@@ -1,0 +1,223 @@
+# Arquivo: faceaudit/faceaudit/__init__.py
+
+# Trazendo as classes para o nível superior para facilitar o import
+# Models
+from .models.case_result import CaseResult
+from .models.category_diff import CategoryDiff
+from .models.comparison_mining_config import ComparisonMiningConfig
+from .models.comparison_result import ComparisonResult
+from .models.data_config import DataConfig
+from .models.dataset_ingestion_config import DatasetIngestionConfig
+from .models.dataset_stats import DatasetStats
+from .models.dir_template import DirTemplate
+from .models.embedding_comparison import EmbeddingComparison
+from .models.embedding_comparison_dataset import EmbeddingComparisonDataset
+from .models.embedding_dataset import EmbeddingDataset
+from .models.embedding_info import EmbeddingInfo
+from .models.face_dataset import FaceDataset
+from .models.face_info import FaceInfo
+from .models.ff_info import FFInfo
+from .models.filter_config import FilterConfig
+from .models.kde_config import KDEConfig
+from .models.kde_training_artifacts import KDETrainingArtifacts
+from .models.kde_validation_input import KDEValidationInput
+from .models.kde_validation_result import KDEValidationResult
+from .models.kde_visualization_data import KDEVisualizationData
+from .models.ofiq_info import OFIQInfo
+from .models.plda_config import PLDAConfig
+from .models.plda_validation_input import PLDAValidationInput
+from .models.plda_validation_result import PLDAValidationResult
+from .models.serfiq_info import SERFIQInfo
+from .models.strategy_validation_result import StrategyValidationResult
+from .models.system_config import AppConfig
+from .models.transformation_pipeline_config import TransformationPipelineConfig
+from .models.transformation_step_3d import TransformationStep3D
+from .models.transformation_trajectory_data import TransformationTrajectoryData
+from .models.transformator_config import TransformatorConfig
+from .models.validation_plot_data import ValidationPlotData
+from .models.project_config import ProjectConfig
+from .models.project_file import ProjectFile
+from .models.aggregation_config import AggregationConfig
+from .models.lda_config import LDAConfig
+from .models.whitening_config import WhiteningConfig
+from .models.coral_config import CoralConfig
+from .models.validation_config import ValidationConfig
+from .models.arena_validation_input import ArenaValidationInput
+from .models.arena_validation_result import ArenaValidationResult
+from .models.strategy_audit_result import StrategyAuditResult
+from .models.split_config import SplitConfig
+from .models.split_simulation_result import SplitSimulationResult
+from .models.ablation_scenario_info import AblationScenarioInfo
+from .models.ablation_study_info import AblationStudyInfo
+from .models.hubness_analysis_info import HubnessAnalysisInfo
+from .models.hubness_sample_info import HubnessSampleInfo
+from .models.hubness_stratification_info import HubnessStratificationInfo
+from .models.hubness_paired_study_info import HubnessPairedStudyInfo
+from .models.hubness_optimization_study_info import HubnessOptimizationStudyInfo
+from .models.hubness_quality_diagnostics_info import HubnessQualityDiagnosticsInfo
+from .models.gaussianity_analysis_info import GaussianityAnalysisInfo
+from .models.validation.validation_result import ValidationResult
+from .models.storage.strategy_artifact_reference import StrategyArtifactReference
+from .models.instructions.instruction_execution_result import InstructionExecutionResult
+from .models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
+from .models.strategy.strategy_resource import StrategyResource
+from .models.pipeline.pipeline_application_policy import PipelineApplicationPolicy
+from .models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
+from .models.strategy.lr_strategy_definition import LRStrategyDefinition
+from .models.instructions.pipeline_training_instruction import PipelineTrainingInstruction
+from .models.instructions.pipeline_application_instruction import PipelineApplicationInstruction
+from .models.instructions.dataset_split_instruction import DatasetSplitInstruction
+from .models.strategy.lr_strategy_trained_model import LRStrategyTrainedModel
+from .models.instructions.dataset_merge_instruction import DatasetMergeInstruction
+from .models.instructions.similarity_model_training_instruction import SimilarityModelTrainingInstruction
+from .models.instructions.calibration_model_training_instruction import CalibrationModelTrainingInstruction
+from .models.similarity.plda_similarity_model_config import PLDASimilarityModelConfig
+from .models.similarity.plda_similarity_model import PLDASimilarityModel
+from .models.similarity.cosine_similarity_model import CosineSimilarityModel
+from .models.calibration.logistic_regression_calibration_model_config import LogisticRegressionCalibrationModelConfig
+from .models.calibration.logistic_regression_calibration_model import LogisticRegressionCalibrationModel
+from .models.calibration.kde_calibration_model_config import KDECalibrationModelConfig
+from .models.calibration.kde_calibration_model import KDECalibrationModel
+from .models.similarity.similarity_score_sample import SimilarityScoreSample
+from .models.similarity.similarity_score_dataset import SimilarityScoreDataset
+from .models.instructions.similarity_scoring_instruction import SimilarityScoringInstruction
+
+# Services
+from .services.arena_validation_service import ArenaValidationService
+from .services.comparison_service import ComparisonService
+from .services.comparison_mining_service import ComparisonMiningService
+from .services.config_loader_service import ConfigLoaderService
+from .services.dataset_comparison_service import DatasetComparisonService
+from .services.dataset_loader_service import DatasetLoaderService
+from .services.dataset_stats_service import DatasetStatsService
+from .services.dimensionality_reduction_service import DimensionalityReductionService
+from .services.embedding_math_service import EmbeddingMathService
+from .services.ff_service import FFService
+from .services.hash_service import HashService
+from .services.kde_validation_service import KDEValidationService
+from .services.kde_visualization_service import KDEVisualizationService
+from .services.ofiq_service import OFIQService
+from .services.plda_validation_service import PLDAValidationService
+from .services.serfiq_service import SERFIQService
+from .services.file_system_service import FileSystemService
+from .services.trajectory_plotter_service import TrajectoryPlotterService
+from .services.kde_plotter_service import KDEPlotterService
+from .services.validation_math_service import ValidationMathService
+from .services.plda_split_service import PLDASplitService
+from .services.typicality_model import TypicalityModel
+from .services.typicality_model import TypicalityInfo
+from .services.hubness_analysis_service import HubnessAnalysisService
+from .services.hubness_plot_service import HubnessPlotService
+from .services.gaussianity_analyzer import GaussianityAnalyzer
+from .services.gaussianity_plotter import GaussianityPlotter
+
+# Adapters
+from .adapters.face_dataset_adapter import FaceDatasetAdapter
+
+# Pipelines
+#from .pipelines.validation_pipeline import ValidationPipeline
+from .pipelines.casework_pipeline import CaseworkPipeline
+from .pipelines.feature_extraction_pipeline import FeatureExtractionPipeline
+from .pipelines.transformation_pipeline import TransformationPipeline
+from .pipelines.embedding_transformation_pipeline import EmbeddingTransformationPipeline
+
+
+# Protocols
+from .protocols.lr_model_protocol import LRModelProtocol
+from .protocols.embedding_transformation_protocol import EmbeddingTransformationProtocol
+from .protocols.model_parameters import ModelParametersProtocol
+from .protocols.strategy_resource_protocol import StrategyResourceProtocol
+from .protocols.strategy_instruction_executor_protocol import StrategyInstructionExecutorProtocol
+from .protocols.validation_rule_protocol import ValidationRuleProtocol
+from .protocols.strategy_execution_context_protocol import StrategyExecutionContextProtocol
+from .protocols.trainable_model_protocol import TrainableModelProtocol
+from .protocols.applicable_model_protocol import ApplicableModelProtocol
+from .protocols.strategy_definition_validator_protocol import StrategyDefinitionValidatorProtocol
+from .protocols.embedding_transformation_step_protocol import EmbeddingTransformationStepProtocol
+from .protocols.embedding_transformation_pipeline_protocol import EmbeddingTransformationPipelineProtocol
+from .protocols.lr_strategy_definition_protocol import LRStrategyDefinitionProtocol
+from .protocols.lr_strategy_trained_model_protocol import LRStrategyTrainedModelProtocol
+from .protocols.artifact_storage_protocol import ArtifactStorageProtocol
+from .protocols.strategy_definition_repository_protocol import StrategyDefinitionRepositoryProtocol
+from .protocols.strategy_trained_model_repository_protocol import StrategyTrainedModelRepositoryProtocol
+from .protocols.similarity_model_protocol import SimilarityModelProtocol
+from .protocols.calibration_model_protocol import CalibrationModelProtocol
+
+# Contexts
+from .contexts.strategy_execution_context import StrategyExecutionContext
+
+# Storage
+from .storage.artifact_storage_service import ArtifactStorageProtocol
+
+# Repositories
+from .repositories.strategy_definition_repository import StrategyDefinitionRepository
+from .repositories.strategy_trained_model_repository import StrategyTrainedModelRepository
+
+# Executors
+from .executors.instructions.strategy_instruction_executor_base import StrategyInstructionExecutorBase
+from .executors.instructions.pipeline_training_instruction_executor import PipelineTrainingInstructionExecutor
+from .executors.instructions.pipeline_application_instruction_executor import PipelineApplicationInstructionExecutor
+from .executors.strategy_executor import StrategyExecutor
+from .executors.instruction_executor_registry import InstructionExecutorRegistry
+from .executors.instructions.dataset_split_instruction_executor import DatasetSplitInstructionExecutor
+from .executors.instructions.similarity_model_training_instruction_executor import SimilarityModelTrainingInstructionExecutor
+from .executors.instructions.calibration_model_training_instruction_executor import CalibrationModelTrainingInstructionExecutor
+from .executors.instructions.dataset_merge_instruction_executor import DatasetMergeInstructionExecutor
+from .executors.instructions.similarity_scoring_instruction_executor import SimilarityScoringInstructionExecutor
+
+
+# Transformators
+from .transformators.l2_normalization import L2Normalization
+from .transformators.identity_aggregation import IdentityAggregation
+from .transformators.centering_transformation import CenteringTransformation
+from .transformators.coral_transformation import CoralTransformation
+from .transformators.lda_transformation import LdaTransformation
+from .transformators.whitening_transformation import WhiteningTransformation
+
+# Strategies
+from .strategies.kde_strategy import KDEStrategy
+from .strategies.plda_strategy import PLDAStrategy
+
+# Parameters
+from .parameters.plda_parameters import PLDAParameters
+
+# Enums
+from .enums.transformation_type import TransformationType
+from .enums.lr_model_type import LRModelType
+from .enums.whitening_style import WhiteningStyle
+from .enums.plda_training_strategy import PLDATrainingStrategy
+from .enums.embedding_type import EmbeddingType
+from .enums.dataset_columns import DatasetColumns
+from .enums.strategy_type import StrategyType
+from .enums.aggregation_method import AggregationMethod
+from .enums.quality_score_type import QualityScoreType
+from .enums.coral_estimator_type import CoralEstimatorType
+from .enums.embedding_type import EmbeddingType
+from .enums.kde_kernel_type import KDEKernelType
+from .enums.lr_method_type import LRMethodType
+from .enums.plda_mode import PLDAMode
+from .enums.score_based_strategy_mode import ScoreBasedStrategyMode
+from .enums.score_metric import ScoreMetric
+from .enums.step_type import StepType
+from .enums.validation_severity import ValidationSeverity
+from .enums.strategy_resource_type import StrategyResourceType
+from .enums.strategy_instruction_type import StrategyInstructionType
+from .enums.pipeline_mode import PipelineMode
+from .enums.strategy_artifact_type import StrategyArtifactType
+from .enums.dataset_split_mode import DatasetSplitMode
+from .enums.dataset_merge_mode import DatasetMergeMode
+from .enums.similarity_model_type import SimilarityModelType
+from .enums.calibration_model_type import CalibrationModelType
+
+# Controllers
+from .controllers.kde_preparation_controller import KDEPreparationController
+from .controllers.plda_training_controller import PLDATrainingController
+from .controllers.plda_transformation_pipelines_controller import PLDATransformationPipelinesController
+from .controllers.transformation_trajectory_controller import TransformationTrajectoryController
+
+
+# Managers
+from .manager.kde_manager import KDEManager
+from .manager.plda_manager import PLDAManager
+from .manager.strategies_manager import StrategiesManager
+from .manager.project_manager import ProjectManager

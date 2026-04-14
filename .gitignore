@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Dados e modelos (potencialmente grandes)
+data/
+out/
+temp_test_pipeline/
+notebooks/.ipynb_checkpoints/
+
+# Arquivos de saída temporários
+*.log
+
+# IDE
+.vscode/settings.json
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Arquivos com nomes corrompidos (artefatos de sessão anterior)
+1])
+None
+float
+str
+"Tuple[float"
+"Tuple[int"
+CaseResult

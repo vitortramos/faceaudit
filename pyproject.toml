@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faceaudit"
+version = "0.1.0"
+description = "Biblioteca de auditoria forense facial"
+dependencies = [
+    "numpy",
+    "pandas",
+    "opencv-python",
+    "tqdm"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]  # Ou ["src"] se você usou a pasta src

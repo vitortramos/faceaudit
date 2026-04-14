@@ -1,0 +1,42 @@
+system:
+  random_seed: 42
+  gpu_enabled: false
+
+paths:
+  # Diretórios de saída de dados
+  output_models: "data/models"
+  output_validation: "data/validation"
+  output_reports: "data/reports"
+
+  # Caminhos para modelos pré-treinados de adaptação (opcional)
+  coral_matrix: "data/models/coral_matrix.pkl"
+  whitening_matrix: "data/models/whitening_matrix.pkl"
+
+  # Configurações de ferramentas externas
+  ofiq:
+    exe_path: "" # Deixe vazio para auto-detectar ou coloque caminho absoluto
+    data_path: "" # Deixe vazio para auto-detectar
+
+forensic_face:
+  model: "sepaelv2"
+  det_size: 320
+
+strategies:
+  plda:
+    name: "PLDA_Latent_LogReg"
+    latent_dim: 512 # Dimensão do espaço latente
+    use_fisher: true # Aplica ArcTanh nos scores antes da calibração
+    use_optimize: false # Otimiza o número de dimensões do espaço latente
+
+  kde:
+    # KDE não tem parâmetros de init além do serviço,
+    # mas deixamos aqui para expansão futura
+    enabled: true
+
+  serfiq:
+    t_augmentations: 10
+    alpha: 1.5
+
+data_preparation:
+  test_ratio: 0.2 # 20% das identidades reservadas para teste
+  calib_ratio: 0.2 # 20% do treino reservado para calibração LogReg

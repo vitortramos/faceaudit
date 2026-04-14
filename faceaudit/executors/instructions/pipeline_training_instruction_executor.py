@@ -1,0 +1,273 @@
+# faceaudit/executors/instructions/pipeline_training_instruction_executor.py
+
+from __future__ import annotations
+
+from typing import Optional
+
+from faceaudit.enums.pipeline_mode import PipelineMode
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
+
+from faceaudit.executors.instructions.strategy_instruction_executor_base import StrategyInstructionExecutorBase
+from faceaudit.models.instructions.instruction_execution_result import (
+    InstructionExecutionResult,
+)
+from faceaudit.models.instructions.pipeline_training_instruction import (
+    PipelineTrainingInstruction,
+)
+from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
+from faceaudit.models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
+from faceaudit.models.strategy.strategy_resource import StrategyResource
+from faceaudit.models.transformation_pipeline_config import TransformationPipelineConfig
+from faceaudit.models.validation.validation_result import ValidationResult
+from faceaudit.pipelines.embedding_transformation_pipeline import (
+    EmbeddingTransformationPipeline,
+)
+from faceaudit.protocols.strategy_execution_context_protocol import (
+    StrategyExecutionContextProtocol,
+)
+
+
+
+
+class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
+    """
+    Executor concreto da instrução de treinamento de pipeline.
+
+    Fluxo:
+    1. Valida a instrução e os recursos necessários.
+    2. Resolve configs e datasets no contexto.
+    3. Instancia o EmbeddingTransformationPipeline.
+    4. Executa fit() ou fit_dual().
+    5. Registra o pipeline treinado como novo recurso no contexto.
+    """
+
+    def execute(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> InstructionExecutionResult:
+        validation = self.validate(instruction=instruction, context=context)
+        if not validation.is_valid:
+            return self._failure_result(*validation.errors)
+
+        if not isinstance(instruction, PipelineTrainingInstruction):
+            return self._failure_result(
+                "O executor PipelineTrainingInstructionExecutor recebeu uma instrução incompatível."
+            )
+
+        self._log(
+            context,
+            f"▶ Iniciando execução da instrução de treino de pipeline: "
+            f"{instruction.name} ({instruction.instruction_id})"
+        )
+
+        try:
+            if instruction.pipeline_mode == PipelineMode.LINEAR:
+                pipeline = self._execute_linear(instruction=instruction, context=context)
+            else:
+                pipeline = self._execute_dual(instruction=instruction, context=context)
+
+            output_resource_id = instruction.trained_pipeline_resource_id
+            trained_resource = StrategyResource(
+                resource_id=output_resource_id,
+                name=output_resource_id,
+                resource_type=StrategyResourceType.TRAINED_PIPELINE,
+                payload=pipeline,
+                artifact_ref=None,
+            )
+            context.set_resource(trained_resource)
+
+            self._log(
+                context,
+                f"✅ Pipeline treinado registrado como recurso: '{output_resource_id}'."
+            )
+
+            return InstructionExecutionResult.ok(
+                produced_resource_ids=[output_resource_id],
+                metadata={
+                    "instruction_id": instruction.instruction_id,
+                    "instruction_name": instruction.name,
+                    "pipeline_mode": instruction.pipeline_mode.to_str(),
+                    "training_metrics": pipeline.get_training_metrics(),
+                },
+            )
+
+        except Exception as e:
+            self._log(
+                context,
+                f"❌ Erro ao executar a instrução de treino de pipeline "
+                f"{instruction.instruction_id}: {e}"
+            )
+            return self._failure_result(str(e))
+
+    def _validate_instruction_specifics(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> ValidationResult:
+        result = ValidationResult.neutral()
+
+        if not isinstance(instruction, PipelineTrainingInstruction):
+            result.add_error(
+                "A instrução informada não é do tipo PipelineTrainingInstruction."
+            )
+            return result
+
+        if not instruction.trained_pipeline_resource_id:
+            result.add_error(
+                "A instrução de treino de pipeline deve definir "
+                "'trained_pipeline_resource_id'."
+            )
+
+        if instruction.pipeline_mode == PipelineMode.LINEAR:
+            self._validate_linear_instruction(
+                instruction=instruction,
+                context=context,
+                result=result,
+            )
+        elif instruction.pipeline_mode == PipelineMode.DUAL:
+            self._validate_dual_instruction(
+                instruction=instruction,
+                context=context,
+                result=result,
+            )
+        else:
+            result.add_error(f"PipelineMode não suportado: {instruction.pipeline_mode}")
+
+        if result.is_valid and not result.has_warnings:
+            result.mark_ok()
+
+        return result
+
+    def _validate_linear_instruction(
+        self,
+        instruction: PipelineTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+        result: ValidationResult,
+    ) -> None:
+        if not instruction.pipeline_config_resource_id:
+            result.add_error(
+                "Pipeline linear exige 'pipeline_config_resource_id'."
+            )
+        elif not context.has_resource(instruction.pipeline_config_resource_id):
+            result.add_error(
+                f"Recurso de config do pipeline linear não encontrado no contexto: "
+                f"'{instruction.pipeline_config_resource_id}'."
+            )
+        else:
+            config_resource = context.get_resource(instruction.pipeline_config_resource_id)
+            if config_resource is None or not isinstance(
+                config_resource.payload, TransformationPipelineConfig
+            ):
+                result.add_error(
+                    f"O recurso '{instruction.pipeline_config_resource_id}' não contém "
+                    "um TransformationPipelineConfig válido."
+                )
+
+        if not instruction.dataset_resource_id:
+            result.add_error(
+                "Pipeline linear exige 'dataset_resource_id'."
+            )
+        elif not context.has_resource(instruction.dataset_resource_id):
+            result.add_error(
+                f"Recurso de dataset do treino linear não encontrado no contexto: "
+                f"'{instruction.dataset_resource_id}'."
+            )
+
+    def _validate_dual_instruction(
+        self,
+        instruction: PipelineTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+        result: ValidationResult,
+    ) -> None:
+        required_config_ids = [
+            ("source_pipeline_config_resource_id", instruction.source_pipeline_config_resource_id),
+            ("target_pipeline_config_resource_id", instruction.target_pipeline_config_resource_id),
+        ]
+        for label, resource_id in required_config_ids:
+            if not resource_id:
+                result.add_error(f"Pipeline dual exige '{label}'.")
+            elif not context.has_resource(resource_id):
+                result.add_error(
+                    f"Recurso '{resource_id}' não encontrado no contexto."
+                )
+            else:
+                resource = context.get_resource(resource_id)
+                if resource is None or not isinstance(
+                    resource.payload, TransformationPipelineConfig
+                ):
+                    result.add_error(
+                        f"O recurso '{resource_id}' não contém um "
+                        "TransformationPipelineConfig válido."
+                    )
+
+        required_dataset_ids = [
+            ("source_dataset_resource_id", instruction.source_dataset_resource_id),
+            ("target_dataset_resource_id", instruction.target_dataset_resource_id),
+        ]
+        for label, resource_id in required_dataset_ids:
+            if not resource_id:
+                result.add_error(f"Pipeline dual exige '{label}'.")
+            elif not context.has_resource(resource_id):
+                result.add_error(
+                    f"Recurso '{resource_id}' não encontrado no contexto."
+                )
+
+    def _execute_linear(
+        self,
+        instruction: PipelineTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+    ) -> EmbeddingTransformationPipeline:
+        config_resource = context.get_resource(instruction.pipeline_config_resource_id)
+        dataset_resource = context.get_resource(instruction.dataset_resource_id)
+
+        config = config_resource.payload
+        dataset = dataset_resource.payload
+
+        training_policy = instruction.training_policy or PipelineTrainingPolicy.default_linear()
+
+        pipeline = EmbeddingTransformationPipeline(
+            mode=PipelineMode.LINEAR,
+            config=config,
+        )
+        pipeline.fit(dataset=dataset, training_policy=training_policy)
+
+        return pipeline
+
+    def _execute_dual(
+        self,
+        instruction: PipelineTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+    ) -> EmbeddingTransformationPipeline:
+        source_config_resource = context.get_resource(
+            instruction.source_pipeline_config_resource_id
+        )
+        target_config_resource = context.get_resource(
+            instruction.target_pipeline_config_resource_id
+        )
+        source_dataset_resource = context.get_resource(
+            instruction.source_dataset_resource_id
+        )
+        target_dataset_resource = context.get_resource(
+            instruction.target_dataset_resource_id
+        )
+
+        source_config = source_config_resource.payload
+        target_config = target_config_resource.payload
+        source_dataset = source_dataset_resource.payload
+        target_dataset = target_dataset_resource.payload
+
+        training_policy = instruction.training_policy or PipelineTrainingPolicy.default_dual()
+
+        pipeline = EmbeddingTransformationPipeline(
+            mode=PipelineMode.DUAL,
+            source_config=source_config,
+            target_config=target_config,
+        )
+        pipeline.fit_dual(
+            source_dataset=source_dataset,
+            target_dataset=target_dataset,
+            training_policy=training_policy,
+        )
+
+        return pipeline
