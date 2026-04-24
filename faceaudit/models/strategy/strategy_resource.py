@@ -97,4 +97,7 @@ class StrategyResource(JSONSerializableMixin):
                 processed_data["artifact_ref"]
             )
 
+        # Retrocompat: campo removido — embedding_type agora vive na LRStrategyDefinition
+        processed_data.pop("embedding_column", None)
+
         return cls(**processed_data)

@@ -40,7 +40,11 @@ class StrategyResourceLoaderService:
     # API PRINCIPAL
     # =========================================================================
 
-    def hydrate(self, resource: StrategyResource) -> StrategyResource:
+    def hydrate(
+        self,
+        resource: StrategyResource,
+        embedding_column: Optional[str] = None,
+    ) -> StrategyResource:
         """
         Carrega o payload do recurso a partir do artifact_ref, se necessário.
 
@@ -49,6 +53,8 @@ class StrategyResourceLoaderService:
 
         Args:
             resource: Recurso a ser hidratado.
+            embedding_column: Coluna de embedding a usar (override da estratégia).
+                              None = auto-detect por prioridade.
 
         Returns:
             O mesmo objeto StrategyResource, com payload preenchido se possível.
@@ -63,21 +69,30 @@ class StrategyResourceLoaderService:
         if abs_path is None:
             return resource  # arquivo ausente — executor falhará na validação
 
-        payload = self._load_by_type(resource.resource_type, abs_path)
+        payload = self._load_by_type(
+            resource.resource_type,
+            abs_path,
+            embedding_column=embedding_column,
+        )
         if payload is not None:
             resource.payload = payload
 
         return resource
 
-    def hydrate_all(self, resources: list[StrategyResource]) -> None:
+    def hydrate_all(
+        self,
+        resources: list[StrategyResource],
+        embedding_column: Optional[str] = None,
+    ) -> None:
         """
         Hidrata uma lista de recursos in-place.
 
         Args:
             resources: Lista de StrategyResource a ser hidratada.
+            embedding_column: Coluna de embedding a usar (override da estratégia).
         """
         for resource in resources:
-            self.hydrate(resource)
+            self.hydrate(resource, embedding_column=embedding_column)
 
     # =========================================================================
     # DESPACHO POR TIPO
@@ -87,6 +102,7 @@ class StrategyResourceLoaderService:
         self,
         resource_type: StrategyResourceType,
         path: Path,
+        embedding_column: Optional[str] = None,
     ) -> Optional[Any]:
         """
         Despacha o carregamento com base no tipo do recurso.
@@ -95,7 +111,7 @@ class StrategyResourceLoaderService:
         permanecerá sem payload e a validação do executor reportará o erro.
         """
         if resource_type == StrategyResourceType.DATASET:
-            return self._load_dataset(path)
+            return self._load_dataset(path, embedding_column=embedding_column)
 
         if resource_type == StrategyResourceType.PIPELINE_CONFIG:
             return self._load_pipeline_config(path)
@@ -108,20 +124,23 @@ class StrategyResourceLoaderService:
     # LOADERS CONCRETOS
     # =========================================================================
 
-    def _load_dataset(self, path: Path) -> Optional[Any]:
+    def _load_dataset(self, path: Path,
+                      embedding_column: Optional[str] = None) -> Optional[Any]:
         """
         Carrega um dataset a partir de um arquivo .parquet.
 
         Tenta EmbeddingDataset primeiro (caso mais comum).
         Se falhar, tenta FaceDataset.
+        Em ambos os casos passa embedding_column para que a coluna correta
+        seja usada conforme configurado na estratégia.
         """
         try:
-            return EmbeddingDataset.from_parquet(path)
+            return EmbeddingDataset.from_parquet(path, embedding_column=embedding_column)
         except Exception:
             pass
 
         try:
-            return FaceDataset.from_parquet(path)
+            return FaceDataset.from_parquet(path, embedding_column=embedding_column)
         except Exception:
             pass
 

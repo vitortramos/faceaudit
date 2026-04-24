@@ -6,7 +6,9 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.calibration_model_type import CalibrationModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -47,6 +49,16 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             self.name = "Calibration Model Training"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        ART = (StrategyResourceType.ARTIFACT,)
+        CC = (StrategyResourceType.CALIBRATION_MODEL_CONFIG,)
+        TC = (StrategyResourceType.TRAINED_CALIBRATION_MODEL,)
+        return [
+            ResourceFieldSpec("input_resource_id", "Dados de Entrada (scores)", ART),
+            ResourceFieldSpec("calibration_model_config_resource_id", "Config do Calibrador", CC),
+            ResourceFieldSpec("trained_calibration_model_resource_id", "Calibrador Treinado", TC, is_output=True),
+        ]
 
     def _sync_declared_io(self) -> None:
         inputs = []

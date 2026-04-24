@@ -312,13 +312,18 @@ def build_toc(story, S):
 
     toc_items = [
         ("1.", "Visão Geral e Motivação"),
+        ("  1.1", "Modelo Mental — A Arquitetura em 30 Segundos"),
         ("2.", "Arquitetura Antiga — Problemas Resolvidos"),
         ("3.", "Visão Geral da Nova Arquitetura"),
+        ("  3.1", "Padrão Command + Context + Registry"),
+        ("  3.2", "Fluxo de Dados entre Instruções (DAG de Recursos)"),
         ("4.", "Fluxo de Execução Detalhado"),
+        ("  4.1", "Execução Individual (step-by-step)"),
+        ("  4.2", "Hello World — Exemplo Mínimo Completo"),
         ("5.", "Componentes Principais"),
         ("  5.1", "LRStrategyDefinition — O Plano da Estratégia"),
         ("  5.2", "StrategyExecutionContext — O Barramento de Estado"),
-        ("  5.3", "StrategyResource — A Unidade de Troca"),
+        ("  5.3", "StrategyResource — A Unidade de Troca (categorias e placeholders)"),
         ("  5.4", "StrategyExecutor — O Orquestrador"),
         ("  5.5", "Executores de Instrução"),
         ("6.", "Os 8 Tipos de Instrução"),
@@ -331,16 +336,28 @@ def build_toc(story, S):
         ("  9.1", "PipelineTrajectoryService — Visualização 3D"),
         ("10.", "Protocolo de Persistência (ArtifactStorageProtocol)"),
         ("  10.1", "Verificação de Integridade (LocalProjectArtifactStorage)"),
-        ("11.", "Sistema de Validação"),
-        ("  11.1", "Dois Mecanismos Complementares"),
-        ("  11.2", "ValidationRuleBase e Cache de Stats"),
-        ("  11.3", "Regras Concretas Implementadas"),
+        ("11.", "Pipeline de Validação"),
+        ("  11.1", "Visão Geral — 2 Níveis, 5 Estágios"),
+        ("  11.2", "Nível 1: Validação da Estratégia"),
+        ("  11.3", "Nível 2: Validação de Instrução (4 estágios)"),
+        ("  11.4", "Gate de Dependência (can_execute_instruction)"),
+        ("  11.5", "ValidationRuleBase e Cache de Stats"),
+        ("  11.6", "Regras Concretas Implementadas"),
+        ("  11.7", "Validação Dinâmica por Instrução (build_validation_rules)"),
         ("12.", "Ciclo de Vida de um Projeto FaceAudit"),
         ("  12.1", "Fluxo de Treinamento (end-to-end)"),
         ("  12.2", "Fluxo de Inferência (StrategyInferenceService)"),
         ("13.", "Decisões de Design e Princípios Arquiteturais"),
         ("14.", "Extensibilidade — Como Adicionar Novos Componentes"),
-        ("15.", "Estrutura de Pastas"),
+        ("15.", "Interface Gráfica: Estratégias (Nova Arch)"),
+        ("  15.1", "Visão Geral do Layout"),
+        ("  15.2", "Toolbars"),
+        ("  15.3", "Painel Esquerdo"),
+        ("  15.4", "Editor de Estratégia com Três Abas"),
+        ("  15.5", "Execução Individual de Instruções"),
+        ("  15.6", "Workers (Execução em Thread)"),
+        ("  15.7", "Decisões de Design da Interface"),
+        ("16.", "Estrutura de Pastas"),
     ]
 
     for num, title in toc_items:
@@ -393,6 +410,53 @@ def build_s1(story, S):
         "interpreta e roda essa lista. O perito define o que acontece; o código executa.",
         bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
     )
+
+    # 1.1 — Modelo Mental
+    story.append(Paragraph("1.1 Modelo Mental — A Arquitetura em 30 Segundos", S["h2"]))
+    story.append(Paragraph(
+        "Antes de entrar nos detalhes, esta é a forma mais rápida de entender "
+        "como a nova arquitetura funciona:",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Conceito", "Analogia"],
+        [
+            ["Estratégia (LRStrategyDefinition)",
+             "Uma <b>receita</b> — lista ordenada de passos (instruções) "
+             "e os ingredientes necessários (recursos)."],
+            ["Instrução (StrategyInstructionDefinition)",
+             "Um <b>passo da receita</b> — transforma ingredientes de entrada "
+             "em produtos de saída. Ex: \"treinar pipeline\", \"dividir dataset\"."],
+            ["Recurso (StrategyResource)",
+             "Um <b>ingrediente ou produto</b> — qualquer objeto nomeado que flui entre instruções: "
+             "datasets, pipelines treinados, scores, modelos de calibração."],
+            ["Contexto (StrategyExecutionContext)",
+             "A <b>bancada de trabalho</b> — memória compartilhada onde os recursos ficam "
+             "acessíveis. Uma instrução lê o que precisa e deixa o que produziu."],
+            ["Executor (StrategyExecutor)",
+             "O <b>cozinheiro</b> — segue a receita passo a passo, resolvendo qual "
+             "especialista (executor de instrução) cuida de cada passo."],
+            ["Registry (InstructionExecutorRegistry)",
+             "O <b>catálogo de especialistas</b> — mapeia cada tipo de instrução "
+             "ao executor concreto que sabe executá-la."],
+        ],
+    )
+
+    code_block(story, S, [
+        "Estratégia    = lista de instruções + recursos iniciais",
+        "Instrução     = transformação: recursos de entrada → recursos de saída",
+        "Recurso       = objeto nomeado que flui entre instruções",
+        "Contexto      = memória compartilhada (bancada de trabalho)",
+        "Executor      = motor que segue a receita",
+        "Registry      = mapa tipo_instrução → executor_concreto",
+    ])
+
+    story.append(Paragraph(
+        "O perito monta a receita na interface. O motor executa. "
+        "Nenhum passo está hard-coded — a ordem e os ingredientes são declarados pelo perito.",
+        S["body"]
+    ))
 
     story.append(PageBreak())
 
@@ -465,9 +529,9 @@ def build_s3(story, S):
         "┌─────────────────────────────────────────────────────────────┐",
         "│                    LRStrategyDefinition                      │",
         "│  resources: [dataset_A, split_cfg, mining_cfg, ...]          │",
-        "│  instructions: [PIPELINE_TRAINING, DATASET_SPLIT,            │",
-        "│                  PAIR_MINING, SIMILARITY_MODEL_TRAINING,     │",
-        "│                  SIMILARITY_SCORING, CALIBRATION_TRAINING]   │",
+        "│  preparation_instructions:  [PIPELINE_TRAINING, ...]         │",
+        "│  validation_instructions:   [SIMILARITY_SCORING, ...]        │",
+        "│  casework_instructions:     [CALIBRATION_TRAINING, ...]      │",
         "└───────────────────────────┬─────────────────────────────────┘",
         "                            │ StrategyExecutorFactory.build()",
         "                            ▼",
@@ -478,12 +542,18 @@ def build_s3(story, S):
         "│  │  get_resource() / set_resource() / has_resource()      │  │",
         "│  │  log / artifacts / validation_rules / metadata         │  │",
         "│  └────────────────────────────────────────────────────────┘  │",
-        "│  Para cada instrução:                                         │",
-        "│    InstructionExecutorRegistry.resolve(instruction_type)      │",
-        "│      → executor.execute(instruction, context)                 │",
-        "│            lê recursos do contexto                            │",
-        "│            executa lógica                                     │",
-        "│            escreve novos recursos no contexto                 │",
+        "│  Execução por fase (Preparação → Validação → Caso):          │",
+        "│    Para cada instrução da fase:                               │",
+        "│      InstructionExecutorRegistry.resolve(instruction_type)    │",
+        "│        → executor.execute(instruction, context)               │",
+        "│              lê recursos do contexto                          │",
+        "│              executa lógica                                   │",
+        "│              escreve novos recursos no contexto               │",
+        "│                                                               │",
+        "│  Execução individual (step-by-step):                          │",
+        "│    prepare_context(definition) → contexto persistente         │",
+        "│    can_execute_instruction(instr, ctx) → (bool, missing)      │",
+        "│    execute_single_instruction(instr, ctx) → result            │",
         "└─────────────────────────────────────────────────────────────┘",
         "                            │",
         "                            ▼",
@@ -499,6 +569,148 @@ def build_s3(story, S):
         "comunicam exclusivamente por meio dele.",
         S["body"]
     ))
+
+    # 3.1 — Command + Context + Registry
+    story.append(Paragraph("3.1 Padrão Command + Context + Registry", S["h2"]))
+    story.append(Paragraph(
+        "A nova arquitetura implementa uma variação do padrão "
+        "<b>Command + Context + Registry</b>. Cada peça tem uma responsabilidade única:",
+        S["body"]
+    ))
+
+    three_col_table(story, S,
+        ["Peça", "Implementação", "Responsabilidade"],
+        [
+            ["Command\n(Instrução)",
+             "StrategyInstructionDefinition\n(8 subclasses concretas)",
+             "Descreve UMA ação a ser executada: qual tipo de operação, quais recursos "
+             "consome (input_resource_ids), quais produz (output_resource_ids), e todos os "
+             "parâmetros configuráveis. É um DTO puro — não contém lógica de execução."],
+            ["Context\n(Estado)",
+             "StrategyExecutionContext\n(implementa StrategyExecution\nContextProtocol)",
+             "Barramento de estado compartilhado. Armazena recursos nomeados, regras de "
+             "validação, artefatos, logs e metadados. Uma instrução lê o que precisa com "
+             "get_resource() e publica o que produziu com set_resource(). É o ÚNICO canal "
+             "de comunicação entre instruções — não há chamadas diretas."],
+            ["Registry\n(Roteador)",
+             "InstructionExecutorRegistry\n(dict tipo → executor)",
+             "Mapeia cada StrategyInstructionType ao executor concreto que sabe executá-la. "
+             "O StrategyExecutor chama registry.resolve(instruction_type) para obter o executor "
+             "correto. Novos tipos de instrução são adicionados registrando um novo par no mapa."],
+        ],
+        col_widths=[INNER_W*0.15, INNER_W*0.28, INNER_W*0.57],
+    )
+
+    story.append(Paragraph(
+        "O <b>StrategyExecutor</b> é o orquestrador que conecta as três peças: "
+        "recebe a lista de Commands (instruções), cria o Context, e usa o Registry "
+        "para resolver o executor correto de cada instrução. A separação entre o DTO "
+        "(o que fazer) e o executor (como fazer) permite testar, substituir e estender "
+        "cada parte independentemente.",
+        S["body"]
+    ))
+
+    code_block(story, S, [
+        "Command (DTO puro)          Registry (mapa)             Executor (lógica)",
+        "┌──────────────────┐    ┌───────────────────────┐    ┌──────────────────┐",
+        "│ PipelineTraining │───▶│ PIPELINE_TRAINING     │───▶│ PipelineTraining │",
+        "│ Instruction      │    │  → PipelineTraining   │    │ InstructionExec  │",
+        "│                  │    │    InstructionExecutor │    │                  │",
+        "│ input_ids: [...]  │    ├───────────────────────┤    │ validate()       │",
+        "│ output_ids: [...] │    │ DATASET_SPLIT         │    │ execute()        │",
+        "│ pipeline_mode:DUAL│    │  → DatasetSplit       │    │                  │",
+        "└──────────────────┘    │    InstructionExecutor │    └────────┬─────────┘",
+        "                        └───────────────────────┘             │",
+        "                                                              ▼",
+        "                        ┌─────────────────────────────────────────────┐",
+        "                        │           StrategyExecutionContext           │",
+        "                        │  get_resource(id) → recurso                 │",
+        "                        │  set_resource(recurso) → publica resultado  │",
+        "                        └─────────────────────────────────────────────┘",
+    ])
+
+    # 3.2 — DAG de Recursos
+    story.append(Paragraph("3.2 Fluxo de Dados entre Instruções (DAG de Recursos)", S["h2"]))
+    story.append(Paragraph(
+        "Cada instrução declara explicitamente seus <code>input_resource_ids</code> "
+        "(o que consome) e <code>output_resource_ids</code> (o que produz). Isso forma "
+        "um <b>grafo acíclico dirigido (DAG)</b> implícito entre as instruções — o output "
+        "de uma é o input da seguinte. O diagrama abaixo mostra o fluxo de dados "
+        "de uma estratégia típica PLDA + Regressão Logística:",
+        S["body"]
+    ))
+
+    code_block(story, S, [
+        "                    ┌─────────────────┐",
+        "                    │   dataset_raw    │  (recurso do projeto)",
+        "                    │   pipeline_cfg   │",
+        "                    └────────┬─────────┘",
+        "                             │",
+        "                             ▼",
+        "                 ┌───────────────────────┐",
+        "                 │   PIPELINE_TRAINING    │",
+        "                 │   in:  dataset_raw     │",
+        "                 │        pipeline_cfg    │",
+        "                 │   out: trained_pipe    │",
+        "                 └───────────┬───────────┘",
+        "                             │",
+        "               ┌─────────────┤",
+        "               ▼             ▼",
+        " ┌─────────────────┐  ┌──────────────────────┐",
+        " │ trained_pipe     │  │ PIPELINE_APPLICATION  │",
+        " │ (persistido)     │  │ in: trained_pipe      │",
+        " └─────────────────┘  │     dataset_raw       │",
+        "                      │ out: transformed_ds   │",
+        "                      └──────────┬────────────┘",
+        "                                 │",
+        "                                 ▼",
+        "                     ┌───────────────────────┐",
+        "                     │    DATASET_SPLIT       │",
+        "                     │    in: transformed_ds  │",
+        "                     │    out: split_A         │",
+        "                     │         split_B         │",
+        "                     └─────┬─────────┬────────┘",
+        "                           │         │",
+        "              ┌────────────┘         └────────────┐",
+        "              ▼                                    ▼",
+        "  ┌────────────────────────┐         ┌──────────────────────┐",
+        "  │ SIMILARITY_MODEL_TRAIN │         │  SIMILARITY_SCORING  │",
+        "  │ in:  split_A           │         │  in: split_B         │",
+        "  │ out: trained_plda      │────────▶│      trained_plda    │",
+        "  └────────────────────────┘         │  out: scores_ds      │",
+        "                                     └──────────┬───────────┘",
+        "                                                │",
+        "                                                ▼",
+        "                                    ┌───────────────────────┐",
+        "                                    │    PAIR_MINING         │",
+        "                                    │    in: scores_ds      │",
+        "                                    │    out: impostors      │",
+        "                                    │         genuines       │",
+        "                                    └─────┬─────────┬───────┘",
+        "                                          │         │",
+        "                                          ▼         ▼",
+        "                                 ┌────────────────────────────┐",
+        "                                 │ CALIBRATION_MODEL_TRAINING │",
+        "                                 │ in:  impostors, genuines   │",
+        "                                 │ out: trained_calibrator    │",
+        "                                 └────────────────────────────┘",
+    ])
+
+    story.append(Paragraph(
+        "A sequência de execução respeita a ordem das instruções na definição da estratégia. "
+        "O <code>can_execute_instruction()</code> verifica se todos os "
+        "<code>input_resource_ids</code> existem no contexto antes de permitir a execução — "
+        "garantindo que o DAG é respeitado mesmo na execução instrução-a-instrução.",
+        S["body"]
+    ))
+
+    callout_box(story, S,
+        "O DAG é <b>implícito</b> — não existe uma estrutura de grafo explícita no código. "
+        "A dependência é declarada nos campos <code>input_resource_ids</code> e "
+        "<code>output_resource_ids</code> de cada instrução, sincronizados automaticamente "
+        "pelo <code>_sync_declared_io()</code> no <code>__post_init__</code> do DTO.",
+        bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
+    )
 
     story.append(PageBreak())
 
@@ -539,14 +751,17 @@ def build_s4(story, S):
          "As validation_rule_ids declaradas na LRStrategyDefinition são executadas "
          "contra o contexto inicial. Se qualquer regra crítica falhar, a execução "
          "é abortada."),
-        ("5. Loop de execução das instruções",
-         "Para cada StrategyInstructionDefinition na lista instructions (em ordem): "
+        ("5. Execução por fases (três fases em sequência)",
+         "As instruções são organizadas em três fases: Preparação "
+         "(preparation_instructions), Validação (validation_instructions) e "
+         "Análise de Caso (casework_instructions). O executor itera cada fase "
+         "em ordem. Para cada instrução da fase: "
          "(a) resolve o executor concreto no InstructionExecutorRegistry; "
          "(b) chama executor.validate(instruction, context); "
          "(c) se válido, chama executor.execute(instruction, context); "
-         "(d) o resultado é registrado; se crítico, a execução pode ser abortada."),
+         "(d) o resultado é registrado; se crítico, a execução é abortada."),
         ("6. Empacotamento do resultado",
-         "Após todas as instruções, o contexto final é empacotado em um "
+         "Após todas as fases, o contexto final é empacotado em um "
          "LRStrategyTrainedModel contendo: recursos treinados, referências de "
          "artefatos persistidos, log de execução e metadados."),
     ]
@@ -557,14 +772,16 @@ def build_s4(story, S):
             Paragraph(desc, S["body"]),
         ]))
 
-    story.append(Paragraph("Exemplo de estratégia típica", S["h2"]))
+    story.append(Paragraph("Exemplo de estratégia típica (com fases)", S["h2"]))
     story.append(Paragraph(
         "Uma estratégia completa de PLDA + Regressão Logística tipicamente contém "
-        "as seguintes instruções em ordem:",
+        "as seguintes instruções distribuídas em três fases:",
         S["body"]
     ))
 
     code_block(story, S, [
+        "═══ Fase: Preparação (preparation_instructions) ═══",
+        "",
         "Instrução 1: PIPELINE_TRAINING",
         "  → Treina pipeline LINEAR [Centering → L2Norm → Whitening → LDA]",
         "  → Produz: trained_pipeline",
@@ -581,6 +798,8 @@ def build_s4(story, S):
         "  → Treina PLDASimilarityModel em split_A",
         "  → Produz: trained_plda",
         "",
+        "═══ Fase: Validação (validation_instructions) ═══",
+        "",
         "Instrução 5: SIMILARITY_SCORING",
         "  → Gera matriz de scores em split_B usando trained_plda",
         "  → Produz: scores_dataset",
@@ -589,10 +808,150 @@ def build_s4(story, S):
         "  → Cura impostores/genuínos de scores_dataset via ComparisonMiningConfig",
         "  → Produz: mined_impostors, mined_genuines",
         "",
+        "═══ Fase: Análise de Caso (casework_instructions) ═══",
+        "",
         "Instrução 7: CALIBRATION_MODEL_TRAINING",
         "  → Treina LogisticRegressionCalibrationModel com mined_impostors + mined_genuines",
         "  → Produz: trained_calibrator",
     ])
+
+    story.append(Paragraph("4.1 Execução individual (step-by-step)", S["h2"]))
+    story.append(Paragraph(
+        "Além do fluxo completo (<code>execute()</code>), o <code>StrategyExecutor</code> "
+        "expõe três métodos para execução instrução por instrução, usados pela interface "
+        "gráfica para permitir ao perito executar uma instrução de cada vez:",
+        S["body"]
+    ))
+
+    step_by_step = [
+        ("prepare_context(strategy_definition) → context",
+         "Cria o StrategyExecutionContext, hidrata e carrega os recursos iniciais, "
+         "registra as regras de validação. O contexto retornado é persistente e deve "
+         "ser reutilizado entre chamadas a execute_single_instruction()."),
+        ("can_execute_instruction(instruction, context) → (bool, missing_ids)",
+         "Verifica se todos os input_resource_ids da instrução estão disponíveis no "
+         "contexto. Retorna (True, []) se executável, ou (False, [lista de IDs faltantes]) "
+         "se bloqueada. Usado pela UI para mostrar estados visuais: 🔒 bloqueada, "
+         "ícone normal executável, ✅ já executada."),
+        ("execute_single_instruction(instruction, context) → result",
+         "Executa uma única instrução dentro do contexto fornecido. Os recursos produzidos "
+         "ficam disponíveis no contexto para instruções futuras. O resultado é um "
+         "InstructionExecutionResult com success, errors, produced_resource_ids e "
+         "produced_artifacts."),
+        ("persist_produced_resource(resource, strategy_id) → artifact_ref",
+         "Persiste um recurso produzido em disco via artifact_storage. Mapeia "
+         "StrategyResourceType → StrategyArtifactType via to_artifact_type(), gera o "
+         "path relativo via StrategyFileType.build_path() e chama save_artifact(). "
+         "Retorna StrategyArtifactReference (com path relativo e hash SHA-256) ou None "
+         "se o recurso não for persistível (sem payload ou sem artifact_storage). "
+         "Chamado pela UI após cada execução individual de instrução."),
+    ]
+
+    for title, desc in step_by_step:
+        story.append(KeepTogether([
+            Paragraph(title, S["h3"]),
+            Paragraph(desc, S["body"]),
+        ]))
+
+    callout_box(story, S,
+        "O contexto é <b>descartado</b> quando o perito edita, reordena ou remove "
+        "qualquer instrução da estratégia. Isso garante consistência: os recursos no "
+        "contexto sempre refletem exatamente as instruções já executadas. "
+        "Porém, os recursos já <b>persistidos em disco</b> (artifact_ref preenchido) "
+        "sobrevivem ao reset — estão salvos na definição da estratégia.",
+        bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
+    )
+
+    # 4.2 — Hello World
+    story.append(Paragraph("4.2 Hello World — Exemplo Mínimo Completo", S["h2"]))
+    story.append(Paragraph(
+        "O exemplo mais simples possível de uma estratégia funcional: um dataset de "
+        "embeddings faciais → modelo de similaridade cosseno → scores de todos os pares. "
+        "Apenas 3 instruções, sem pipeline de transformação e sem calibração.",
+        S["body"]
+    ))
+
+    story.append(Paragraph("Definição da estratégia", S["h3"]))
+    code_block(story, S, [
+        "from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition",
+        "from faceaudit.models.strategy.strategy_resource import StrategyResource",
+        "from faceaudit.enums.strategy_resource_type import StrategyResourceType",
+        "from faceaudit.models.instructions.similarity_model_training_instruction import (",
+        "    SimilarityModelTrainingInstruction,",
+        ")",
+        "from faceaudit.models.instructions.similarity_scoring_instruction import (",
+        "    SimilarityScoringInstruction,",
+        ")",
+        "from faceaudit.enums.similarity_model_type import SimilarityModelType",
+        "",
+        "# 1. Criar recurso de dataset (payload será hidratado do disco)",
+        "dataset = StrategyResource(",
+        "    resource_id='meu_dataset',",
+        "    name='Dataset de Embeddings',",
+        "    resource_type=StrategyResourceType.DATASET,",
+        "    artifact_ref=StrategyArtifactReference(",
+        "        path='datasets/meu_dataset.parquet', hash=None",
+        "    ),",
+        ")",
+        "",
+        "# 2. Montar instruções",
+        "train_sim = SimilarityModelTrainingInstruction(",
+        "    name='Treinar Cosine',",
+        "    similarity_model_type=SimilarityModelType.COSINE,",
+        "    dataset_resource_id='meu_dataset',",
+        "    trained_similarity_model_resource_id='cosine_model',",
+        ")",
+        "",
+        "score = SimilarityScoringInstruction(",
+        "    name='Gerar Scores',",
+        "    trained_similarity_model_resource_id='cosine_model',",
+        "    probe_dataset_resource_id='meu_dataset',",
+        "    # sem reference → auto-comparação (upper triangle)",
+        "    output_similarity_scores_resource_id='scores',",
+        ")",
+        "",
+        "# 3. Montar definição",
+        "definition = LRStrategyDefinition(",
+        "    name='Hello World Cosine',",
+        "    resources=[dataset],",
+        "    preparation_instructions=[train_sim],",
+        "    validation_instructions=[score],",
+        ")",
+    ])
+
+    story.append(Paragraph("Execução", S["h3"]))
+    code_block(story, S, [
+        "from faceaudit.factories.strategy_executor_factory import StrategyExecutorFactory",
+        "",
+        "# Montar executor com artifact_storage (para hidratar dataset do disco)",
+        "executor = StrategyExecutorFactory.build(artifact_storage=storage)",
+        "",
+        "# Executar tudo",
+        "trained_model = executor.execute(definition)",
+        "",
+        "# Acessar resultado",
+        "scores_resource = trained_model.get_trained_resource('scores')",
+        "score_dataset = scores_resource.payload  # SimilarityScoreDataset",
+        "print(f'{len(score_dataset.samples)} pares comparados')",
+    ])
+
+    story.append(Paragraph("Fluxo de dados", S["h3"]))
+    code_block(story, S, [
+        "meu_dataset ──▶ SIMILARITY_MODEL_TRAINING ──▶ cosine_model",
+        "                                                   │",
+        "meu_dataset ─────────────────────────────────┐     │",
+        "                                             ▼     ▼",
+        "                                      SIMILARITY_SCORING ──▶ scores",
+    ])
+
+    story.append(Paragraph(
+        "Este exemplo demonstra o fluxo essencial: recursos iniciais são carregados no "
+        "contexto, instruções consomem e produzem recursos nomeados, e o resultado final "
+        "contém todos os recursos produzidos. Estratégias reais adicionam pipeline de "
+        "transformação, split de dataset, mineração de pares e calibração — mas o padrão "
+        "fundamental é o mesmo.",
+        S["body"]
+    ))
 
     story.append(PageBreak())
 
@@ -625,7 +984,10 @@ def build_s5(story, S):
             ["name", "Nome legível pelo perito"],
             ["description", "Descrição da abordagem"],
             ["resources", "Lista de StrategyResource com os dados e configs de entrada"],
-            ["instructions", "Lista ordenada de StrategyInstructionDefinition"],
+            ["preparation_instructions", "Instruções da fase de Preparação (treino de pipelines, modelos)"],
+            ["validation_instructions", "Instruções da fase de Validação (métricas, scores, gráficos)"],
+            ["casework_instructions", "Instruções da fase de Análise de Caso (scores do caso real)"],
+            ["instructions (property)", "Read-only: concatenação das três fases (retrocompat)"],
             ["validation_rule_ids", "IDs de regras de validação globais da estratégia"],
             ["created_at / updated_at", "Timestamps de criação e atualização"],
         ],
@@ -633,6 +995,9 @@ def build_s5(story, S):
     )
 
     story.append(Paragraph(
+        "As instruções são organizadas em <b>três fases</b>: Preparação, Validação e "
+        "Análise de Caso. A property <code>instructions</code> (read-only) concatena as "
+        "três listas para retrocompatibilidade com validadores e outros consumidores. "
         "O método <code>from_dict()</code> é um dispatcher polimórfico: ao ler "
         "<code>instruction_type</code>, hidrata o DTO especializado correto "
         "(DatasetSplitInstruction, PairMiningInstruction, etc.).",
@@ -688,8 +1053,45 @@ def build_s5(story, S):
             ["resource_type", "StrategyResourceType (DATASET, TRAINED_PIPELINE, etc.)"],
             ["payload", "O objeto real: EmbeddingDataset, PLDASimilarityModel, etc."],
             ["artifact_ref", "StrategyArtifactReference quando o recurso foi persistido em disco"],
+            ["has_payload (property)", "True se payload não é None"],
+            ["has_artifact (property)", "True se artifact_ref não é None"],
         ],
     )
+
+    story.append(Paragraph("Duas categorias de recursos", S["h3"]))
+    story.append(Paragraph(
+        "Na prática, os recursos de uma estratégia dividem-se em duas categorias:",
+        S["body"]
+    ))
+    two_col_table(story, S,
+        ["Categoria", "Descrição"],
+        [
+            ["Recursos do projeto",
+             "Importados pelo perito e compartilhados entre estratégias: DATASET, "
+             "PIPELINE_CONFIG, SPLIT_CONFIG, MERGE_CONFIG, SIMILARITY_MODEL_CONFIG, "
+             "CALIBRATION_MODEL_CONFIG. Sempre possuem artifact_ref (arquivo em disco)."],
+            ["Recursos produzidos pela estratégia",
+             "Gerados pela execução de instruções: TRAINED_PIPELINE, "
+             "INTERMEDIATE_DATASET, TRAINED_SIMILARITY_MODEL, TRAINED_CALIBRATION_MODEL. "
+             "Criados inicialmente como placeholders (payload=None, artifact_ref=None) "
+             "quando o perito configura os campos de output de uma instrução. "
+             "Após execução, o payload é preenchido e o recurso é persistido em disco "
+             "(artifact_ref ganha path + hash)."],
+        ],
+    )
+
+    story.append(Paragraph("Placeholders de output", S["h3"]))
+    story.append(Paragraph(
+        "O método <code>StrategyInstructionDefinition.get_output_resource_placeholders()</code> "
+        "itera os <code>ResourceFieldSpec</code> com <code>is_output=True</code> e cria "
+        "<code>StrategyResource</code> com <code>payload=None</code> e "
+        "<code>artifact_ref=None</code>. O controller da UI chama este método em cada "
+        "edição da estratégia (<code>_sync_all_output_placeholders()</code>) para manter "
+        "a lista <code>LRStrategyDefinition.resources</code> sincronizada com as "
+        "instruções declaradas. Placeholders órfãos (de instruções removidas) são "
+        "limpos automaticamente — exceto os que já possuem artifact_ref (persistidos).",
+        S["body"]
+    ))
 
     # 5.4
     story.append(Paragraph("5.4 StrategyExecutor — O Orquestrador", S["h2"]))
@@ -714,6 +1116,28 @@ def build_s5(story, S):
         S["body"]
     ))
 
+    two_col_table(story, S,
+        ["Método", "Descrição"],
+        [
+            ["execute(definition)",
+             "Execução completa: cria contexto, valida, executa todas as fases "
+             "(Preparação → Validação → Análise de Caso) e retorna LRStrategyTrainedModel."],
+            ["prepare_context(definition)",
+             "Cria e inicializa o contexto: hidrata recursos iniciais e registra regras. "
+             "O contexto retornado persiste entre execuções individuais de instruções."],
+            ["can_execute_instruction(instr, ctx)",
+             "Verifica se todos os input_resource_ids da instrução estão disponíveis. "
+             "Retorna (bool, list[missing_ids])."],
+            ["execute_single_instruction(instr, ctx)",
+             "Executa uma única instrução no contexto fornecido. Os recursos produzidos "
+             "ficam disponíveis para instruções futuras."],
+            ["persist_produced_resource(resource, strategy_id)",
+             "Persiste um recurso produzido em disco via artifact_storage. "
+             "Mapeia resource_type → artifact_type via to_artifact_type(). "
+             "Retorna StrategyArtifactReference ou None se não persistível."],
+        ],
+    )
+
     # 5.5
     story.append(Paragraph("5.5 Executores de Instrução", S["h2"]))
     story.append(Paragraph(
@@ -723,9 +1147,11 @@ def build_s5(story, S):
     story.append(Paragraph(
         "Cada tipo de instrução tem um executor concreto que estende "
         "<code>StrategyInstructionExecutorBase</code>. A base implementa a lógica "
-        "de validação genérica (regras declaradas na instrução + chamada a "
-        "<code>_validate_instruction_specifics()</code>). O executor concreto "
-        "sobrescreve <code>execute()</code> e <code>_validate_instruction_specifics()</code>.",
+        "de validação genérica: (1) regras declaradas via <code>validation_rule_ids</code>, "
+        "(2) regras dinâmicas via <code>instruction.build_validation_rules()</code>, "
+        "(3) chamada a <code>_validate_instruction_specifics()</code>. "
+        "O executor concreto sobrescreve <code>execute()</code> e "
+        "<code>_validate_instruction_specifics()</code>.",
         S["body"]
     ))
 
@@ -745,6 +1171,18 @@ def build_s6(story, S):
         "O método <code>__post_init__</code> define <code>instruction_type</code> e "
         "sincroniza <code>input_resource_ids</code> / <code>output_resource_ids</code> "
         "com os campos específicos via <code>_sync_declared_io()</code>.",
+        S["body"]
+    ))
+
+    story.append(Paragraph(
+        "Cada DTO concreto também implementa <code>get_resource_field_specs()</code>, "
+        "que retorna uma lista de <code>ResourceFieldSpec</code> — dataclass frozen com "
+        "<code>field_name</code>, <code>label</code>, <code>accepted_types</code> "
+        "(tupla de StrategyResourceType) e <code>is_output</code> (bool). "
+        "A UI usa esses specs para renderizar dropdowns filtrados por tipo de recurso "
+        "no painel de configuração de cada instrução. É um método de instância "
+        "(não classmethod) porque algumas instruções variam os campos conforme o modo "
+        "(ex: Pipeline Training LINEAR vs DUAL).",
         S["body"]
     ))
 
@@ -1183,6 +1621,24 @@ def build_s10(story, S):
         S["body"]
     ))
 
+    story.append(Paragraph("Mapeamento StrategyResourceType → StrategyArtifactType", S["h3"]))
+    story.append(Paragraph(
+        "O método <code>StrategyResourceType.to_artifact_type()</code> converte o tipo "
+        "lógico do recurso no tipo de artefato físico para persistência. Usado pelo "
+        "<code>StrategyExecutor.persist_produced_resource()</code> para determinar em "
+        "qual subpasta e formato salvar o recurso produzido:",
+        S["body"]
+    ))
+    two_col_table(story, S,
+        ["StrategyResourceType", "StrategyArtifactType"],
+        [
+            ["TRAINED_PIPELINE", "TRAINED_PIPELINE (.pkl em artifacts/)"],
+            ["TRAINED_SIMILARITY_MODEL", "TRAINED_SIMILARITY_MODEL (.pkl em artifacts/)"],
+            ["TRAINED_CALIBRATION_MODEL", "TRAINED_CALIBRATION_MODEL (.pkl em artifacts/)"],
+            ["INTERMEDIATE_DATASET", "INTERMEDIATE_DATASET (.parquet em datasets/)"],
+        ],
+    )
+
     # 10.1
     story.append(Paragraph("10.1 Verificação de Integridade (LocalProjectArtifactStorage)", S["h2"]))
     story.append(Paragraph(
@@ -1237,42 +1693,134 @@ def build_s10(story, S):
 # ---------------------------------------------------------------------------
 
 def build_s11(story, S):
-    section_banner(story, S, "11. Sistema de Validação")
+    section_banner(story, S, "11. Pipeline de Validação")
 
     # 11.1
-    story.append(Paragraph("11.1 Dois Mecanismos Complementares", S["h2"]))
+    story.append(Paragraph("11.1 Visão Geral — 2 Níveis, 5 Estágios", S["h2"]))
     story.append(Paragraph(
-        "A nova arquitetura possui dois mecanismos de validação que atuam em camadas distintas:",
+        "A validação na nova arquitetura opera em <b>dois níveis</b> com <b>cinco estágios</b> "
+        "no total. Cada estágio agrega seus resultados no mesmo <code>ValidationResult</code> "
+        "via <code>merge()</code>. Além disso, um <b>gate de dependência</b> separado impede "
+        "a execução de instruções cujas dependências não estão satisfeitas.",
         S["body"]
     ))
 
-    two_col_table(story, S,
-        ["Mecanismo", "Características"],
-        [
-            ["Validações internas dos executores",
-             "Hard-coded em _validate_instruction_specifics() de cada executor concreto. "
-             "Verificam: tipo correto da instrução, campos obrigatórios preenchidos, "
-             "recursos existentes no contexto, tipos corretos dos payloads. "
-             "Automáticas e invisíveis para o perito — sempre executam."],
-            ["ValidationRuleProtocol (plugável)",
-             "Regras reutilizáveis registradas no StrategyExecutor por rule_id. "
-             "Referenciadas na LRStrategyDefinition (antes de qualquer instrução) ou "
-             "em instruções específicas (antes dessa instrução). "
-             "Permitem políticas do laboratório como limiares mínimos de dados e "
-             "restrições de isolamento entre datasets."],
-        ],
-    )
+    # Diagrama ASCII do pipeline
+    pipeline_lines = [
+        "┌─────────────────────────────────────────────────────────────────┐",
+        "│              PIPELINE DE VALIDAÇÃO — VISÃO GERAL               │",
+        "├─────────────────────────────────────────────────────────────────┤",
+        "│                                                                 │",
+        "│  ┌─── Nível 1: Estratégia (antes de qualquer instrução) ────┐  │",
+        "│  │  Strategy Rules (LRStrategyDefinition.validation_rule_ids)│  │",
+        "│  │  → Regras globais: isolamento de datasets, etc.          │  │",
+        "│  └──────────────────────────────────────────────────────────┘  │",
+        "│                          │                                      │",
+        "│                          ▼                                      │",
+        "│  ┌─── Gate: can_execute_instruction() ──────────────────────┐  │",
+        "│  │  Todos os input_resource_ids presentes no contexto?      │  │",
+        "│  │  Não → instrução bloqueada (🔒 na UI)                    │  │",
+        "│  └──────────────────────────────────────────────────────────┘  │",
+        "│                          │                                      │",
+        "│                          ▼                                      │",
+        "│  ┌─── Nível 2: Instrução (validate() do executor base) ─────┐  │",
+        "│  │                                                          │  │",
+        "│  │  Estágio 1: Structural                                   │  │",
+        "│  │  └─ Null checks (instruction, context)                   │  │",
+        "│  │                                                          │  │",
+        "│  │  Estágio 2: Pluggable                                    │  │",
+        "│  │  └─ instruction.validation_rule_ids → regras do contexto │  │",
+        "│  │                                                          │  │",
+        "│  │  Estágio 3: Dynamic                                      │  │",
+        "│  │  └─ instruction.build_validation_rules()                  │  │",
+        "│  │                                                          │  │",
+        "│  │  Estágio 4: Executor                                     │  │",
+        "│  │  └─ _validate_instruction_specifics()                    │  │",
+        "│  │                                                          │  │",
+        "│  └──────────────────────────────────────────────────────────┘  │",
+        "│                                                                 │",
+        "└─────────────────────────────────────────────────────────────────┘",
+    ]
+    for line in pipeline_lines:
+        story.append(Paragraph(line, S["code"]))
+    story.append(Spacer(1, 8))
 
     callout_box(story, S,
-        "As regras plugáveis não precisam ser copiadas para cada projeto — elas vivem no "
-        "código da aplicação e são referenciadas pelo rule_id. Templates de estratégia na "
-        "biblioteca global já carregam os rule_ids embutidos. Ao instanciar o template, "
-        "as políticas do laboratório vêm junto automaticamente.",
+        "O pipeline de validação executa em dois momentos: (1) manualmente pelo botão "
+        "<b>Validar</b> na interface (sem executar a instrução) e (2) automaticamente "
+        "dentro de <code>execute()</code> antes da lógica de negócio. Ambos os caminhos "
+        "executam exatamente os mesmos 4 estágios do Nível 2.",
         bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
     )
 
     # 11.2
-    story.append(Paragraph("11.2 ValidationRuleBase e Cache de Stats", S["h2"]))
+    story.append(Paragraph("11.2 Nível 1: Validação da Estratégia", S["h2"]))
+    story.append(Paragraph(
+        "Executada em <code>StrategyExecutor._validate_strategy()</code> durante a execução "
+        "completa (<b>Run All</b>). Itera os <code>validation_rule_ids</code> declarados na "
+        "<code>LRStrategyDefinition</code> e executa cada regra contra a definição inteira. "
+        "Se qualquer regra falha, a execução é abortada com <code>ValueError</code> antes de "
+        "qualquer instrução ser processada.",
+        S["body"]
+    ))
+    story.append(Paragraph(
+        "Na execução instrução-a-instrução (step-by-step via UI), este nível <b>não é executado</b> "
+        "— a validação fica a cargo do Nível 2 em cada instrução individual. As regras de estratégia "
+        "referenciadas por <code>validation_rule_ids</code> da estratégia são políticas globais que "
+        "só fazem sentido quando a definição completa está disponível.",
+        S["body"]
+    ))
+
+    # 11.3
+    story.append(Paragraph("11.3 Nível 2: Validação de Instrução (4 estágios)", S["h2"]))
+    story.append(Paragraph(
+        "Implementada em <code>StrategyInstructionExecutorBase.validate()</code>. "
+        "Os 4 estágios executam sequencialmente — apenas o Estágio 1 pode abortar os demais "
+        "(null check). Os estágios 2–4 sempre executam e agregam todos os erros/warnings.",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Estágio", "Comportamento"],
+        [
+            ["1. Structural",
+             "Null checks em instruction e context. Se qualquer um for None, retorna "
+             "ValidationResult.critical() imediatamente — os demais estágios não executam."],
+            ["2. Pluggable (validation_rule_ids)",
+             "Itera instruction.validation_rule_ids e executa cada regra registrada no contexto. "
+             "Regras não encontradas geram erro mas não abortam os estágios seguintes. "
+             "Permitem políticas do laboratório como limiares mínimos e restrições de isolamento."],
+            ["3. Dynamic (build_validation_rules)",
+             "Chama instruction.build_validation_rules() e executa cada regra retornada. "
+             "As regras são instanciadas com os resource_ids atuais do DTO — refletem "
+             "as escolhas mais recentes do perito na interface. Default: retorna []."],
+            ["4. Executor (_validate_instruction_specifics)",
+             "Validações hard-coded do executor concreto. Verificam: tipo correto da instrução, "
+             "campos obrigatórios preenchidos, recursos existentes no contexto com payloads corretos. "
+             "Automáticas e invisíveis para o perito — sempre executam."],
+        ],
+    )
+
+    # 11.4
+    story.append(Paragraph("11.4 Gate de Dependência (can_execute_instruction)", S["h2"]))
+    story.append(Paragraph(
+        "Separado do pipeline de validação, o <code>StrategyExecutor.can_execute_instruction()</code> "
+        "verifica se todos os <code>input_resource_ids</code> declarados pela instrução estão "
+        "presentes no contexto de execução. Na UI, instruções bloqueadas aparecem com ícone 🔒 "
+        "e o botão ▶ Run desabilitado.",
+        S["body"]
+    ))
+    story.append(Paragraph(
+        "Este gate roda <b>antes</b> do pipeline de validação e não é um estágio dele — é uma "
+        "verificação estrutural de pré-condições. Retorna <code>(bool, List[str])</code>: "
+        "<code>(True, [])</code> se executável ou <code>(False, [missing_ids])</code> se bloqueada. "
+        "Os <code>input_resource_ids</code> são mantidos em sincronia pelo <code>_sync_declared_io()</code> "
+        "no <code>__post_init__</code> de cada DTO de instrução.",
+        S["body"]
+    ))
+
+    # 11.5
+    story.append(Paragraph("11.5 ValidationRuleBase e Cache de Stats", S["h2"]))
     story.append(Paragraph(
         "Todas as regras concretas estendem <code>ValidationRuleBase</code> "
         "(<code>faceaudit/validation_rules/validation_rule_base.py</code>). "
@@ -1303,8 +1851,16 @@ def build_s11(story, S):
         S["body"]
     ))
 
-    # 11.3
-    story.append(Paragraph("11.3 Regras Concretas Implementadas", S["h2"]))
+    callout_box(story, S,
+        "As regras plugáveis não precisam ser copiadas para cada projeto — elas vivem no "
+        "código da aplicação e são referenciadas pelo rule_id. Templates de estratégia na "
+        "biblioteca global já carregam os rule_ids embutidos. Ao instanciar o template, "
+        "as políticas do laboratório vêm junto automaticamente.",
+        bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
+    )
+
+    # 11.6
+    story.append(Paragraph("11.6 Regras Concretas Implementadas", S["h2"]))
 
     rules = [
         ("DatasetIsolationRule", "dataset_isolation_rule.py",
@@ -1337,6 +1893,22 @@ def build_s11(story, S):
          "Verifica que todos os datasets de hold-out são disjuntos de todos os datasets "
          "de treino. Aceita listas de resource_ids para cruzamento múltiplo. "
          "Parâmetros: holdout_resource_ids: List[str], train_resource_ids: List[str]."),
+        ("DualPipelineDimensionCompatibilityRule",
+         "dual_pipeline_dimension_compatibility_rule.py",
+         "CRITICAL / WARNING",
+         "Verifica que source e target pipeline configs produzem a mesma dimensão de saída "
+         "(output_dimension). CRITICAL se dimensões explícitas divergem; WARNING se ambas "
+         "são None (verificação adiada para runtime). "
+         "Parâmetros: source_config_resource_id, target_config_resource_id. "
+         "Uso: validação dinâmica via build_validation_rules() de PipelineTrainingInstruction DUAL."),
+        ("DualPipelineSubsequenceRule",
+         "dual_pipeline_subsequence_rule.py",
+         "CRITICAL",
+         "Verifica que os tipos do pipeline target são subsequência ordenada dos tipos do "
+         "source (excluindo CORAL). CRITICAL se target contém CORAL_TRANSFORMATION (exclusivo "
+         "do source) ou se a sequência de tipos não é válida. "
+         "Parâmetros: source_config_resource_id, target_config_resource_id. "
+         "Uso: validação dinâmica via build_validation_rules() de PipelineTrainingInstruction DUAL."),
     ]
 
     for rname, rfile, sev, desc in rules:
@@ -1362,6 +1934,48 @@ def build_s11(story, S):
         ]))
         story.append(t)
         story.append(Spacer(1, 4))
+
+    # 11.7
+    story.append(Paragraph("11.7 Validação Dinâmica por Instrução (build_validation_rules)", S["h2"]))
+    story.append(Paragraph(
+        "O Estágio 3 (Dynamic) permite que cada DTO de instrução construa "
+        "regras de validação <b>dinamicamente</b>, com base no seu estado atual. "
+        "A classe base <code>StrategyInstructionDefinition</code> declara o método "
+        "<code>build_validation_rules() → list</code> (retorna <code>[]</code> por padrão). "
+        "DTOs concretos fazem override para instanciar regras parametrizadas com os "
+        "<code>resource_ids</code> configurados pelo perito na interface.",
+        S["body"]
+    ))
+
+    story.append(Paragraph("Exemplo: PipelineTrainingInstruction (modo DUAL)", S["h3"]))
+    story.append(Paragraph(
+        "Quando <code>pipeline_mode == DUAL</code> e os campos de recurso estão preenchidos, "
+        "<code>build_validation_rules()</code> retorna três regras:",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Regra", "O que valida"],
+        [
+            ["DatasetOverlapRequiredRule",
+             "Source e target datasets compartilham identidades em comum "
+             "(necessário para formar pares genuínos no treino DUAL)."],
+            ["DualPipelineDimensionCompatibilityRule",
+             "Source e target pipeline configs produzem a mesma dimensão de saída "
+             "(necessário para que o scoring cruzado funcione)."],
+            ["DualPipelineSubsequenceRule",
+             "Target pipeline é subsequência ordenada do source sem CORAL "
+             "(CORAL é adaptação de domínio, exclusiva do ramo source)."],
+        ],
+    )
+
+    callout_box(story, S,
+        "As regras são instanciadas a cada chamada de <code>build_validation_rules()</code> "
+        "com os resource_ids <b>atuais</b> dos campos da instrução. Se o perito altera um "
+        "dropdown de dataset e clica Validar, a nova regra já usa o novo resource_id — "
+        "sem necessidade de re-registrar regras no contexto.",
+        bg=colors.HexColor("#FFF8E8"), border=BRAND_ACCENT,
+    )
 
     story.append(PageBreak())
 
@@ -1700,6 +2314,7 @@ def build_s14(story, S):
         "Adicionar valor ao enum StrategyInstructionType",
         "Criar DTO em faceaudit/models/instructions/ herdando StrategyInstructionDefinition",
         "Implementar __post_init__ com instruction_type + _sync_declared_io()",
+        "Implementar get_resource_field_specs() retornando ResourceFieldSpec para cada campo de recurso",
         "Implementar from_dict() hidratando enums aninhados",
         "Adicionar bloco de dispatch em StrategyInstructionDefinition.from_dict()",
         "Criar executor em faceaudit/executors/instructions/ herdando StrategyInstructionExecutorBase",
@@ -1728,11 +2343,302 @@ def build_s14(story, S):
 
 
 # ---------------------------------------------------------------------------
-# SEÇÃO 15 — ESTRUTURA DE PASTAS
+# SEÇÃO 15 — INTERFACE GRÁFICA: STRATEGY MANAGER V2
 # ---------------------------------------------------------------------------
 
 def build_s15(story, S):
-    section_banner(story, S, "15. Estrutura de Pastas")
+    section_banner(story, S, "15. Interface Gráfica: Estratégias (Nova Arch)")
+
+    story.append(Paragraph(
+        "A aba <b>Estratégias (Nova Arch)</b> é o primeiro componente de interface "
+        "construído sobre a nova arquitetura declarativa. Ela permite ao perito criar "
+        "projetos, importar recursos, compor estratégias e executar instruções "
+        "individualmente ou em sequência — tudo pela interface gráfica.",
+        S["body"]
+    ))
+
+    story.append(Paragraph("15.1 Visão geral do layout", S["h2"]))
+
+    code_block(story, S, [
+        "┌─────────────────────────────────────────────────────────────┐",
+        "│  Biblioteca Global:  [Pipeline] [Mining] [Split] [Gerenciar]│",
+        "│  Projeto:  [Novo] [Abrir] [Salvar] [Fechar]  │  [▶ Exec]  │",
+        "├──────────────┬──────────────────────────────────────────────┤",
+        "│  Left Panel  │  Main Area (QTabWidget)                      │",
+        "│  ┌──────────┐│  ┌─────────────────────────────────────────┐ │",
+        "│  │Estratégias││  │ Estratégia: LDA+PLDA  │  Embedding: ▼  │ │",
+        "│  │ • LDA+PLDA││  ├──────────┬──────────┬──────────────────┤ │",
+        "│  │ • Cosine  ││  │Preparação│Validação │ Análise de Caso  │ │",
+        "│  ├──────────┤│  ├──────────┴──────────┴──────────────────┤ │",
+        "│  │ Recursos  ││  │  Lista de       │  Painel de config   │ │",
+        "│  │ 📁Dataset ││  │  instruções     │  (dropdowns tipados)│ │",
+        "│  │ 📁Pipeline││  │  [▶ Run]        │                     │ │",
+        "│  │ 📁Config  ││  │  🔒 / ✅ / ⚙  │  Pipeline Config: ▼ │ │",
+        "│  ├──────────┤│  │ ─────────────── │  Dataset:         ▼ │ │",
+        "│  │ Info      ││  │  Recursos       │  Output:    [____]  │ │",
+        "│  │ recurso   ││  │  Produzidos     │ [Aplicar] [Validar] │ │",
+        "│  │ (pipeline)││  │  🟢 pipe_trnD  │                     │ │",
+        "│  └──────────┘│  │  ⬜ transf_ds   │                     │ │",
+        "│              │  └──────────────────┴─────────────────────┘ │",
+        "└──────────────┴──────────────────────────────────────────────┘",
+    ])
+
+    story.append(Paragraph(
+        "A interface é registrada em <code>main_gui_controller._init_strategy_manager_v2()</code>. "
+        "Recebe <code>global_storage</code> (biblioteca global, opcional) e "
+        "<code>app_config</code> (paths padrão para FileDialogs). "
+        "O controlador central (<code>StrategyManagerV2Controller</code>, QObject) coordena "
+        "todos os widgets e mantém o estado do projeto.",
+        S["body"]
+    ))
+
+    # 15.2
+    story.append(Paragraph("15.2 Toolbars", S["h2"]))
+    story.append(Paragraph(
+        "A aba possui duas barras de ferramentas horizontais no topo:",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Toolbar", "Ações"],
+        [
+            ["Biblioteca Global (GlobalResourcesToolbar)",
+             "Pipeline — abre PipelineCreatorController (criação de configs de pipeline). "
+             "Mining — abre NewMiningConfigDialogController. "
+             "Split — abre NewSplitConfigDialogController. "
+             "Gerenciar Biblioteca — lista/remove recursos da GlobalLibraryStorage."],
+            ["Projeto (ProjectToolbar)",
+             "Novo — cria projeto FaceAudit (.fa). "
+             "Abrir — abre projeto existente. "
+             "Salvar — persiste definições. "
+             "Fechar — fecha projeto. "
+             "▶ Executar — executa todas as fases da estratégia selecionada (Run All). "
+             "Salvar como Template — exporta estratégia para a biblioteca global."],
+        ],
+    )
+
+    # 15.3
+    story.append(Paragraph("15.3 Painel Esquerdo (LeftPanelWidget)", S["h2"]))
+    story.append(Paragraph(
+        "QSplitter vertical com três seções, dividindo aproximadamente 35%/40%/25%:",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Seção", "Funcionalidade"],
+        [
+            ["StrategyListWidget",
+             "Lista de LRStrategyDefinitions do projeto. "
+             "Botões: Nova / Duplicar / Remover. "
+             "Clique seleciona; duplo-clique abre no editor."],
+            ["ResourceTreeWidget",
+             "Árvore de recursos agrupados por StrategyResourceType. "
+             "Botão 'Adicionar Recurso' com menu: Dataset / Split Config / Mining Config / Pipeline Config. "
+             "Importa arquivos para o projeto via copy_artifact_to_project()."],
+            ["ResourceInfoWidget",
+             "Exibe metadados do recurso selecionado: ID, tipo, arquivo em disco (artifact_ref), "
+             "hash SHA-256, tamanho em disco e lista de instruções que o utilizam. "
+             "Para DATASET: mostra estatísticas (amostras, identidades, colunas de embedding). "
+             "Para PIPELINE_CONFIG: mostra etapas do pipeline, dimensão de saída "
+             "(com fallback para EmbeddingType.dimensions) e flags (PCA/LDA)."],
+        ],
+    )
+
+    # 15.4
+    story.append(Paragraph("15.4 Editor de Estratégia com Três Abas", S["h2"]))
+    story.append(Paragraph(
+        "O <code>StrategyEditorWidget</code> é o coração da aba. Quando uma estratégia "
+        "é aberta, ele exibe um QTabWidget com três abas — uma por fase de instrução:",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Aba", "Fase"],
+        [
+            ["Preparação",
+             "preparation_instructions — treino de pipelines, divisão de datasets, "
+             "treino de modelos de similaridade."],
+            ["Validação",
+             "validation_instructions — cálculo de scores, mineração de pares, "
+             "métricas de desempenho."],
+            ["Análise de Caso",
+             "casework_instructions — treino de calibrador, scores do caso real."],
+        ],
+    )
+
+    story.append(Paragraph(
+        "Cada aba contém um <b>splitter horizontal</b> com dois painéis. O painel "
+        "esquerdo é um container vertical com a lista de instruções e o widget de "
+        "recursos produzidos:",
+        S["body"]
+    ))
+
+    code_block(story, S, [
+        "QSplitter (horizontal)",
+        "├── QWidget container (240px)",
+        "│   ├── InstructionListWidget (stretch=1)",
+        "│   └── ProducedResourcesWidget (fixo, ~90px)",
+        "└── InstructionConfigPanel (460px)",
+    ])
+
+    two_col_table(story, S,
+        ["Painel", "Funcionalidade"],
+        [
+            ["InstructionListWidget (esquerda, topo)",
+             "Lista reordenável (drag-and-drop) de instruções da fase. "
+             "Botões: ➕ Adicionar (menu com os 8 tipos), 🗑 Remover, ▶ Run (instrução individual). "
+             "Estados visuais por instrução: 🔒 bloqueada (cinza, dependências faltantes), "
+             "ícone normal (executável), ✅ já executada (verde)."],
+            ["ProducedResourcesWidget (esquerda, baixo)",
+             "Lista compacta dos recursos produzidos pelas instruções da fase. "
+             "Três estados visuais: ⬜ placeholder (declarado mas não executado), "
+             "🟡 em memória (executado, payload presente no contexto), "
+             "🟢 salvo em disco (artifact_ref preenchido). "
+             "Atualizado automaticamente após cada execução de instrução e ao abrir a estratégia."],
+            ["InstructionConfigPanel (direita)",
+             "Formulário dinâmico por tipo de instrução. Os campos de recurso são renderizados "
+             "a partir de get_resource_field_specs(): inputs como dropdowns filtrados por "
+             "StrategyResourceType, outputs como campos de texto livre. "
+             "Botão 'Aplicar' grava alterações no DTO e chama _sync_declared_io(). "
+             "Botão 'Validar' aplica o formulário e executa a validação completa da instrução "
+             "(regras dinâmicas via build_validation_rules() + validações internas do executor), "
+             "exibindo erros e avisos em um QMessageBox."],
+        ],
+    )
+
+    callout_box(story, S,
+        "Os dropdowns de recurso são <b>filtrados por tipo</b>. Por exemplo, o campo "
+        "'Pipeline Config' de um PIPELINE_TRAINING mostra apenas recursos do tipo "
+        "PIPELINE_CONFIG, enquanto o campo 'Dataset' mostra apenas DATASET e "
+        "INTERMEDIATE_DATASET. Isso evita erros de configuração.",
+        bg=BRAND_LIGHT, border=BRAND_MED,
+    )
+
+    # 15.5
+    story.append(Paragraph("15.5 Execução Individual de Instruções", S["h2"]))
+    story.append(Paragraph(
+        "O controlador mantém estado de execução persistente entre cliques do botão "
+        "▶ Run: <code>_execution_context</code> (StrategyExecutionContext), "
+        "<code>_executed_instruction_ids</code> (set de IDs já executados) e "
+        "<code>_executor</code> (StrategyExecutor). O fluxo é:",
+        S["body"]
+    ))
+
+    steps = [
+        ("1.", "Perito abre uma estratégia → estado de execução vazio; todas as instruções mostram 🔒. "
+               "Recursos já persistidos em execuções anteriores aparecem como 🟢 no ProducedResourcesWidget."),
+        ("2.", "Perito clica ▶ Run na primeira instrução → _ensure_executor_and_context() "
+               "cria o executor e prepara o contexto (hidrata recursos iniciais)."),
+        ("3.", "_refresh_instruction_states() calcula quais instruções são executáveis "
+               "(todos os input_resource_ids disponíveis no contexto) → instruções sem "
+               "dependências passam de 🔒 para executáveis."),
+        ("4.", "Instrução é executada em thread separada (InstructionExecutionWorker). "
+               "Após sucesso, outputs ficam disponíveis no contexto → instruções que dependiam "
+               "desses outputs tornam-se executáveis."),
+        ("5.", "Recursos produzidos são persistidos em disco automaticamente via "
+               "_persist_produced_resources(): para cada produced_resource_id do resultado, "
+               "chama StrategyExecutor.persist_produced_resource(), obtém StrategyArtifactReference "
+               "e atualiza a LRStrategyDefinition em disco. ProducedResourcesWidget muda de "
+               "⬜ placeholder para 🟢 salvo em disco."),
+        ("6.", "Perito edita, reordena ou remove qualquer instrução → todo o estado de "
+               "execução é descartado (_reset_execution_state()). Instruções voltam a 🔒. "
+               "Recursos já persistidos (artifact_ref) permanecem salvos."),
+    ]
+    for num, desc in steps:
+        story.append(Paragraph(f"{num} {desc}", S["bullet"]))
+
+    story.append(Spacer(1, 4))
+
+    story.append(Paragraph("15.6 Workers (Execução em Thread)", S["h2"]))
+    story.append(Paragraph(
+        "A execução de instruções e estratégias completas ocorre em threads separadas "
+        "para não bloquear a interface. Ambos os workers seguem o padrão "
+        "QObject + moveToThread (não herdam de QThread).",
+        S["body"]
+    ))
+
+    two_col_table(story, S,
+        ["Worker", "Uso"],
+        [
+            ["StrategyExecutionWorker",
+             "Executa StrategyExecutor.execute() — todas as fases em sequência. "
+             "Usado pelo botão '▶ Executar' da toolbar. "
+             "Sinais: log_message(str), finished(LRStrategyTrainedModel), error(str)."],
+            ["InstructionExecutionWorker",
+             "Executa StrategyExecutor.execute_single_instruction() — uma instrução. "
+             "Usado pelo botão '▶ Run' de cada instrução na lista. "
+             "Sinais: log_message(str), finished(InstructionExecutionResult), error(str)."],
+        ],
+    )
+
+    story.append(Paragraph("15.7 Decisões de Design da Interface", S["h2"]))
+
+    decisions = [
+        (
+            "Abertura de projeto é síncrona com WaitCursor",
+            "No Windows, diálogos ApplicationModal impedem entrega de sinais "
+            "enfileirados de threads worker, fazendo LogProgressDialog travar. "
+            "Solução: FaceAuditProjectService.open() roda na main thread com "
+            "QApplication.setOverrideCursor(WaitCursor). O ProjectIOWorker existe mas "
+            "não é usado para abertura.",
+        ),
+        (
+            "'Adicionar Recurso' vive no painel esquerdo, não na toolbar",
+            "O ResourceTreeWidget tem um QToolButton com MenuButtonPopup mostrando "
+            "4 opções (Dataset / Split Config / Mining Config / Pipeline Config). "
+            "O LeftPanelWidget repassa os sinais ao controller. "
+            "O botão é desabilitado até um projeto estar aberto.",
+        ),
+        (
+            "Descoberta de recursos = scan de definições + scan de disco",
+            "_collect_project_resources() no controller faz dois passes: "
+            "(1) recursos declarados nas LRStrategyDefinitions, "
+            "(2) arquivos em disco via storage.list_artifacts() por tipo importável. "
+            "Isso garante que arquivos importados apareçam na árvore mesmo antes de "
+            "serem referenciados por uma estratégia.",
+        ),
+        (
+            "Contexto descartado a cada edição",
+            "Qualquer modificação na estratégia (adicionar/remover/reordenar instrução, "
+            "alterar parâmetros) chama _reset_execution_state(), descartando o contexto e "
+            "os IDs executados. Isso garante que os recursos no contexto sempre refletem "
+            "exatamente as instruções já executadas — sem ambiguidade.",
+        ),
+        (
+            "Placeholders de output sincronizados automaticamente",
+            "_sync_all_output_placeholders() é chamado a cada _on_strategy_modified(). "
+            "Itera todas as instruções, coleta os outputs declarados via "
+            "get_output_resource_placeholders(), adiciona placeholders faltantes em "
+            "LRStrategyDefinition.resources e remove placeholders órfãos (sem payload "
+            "e sem artifact_ref) de instruções removidas ou renomeadas. Recursos já "
+            "persistidos nunca são removidos automaticamente.",
+        ),
+        (
+            "Persistência automática após execução individual",
+            "Após cada execução bem-sucedida de instrução, _persist_produced_resources() "
+            "itera os produced_resource_ids do InstructionExecutionResult e chama "
+            "StrategyExecutor.persist_produced_resource() para cada um. O artefato é salvo "
+            "em disco e a definição da estratégia é atualizada com o artifact_ref. "
+            "Isso garante que os recursos produzidos sobrevivam ao fechamento do app.",
+        ),
+    ]
+
+    for title, body in decisions:
+        story.append(KeepTogether([
+            Paragraph(title, S["h3"]),
+            Paragraph(body, S["body"]),
+            Spacer(1, 4),
+        ]))
+
+    story.append(PageBreak())
+
+
+# ---------------------------------------------------------------------------
+# SEÇÃO 16 — ESTRUTURA DE PASTAS
+# ---------------------------------------------------------------------------
+
+def build_s16(story, S):
+    section_banner(story, S, "16. Estrutura de Pastas")
 
     three_col_table(story, S,
         ["Pasta", "Status", "Conteúdo"],
@@ -1778,8 +2684,9 @@ def build_s15(story, S):
             ["faceaudit/models/project/", "Nova arch",
              "FaceAuditProjectMetadata"],
             ["faceaudit/validation_rules/", "Nova arch",
-             "ValidationRuleBase + 5 regras concretas: DatasetIsolationRule, "
-             "DatasetOverlapRequiredRule, FisherRule, MinCalibrationPairsRule, HoldoutLeakageRule"],
+             "ValidationRuleBase + 7 regras concretas: DatasetIsolationRule, "
+             "DatasetOverlapRequiredRule, FisherRule, MinCalibrationPairsRule, HoldoutLeakageRule, "
+             "DualPipelineDimensionCompatibilityRule, DualPipelineSubsequenceRule"],
             ["faceaudit/transformators/", "Compartilhada",
              "6 transformadores de embeddings — usados por ambas as archs"],
             ["faceaudit/pipelines/EmbeddingTransformationPipeline", "Nova arch",
@@ -1792,7 +2699,10 @@ def build_s15(story, S):
              "Controllers hard-coded — não usar em código novo"],
             ["faceaudit/strategies/", "Arch antiga",
              "KDEStrategy, PLDAStrategy, PLDASnormStrategy"],
-            ["interface/", "Arch antiga",
+            ["interface/tabs/strategy_manager_v2/", "Nova arch",
+             "Frontend V2 — editor com 3 abas (Preparação/Validação/Caso), "
+             "execução individual + workers em thread separada"],
+            ["interface/ (demais)", "Arch antiga",
              "Frontend — ainda não migrado para nova arch"],
         ],
         col_widths=[INNER_W*0.38, INNER_W*0.16, INNER_W*0.46],
@@ -1804,7 +2714,7 @@ def build_s15(story, S):
     story.append(Spacer(1, 8))
     story.append(Paragraph(
         "Documento gerado automaticamente a partir do código-fonte do FaceAudit · "
-        "Versão 1.2 · Abril 2026",
+        "Versão 1.5 · Abril 2026",
         S["caption"]
     ))
 
@@ -1846,6 +2756,7 @@ def build_pdf(output_path: str):
     build_s13(story, S)
     build_s14(story, S)
     build_s15(story, S)
+    build_s16(story, S)
 
     doc.build(story)
     print(f"PDF gerado: {output_path}")

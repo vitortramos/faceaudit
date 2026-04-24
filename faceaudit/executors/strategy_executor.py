@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Type, Union
+from typing import Dict, List, Optional, Tuple, Type, Union
 
+from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.executors.instruction_executor_registry import (
     InstructionExecutorRegistry,
@@ -14,8 +15,12 @@ from faceaudit.models.instructions.instruction_execution_result import (
 from faceaudit.models.instructions.strategy_instruction_definition import (
     StrategyInstructionDefinition,
 )
+from faceaudit.models.storage.strategy_artifact_reference import (
+    StrategyArtifactReference,
+)
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.lr_strategy_trained_model import LRStrategyTrainedModel
+from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.strategy_execution_context_protocol import (
     StrategyExecutionContextProtocol,
@@ -54,6 +59,7 @@ class StrategyExecutor:
     ):
         self.context_factory = context_factory
         self.validation_rules = validation_rules or {}
+        self._artifact_storage = artifact_storage
         self._resource_loader = (
             StrategyResourceLoaderService(artifact_storage)
             if artifact_storage is not None
@@ -86,15 +92,10 @@ class StrategyExecutor:
         if strategy_definition is None:
             raise ValueError("A definição da estratégia não pode ser nula.")
 
-        context = self.context_factory()
-
-        self._log(context, f"🚀 Iniciando execução da estratégia '{strategy_definition.name}'")
-
-        self._register_initial_resources(strategy_definition, context)
-        self._register_validation_rules(context)
+        context = self.prepare_context(strategy_definition)
         self._validate_strategy(strategy_definition, context)
 
-        execution_results = self._execute_instructions(strategy_definition, context)
+        execution_results = self._execute_all_phases(strategy_definition, context)
 
         trained_model = self._build_trained_model(
             strategy_definition=strategy_definition,
@@ -106,6 +107,89 @@ class StrategyExecutor:
 
         return trained_model
 
+    def prepare_context(
+        self,
+        strategy_definition: LRStrategyDefinition,
+    ) -> StrategyExecutionContextProtocol:
+        """
+        Cria e inicializa o contexto: hidrata recursos iniciais e registra regras.
+        O contexto retornado persiste entre execuções individuais de instruções.
+        """
+        context = self.context_factory()
+        self._register_initial_resources(strategy_definition, context)
+        self._register_validation_rules(context)
+
+        # Armazena dimensões do embedding para regras de validação
+        if getattr(strategy_definition, "embedding_type", None) is not None:
+            context.set_metadata(
+                "embedding_dimensions",
+                strategy_definition.embedding_type.dimensions,
+            )
+
+        self._log(context, f"🚀 Contexto preparado para '{strategy_definition.name}'")
+        return context
+
+    def can_execute_instruction(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> Tuple[bool, List[str]]:
+        """
+        Verifica se todos os input_resource_ids da instrução estão disponíveis no contexto.
+        Retorna (True, []) se executável, ou (False, [missing_ids]) se bloqueada.
+        """
+        missing = [
+            rid for rid in instruction.input_resource_ids
+            if not context.has_resource(rid)
+        ]
+        return (len(missing) == 0, missing)
+
+    def execute_single_instruction(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> InstructionExecutionResult:
+        """
+        Executa uma única instrução dentro do contexto fornecido.
+        Os recursos produzidos ficam disponíveis no contexto para instruções futuras.
+        """
+        executor = self._resolve_executor(instruction)
+        self._log(context, f"▶ Executando: {instruction.name} ({instruction.instruction_id})")
+        result = executor.execute(instruction=instruction, context=context)
+        if not result.success:
+            self._log(context, f"❌ Falha: {result.errors}")
+        else:
+            self._log(context, f"✅ Concluída: {instruction.name}")
+        return result
+
+    def persist_produced_resource(
+        self,
+        resource: StrategyResource,
+        strategy_id: str,
+    ) -> Optional[StrategyArtifactReference]:
+        """
+        Persiste um recurso produzido em disco via artifact_storage.
+        Retorna o StrategyArtifactReference ou None se não for persistível.
+        """
+        if not resource.has_payload or self._artifact_storage is None:
+            return None
+
+        artifact_type = resource.resource_type.to_artifact_type()
+        if artifact_type is None:
+            return None
+
+        kwargs = {"strategy_id": strategy_id, "resource_id": resource.resource_id}
+
+        # TRAINED_PIPELINE usa step_id ao invés de resource_id no template
+        if artifact_type == StrategyArtifactType.TRAINED_PIPELINE:
+            kwargs["step_id"] = resource.resource_id
+
+        return self._artifact_storage.save_artifact(
+            artifact_type=artifact_type,
+            data=resource.payload,
+            **kwargs,
+        )
+
     # =========================================================================
     # ETAPAS INTERNAS
     # =========================================================================
@@ -115,9 +199,16 @@ class StrategyExecutor:
         strategy_definition: LRStrategyDefinition,
         context: StrategyExecutionContextProtocol,
     ) -> None:
+        # Resolve a coluna de embedding da estratégia (None = auto-detect)
+        embedding_column: Optional[str] = None
+        if getattr(strategy_definition, "embedding_type", None) is not None:
+            embedding_column = strategy_definition.embedding_type.parquet_column
+
         for resource in strategy_definition.resources:
             if self._resource_loader is not None:
-                self._resource_loader.hydrate(resource)
+                self._resource_loader.hydrate(
+                    resource, embedding_column=embedding_column
+                )
             context.set_resource(resource)
 
     def _register_validation_rules(
@@ -149,31 +240,33 @@ class StrategyExecutor:
 
         self._log(context, "✅ Estratégia válida.")
 
-    def _execute_instructions(
+    def _execute_all_phases(
         self,
         strategy_definition: LRStrategyDefinition,
         context: StrategyExecutionContextProtocol,
     ) -> List[InstructionExecutionResult]:
         results: List[InstructionExecutionResult] = []
 
-        self._log(context, "⚙️ Executando instruções...")
+        phases = [
+            ("Preparação", strategy_definition.preparation_instructions),
+            ("Validação", strategy_definition.validation_instructions),
+            ("Análise de Caso", strategy_definition.casework_instructions),
+        ]
 
-        for instruction in strategy_definition.instructions:
-            executor = self._resolve_executor(instruction)
-
+        for phase_name, phase_instructions in phases:
+            if not phase_instructions:
+                continue
             self._log(
                 context,
-                f"▶ Executando instrução: {instruction.name} ({instruction.instruction_id})"
+                f"📋 Fase: {phase_name} ({len(phase_instructions)} instruções)",
             )
-
-            result = executor.execute(instruction=instruction, context=context)
-
-            if not result.success:
-                raise RuntimeError(
-                    f"Instrução falhou ({instruction.instruction_id}): {result.errors}"
-                )
-
-            results.append(result)
+            for instruction in phase_instructions:
+                result = self.execute_single_instruction(instruction, context)
+                if not result.success:
+                    raise RuntimeError(
+                        f"Instrução falhou ({instruction.instruction_id}): {result.errors}"
+                    )
+                results.append(result)
 
         return results
 

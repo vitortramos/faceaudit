@@ -6,7 +6,10 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.pipeline_mode import PipelineMode
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ChoiceFieldSpec,
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 from faceaudit.models.pipeline.pipeline_application_policy import PipelineApplicationPolicy
@@ -91,6 +94,31 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
     @property
     def is_dual(self) -> bool:
         return self.pipeline_mode == PipelineMode.DUAL
+
+    def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
+        return [
+            ChoiceFieldSpec("pipeline_mode", "Modo do Pipeline", ("LINEAR", "DUAL"), PipelineMode),
+        ]
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        TP = (StrategyResourceType.TRAINED_PIPELINE,)
+        ID = (StrategyResourceType.INTERMEDIATE_DATASET,)
+
+        if self.is_linear:
+            return [
+                ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP),
+                ResourceFieldSpec("dataset_resource_id", "Dataset", DS),
+                ResourceFieldSpec("transformed_dataset_resource_id", "Dataset Transformado", ID, is_output=True),
+            ]
+        else:
+            return [
+                ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP),
+                ResourceFieldSpec("source_dataset_resource_id", "Dataset (Source)", DS),
+                ResourceFieldSpec("target_dataset_resource_id", "Dataset (Target)", DS),
+                ResourceFieldSpec("transformed_source_dataset_resource_id", "Transformado (Source)", ID, is_output=True),
+                ResourceFieldSpec("transformed_target_dataset_resource_id", "Transformado (Target)", ID, is_output=True),
+            ]
 
     def _sync_declared_io(self) -> None:
         """

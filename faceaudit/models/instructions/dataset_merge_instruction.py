@@ -6,7 +6,9 @@ from typing import List, Optional, Type, TypeVar
 
 from faceaudit.enums.dataset_merge_mode import DatasetMergeMode
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -75,6 +77,15 @@ class DatasetMergeInstruction(StrategyInstructionDefinition):
             self.name = "Dataset Merge"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        return [
+            ResourceFieldSpec("base_dataset_resource_id", "Dataset Base", DS),
+            ResourceFieldSpec("secondary_dataset_resource_id", "Dataset Secundário", DS),
+            ResourceFieldSpec("output_dataset_resource_id", "Dataset Resultante", OUT, is_output=True),
+        ]
 
     def _sync_declared_io(self) -> None:
         """

@@ -43,6 +43,12 @@ class GlobalLibraryFileType(Enum):
         "{config_id}",
     )
 
+    PIPELINE_CONFIG = (
+        ".json",
+        GlobalLibraryFolder.PIPELINE_CONFIGS,
+        "{config_id}",
+    )
+
     STRATEGY_TEMPLATE = (
         ".json",
         GlobalLibraryFolder.STRATEGY_TEMPLATES,
@@ -126,5 +132,6 @@ class GlobalLibraryFileType(Enum):
             StrategyArtifactType.GLOBAL_DATASET:     cls.GLOBAL_DATASET,
             StrategyArtifactType.SPLIT_CONFIG:        cls.SPLIT_CONFIG,
             StrategyArtifactType.MINING_CONFIG:       cls.MINING_CONFIG,
+            StrategyArtifactType.PIPELINE_CONFIG:     cls.PIPELINE_CONFIG,
             StrategyArtifactType.STRATEGY_TEMPLATE:   cls.STRATEGY_TEMPLATE,
         }

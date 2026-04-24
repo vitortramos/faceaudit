@@ -1,0 +1,165 @@
+# interface/tabs/strategy_manager_v2/strategy_manager_v2_view.py
+
+from PyQt6 import QtWidgets, QtCore
+
+
+class StrategyManagerV2View(QtWidgets.QWidget):
+    """
+    View Container da aba Strategy Manager V2 (nova arquitetura declarativa).
+
+    Layout:
+    ┌─────────────────────────────────────────────────────┐
+    │  Global Resources Toolbar (Pipeline/Mining/Split/…) │
+    │  Project Toolbar (Novo/Abrir/Salvar/Fechar/…)       │
+    ├──────────────┬──────────────────────────────────────┤
+    │  Left Panel  │  Main Area (QTabWidget)               │
+    │  (QSplitter) │  ┌─────────────┬──────────────────┐  │
+    │  - Estratégs │  │  Estratégia │  Comparação      │  │
+    │  - Recursos  │  │  (editor)   │  (futura)        │  │
+    │  - Info      │  └─────────────┴──────────────────┘  │
+    └──────────────┴──────────────────────────────────────┘
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_layout()
+
+    def _init_layout(self):
+        root = QtWidgets.QVBoxLayout(self)
+        root.setSpacing(0)
+        root.setContentsMargins(5, 5, 5, 5)
+
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        self.toolbar_container = QtWidgets.QWidget()
+        toolbar_layout = QtWidgets.QVBoxLayout(self.toolbar_container)
+        toolbar_layout.setContentsMargins(0, 0, 0, 4)
+        toolbar_layout.setSpacing(0)
+
+        # Placeholder — preenchido pelo controller
+        self.project_toolbar = QtWidgets.QToolBar("Projeto")
+        self.project_toolbar.setMovable(False)
+
+        toolbar_layout.addWidget(self.project_toolbar)
+        root.addWidget(self.toolbar_container)
+
+        # Separador visual
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #dcdde1;")
+        root.addWidget(sep)
+
+        # ── Content: QStackedWidget (welcome ↔ workspace) ────────────────────
+        self.content_stack = QtWidgets.QStackedWidget()
+
+        self.welcome_page = self._create_welcome_page()
+        self.content_stack.addWidget(self.welcome_page)       # index 0
+
+        self.workspace_page = self._create_workspace_page()
+        self.content_stack.addWidget(self.workspace_page)     # index 1
+
+        root.addWidget(self.content_stack)
+        self.show_welcome_screen()
+
+    # ── Welcome screen ────────────────────────────────────────────────────────
+
+    def _create_welcome_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        icon = QtWidgets.QLabel("⚖️")
+        icon.setStyleSheet("font-size: 60px; margin-bottom: 15px;")
+        icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        title = QtWidgets.QLabel("Gerenciador de Estratégias (Nova Arquitetura)")
+        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50;")
+
+        subtitle = QtWidgets.QLabel(
+            "Crie ou abra um projeto para:\n\n"
+            "• Compor estratégias de cálculo de LR de forma declarativa\n"
+            "• Executar e validar estratégias configuradas\n"
+            "• Comparar resultados entre estratégias"
+        )
+        subtitle.setStyleSheet(
+            "font-size: 14px; color: #5f6368; line-height: 180%; padding: 20px;"
+        )
+        subtitle.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        layout.addStretch()
+        layout.addWidget(icon)
+        layout.addWidget(title, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(subtitle, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
+        layout.addStretch()
+        return page
+
+    # ── Workspace ─────────────────────────────────────────────────────────────
+
+    def _create_workspace_page(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(page)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 4, 0, 0)
+
+        # Splitter principal: left panel ↔ main area (redimensionável pelo usuário)
+        self._workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        self._workspace_splitter.setChildrenCollapsible(False)
+        self._workspace_splitter.setHandleWidth(4)
+        self._workspace_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background: #dcdde1;
+            }
+            QSplitter::handle:hover {
+                background: #a0a0a0;
+            }
+        """)
+
+        # Left panel placeholder — substituído por LeftPanelWidget pelo controller
+        self.left_panel_placeholder = QtWidgets.QWidget()
+        self.left_panel_placeholder.setMinimumWidth(200)
+        self.left_panel_placeholder.setMaximumWidth(500)
+
+        # Main area: QTabWidget
+        self.main_tabs = QtWidgets.QTabWidget()
+        self.main_tabs.setDocumentMode(True)
+
+        # Tab 0: Estratégia (editor placeholder — substituído pelo controller)
+        self.strategy_editor_placeholder = QtWidgets.QWidget()
+        self.main_tabs.addTab(self.strategy_editor_placeholder, "Estratégia")
+
+        # Tab 1: Comparação (futura implementação)
+        self.comparison_placeholder = QtWidgets.QWidget()
+        _lbl = QtWidgets.QLabel("Comparação entre estratégias — disponível em breve.")
+        _lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        _lbl.setStyleSheet("color: #888; font-size: 14px;")
+        QtWidgets.QVBoxLayout(self.comparison_placeholder).addWidget(_lbl)
+        self.main_tabs.addTab(self.comparison_placeholder, "Comparação")
+
+        self._workspace_splitter.addWidget(self.left_panel_placeholder)
+        self._workspace_splitter.addWidget(self.main_tabs)
+        self._workspace_splitter.setSizes([280, 700])
+
+        layout.addWidget(self._workspace_splitter)
+        return page
+
+    def set_left_panel(self, widget: QtWidgets.QWidget) -> None:
+        """Substitui o placeholder do painel esquerdo pelo widget real."""
+        widget.setMinimumWidth(200)
+        widget.setMaximumWidth(500)
+        self._workspace_splitter.replaceWidget(0, widget)
+        self.left_panel_placeholder.hide()
+        self.left_panel_placeholder = widget
+
+    def set_strategy_editor(self, widget: QtWidgets.QWidget) -> None:
+        """Substitui o placeholder do editor de estratégia pelo widget real."""
+        self.main_tabs.removeTab(0)
+        self.main_tabs.insertTab(0, widget, "Estratégia")
+        self.main_tabs.setCurrentIndex(0)
+        self.strategy_editor_placeholder = widget
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+
+    def show_welcome_screen(self) -> None:
+        self.content_stack.setCurrentIndex(0)
+
+    def show_workspace_screen(self) -> None:
+        self.content_stack.setCurrentIndex(1)

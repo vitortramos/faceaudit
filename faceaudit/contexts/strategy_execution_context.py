@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Type, TypeVar
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
 from faceaudit.models.strategy.strategy_resource import StrategyResource
-from faceaudit.protocols.strategy_execution_context_protocol import StrategyExecutionContextProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
 
 
@@ -15,7 +14,7 @@ T = TypeVar("T", bound="StrategyExecutionContext")
 
 
 @dataclass
-class StrategyExecutionContext(JSONSerializableMixin, StrategyExecutionContextProtocol):
+class StrategyExecutionContext(JSONSerializableMixin):
     """
     Implementação concreta do contexto de execução da estratégia.
 

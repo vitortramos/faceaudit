@@ -37,18 +37,32 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
         context: StrategyExecutionContextProtocol,
     ) -> ValidationResult:
         """
-        Executa a validação base da instrução:
-        1. valida as rules declaradas pela própria instrução
-        2. executa validações específicas do executor concreto
+        Pipeline de validação de instrução — 4 estágios sequenciais.
+
+        Cada estágio agrega seus resultados no mesmo ValidationResult.
+        Se o estágio 1 (null checks) falha, os demais não executam.
+
+        Estágios:
+            1. Structural  — null checks em instruction e context
+            2. Pluggable   — regras registradas via validation_rule_ids
+            3. Dynamic     — regras construídas pelo DTO (build_validation_rules)
+            4. Executor    — validações hard-coded do executor concreto
+                             (_validate_instruction_specifics)
+
+        Nota: a verificação de dependências (input_resource_ids presentes no
+        contexto) ocorre ANTES deste pipeline, via can_execute_instruction()
+        no StrategyExecutor — é um gate de execução, não de validação.
         """
         result = ValidationResult.neutral()
 
+        # ── Estágio 1: Structural ──────────────────────────────────
         if instruction is None:
             return ValidationResult.critical("A instrução não pode ser nula.")
 
         if context is None:
             return ValidationResult.critical("O contexto de execução não pode ser nulo.")
 
+        # ── Estágio 2: Pluggable (validation_rule_ids) ─────────────
         for rule_id in instruction.validation_rule_ids:
             if not context.has_validation_rule(rule_id):
                 result.add_error(
@@ -67,6 +81,12 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
             rule_result = rule.validate(target=instruction, context=context)
             result.merge(rule_result)
 
+        # ── Estágio 3: Dynamic (build_validation_rules) ────────────
+        for rule in instruction.build_validation_rules():
+            rule_result = rule.validate(target=instruction, context=context)
+            result.merge(rule_result)
+
+        # ── Estágio 4: Executor (_validate_instruction_specifics) ──
         specific_result = self._validate_instruction_specifics(
             instruction=instruction,
             context=context,

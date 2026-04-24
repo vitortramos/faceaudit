@@ -78,6 +78,15 @@ class EmbeddingType(Enum):
     def __str__(self):
         return self.display_name
 
+    @property
+    def parquet_column(self) -> str:
+        """Nome da coluna de embedding no arquivo parquet."""
+        _map = {
+            "SEPAEL_V2": "embedding",
+            "SEPAEL_V4": "embedding_v4",
+        }
+        return _map[self.name]
+
     # --- Interface de Serialização ---
 
     def to_str(self) -> str:

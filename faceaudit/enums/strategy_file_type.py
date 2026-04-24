@@ -108,6 +108,29 @@ class StrategyFileType(Enum):
         "{strategy_id}_checkpoint",
     )
 
+    # --- RECURSOS IMPORTADOS DA BIBLIOTECA GLOBAL ---
+    # Usados quando copy_artifact_to_project() recebe um tipo de biblioteca global.
+    SOURCE_DATASET = (
+        ".parquet",
+        ProjectFolder.DATASETS,
+        "{dataset_id}",
+    )
+    PROJECT_SPLIT_CONFIG = (
+        ".json",
+        ProjectFolder.SPLIT_CONFIGS,
+        "{config_id}",
+    )
+    PROJECT_MINING_CONFIG = (
+        ".json",
+        ProjectFolder.MINING_CONFIGS,
+        "{config_id}",
+    )
+    PROJECT_PIPELINE_CONFIG = (
+        ".json",
+        ProjectFolder.PIPELINES,
+        "{config_id}",
+    )
+
     def __init__(self, extension: str, folder: ProjectFolder, name_template: str):
         self.extension = extension
         self.folder = folder
@@ -210,5 +233,10 @@ class StrategyFileType(Enum):
             StrategyArtifactType.TRAJECTORY_DATA:           cls.TRAJECTORY_DATA,
             StrategyArtifactType.GRAPHIC:                   cls.GRAPHIC,
             StrategyArtifactType.CHECKPOINT:                cls.CHECKPOINT,
-            # StrategyArtifactType.UNKNOWN não tem mapeamento intencional
+            # Tipos de biblioteca global → destino dentro do projeto
+            StrategyArtifactType.GLOBAL_DATASET:            cls.SOURCE_DATASET,
+            StrategyArtifactType.SPLIT_CONFIG:              cls.PROJECT_SPLIT_CONFIG,
+            StrategyArtifactType.MINING_CONFIG:             cls.PROJECT_MINING_CONFIG,
+            StrategyArtifactType.PIPELINE_CONFIG:           cls.PROJECT_PIPELINE_CONFIG,
+            # StrategyArtifactType.UNKNOWN e STRATEGY_TEMPLATE não têm mapeamento intencional
         }

@@ -248,7 +248,8 @@ class EmbeddingDataset:
     # =========================================================================
 
     @classmethod
-    def from_parquet(cls, path: Union[str, Path]) -> 'EmbeddingDataset':
+    def from_parquet(cls, path: Union[str, Path],
+                     embedding_column: Optional[str] = None) -> 'EmbeddingDataset':
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Arquivo Parquet não encontrado: {p}")
@@ -270,10 +271,17 @@ class EmbeddingDataset:
 
         items: List[EmbeddingInfo] = []
 
+        # Resolve coluna de embedding: usa a configurada ou cai para 'embedding'
+        _emb_col = (
+            embedding_column
+            if (embedding_column and embedding_column in df.columns)
+            else 'embedding'
+        )
+
         for row in df.itertuples(index=False):
             row_dict = row._asdict()
 
-            emb_array = np.array(row_dict['embedding'], dtype=np.float32)
+            emb_array = np.array(row_dict[_emb_col], dtype=np.float32)
 
             face_img_array = None
             if row_dict.get('face_image') is not None:

@@ -6,7 +6,10 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.pipeline_mode import PipelineMode
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ChoiceFieldSpec,
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 from faceaudit.models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
@@ -91,6 +94,62 @@ class PipelineTrainingInstruction(StrategyInstructionDefinition):
     @property
     def is_dual(self) -> bool:
         return self.pipeline_mode == PipelineMode.DUAL
+
+    def build_validation_rules(self) -> list:
+        if not self.is_dual:
+            return []
+
+        from faceaudit.validation_rules.dataset_overlap_required_rule import DatasetOverlapRequiredRule
+        from faceaudit.validation_rules.dual_pipeline_dimension_compatibility_rule import DualPipelineDimensionCompatibilityRule
+        from faceaudit.validation_rules.dual_pipeline_subsequence_rule import DualPipelineSubsequenceRule
+
+        rules = []
+
+        if self.source_dataset_resource_id and self.target_dataset_resource_id:
+            rules.append(DatasetOverlapRequiredRule(
+                rule_id=f"{self.instruction_id}_dual_dataset_overlap",
+                dataset_a_resource_id=self.source_dataset_resource_id,
+                dataset_b_resource_id=self.target_dataset_resource_id,
+            ))
+
+        if self.source_pipeline_config_resource_id and self.target_pipeline_config_resource_id:
+            rules.append(DualPipelineDimensionCompatibilityRule(
+                rule_id=f"{self.instruction_id}_dual_dim_compat",
+                source_config_resource_id=self.source_pipeline_config_resource_id,
+                target_config_resource_id=self.target_pipeline_config_resource_id,
+            ))
+            rules.append(DualPipelineSubsequenceRule(
+                rule_id=f"{self.instruction_id}_dual_subsequence",
+                source_config_resource_id=self.source_pipeline_config_resource_id,
+                target_config_resource_id=self.target_pipeline_config_resource_id,
+            ))
+
+        return rules
+
+    def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
+        return [
+            ChoiceFieldSpec("pipeline_mode", "Modo do Pipeline", ("LINEAR", "DUAL"), PipelineMode),
+        ]
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        PC = (StrategyResourceType.PIPELINE_CONFIG,)
+        TP = (StrategyResourceType.TRAINED_PIPELINE,)
+
+        if self.is_linear:
+            return [
+                ResourceFieldSpec("pipeline_config_resource_id", "Pipeline Config", PC),
+                ResourceFieldSpec("dataset_resource_id", "Dataset", DS),
+                ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP, is_output=True),
+            ]
+        else:
+            return [
+                ResourceFieldSpec("source_pipeline_config_resource_id", "Pipeline Config (Source)", PC),
+                ResourceFieldSpec("target_pipeline_config_resource_id", "Pipeline Config (Target)", PC),
+                ResourceFieldSpec("source_dataset_resource_id", "Dataset (Source)", DS),
+                ResourceFieldSpec("target_dataset_resource_id", "Dataset (Target)", DS),
+                ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP, is_output=True),
+            ]
 
     def _sync_declared_io(self) -> None:
         """

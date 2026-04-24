@@ -6,7 +6,9 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.similarity_model_type import SimilarityModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -58,6 +60,16 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
             self.name = "Similarity Model Training"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        SC = (StrategyResourceType.SIMILARITY_MODEL_CONFIG,)
+        TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
+        return [
+            ResourceFieldSpec("input_dataset_resource_id", "Dataset", DS),
+            ResourceFieldSpec("similarity_model_config_resource_id", "Config do Modelo", SC),
+            ResourceFieldSpec("trained_similarity_model_resource_id", "Modelo Treinado", TS, is_output=True),
+        ]
 
     def _sync_declared_io(self) -> None:
         """

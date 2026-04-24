@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -67,6 +69,17 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
             self.name = "Similarity Scoring"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
+        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        return [
+            ResourceFieldSpec("trained_similarity_model_resource_id", "Modelo de Similaridade", TS),
+            ResourceFieldSpec("probe_dataset_resource_id", "Dataset Probe", DS),
+            ResourceFieldSpec("reference_dataset_resource_id", "Dataset Reference (opcional)", DS),
+            ResourceFieldSpec("output_similarity_scores_resource_id", "Scores de Saída", OUT, is_output=True),
+        ]
 
     @property
     def uses_self_comparison(self) -> bool:

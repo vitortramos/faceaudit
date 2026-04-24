@@ -302,7 +302,8 @@ class FaceDataset:
         return pd.DataFrame(data)
             
     @classmethod
-    def from_dataframe(cls, df: pd.DataFrame, name: str = "Dataset") -> 'FaceDataset':
+    def from_dataframe(cls, df: pd.DataFrame, name: str = "Dataset",
+                       embedding_column: Optional[str] = None) -> 'FaceDataset':
         """
         Reconstrói um FaceDataset a partir de um pandas DataFrame.
         Realiza o parsing de colunas flat para as estruturas aninhadas (FFInfo, OFIQInfo).
@@ -314,10 +315,13 @@ class FaceDataset:
         
         # 1. Detecção da Coluna de Embedding principal
         col_emb = None
-        for candidate in ['embedding', 'embeddings', 'feature', 'vector', 'embedding_v2']:
-            if candidate in df.columns:
-                col_emb = candidate
-                break
+        if embedding_column and embedding_column in df.columns:
+            col_emb = embedding_column  # uso direto — configurado na estratégia
+        else:
+            for candidate in ['embedding', 'embeddings', 'feature', 'vector', 'embedding_v2']:
+                if candidate in df.columns:
+                    col_emb = candidate
+                    break
 
         # 2. Mapa de Tradução (Parquet -> Atributo Interno)
         parquet_mapping = {
@@ -408,7 +412,8 @@ class FaceDataset:
         return dataset        
 
     @classmethod
-    def from_parquet(cls, path: Union[str, Path]) -> 'FaceDataset':
+    def from_parquet(cls, path: Union[str, Path],
+                     embedding_column: Optional[str] = None) -> 'FaceDataset':
         """
         Carrega um dataset do disco a partir de um arquivo Parquet.
         Recupera metadados globais (nome, descrição) se disponíveis.
@@ -418,14 +423,14 @@ class FaceDataset:
              return cls(name=path_obj.stem)
 
         df = pd.read_parquet(path_obj)
-        
+
         ds_name = path_obj.stem
         if not df.empty:
             saved_name = df.iloc[0].get('dataset_name')
             if saved_name and pd.notna(saved_name):
                 ds_name = str(saved_name)
-            
-        return cls.from_dataframe(df, name=ds_name)
+
+        return cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
 
     def to_parquet(self, path: Union[str, Path]):
         """

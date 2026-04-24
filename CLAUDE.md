@@ -34,7 +34,7 @@ python tests/check_parquet.py
 
 ## ACTIVE ARCHITECTURE MIGRATION
 
-**The codebase currently contains two architectures in parallel.** The backend (`faceaudit/`) is being migrated to the new architecture. The frontend (`interface/`) still uses the old architecture entirely and has not been migrated yet.
+**The codebase currently contains two architectures in parallel.** The backend (`faceaudit/`) is being migrated to the new architecture. The frontend (`interface/`) has the old architecture tabs plus the new **Strategy Manager V2** tab (`interface/tabs/strategy_manager_v2/`) which is the first frontend component built against the new backend.
 
 ### Old Architecture — folders: `manager/`, `controllers/`, `strategies/` (partially)
 
@@ -58,13 +58,23 @@ StrategyExecutorFactory.build()
        ├─ Creates StrategyExecutionContext  ← shared state bus
        ├─ Loads initial resources into context (datasets, configs)
        ├─ Validates strategy via ValidationRules
-       └─ For each StrategyInstructionDefinition (in order):
-            InstructionExecutorRegistry.resolve(instruction_type)
-              └─ executor.execute(instruction, context)
-                   ├─ Reads needed resources from context
-                   ├─ Runs logic (pipeline/split/score/calibrate)
-                   └─ Writes results back into context as new StrategyResource
+       └─ For each phase (Preparação → Validação → Análise de Caso):
+            For each StrategyInstructionDefinition in phase:
+              InstructionExecutorRegistry.resolve(instruction_type)
+                └─ executor.validate(instruction, context)
+                     ├─ validation_rule_ids (registered rules)
+                     ├─ instruction.build_validation_rules() (dynamic rules)
+                     └─ _validate_instruction_specifics() (hard-coded checks)
+                └─ executor.execute(instruction, context)
+                     ├─ Reads needed resources from context
+                     ├─ Runs logic (pipeline/split/score/calibrate)
+                     └─ Writes results back into context as new StrategyResource
        └─ Packages final context → LRStrategyTrainedModel
+
+Step-by-step execution (used by the UI for per-instruction runs):
+  StrategyExecutor.prepare_context(definition) → persistent context
+  StrategyExecutor.can_execute_instruction(instr, ctx) → (bool, missing_ids)
+  StrategyExecutor.execute_single_instruction(instr, ctx) → result
 ```
 
 #### New architecture folder map
@@ -76,7 +86,7 @@ StrategyExecutorFactory.build()
 | `faceaudit/executors/instructions/` | One concrete executor per instruction type, all extending `StrategyInstructionExecutorBase` |
 | `faceaudit/factories/` | `StrategyExecutorFactory` — single assembly point for the engine |
 | `faceaudit/repositories/` | `StrategyDefinitionRepository` (JSON) + `StrategyTrainedModelRepository` (pickle) — ambos aceitam `ArtifactStorageProtocol`, não `ArtifactStorageService` |
-| `faceaudit/validation_rules/` | Implementações concretas de `ValidationRuleProtocol`, todas estendendo `ValidationRuleBase`; 5 regras: `DatasetIsolationRule`, `DatasetOverlapRequiredRule`, `FisherRule`, `MinCalibrationPairsRule`, `HoldoutLeakageRule` |
+| `faceaudit/validation_rules/` | Implementações concretas de `ValidationRuleProtocol`, todas estendendo `ValidationRuleBase`; 7 regras: `DatasetIsolationRule`, `DatasetOverlapRequiredRule`, `FisherRule`, `MinCalibrationPairsRule`, `HoldoutLeakageRule`, `DualPipelineDimensionCompatibilityRule`, `DualPipelineSubsequenceRule` |
 | `faceaudit/storage/` | `LocalProjectArtifactStorage` (projeto autocontido) + `GlobalLibraryStorage` (biblioteca global) — ambos implementam `ArtifactStorageProtocol`; `ArtifactStorageService` é adaptador transitório para arch antiga. `LocalProjectArtifactStorage` expõe também `verify_integrity(refs)` fora do protocolo. |
 | `faceaudit/services/project_service.py` | `FaceAuditProjectService` — cria/abre projetos (`.fa`), agrega `LocalProjectArtifactStorage` + repositórios; `open(verify_integrity=True)` executa `check_integrity()` automaticamente. `FaceAuditProject` expõe `integrity_results`, `has_integrity_problems` e `check_integrity()`. |
 | `faceaudit/services/strategy_resource_loader_service.py` | `StrategyResourceLoaderService` — hidrata `payload` de `StrategyResource` a partir de `artifact_ref`; usado pelo `StrategyExecutor` antes da execução e pelo `StrategyInferenceService` para carregar probe/reference |
@@ -115,7 +125,11 @@ Key new protocols and what they define:
 
 #### Key design decisions in the new architecture
 
-**`StrategyResource` is the unit of exchange between instructions.** Every instruction reads named resources from the context and writes named resources back. The names are declared in the instruction DTO itself (`input_resource_ids`, `output_resource_ids`), kept in sync via `_sync_declared_io()` in `__post_init__`.
+**`LRStrategyDefinition` organizes instructions in three phases.** `preparation_instructions` (pipeline training, model training), `validation_instructions` (metrics, scoring), `casework_instructions` (case analysis). The read-only property `instructions` concatenates all three for backward compatibility with validators, protocols, and `resource_info_widget`. Helper `_get_phase_list(phase)` returns the list for a given phase key.
+
+**`StrategyResource` is the unit of exchange between instructions.** Every instruction reads named resources from the context and writes named resources back. The names are declared in the instruction DTO itself (`input_resource_ids`, `output_resource_ids`), kept in sync via `_sync_declared_io()` in `__post_init__`. Two categories exist: **project resources** (DATASET, *_CONFIG — imported by the user, shared across strategies, always have `artifact_ref`) and **strategy-produced resources** (TRAINED_PIPELINE, INTERMEDIATE_DATASET, TRAINED_SIMILARITY_MODEL, TRAINED_CALIBRATION_MODEL — produced by instruction execution). Strategy-produced resources start as **placeholders** (payload=None, artifact_ref=None) when the user fills in output fields in the instruction config panel. After execution, they are persisted to disk and gain `artifact_ref`. `StrategyResourceType.to_artifact_type()` maps the logical resource type to the physical `StrategyArtifactType` for persistence. `StrategyInstructionDefinition.get_output_resource_placeholders()` creates placeholder `StrategyResource` objects from `ResourceFieldSpec` entries with `is_output=True`. The controller calls `_sync_all_output_placeholders()` on each strategy modification to keep `LRStrategyDefinition.resources` in sync. `StrategyExecutor.persist_produced_resource(resource, strategy_id)` handles disk persistence, returning a `StrategyArtifactReference`.
+
+**`ResourceFieldSpec` enables type-filtered resource dropdowns.** Each instruction DTO implements `get_resource_field_specs()` returning a list of `ResourceFieldSpec(field_name, label, accepted_types, is_output)`. The UI config panel uses these specs to show only resources of the correct `StrategyResourceType` in each dropdown. It's an instance method (not classmethod) because Pipeline Training/Application specs vary by `pipeline_mode` (LINEAR vs DUAL).
 
 **`StrategyInstructionDefinition.from_dict()` is a polymorphic dispatcher.** It reads `instruction_type` and hydrates the correct concrete DTO. This is how the strategy survives JSON serialization/deserialization with full type information.
 
@@ -127,7 +141,26 @@ Key new protocols and what they define:
 
 **`ValidationResult`** flows through everything. Uses `merge()` to aggregate results from multiple rules. Four factories: `ok()`, `neutral()`, `critical(message)`, `warning(message)`.
 
-**Sistema de validação — dois mecanismos complementares.** Cada executor concreto possui validações hard-coded em `_validate_instruction_specifics()` (tipo correto, campos obrigatórios, recursos no contexto). Além disso, existe um sistema plugável de `ValidationRuleProtocol`: regras reutilizáveis registradas no `StrategyExecutor` por `rule_id` e referenciadas na `LRStrategyDefinition` (antes de qualquer instrução) ou em instruções específicas. Todas as regras concretas estendem `ValidationRuleBase` (`faceaudit/validation_rules/validation_rule_base.py`), que fornece o helper `_get_or_compute_stats(resource_id, context)`: busca `"{resource_id}_stats"` no contexto ou computa via `DatasetStatsService` e armazena automaticamente como `DATASET_STATS` resource — custo pago uma vez por dataset por execução. `DatasetStats` foi estendido com `embedding_dim` para suportar a Regra de Fisher. `DatasetStatsService.compute_from_embedding_dataset()` foi adicionado para computar stats de `EmbeddingDataset` (a arch antiga só tinha `FaceDataset`). **Não implementar `ValidationRuleProtocol` diretamente — estender sempre `ValidationRuleBase`.**
+**Pipeline de validação — 5 estágios em dois níveis.** A validação ocorre em dois pontos distintos com estágios bem definidos. Cada estágio agrega resultados no mesmo `ValidationResult` via `merge()`.
+
+**Nível 1 — Validação da estratégia** (antes de qualquer instrução, em `StrategyExecutor._validate_strategy()`):
+
+| Estágio | Onde | O que valida |
+|---|---|---|
+| Strategy Rules | `LRStrategyDefinition.validation_rule_ids` | Regras globais da estratégia (ex: isolamento entre datasets de treino e calibração). Executam uma vez, antes de qualquer fase. |
+
+**Nível 2 — Validação de instrução** (em `StrategyInstructionExecutorBase.validate()`, executado automaticamente antes de cada `execute()` e pelo botão "Validar" da UI):
+
+| Estágio | Onde | O que valida |
+|---|---|---|
+| 1. Structural | `validate()` — topo | Null checks em `instruction` e `context`. Falha aqui aborta os demais. |
+| 2. Pluggable | `instruction.validation_rule_ids` | Regras registradas no contexto por `rule_id`, referenciadas pela instrução. Políticas do laboratório. |
+| 3. Dynamic | `instruction.build_validation_rules()` | Regras construídas pelo DTO com base no estado atual dos campos. Ex: `PipelineTrainingInstruction` DUAL retorna 3 regras (overlap, dimensões, subsequência). |
+| 4. Executor | `_validate_instruction_specifics()` | Hard-coded no executor concreto: tipo da instrução, campos obrigatórios, payloads corretos, recursos no contexto. |
+
+**Gate de dependência** (separado do pipeline): `StrategyExecutor.can_execute_instruction()` verifica se todos os `input_resource_ids` estão presentes no contexto. É um gate de execução que roda ANTES do pipeline de validação — na UI, impede o botão "Run" de ativar.
+
+**Regras concretas**: 7 implementações em `faceaudit/validation_rules/`, todas estendendo `ValidationRuleBase` (`faceaudit/validation_rules/validation_rule_base.py`). A classe base fornece o helper `_get_or_compute_stats(resource_id, context)`: busca `"{resource_id}_stats"` no contexto ou computa via `DatasetStatsService` e armazena como `DATASET_STATS` resource — custo pago uma vez por dataset por execução. `DatasetStats` inclui `embedding_dim` para suportar a Regra de Fisher. **Não implementar `ValidationRuleProtocol` diretamente — estender sempre `ValidationRuleBase`.**
 
 **`LRStrategyDefinition` e `LRStrategyTrainedModel` NÃO herdam de seus respectivos Protocols.** Em Python, herança explícita de `Protocol` é desnecessária — a tipagem estrutural garante compatibilidade sem declaração. Além disso, as `@property` declaradas no Protocol bloqueavam o `__init__` gerado pelo `@dataclass` (sem setter → `AttributeError`). Ambas as classes herdam apenas de `JSONSerializableMixin`. O `isinstance(obj, LRStrategyDefinitionProtocol)` continua funcionando via `@runtime_checkable` (verifica presença de atributos, não hierarquia). **Não adicionar herança de Protocol em nenhum `@dataclass` concreto da nova arch.**
 
@@ -180,7 +213,8 @@ Project skills are available in `.claude/commands/`. Use them instead of creatin
 | `faceaudit/services/` | Mixed — old arch: `FileSystemService`, `ConfigLoaderService`, etc.; new arch: `FaceAuditProjectService`, `StrategyResourceLoaderService`, `StrategyInferenceService`, `PipelineTrajectoryService` |
 | `faceaudit/protocols/` | Mixed — see protocol list above |
 | `faceaudit/models/` | Mixed — subfolders `calibration/`, `instructions/`, `pipeline/`, `similarity/`, `storage/`, `strategy/`, `validation/` are new; root-level models are shared (see notes below) |
-| `interface/` | Old architecture only — not yet migrated |
+| `interface/tabs/strategy_manager_v2/` | **New architecture frontend** — see section below |
+| `interface/` (rest) | Old architecture only — not yet migrated |
 
 ### Root-level models in `faceaudit/models/` — usage notes
 
@@ -192,6 +226,82 @@ Most root-level models are shared between both architectures. Key points for the
 - **Candidate for future use**: `filter_config.py` (dataset filtering) — DTO bem estruturado, sem instrução correspondente ainda
 - **Old-arch replacements** — do not use in new arch: `kde_config.py` (replaced by `models/calibration/kde_calibration_model_config.py`), `plda_config.py` (replaced by `models/similarity/plda_similarity_model_config.py`), `project_config.py` (replaced by `FaceAuditProjectMetadata` + `.fa` file in new arch), `strategy_entry.py` (replaced by `LRStrategyDefinition`)
 - **Old-arch UI/analysis only**: `kde_validation_input.py`, `plda_validation_input.py`, `pipeline_summary.py`, `transformation_trajectory_data.py`, `kde_visualization_data.py`, hubness/ablation/gaussianity analysis files
+
+---
+
+## Strategy Manager V2 — Frontend (Nova Arch)
+
+The tab is registered in `interface/main_gui_controller._init_strategy_manager_v2()`. It receives `global_storage` (optional `GlobalLibraryStorage`) and `app_config` (for resolving initial FileDialog directories).
+
+### Folder structure
+
+```
+interface/tabs/strategy_manager_v2/
+├── strategy_manager_v2_controller.py   ← Central controller (QObject); owns project + execution state
+├── strategy_manager_v2_view.py         ← QStackedWidget: welcome screen (0) + workspace (1)
+├── toolbar/
+│   ├── global_resources_toolbar.py     ← Pipeline / Mining / Split / Manage Library buttons
+│   └── project_toolbar.py             ← New / Open / Save / Close / Run / Save as Template
+├── left_panel/
+│   ├── left_panel_widget.py            ← QSplitter vertical with 3 sections; forwards signals
+│   ├── strategy_list_widget.py         ← QListWidget of LRStrategyDefinition; New/Duplicate/Remove
+│   ├── resource_tree_widget.py         ← QTreeWidget grouped by StrategyResourceType; "Adicionar Recurso" dropdown
+│   └── resource_info_widget.py         ← Metadata + usage + pipeline details + dataset stats of selected resource
+├── strategy_editor/
+│   ├── strategy_editor_widget.py       ← QTabWidget with 3 tabs (Preparação/Validação/Caso), each with list+config+produced
+│   ├── instruction_list_widget.py      ← Drag-and-drop list with ▶ Run button + visual states (🔒/✅)
+│   ├── instruction_config_panel.py     ← Dynamic form with type-filtered dropdowns via ResourceFieldSpec + Validate button
+│   └── produced_resources_widget.py    ← Shows strategy-produced resources per phase (⬜ placeholder / 🟡 in memory / 🟢 saved)
+├── comparison_tab/
+│   └── comparison_tab_widget.py        ← Placeholder for future strategy comparison
+├── dialogs/
+│   ├── new_project_v2/                 ← Name + description + destination folder
+│   ├── new_strategy/                   ← From scratch or from GlobalLibraryStorage template
+│   └── manage_library/                 ← List/remove resources from GlobalLibraryStorage
+└── workers/
+    ├── strategy_execution_worker.py    ← QObject + moveToThread; runs StrategyExecutor.execute() (all phases)
+    ├── instruction_execution_worker.py ← QObject + moveToThread; runs single instruction via execute_single_instruction()
+    └── project_io_worker.py            ← QObject + moveToThread (currently unused; open is sync)
+```
+
+### Key design decisions in the V2 frontend
+
+**Project open is synchronous with WaitCursor, not threaded.** On Windows, `ApplicationModal` dialogs prevent queued signal delivery from worker threads, causing `LogProgressDialog` to hang forever. Solution: `FaceAuditProjectService.open()` runs on the main thread with `QApplication.setOverrideCursor(WaitCursor)`. The `ProjectIOWorker` exists but is not used for opening.
+
+**"Adicionar Recurso" lives in the left panel, not the toolbar.** The `ResourceTreeWidget` has a `QToolButton` with `MenuButtonPopup` showing 4 options (Dataset / Split Config / Mining Config / Pipeline Config). `LeftPanelWidget` forwards the 4 signals up to `StrategyManagerV2Controller`. The button is disabled until a project is open.
+
+**Resource discovery = definitions scan + disk scan.** `_collect_project_resources()` in the controller does two passes: (1) resources declared in `LRStrategyDefinition` objects, (2) files on disk found via `storage.list_artifacts()` for each importable type. This ensures imported files appear in the tree even before they are referenced by a strategy.
+
+**`app_config.paths.*` drives FileDialog initial directories.** The controller receives `app_config` from `main_gui_controller`. `_import_resource()` reads `app_config.paths.<attr>` (e.g. `datasets`, `split_configs`, `mining_configs`, `pipelines`) to open the FileDialog in the right folder. Falls back to `Path.home()` if the attribute is missing or `app_config` is None.
+
+**Per-instruction execution with dependency tracking and auto-persistence.** The controller maintains persistent execution state: `_execution_context` (StrategyExecutionContext), `_executed_instruction_ids` (set), `_executor` (StrategyExecutor). When the user clicks "Run" on an instruction, `_ensure_executor_and_context()` lazily creates the executor and context, `can_execute_instruction()` checks dependencies, then `InstructionExecutionWorker` runs the instruction in a separate thread. After success: (1) `_persist_produced_resources()` saves produced resources to disk via `persist_produced_resource()`, (2) `_refresh_instruction_states()` recalculates which instructions are now runnable, (3) `_refresh_produced_resources()` updates the visual state of produced resources. All execution state resets when the strategy is edited, reordered, or switched — but persisted resources (with `artifact_ref`) survive the reset.
+
+**Three-tab strategy editor with produced resources.** The `StrategyEditorWidget` uses a `QTabWidget` with three tabs (Preparação, Validação, Análise de Caso). Each tab has a horizontal splitter: left container (`InstructionListWidget` + `ProducedResourcesWidget` stacked vertically) and right `InstructionConfigPanel`. Visual instruction states: locked (gray), runnable (normal icon), executed (green checkmark). The `ProducedResourcesWidget` shows output resources per phase with three states: placeholder (white), in-memory (yellow), saved to disk (green).
+
+**Automatic placeholder sync and resource persistence.** When the user modifies a strategy (adds/removes/edits instructions), `_sync_all_output_placeholders()` scans all instructions' `get_output_resource_placeholders()`, creates missing placeholder `StrategyResource` objects in `LRStrategyDefinition.resources`, and removes orphaned placeholders (no payload, no artifact_ref). After each successful instruction execution, `_persist_produced_resources()` calls `StrategyExecutor.persist_produced_resource()` for each `produced_resource_id`, saving the artifact to disk and updating the definition's `artifact_ref`. The definition is saved to the repository automatically.
+
+**Type-filtered resource dropdowns.** The `InstructionConfigPanel` uses `get_resource_field_specs()` from each instruction DTO to render dropdowns that only show resources of the correct `StrategyResourceType`. Output fields are rendered as text inputs. Falls back to generic rendering for instructions without specs. The panel has two buttons: "Aplicar alterações" (applies form to DTO) and "Validar" (applies form then runs full validation via the instruction executor, showing errors/warnings in a QMessageBox).
+
+**Reused from old-arch frontend** (imported directly, no copy):
+- `LogProgressDialog` — used for strategy execution
+- `PipelineCreatorController` — "Pipeline" button in global resources toolbar
+- `NewMiningConfigDialogController` — "Mining" button
+- `NewSplitConfigDialogController` — "Split" button
+
+### StrategyArtifactType / StrategyFileType — import mappings
+
+When `copy_artifact_to_project()` is called with a global-library type, `StrategyFileType._artifact_map()` maps it to a project-local file type:
+
+| `StrategyArtifactType` | `StrategyFileType` | Destination in project |
+|---|---|---|
+| `GLOBAL_DATASET` | `SOURCE_DATASET` | `datasets/{dataset_id}.parquet` |
+| `SPLIT_CONFIG` | `PROJECT_SPLIT_CONFIG` | `split_configs/{config_id}.json` |
+| `MINING_CONFIG` | `PROJECT_MINING_CONFIG` | `mining_configs/{config_id}.json` |
+| `PIPELINE_CONFIG` | `PROJECT_PIPELINE_CONFIG` | `pipelines/{config_id}.json` |
+
+`PIPELINE_CONFIG` was added to `StrategyArtifactType` during V2 frontend development. `STRATEGY_TEMPLATE` and `UNKNOWN` intentionally have no project-level mapping.
+
+---
 
 ## External Tools (accessed via services)
 

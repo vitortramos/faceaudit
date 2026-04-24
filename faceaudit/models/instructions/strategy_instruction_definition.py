@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
 
 T = TypeVar("T", bound="StrategyInstructionDefinition")
+
+
+@dataclass(frozen=True)
+class ResourceFieldSpec:
+    """Especificação de um campo de recurso para renderização no config panel."""
+    field_name: str
+    label: str
+    accepted_types: Tuple[StrategyResourceType, ...]
+    is_output: bool = False
+
+
+@dataclass(frozen=True)
+class ChoiceFieldSpec:
+    """Especificação de um campo de escolha (enum) para renderização no config panel."""
+    field_name: str
+    label: str
+    choices: Tuple[str, ...]   # valores do enum (strings)
+    enum_type: Optional[type] = None  # classe do enum para conversão segura via from_str
 
 
 @dataclass
@@ -50,6 +69,49 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
         default=None,
         metadata={"help": "Descrição opcional da finalidade da instrução."}
     )
+
+    def get_choice_field_specs(self) -> List[ChoiceFieldSpec]:
+        """Retorna campos de escolha (enums) para renderização no config panel. Override nos DTOs concretos."""
+        return []
+
+    def get_resource_field_specs(self) -> List[ResourceFieldSpec]:
+        """Retorna specs para renderização no config panel. Override nos DTOs concretos."""
+        return []
+
+    def build_validation_rules(self) -> list:
+        """
+        Retorna regras de validação dinâmicas baseadas no estado atual da instrução.
+        Override nos DTOs concretos para regras semânticas específicas.
+        """
+        return []
+
+    def get_output_resource_placeholders(self) -> list:
+        """
+        Retorna StrategyResource placeholders para cada campo de output preenchido.
+        payload=None, artifact_ref=None — preenchidos ao executar a instrução.
+        """
+        from faceaudit.models.strategy.strategy_resource import StrategyResource
+
+        placeholders = []
+        for spec in self.get_resource_field_specs():
+            if not spec.is_output:
+                continue
+            resource_id = getattr(self, spec.field_name, None)
+            if not resource_id:
+                continue
+            resource_type = (
+                spec.accepted_types[0]
+                if spec.accepted_types
+                else StrategyResourceType.UNKNOWN
+            )
+            placeholders.append(
+                StrategyResource(
+                    resource_id=resource_id,
+                    name=resource_id,
+                    resource_type=resource_type,
+                )
+            )
+        return placeholders
 
     @property
     def has_inputs(self) -> bool:

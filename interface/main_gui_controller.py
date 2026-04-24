@@ -33,6 +33,7 @@ class MainGuiController:
         # 3. Inicializa as abas
         self._init_dataset_manager()
         self._init_strategy_manager()
+        self._init_strategy_manager_v2()
         self._setup_connections()
 
     def _sync_container_config(self):
@@ -101,6 +102,34 @@ class MainGuiController:
         )
         self.view.add_tab(1, self.strategy_view, "Gerenciador de Estratégias")
 
+    def _init_strategy_manager_v2(self):
+        """
+        Inicializa a aba Strategy Manager V2 (nova arquitetura declarativa).
+        Convive com a aba antiga durante a migração.
+        """
+        from interface.tabs.strategy_manager_v2.strategy_manager_v2_controller import (
+            StrategyManagerV2Controller,
+        )
+        from faceaudit.storage.global_library_storage import GlobalLibraryStorage
+        from pathlib import Path
+
+        # Tenta construir GlobalLibraryStorage a partir do config
+        global_storage = None
+        try:
+            library_root = getattr(self.app_config.paths, "library", None)
+            if library_root:
+                global_storage = GlobalLibraryStorage(library_root=Path(library_root))
+                global_storage.create_library_structure()
+        except Exception:
+            pass  # Biblioteca opcional — a aba funciona sem ela
+
+        self.strategy_manager_v2 = StrategyManagerV2Controller(
+            parent=self.view,
+            global_storage=global_storage,
+            app_config=self.app_config,
+        )
+        self.view.add_tab(2, self.strategy_manager_v2.view, "Estratégias (Nova Arch)")
+
     def _setup_connections(self):
         """Estabelece a comunicação via sinais."""
         self.view.config_requested.connect(self.abrir_dialogo_configuracoes)
@@ -145,12 +174,19 @@ class MainGuiController:
                 event.ignore()
                 return
 
-        # 2. Pergunta para a Aba 2 (Estratégias / Projeto)
+        # 2. Pergunta para a Aba 2 (Estratégias / Projeto) — arch antiga
         if hasattr(self, 'strategy_controller'):
             pode_fechar_projeto = self.strategy_controller.request_close()
             if not pode_fechar_projeto:
                 event.ignore()
                 return
 
-        # 3. Se todo mundo retornou True (está tudo salvo ou vazio), deixa a janela fechar
+        # 3. Pergunta para a Aba 3 (Estratégias V2 / Nova Arch)
+        if hasattr(self, 'strategy_manager_v2'):
+            pode_fechar_v2 = self.strategy_manager_v2.request_close()
+            if not pode_fechar_v2:
+                event.ignore()
+                return
+
+        # 4. Se todo mundo retornou True (está tudo salvo ou vazio), deixa a janela fechar
         event.accept()

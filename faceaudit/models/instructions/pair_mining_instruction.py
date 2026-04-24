@@ -5,8 +5,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -54,6 +56,15 @@ class PairMiningInstruction(StrategyInstructionDefinition):
             self.name = "Pair Mining"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        ART = (StrategyResourceType.ARTIFACT,)
+        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        return [
+            ResourceFieldSpec("comparison_dataset_resource_id", "Dataset de Comparação", ART),
+            ResourceFieldSpec("output_impostors_resource_id", "Impostores Minerados", OUT, is_output=True),
+            ResourceFieldSpec("output_genuines_resource_id", "Genuínos Minerados", OUT, is_output=True),
+        ]
 
     def _sync_declared_io(self) -> None:
         inputs = []

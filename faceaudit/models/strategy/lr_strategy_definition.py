@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Type, TypeVar
 
+from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.models.instructions.strategy_instruction_definition import (
     StrategyInstructionDefinition,
@@ -44,14 +45,28 @@ class LRStrategyDefinition(JSONSerializableMixin):
         default_factory=list,
         metadata={"help": "Lista de recursos declarados da estratégia."}
     )
-    instructions: List[StrategyInstructionDefinition] = field(
+
+    preparation_instructions: List[StrategyInstructionDefinition] = field(
         default_factory=list,
-        metadata={"help": "Lista ordenada de instruções declaradas da estratégia."}
+        metadata={"help": "Instruções de preparação (treino de pipeline, modelos)."}
+    )
+    validation_instructions: List[StrategyInstructionDefinition] = field(
+        default_factory=list,
+        metadata={"help": "Instruções de validação (métricas, gráficos)."}
+    )
+    casework_instructions: List[StrategyInstructionDefinition] = field(
+        default_factory=list,
+        metadata={"help": "Instruções de análise de caso (escores do caso)."}
     )
 
     validation_rule_ids: List[str] = field(
         default_factory=list,
         metadata={"help": "Lista de regras de validação registradas na estratégia."}
+    )
+
+    embedding_type: Optional[EmbeddingType] = field(
+        default=None,
+        metadata={"help": "Tipo de embedding a usar nos datasets. None = auto-detect."}
     )
 
     version: str = field(
@@ -60,18 +75,28 @@ class LRStrategyDefinition(JSONSerializableMixin):
     )
 
     @property
+    def instructions(self) -> List[StrategyInstructionDefinition]:
+        """
+        Retorna todas as instruções de todas as fases em ordem.
+        Read-only — para adicionar/remover, use os métodos específicos.
+        """
+        return (
+            self.preparation_instructions
+            + self.validation_instructions
+            + self.casework_instructions
+        )
+
+    @property
     def has_resources(self) -> bool:
-        """
-        Retorna True se a estratégia possui recursos declarados.
-        """
         return bool(self.resources)
 
     @property
     def has_instructions(self) -> bool:
-        """
-        Retorna True se a estratégia possui instruções declaradas.
-        """
-        return bool(self.instructions)
+        return bool(
+            self.preparation_instructions
+            or self.validation_instructions
+            or self.casework_instructions
+        )
 
     @property
     def has_validation_rules(self) -> bool:
@@ -146,9 +171,13 @@ class LRStrategyDefinition(JSONSerializableMixin):
             if resource.resource_id != resource_id
         ]
 
-    def add_instruction(self, instruction: StrategyInstructionDefinition) -> None:
+    def add_instruction(
+        self,
+        instruction: StrategyInstructionDefinition,
+        phase: str = "preparation",
+    ) -> None:
         """
-        Adiciona uma instrução à estratégia.
+        Adiciona uma instrução à fase indicada.
 
         Lança erro se já existir uma instrução com o mesmo instruction_id.
         """
@@ -160,21 +189,22 @@ class LRStrategyDefinition(JSONSerializableMixin):
                 f"Já existe uma instrução com instruction_id '{instruction.instruction_id}'."
             )
 
-        self.instructions.append(instruction)
+        self._get_phase_list(phase).append(instruction)
 
     def update_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         """
-        Atualiza uma instrução já existente na estratégia.
+        Atualiza uma instrução já existente em qualquer fase.
 
         Lança erro se a instrução não existir.
         """
         if instruction is None:
             raise ValueError("A instrução não pode ser nula.")
 
-        for index, current in enumerate(self.instructions):
-            if current.instruction_id == instruction.instruction_id:
-                self.instructions[index] = instruction
-                return
+        for phase_list in self._phase_lists():
+            for index, current in enumerate(phase_list):
+                if current.instruction_id == instruction.instruction_id:
+                    phase_list[index] = instruction
+                    return
 
         raise ValueError(
             f"Não foi encontrada instrução com instruction_id "
@@ -183,14 +213,29 @@ class LRStrategyDefinition(JSONSerializableMixin):
 
     def remove_instruction(self, instruction_id: str) -> None:
         """
-        Remove uma instrução da estratégia pelo identificador.
-
-        Se a instrução não existir, não faz nada.
+        Remove uma instrução de qualquer fase pelo identificador.
         """
-        self.instructions = [
-            instruction for instruction in self.instructions
-            if instruction.instruction_id != instruction_id
+        for phase_list in self._phase_lists():
+            phase_list[:] = [
+                i for i in phase_list if i.instruction_id != instruction_id
+            ]
+
+    def _phase_lists(self) -> List[List[StrategyInstructionDefinition]]:
+        return [
+            self.preparation_instructions,
+            self.validation_instructions,
+            self.casework_instructions,
         ]
+
+    def _get_phase_list(self, phase: str) -> List[StrategyInstructionDefinition]:
+        _map = {
+            "preparation": self.preparation_instructions,
+            "validation": self.validation_instructions,
+            "casework": self.casework_instructions,
+        }
+        if phase not in _map:
+            raise ValueError(f"Fase inválida: '{phase}'. Use: {list(_map.keys())}")
+        return _map[phase]
 
     def add_validation_rule_id(self, rule_id: str) -> None:
         """
@@ -230,10 +275,16 @@ class LRStrategyDefinition(JSONSerializableMixin):
                 for item in processed_data["resources"]
             ]
 
-        if "instructions" in processed_data and isinstance(processed_data["instructions"], list):
-            processed_data["instructions"] = [
-                StrategyInstructionDefinition.from_dict(item) if isinstance(item, dict) else item
-                for item in processed_data["instructions"]
-            ]
+        for key in ("preparation_instructions", "validation_instructions", "casework_instructions"):
+            if key in processed_data and isinstance(processed_data[key], list):
+                processed_data[key] = [
+                    StrategyInstructionDefinition.from_dict(item) if isinstance(item, dict) else item
+                    for item in processed_data[key]
+                ]
+
+        if "embedding_type" in processed_data and processed_data["embedding_type"]:
+            processed_data["embedding_type"] = EmbeddingType.from_str(
+                processed_data["embedding_type"]
+            )
 
         return cls(**processed_data)

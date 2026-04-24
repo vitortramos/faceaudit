@@ -6,7 +6,9 @@ from typing import List, Optional, Type, TypeVar
 
 from faceaudit.enums.dataset_split_mode import DatasetSplitMode
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
 
@@ -89,6 +91,15 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
             self.name = "Dataset Split"
 
         self._sync_declared_io()
+
+    def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
+        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        return [
+            ResourceFieldSpec("dataset_resource_id", "Dataset", DS),
+            ResourceFieldSpec("output_dataset_a_resource_id", "Dataset A", OUT, is_output=True),
+            ResourceFieldSpec("output_dataset_b_resource_id", "Dataset B", OUT, is_output=True),
+        ]
 
     def _sync_declared_io(self) -> None:
         """

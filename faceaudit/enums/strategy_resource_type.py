@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from enum import Enum
+from typing import Optional
 
 
 class StrategyResourceType(Enum):
@@ -41,6 +42,18 @@ class StrategyResourceType(Enum):
     def to_str(self) -> str:
         """Retorna o valor persistível para serialização."""
         return self.value
+
+    def to_artifact_type(self) -> Optional["StrategyArtifactType"]:
+        """Retorna o StrategyArtifactType correspondente para persistência."""
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+
+        _map = {
+            StrategyResourceType.TRAINED_PIPELINE:          StrategyArtifactType.TRAINED_PIPELINE,
+            StrategyResourceType.TRAINED_SIMILARITY_MODEL:  StrategyArtifactType.TRAINED_SIMILARITY_MODEL,
+            StrategyResourceType.TRAINED_CALIBRATION_MODEL: StrategyArtifactType.TRAINED_CALIBRATION_MODEL,
+            StrategyResourceType.INTERMEDIATE_DATASET:      StrategyArtifactType.INTERMEDIATE_DATASET,
+        }
+        return _map.get(self)
 
     @classmethod
     def from_str(cls, value: str) -> StrategyResourceType:
