@@ -28,6 +28,15 @@ class StrategyInstructionType(Enum):
         "Divide um dataset em dois subconjuntos segundo uma regra declarada.",
     )
 
+    PAIRED_DATASET_SPLIT = (
+        "PAIRED_DATASET_SPLIT",
+        "Paired Dataset Split",
+        "Divide DOIS datasets de forma sincronizada por identidade — o mesmo "
+        "sorteio de IDs é aplicado em ambos. Ideal para preparar pares "
+        "cross-pose (frontal × lateral) com identidades pareadas em "
+        "treino e calibração.",
+    )
+
     DATASET_MERGE = (
         "DATASET_MERGE",
         "Dataset Merge",
@@ -56,6 +65,20 @@ class StrategyInstructionType(Enum):
         "CALIBRATION_MODEL_TRAINING",
         "Calibration Model Training",
         "Treina ou prepara um modelo de calibração a partir de scores e labels.",
+    )
+
+    SCORE_CALIBRATION = (
+        "SCORE_CALIBRATION",
+        "Score Calibration",
+        "Aplica um modelo de calibração treinado a um SimilarityScoreDataset, "
+        "produzindo log-LR por par.",
+    )
+
+    STRATEGY_EVALUATION = (
+        "STRATEGY_EVALUATION",
+        "Strategy Evaluation",
+        "Calcula métricas forenses (EER, Cllr, Cllr_min via PAVA, AUC) e dados "
+        "de plot (DET, Tippett, ECE) a partir de um CALIBRATED_SCORES.",
     )
 
     def __init__(self, value: str, label: str, description: str):

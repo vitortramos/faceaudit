@@ -62,6 +62,24 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
         if context is None:
             return ValidationResult.critical("O contexto de execução não pode ser nulo.")
 
+        # ── Pré-estágio: Re-hidratação preguiçosa de inputs ────────
+        # Antes da validação propriamente dita, garante que cada input
+        # declarado tenha o payload carregado quando possível. Sem isso,
+        # validators que checam isinstance(payload, ...) falhariam logo após
+        # abrir um projeto (recursos no contexto vêm com payload=None e
+        # artifact_ref preenchido — payload só era hidratado no
+        # execute_single_instruction). Idempotente: se payload já está em
+        # memória, ensure_payload retorna direto sem custo.
+        ensure_payload = getattr(context, "ensure_payload", None)
+        if callable(ensure_payload):
+            for rid in getattr(instruction, "input_resource_ids", []) or []:
+                try:
+                    ensure_payload(rid)
+                except Exception:
+                    # Falha não-fatal — o validador concreto reportará
+                    # com mensagem específica (payload=None / load do disco).
+                    pass
+
         # ── Estágio 2: Pluggable (validation_rule_ids) ─────────────
         for rule_id in instruction.validation_rule_ids:
             if not context.has_validation_rule(rule_id):

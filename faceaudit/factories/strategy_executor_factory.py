@@ -16,6 +16,9 @@ from faceaudit.executors.instructions.dataset_merge_instruction_executor import 
 from faceaudit.executors.instructions.dataset_split_instruction_executor import (
     DatasetSplitInstructionExecutor,
 )
+from faceaudit.executors.instructions.paired_dataset_split_instruction_executor import (
+    PairedDatasetSplitInstructionExecutor,
+)
 from faceaudit.executors.instructions.pair_mining_instruction_executor import (
     PairMiningInstructionExecutor,
 )
@@ -27,6 +30,12 @@ from faceaudit.executors.instructions.pipeline_training_instruction_executor imp
 )
 from faceaudit.executors.instructions.similarity_model_training_instruction_executor import (
     SimilarityModelTrainingInstructionExecutor,
+)
+from faceaudit.executors.instructions.score_calibration_instruction_executor import (
+    ScoreCalibrationInstructionExecutor,
+)
+from faceaudit.executors.instructions.strategy_evaluation_instruction_executor import (
+    StrategyEvaluationInstructionExecutor,
 )
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
@@ -72,6 +81,11 @@ class StrategyExecutorFactory:
         )
 
         registry.register(
+            StrategyInstructionType.PAIRED_DATASET_SPLIT,
+            PairedDatasetSplitInstructionExecutor(),
+        )
+
+        registry.register(
             StrategyInstructionType.DATASET_MERGE,
             DatasetMergeInstructionExecutor(),
         )
@@ -94,6 +108,16 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.CALIBRATION_MODEL_TRAINING,
             CalibrationModelTrainingInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.SCORE_CALIBRATION,
+            ScoreCalibrationInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.STRATEGY_EVALUATION,
+            StrategyEvaluationInstructionExecutor(),
         )
 
         return registry

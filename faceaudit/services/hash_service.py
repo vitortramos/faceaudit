@@ -34,13 +34,22 @@ class HashService:
             if not path_obj.exists() or not path_obj.is_file():
                 return None
 
+            # Caminho preferido (Python ≥ 3.11): hashlib.file_digest faz o
+            # loop em C, com gestão otimizada de buffer e libera a GIL de
+            # forma mais agressiva que o loop Python equivalente.
+            if hasattr(hashlib, "file_digest"):
+                with open(path_obj, "rb") as f:
+                    return hashlib.file_digest(f, "sha256").hexdigest()
+
+            # Fallback para Python < 3.11: loop Python com chunks de 64kb.
+            # f.read libera GIL no syscall; sha256.update libera GIL para
+            # buffers >= 2048 bytes (caso desses 64kb).
             sha256_hash = hashlib.sha256()
             with open(path_obj, "rb") as f:
-                # Lê em blocos de 64kb
                 for byte_block in iter(lambda: f.read(65536), b""):
                     sha256_hash.update(byte_block)
             return sha256_hash.hexdigest()
-            
+
         except Exception as e:
             print(f"Erro ao calcular hash do arquivo {file_path}: {e}")
             return None

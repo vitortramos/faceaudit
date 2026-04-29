@@ -58,24 +58,21 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
         )
 
         try:
-            dataset_resource = context.get_resource(instruction.input_dataset_resource_id)
-            dataset = dataset_resource.payload
-
             if instruction.uses_cosine:
+                # Cosine é stateless — não exige dataset.
                 trained_model = self._prepare_cosine_similarity_model(
-                    dataset=dataset,
+                    dataset=None,
                     context=context,
                 )
 
             elif instruction.uses_plda:
-                config_resource = context.get_resource(
-                    instruction.similarity_model_config_resource_id
-                )
-                config_payload = config_resource.payload
+                dataset_resource = context.get_resource(instruction.input_dataset_resource_id)
+                dataset = dataset_resource.payload
 
+                # Config embutida no DTO da instrução (não mais via recurso externo).
                 trained_model = self._train_plda_similarity_model(
                     dataset=dataset,
-                    config_payload=config_payload,
+                    config_payload=instruction.similarity_model_config,
                     context=context,
                 )
 
@@ -108,7 +105,6 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                     "instruction_name": instruction.name,
                     "similarity_model_type": instruction.similarity_model_type.to_str(),
                     "input_dataset_resource_id": instruction.input_dataset_resource_id,
-                    "similarity_model_config_resource_id": instruction.similarity_model_config_resource_id,
                     "trained_similarity_model_resource_id": output_resource_id,
                     "trained_model_type": type(trained_model).__name__,
                 },
@@ -135,24 +131,27 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
             )
             return result
 
-        if not instruction.input_dataset_resource_id:
-            result.add_error(
-                "A instrução deve definir 'input_dataset_resource_id'."
-            )
-        elif not context.has_resource(instruction.input_dataset_resource_id):
-            result.add_error(
-                f"O recurso de entrada não foi encontrado no contexto: "
-                f"'{instruction.input_dataset_resource_id}'."
-            )
-        else:
-            dataset_resource = context.get_resource(instruction.input_dataset_resource_id)
-            if dataset_resource is None or not isinstance(
-                dataset_resource.payload, EmbeddingDataset
-            ):
+        # Dataset só é obrigatório para PLDA. Cosine é stateless — não exige
+        # treino e portanto não precisa de dataset de entrada.
+        if instruction.uses_plda:
+            if not instruction.input_dataset_resource_id:
                 result.add_error(
-                    f"O recurso '{instruction.input_dataset_resource_id}' não contém "
-                    "um EmbeddingDataset válido."
+                    "PLDA exige 'input_dataset_resource_id'."
                 )
+            elif not context.has_resource(instruction.input_dataset_resource_id):
+                result.add_error(
+                    f"O recurso de entrada não foi encontrado no contexto: "
+                    f"'{instruction.input_dataset_resource_id}'."
+                )
+            else:
+                dataset_resource = context.get_resource(instruction.input_dataset_resource_id)
+                if dataset_resource is None or not isinstance(
+                    dataset_resource.payload, EmbeddingDataset
+                ):
+                    result.add_error(
+                        f"O recurso '{instruction.input_dataset_resource_id}' não contém "
+                        "um EmbeddingDataset válido."
+                    )
 
         if not instruction.trained_similarity_model_resource_id:
             result.add_error(
@@ -170,44 +169,21 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
             )
 
         if instruction.uses_cosine:
-            if instruction.similarity_model_config_resource_id and not context.has_resource(
-                instruction.similarity_model_config_resource_id
-            ):
-                result.add_error(
-                    f"O recurso de configuração opcional de cosine não foi encontrado "
-                    f"no contexto: '{instruction.similarity_model_config_resource_id}'."
-                )
+            # Cosine não tem hyperparâmetros — nada a validar.
+            pass
 
         elif instruction.uses_plda:
-            if not instruction.similarity_model_config_resource_id:
+            # Config embutida no DTO da instrução.
+            if instruction.similarity_model_config is None:
                 result.add_error(
-                    "PLDA exige 'similarity_model_config_resource_id'."
+                    "PLDA exige um 'similarity_model_config' embutido na instrução."
                 )
-            elif not context.has_resource(instruction.similarity_model_config_resource_id):
-                result.add_error(
-                    f"O recurso de configuração do modelo PLDA não foi encontrado no "
-                    f"contexto: '{instruction.similarity_model_config_resource_id}'."
-                )
-            else:
-                config_resource = context.get_resource(
-                    instruction.similarity_model_config_resource_id
-                )
-                if config_resource is None or not isinstance(
-                    config_resource.payload, PLDASimilarityModelConfig
-                ):
-                    result.add_error(
-                        f"O recurso '{instruction.similarity_model_config_resource_id}' "
-                        "não contém um PLDASimilarityModelConfig válido."
-                    )
-
-            if (
-                instruction.trained_similarity_model_resource_id
-                and instruction.trained_similarity_model_resource_id
-                == instruction.similarity_model_config_resource_id
+            elif not isinstance(
+                instruction.similarity_model_config, PLDASimilarityModelConfig
             ):
-                result.add_warning(
-                    "trained_similarity_model_resource_id coincide com o recurso de "
-                    "configuração do modelo. O contexto irá sobrescrever esse recurso."
+                result.add_error(
+                    "O 'similarity_model_config' embutido não é um "
+                    "PLDASimilarityModelConfig válido."
                 )
 
         else:
@@ -223,15 +199,23 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
 
     def _prepare_cosine_similarity_model(
         self,
-        dataset: EmbeddingDataset,
+        dataset,
         context: StrategyExecutionContextProtocol,
     ) -> CosineSimilarityModel:
         """
-        Instancia e prepara um CosineSimilarityModel, encaminhando os logs
-        para o contexto de execução.
+        Instancia o CosineSimilarityModel. Cosine é stateless — não exige
+        dataset nem fit. Se um dataset é fornecido, fit() registra metadados
+        opcionais (input_dimension, n_samples_seen) para rastreabilidade.
         """
         model = CosineSimilarityModel()
-        model.fit(dataset=dataset, logger_callback=context.log)
+        if dataset is not None and len(dataset) > 0:
+            try:
+                model.fit(dataset=dataset, logger_callback=context.log)
+            except Exception:
+                # Metadados são best-effort — falha no fit não invalida o modelo.
+                pass
+        else:
+            context.log(f"[{model.name}] ✅ Modelo cosseno pronto (stateless).")
         return model
 
     def _train_plda_similarity_model(

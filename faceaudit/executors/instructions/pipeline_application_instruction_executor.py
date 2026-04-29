@@ -22,6 +22,7 @@ from faceaudit.pipelines.embedding_transformation_pipeline import (
 from faceaudit.protocols.strategy_execution_context_protocol import (
     StrategyExecutionContextProtocol,
 )
+from faceaudit.services.pipeline_trajectory_service import PipelineTrajectoryService
 
 
 
@@ -219,8 +220,22 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
             f"✅ Dataset transformado registrado como recurso: '{output_resource_id}'."
         )
 
+        produced_ids = [output_resource_id]
+
+        # Trajetória 3D opcional — controlada pela política de aplicação.
+        trajectory_id = self._maybe_persist_trajectory(
+            instruction=instruction,
+            context=context,
+            pipeline=pipeline,
+            source_dataset=dataset,
+            target_dataset=None,
+            policy=application_policy,
+        )
+        if trajectory_id:
+            produced_ids.append(trajectory_id)
+
         return InstructionExecutionResult.ok(
-            produced_resource_ids=[output_resource_id],
+            produced_resource_ids=produced_ids,
             metadata={
                 "instruction_id": instruction.instruction_id,
                 "instruction_name": instruction.name,
@@ -287,8 +302,23 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
             f"'{source_output_id}' e '{target_output_id}'."
         )
 
+        produced_ids = [source_output_id, target_output_id]
+
+        # Trajetória 3D opcional — controlada pela política de aplicação.
+        # No modo DUAL, computa para ambos os ramos simultaneamente.
+        trajectory_id = self._maybe_persist_trajectory(
+            instruction=instruction,
+            context=context,
+            pipeline=pipeline,
+            source_dataset=source_dataset,
+            target_dataset=target_dataset,
+            policy=application_policy,
+        )
+        if trajectory_id:
+            produced_ids.append(trajectory_id)
+
         return InstructionExecutionResult.ok(
-            produced_resource_ids=[source_output_id, target_output_id],
+            produced_resource_ids=produced_ids,
             metadata={
                 "instruction_id": instruction.instruction_id,
                 "instruction_name": instruction.name,
@@ -296,3 +326,61 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
                 "execution_metrics": pipeline.get_execution_metrics(),
             },
         )
+
+    def _maybe_persist_trajectory(
+        self,
+        instruction: PipelineApplicationInstruction,
+        context: StrategyExecutionContextProtocol,
+        pipeline: EmbeddingTransformationPipeline,
+        source_dataset,
+        target_dataset,
+        policy: PipelineApplicationPolicy,
+    ):
+        """
+        Computa a TransformationTrajectoryData via PipelineTrajectoryService
+        quando policy.save_trajectory_data=True e registra como StrategyResource
+        no contexto. Retorna o resource_id do recurso produzido (ou None).
+
+        A persistência em disco é delegada ao controller (ele itera os
+        produced_resource_ids e chama persist_produced_resource para cada).
+        """
+        if not getattr(policy, "save_trajectory_data", False):
+            return None
+
+        trajectory_id = (
+            instruction.trajectory_data_resource_id
+            or f"{instruction.instruction_id}_trajectory"
+        )
+
+        try:
+            trajectory_data = PipelineTrajectoryService().compute_trajectory(
+                pipeline=pipeline,
+                source_dataset=source_dataset,
+                target_dataset=target_dataset,
+            )
+        except Exception as exc:
+            # Falha no cálculo da trajetória não deve abortar a aplicação do
+            # pipeline — apenas registra o erro e segue.
+            self._log(
+                context,
+                f"⚠️ Falha ao calcular trajetória 3D para "
+                f"'{instruction.instruction_id}': {exc}"
+            )
+            return None
+
+        trajectory_resource = StrategyResource(
+            resource_id=trajectory_id,
+            name=f"Trajetória 3D ({instruction.name})",
+            resource_type=StrategyResourceType.TRAJECTORY_DATA,
+            payload=trajectory_data,
+            artifact_ref=None,
+        )
+        context.set_resource(trajectory_resource)
+
+        self._log(
+            context,
+            f"✅ Trajetória 3D registrada como recurso: '{trajectory_id}' "
+            f"({len(trajectory_data.steps)} steps)."
+        )
+
+        return trajectory_id

@@ -15,8 +15,10 @@ class DatasetSplitMode(Enum):
 
     BY_IDENTITY_RATIO = "by_identity_ratio"
     BY_IDENTITY_LIST = "by_identity_list"
+    BY_IDENTITY_ABSOLUTE = "by_identity_absolute"
     BY_INDEX_RATIO = "by_index_ratio"
     BY_INDEX_LIST = "by_index_list"
+    BY_SUPERVISED_ADAPTATION = "by_supervised_adaptation"
 
     def __str__(self) -> str:
         """Retorna o identificador textual do modo."""

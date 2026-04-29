@@ -91,7 +91,11 @@ class ValidationRuleBase:
         if not context.has_resource(resource_id):
             return None
 
-        payload = context.get_resource(resource_id).payload
+        # Hidratação preguiçosa: se o resource veio do disco, carrega o
+        # payload sob demanda. Essencial para validação não falhar quando
+        # prepare_context não hidrata mais eager.
+        resource = context.ensure_payload(resource_id)
+        payload = resource.payload if resource is not None else None
         stats: Optional[DatasetStats] = None
 
         if isinstance(payload, EmbeddingDataset):

@@ -85,28 +85,20 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             scores, labels = self._extract_scores_and_labels(input_payload)
 
             if instruction.uses_logistic_regression:
-                config_resource = context.get_resource(
-                    instruction.calibration_model_config_resource_id
-                )
-                config_payload = config_resource.payload
-
+                # Config embutida no DTO da instrução.
                 trained_model = self._train_logistic_regression_calibrator(
                     scores=scores,
                     labels=labels,
-                    config_payload=config_payload,
+                    config_payload=instruction.logreg_config,
                     context=context,
                 )
 
             elif instruction.calibration_model_type == CalibrationModelType.KDE:
-                config_resource = context.get_resource(
-                    instruction.calibration_model_config_resource_id
-                )
-                config_payload = config_resource.payload
-
+                # Config embutida no DTO da instrução.
                 trained_model = self._train_kde_calibrator(
                     scores=scores,
                     labels=labels,
-                    config_payload=config_payload,
+                    config_payload=instruction.kde_config,
                     context=context,
                 )
 
@@ -132,21 +124,29 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 f"'{output_resource_id}'."
             )
 
+            metadata = {
+                "instruction_id": instruction.instruction_id,
+                "instruction_name": instruction.name,
+                "calibration_model_type": instruction.calibration_model_type.to_str(),
+                "input_resource_id": instruction.input_resource_id,
+                "input_payload_type": type(input_payload).__name__,
+                "trained_calibration_model_resource_id": output_resource_id,
+                "trained_model_type": type(trained_model).__name__,
+                "n_samples": int(len(scores)),
+                "n_genuine": int(np.sum(labels == 1)),
+                "n_impostor": int(np.sum(labels == 0)),
+            }
+            best_c = getattr(trained_model, "best_C_", None)
+            if best_c is not None:
+                metadata["best_C"] = float(best_c)
+                if instruction.uses_logistic_regression and instruction.logreg_config is not None:
+                    metadata["used_gridsearch"] = bool(
+                        instruction.logreg_config.use_gridsearch
+                    )
+
             return InstructionExecutionResult.ok(
                 produced_resource_ids=[output_resource_id],
-                metadata={
-                    "instruction_id": instruction.instruction_id,
-                    "instruction_name": instruction.name,
-                    "calibration_model_type": instruction.calibration_model_type.to_str(),
-                    "input_resource_id": instruction.input_resource_id,
-                    "input_payload_type": type(input_payload).__name__,
-                    "calibration_model_config_resource_id": instruction.calibration_model_config_resource_id,
-                    "trained_calibration_model_resource_id": output_resource_id,
-                    "trained_model_type": type(trained_model).__name__,
-                    "n_samples": int(len(scores)),
-                    "n_genuine": int(np.sum(labels == 1)),
-                    "n_impostor": int(np.sum(labels == 0)),
-                },
+                metadata=metadata,
             )
 
         except Exception as e:
@@ -190,43 +190,35 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                         f"um payload válido de calibração: {e}"
                     )
 
-        if not instruction.calibration_model_config_resource_id:
-            result.add_error(
-                "A instrução deve definir 'calibration_model_config_resource_id'."
-            )
-        elif not context.has_resource(instruction.calibration_model_config_resource_id):
-            result.add_error(
-                f"O recurso de configuração do calibrador não foi encontrado no contexto: "
-                f"'{instruction.calibration_model_config_resource_id}'."
-            )
-        else:
-            config_resource = context.get_resource(
-                instruction.calibration_model_config_resource_id
-            )
-
-            if instruction.uses_logistic_regression:
-                if config_resource is None or not isinstance(
-                    config_resource.payload, LogisticRegressionCalibrationModelConfig
-                ):
-                    result.add_error(
-                        f"O recurso '{instruction.calibration_model_config_resource_id}' "
-                        "não contém um LogisticRegressionCalibrationModelConfig válido."
-                    )
-
-            elif instruction.calibration_model_type == CalibrationModelType.KDE:
-                if config_resource is None or not isinstance(
-                    config_resource.payload, KDECalibrationModelConfig
-                ):
-                    result.add_error(
-                        f"O recurso '{instruction.calibration_model_config_resource_id}' "
-                        "não contém um KDECalibrationModelConfig válido."
-                    )
-
-            else:
+        # Config embutida no DTO da instrução — verificada conforme o tipo escolhido.
+        if instruction.uses_logistic_regression:
+            if instruction.logreg_config is None:
                 result.add_error(
-                    f"Tipo de modelo de calibração não suportado: "
-                    f"{instruction.calibration_model_type}"
+                    "Logistic Regression exige um 'logreg_config' embutido na instrução."
                 )
+            elif not isinstance(
+                instruction.logreg_config, LogisticRegressionCalibrationModelConfig
+            ):
+                result.add_error(
+                    "O 'logreg_config' embutido não é um "
+                    "LogisticRegressionCalibrationModelConfig válido."
+                )
+
+        elif instruction.calibration_model_type == CalibrationModelType.KDE:
+            if instruction.kde_config is None:
+                result.add_error(
+                    "KDE exige um 'kde_config' embutido na instrução."
+                )
+            elif not isinstance(instruction.kde_config, KDECalibrationModelConfig):
+                result.add_error(
+                    "O 'kde_config' embutido não é um KDECalibrationModelConfig válido."
+                )
+
+        else:
+            result.add_error(
+                f"Tipo de modelo de calibração não suportado: "
+                f"{instruction.calibration_model_type}"
+            )
 
         if not instruction.trained_calibration_model_resource_id:
             result.add_error(
@@ -241,16 +233,6 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             result.add_warning(
                 "trained_calibration_model_resource_id coincide com o recurso "
                 "de entrada. O contexto irá sobrescrever esse recurso."
-            )
-
-        if (
-            instruction.trained_calibration_model_resource_id
-            and instruction.trained_calibration_model_resource_id
-            == instruction.calibration_model_config_resource_id
-        ):
-            result.add_warning(
-                "trained_calibration_model_resource_id coincide com o recurso "
-                "de configuração do calibrador. O contexto irá sobrescrever esse recurso."
             )
 
         if result.is_valid and not result.has_warnings:

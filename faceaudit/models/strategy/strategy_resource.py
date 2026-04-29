@@ -70,6 +70,47 @@ class StrategyResource(JSONSerializableMixin):
         """
         return self.artifact_ref is not None
 
+    def to_dict(self) -> dict:
+        """
+        Serializa o recurso para JSON omitindo o campo `payload`.
+
+        O payload é estritamente runtime — modelos treinados, datasets em
+        memória, pipelines hidratados — e nem sempre é JSON-serializável
+        (ex: EmbeddingTransformationPipeline). A persistência do conteúdo
+        físico do recurso é responsabilidade do `artifact_ref`.
+
+        ATENÇÃO PERFORMANCE: NÃO chamamos `super().to_dict()` aqui porque
+        a implementação do mixin usa `dataclasses.asdict(self)` que recursa
+        em TODOS os campos do dataclass — incluindo `payload`. Para um
+        SimilarityScoreDataset com 5M+ samples (cada com EmbeddingInfo
+        aninhado + ndarray), o asdict aloca e itera ~70M+ objetos Python
+        antes de o `pop("payload")` ter chance de remover. O save da
+        definition ficava cada vez mais lento à medida que recursos com
+        payloads gigantes apareciam na lista. Construímos o dicionário
+        diretamente sem tocar no payload.
+        """
+        artifact_ref_data = (
+            self.artifact_ref.to_dict()
+            if (self.artifact_ref is not None and hasattr(self.artifact_ref, "to_dict"))
+            else self.artifact_ref
+        )
+        resource_type_data = (
+            self.resource_type.to_str()
+            if hasattr(self.resource_type, "to_str")
+            else (
+                self.resource_type.value
+                if hasattr(self.resource_type, "value")
+                else self.resource_type
+            )
+        )
+        return {
+            "resource_id": self.resource_id,
+            "name": self.name,
+            "resource_type": resource_type_data,
+            "artifact_ref": artifact_ref_data,
+            # payload é runtime-only, intencionalmente omitido.
+        }
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """

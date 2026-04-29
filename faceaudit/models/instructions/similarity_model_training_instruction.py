@@ -8,8 +8,12 @@ from faceaudit.enums.similarity_model_type import SimilarityModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ChoiceFieldSpec,
     ResourceFieldSpec,
     StrategyInstructionDefinition,
+)
+from faceaudit.models.similarity.plda_similarity_model_config import (
+    PLDASimilarityModelConfig,
 )
 
 
@@ -23,14 +27,14 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
 
     Esta instrução descreve:
     - qual família de modelo de similaridade será usada
-    - qual recurso de entrada será usado no treinamento/preparação
-    - qual recurso de configuração do modelo será usado
+    - qual recurso de entrada (dataset) será usado no treinamento/preparação
+    - qual config de hyperparâmetros (embutido na instrução)
     - qual recurso de saída representará o modelo treinado/preparado
 
     Observação:
-    O termo "training" aqui é usado em sentido amplo. Alguns modelos podem exigir
-    treino real (ex: PLDA), enquanto outros podem apenas ser preparados/instanciados
-    (ex: cosine similarity).
+    O termo "training" aqui é usado em sentido amplo. Cosine não exige treino —
+    é apenas instanciação de uma função de similaridade. PLDA exige treino real
+    com hyperparâmetros descritos em `similarity_model_config`.
     """
 
     similarity_model_type: SimilarityModelType = field(
@@ -43,9 +47,9 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         metadata={"help": "Recurso de dataset de entrada usado pelo modelo de similaridade."}
     )
 
-    similarity_model_config_resource_id: Optional[str] = field(
+    similarity_model_config: Optional[PLDASimilarityModelConfig] = field(
         default=None,
-        metadata={"help": "Recurso de configuração do modelo de similaridade."}
+        metadata={"help": "Hyperparâmetros do modelo (PLDA). None para Cosine."}
     )
 
     trained_similarity_model_resource_id: Optional[str] = field(
@@ -59,31 +63,54 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         if not self.name:
             self.name = "Similarity Model Training"
 
+        # Auto-instancia o config quando o tipo o exige e ele ainda não foi
+        # preenchido. Para Cosine, mantém None (não tem hyperparâmetros).
+        if self.uses_plda and self.similarity_model_config is None:
+            self.similarity_model_config = PLDASimilarityModelConfig()
+
         self._sync_declared_io()
+
+    def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
+        triples = SimilarityModelType.choices_with_description()
+        return [
+            ChoiceFieldSpec(
+                field_name="similarity_model_type",
+                label="Tipo do Modelo",
+                choices=tuple(value for value, _label, _desc in triples),
+                enum_type=SimilarityModelType,
+                descriptions={value: desc for value, _label, desc in triples},
+            ),
+        ]
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
         DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
-        SC = (StrategyResourceType.SIMILARITY_MODEL_CONFIG,)
         TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
-        return [
-            ResourceFieldSpec("input_dataset_resource_id", "Dataset", DS),
-            ResourceFieldSpec("similarity_model_config_resource_id", "Config do Modelo", SC),
-            ResourceFieldSpec("trained_similarity_model_resource_id", "Modelo Treinado", TS, is_output=True),
-        ]
+        specs: list[ResourceFieldSpec] = []
+        # Dataset só aparece para PLDA — COSINE é stateless e não precisa de
+        # treino.
+        if self.uses_plda:
+            specs.append(ResourceFieldSpec("input_dataset_resource_id", "Dataset", DS))
+        specs.append(ResourceFieldSpec(
+            "trained_similarity_model_resource_id",
+            "Modelo Treinado",
+            TS,
+            is_output=True,
+        ))
+        return specs
 
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos específicos
-        desta instrução.
+        desta instrução. A config do modelo é embutida no DTO e não conta como input.
+
+        Cosine não exige dataset de entrada (stateless), então só PLDA inclui
+        input_dataset_resource_id no gate de dependência.
         """
         inputs = []
         outputs = []
 
-        if self.input_dataset_resource_id:
+        if self.uses_plda and self.input_dataset_resource_id:
             inputs.append(self.input_dataset_resource_id)
-
-        if self.similarity_model_config_resource_id:
-            inputs.append(self.similarity_model_config_resource_id)
 
         if self.trained_similarity_model_resource_id:
             outputs.append(self.trained_similarity_model_resource_id)
@@ -105,6 +132,7 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         Reconstrói o DTO especializado, hidratando:
         - instruction_type
         - similarity_model_type
+        - similarity_model_config
         """
         if not data:
             return None
@@ -123,5 +151,15 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
             processed_data["similarity_model_type"] = SimilarityModelType.from_str(
                 processed_data["similarity_model_type"]
             )
+
+        if "similarity_model_config" in processed_data and isinstance(
+            processed_data["similarity_model_config"], dict
+        ):
+            processed_data["similarity_model_config"] = PLDASimilarityModelConfig.from_dict(
+                processed_data["similarity_model_config"]
+            )
+
+        # Retrocompat: campo removido
+        processed_data.pop("similarity_model_config_resource_id", None)
 
         return cls(**processed_data)

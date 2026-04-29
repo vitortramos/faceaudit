@@ -93,7 +93,22 @@ class StrategyFileType(Enum):
     TRAJECTORY_DATA = (
         ".pkl",
         ProjectFolder.ARTIFACTS,
-        "{strategy_id}_trajectory",
+        "{strategy_id}_{resource_id}",
+    )
+    SIMILARITY_SCORES = (
+        ".parquet",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
+    )
+    CALIBRATED_SCORES = (
+        ".parquet",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
+    )
+    VALIDATION_RESULT = (
+        ".pkl",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
     )
     GRAPHIC = (
         ".png",
@@ -231,6 +246,9 @@ class StrategyFileType(Enum):
             StrategyArtifactType.EXECUTION_LOG:             cls.EXECUTION_LOG,
             StrategyArtifactType.METRICS:                   cls.METRICS,
             StrategyArtifactType.TRAJECTORY_DATA:           cls.TRAJECTORY_DATA,
+            StrategyArtifactType.SIMILARITY_SCORES:         cls.SIMILARITY_SCORES,
+            StrategyArtifactType.CALIBRATED_SCORES:         cls.CALIBRATED_SCORES,
+            StrategyArtifactType.VALIDATION_RESULT:         cls.VALIDATION_RESULT,
             StrategyArtifactType.GRAPHIC:                   cls.GRAPHIC,
             StrategyArtifactType.CHECKPOINT:                cls.CHECKPOINT,
             # Tipos de biblioteca global → destino dentro do projeto

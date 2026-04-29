@@ -2,6 +2,31 @@ import sys
 from pathlib import Path
 from PyQt6 import QtWidgets
 
+# ─── Tuning anti-"Não respondendo" no Windows ─────────────────────────────
+#
+# Quando workers Python (ex: pickle.dump de modelos grandes) seguram a GIL
+# por muitos segundos, a main thread Qt fica starved e não drena a fila de
+# mensagens do Windows. O OS então substitui a janela pelo "ghost" com
+# título "(Não respondendo)" e overlay branco.
+#
+# Duas mitigações combinadas, aplicadas ANTES de qualquer outro import:
+#
+# 1) sys.setswitchinterval(0.001) — reduz o intervalo de troca da GIL de 5ms
+#    (default) para 1ms. A main thread ganha 5× mais turnos para processar
+#    eventos do Qt durante operações Python-puras concorrentes.
+#
+# 2) user32.DisableProcessWindowsGhosting() — desabilita o ghost window do
+#    Windows. A janela continua reagindo assim que a GIL libera, mas SEM o
+#    overlay "Não respondendo" cosmético no título. Sem efeito colateral.
+sys.setswitchinterval(0.001)
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.user32.DisableProcessWindowsGhosting()
+    except Exception:
+        # Falha aqui é puramente cosmética — não impede a app de subir.
+        pass
+
 # --- AJUSTE DE PATHS ---
 CURRENT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CURRENT_DIR.parent

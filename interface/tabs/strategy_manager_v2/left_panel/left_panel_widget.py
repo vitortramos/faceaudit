@@ -151,8 +151,12 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self._definitions = list(definitions)
         self.strategy_list.populate(definitions)
 
-    def populate_resources(self, resources: List[StrategyResource]) -> None:
-        self.resource_tree.populate(resources)
+    def populate_resources(
+        self,
+        resources: List[StrategyResource],
+        resource_to_strategy: Optional[dict] = None,
+    ) -> None:
+        self.resource_tree.populate(resources, resource_to_strategy=resource_to_strategy)
 
     def set_project_root(self, root: Optional[Path]) -> None:
         self._project_root = root

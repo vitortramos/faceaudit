@@ -7,7 +7,14 @@ from typing import Optional, Type, TypeVar
 from faceaudit.enums.calibration_model_type import CalibrationModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.models.calibration.kde_calibration_model_config import (
+    KDECalibrationModelConfig,
+)
+from faceaudit.models.calibration.logistic_regression_calibration_model_config import (
+    LogisticRegressionCalibrationModelConfig,
+)
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ChoiceFieldSpec,
     ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
@@ -20,6 +27,10 @@ T = TypeVar("T", bound="CalibrationModelTrainingInstruction")
 class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
     """
     Instrução declarativa para treinamento/preparação de um modelo de calibração.
+
+    A config do calibrador é embutida no DTO da instrução, em campos específicos
+    para cada tipo (logreg_config / kde_config). Apenas o config do tipo
+    selecionado é usado pelo executor.
     """
 
     calibration_model_type: CalibrationModelType = field(
@@ -32,9 +43,14 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         metadata={"help": "Recurso de entrada usado no treino/preparação do calibrador."}
     )
 
-    calibration_model_config_resource_id: Optional[str] = field(
+    logreg_config: Optional[LogisticRegressionCalibrationModelConfig] = field(
         default=None,
-        metadata={"help": "Recurso de configuração do modelo de calibração."}
+        metadata={"help": "Hyperparâmetros do calibrador por Regressão Logística (quando esse tipo é selecionado)."}
+    )
+
+    kde_config: Optional[KDECalibrationModelConfig] = field(
+        default=None,
+        metadata={"help": "Hyperparâmetros do calibrador KDE (quando esse tipo é selecionado)."}
     )
 
     trained_calibration_model_resource_id: Optional[str] = field(
@@ -48,16 +64,42 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         if not self.name:
             self.name = "Calibration Model Training"
 
+        # Auto-instancia o config relevante. O config "do outro tipo" pode
+        # permanecer no DTO se já tiver sido preenchido — útil para o usuário
+        # alternar entre tipos sem perder valores ajustados anteriormente.
+        if self.uses_logistic_regression and self.logreg_config is None:
+            self.logreg_config = LogisticRegressionCalibrationModelConfig()
+        if self.uses_kde and self.kde_config is None:
+            self.kde_config = KDECalibrationModelConfig()
+
         self._sync_declared_io()
 
+    def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
+        triples = CalibrationModelType.choices_with_description()
+        return [
+            ChoiceFieldSpec(
+                field_name="calibration_model_type",
+                label="Tipo do Modelo",
+                choices=tuple(value for value, _label, _desc in triples),
+                enum_type=CalibrationModelType,
+                descriptions={value: desc for value, _label, desc in triples},
+            ),
+        ]
+
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        ART = (StrategyResourceType.ARTIFACT,)
-        CC = (StrategyResourceType.CALIBRATION_MODEL_CONFIG,)
+        IN = (
+            StrategyResourceType.SIMILARITY_SCORES,
+            StrategyResourceType.ARTIFACT,
+        )
         TC = (StrategyResourceType.TRAINED_CALIBRATION_MODEL,)
         return [
-            ResourceFieldSpec("input_resource_id", "Dados de Entrada (scores)", ART),
-            ResourceFieldSpec("calibration_model_config_resource_id", "Config do Calibrador", CC),
-            ResourceFieldSpec("trained_calibration_model_resource_id", "Calibrador Treinado", TC, is_output=True),
+            ResourceFieldSpec("input_resource_id", "Scores de Entrada", IN),
+            ResourceFieldSpec(
+                "trained_calibration_model_resource_id",
+                "Calibrador Treinado",
+                TC,
+                is_output=True,
+            ),
         ]
 
     def _sync_declared_io(self) -> None:
@@ -66,9 +108,6 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
 
         if self.input_resource_id:
             inputs.append(self.input_resource_id)
-
-        if self.calibration_model_config_resource_id:
-            inputs.append(self.calibration_model_config_resource_id)
 
         if self.trained_calibration_model_resource_id:
             outputs.append(self.trained_calibration_model_resource_id)
@@ -79,6 +118,10 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
     @property
     def uses_logistic_regression(self) -> bool:
         return self.calibration_model_type == CalibrationModelType.LOGISTIC_REGRESSION
+
+    @property
+    def uses_kde(self) -> bool:
+        return self.calibration_model_type == CalibrationModelType.KDE
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -99,5 +142,24 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             processed_data["calibration_model_type"] = CalibrationModelType.from_str(
                 processed_data["calibration_model_type"]
             )
+
+        if "logreg_config" in processed_data and isinstance(
+            processed_data["logreg_config"], dict
+        ):
+            processed_data["logreg_config"] = (
+                LogisticRegressionCalibrationModelConfig.from_dict(
+                    processed_data["logreg_config"]
+                )
+            )
+
+        if "kde_config" in processed_data and isinstance(
+            processed_data["kde_config"], dict
+        ):
+            processed_data["kde_config"] = KDECalibrationModelConfig.from_dict(
+                processed_data["kde_config"]
+            )
+
+        # Retrocompat: campo removido
+        processed_data.pop("calibration_model_config_resource_id", None)
 
         return cls(**processed_data)

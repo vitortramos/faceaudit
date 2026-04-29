@@ -73,13 +73,29 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
         DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
         TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
-        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        OUT = (StrategyResourceType.SIMILARITY_SCORES,)
         return [
             ResourceFieldSpec("trained_similarity_model_resource_id", "Modelo de Similaridade", TS),
-            ResourceFieldSpec("probe_dataset_resource_id", "Dataset Probe", DS),
-            ResourceFieldSpec("reference_dataset_resource_id", "Dataset Reference (opcional)", DS),
+            ResourceFieldSpec("probe_dataset_resource_id", "Dataset 1", DS),
+            ResourceFieldSpec("reference_dataset_resource_id", "Dataset 2 (opcional)", DS),
             ResourceFieldSpec("output_similarity_scores_resource_id", "Scores de Saída", OUT, is_output=True),
         ]
+
+    def get_configuration_help(self) -> Optional[str]:
+        """
+        Texto explicativo do modo de comparação, exibido no topo da seção
+        Configuração na UI. Esclarece o que acontece em auto-comparação vs
+        comparação cruzada e que um embedding nunca é comparado consigo mesmo.
+        """
+        return (
+            "Modo de comparação:\n"
+            "• Apenas Dataset 1 → AUTO-COMPARAÇÃO dentro do dataset. "
+            "Cada par (i, j) com i < j é comparado uma única vez. "
+            "Um embedding nunca é comparado com ele mesmo.\n"
+            "• Dataset 1 + Dataset 2 → COMPARAÇÃO CRUZADA. "
+            "Cada amostra de Dataset 1 é comparada com cada amostra de Dataset 2 "
+            "(N₁ × N₂ pares)."
+        )
 
     @property
     def uses_self_comparison(self) -> bool:

@@ -31,6 +31,9 @@ class StrategyArtifactType(Enum):
     CHECKPOINT = "checkpoint"
     METRICS = "metrics"
     TRAJECTORY_DATA = "trajectory_data"
+    SIMILARITY_SCORES = "similarity_scores"
+    CALIBRATED_SCORES = "calibrated_scores"
+    VALIDATION_RESULT = "validation_result"
 
     # --- VISUALIZAÇÕES ---
     GRAPHIC = "graphic"

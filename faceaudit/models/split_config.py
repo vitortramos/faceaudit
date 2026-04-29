@@ -16,15 +16,31 @@ class SplitMode(str, Enum):
 class GroupingStrategy(str, Enum):
     """
     Define como as identidades serão selecionadas e agrupadas ANTES de atingir a cota do SplitMode.
-    Isso é vital para garantir que a dificuldade do dataset (sósias) seja preservada 
+    Isso é vital para garantir que a dificuldade do dataset (sósias) seja preservada
     tanto no Treino quanto na Calibração.
     """
-    RANDOM_IDENTITIES = "RANDOM_IDENTITIES"  
+    RANDOM_IDENTITIES = "RANDOM_IDENTITIES"
     # Sorteio cego. Risco: Sósias podem ser separados em datasets diferentes, impedindo o Hard Mining.
-    
-    PRESERVE_LOOKALIKES = "PRESERVE_LOOKALIKES" 
-    # Agrupamento inteligente. Calcula a Matriz de Confusão e força que as N identidades mais 
+
+    PRESERVE_LOOKALIKES = "PRESERVE_LOOKALIKES"
+    # Agrupamento inteligente. Calcula a Matriz de Confusão e força que as N identidades mais
     # parecidas entre si viajem juntas para o mesmo dataset (Treino ou Calibração).
+
+    def to_str(self) -> str:
+        return self.value
+
+    @classmethod
+    def from_str(cls, value: str) -> "GroupingStrategy":
+        """Reconstrói o enum a partir de string com fallback seguro para RANDOM_IDENTITIES."""
+        if not value:
+            return cls.RANDOM_IDENTITIES
+        try:
+            return cls(value)
+        except ValueError:
+            try:
+                return cls[value]
+            except KeyError:
+                return cls.RANDOM_IDENTITIES
 
 
 @dataclass

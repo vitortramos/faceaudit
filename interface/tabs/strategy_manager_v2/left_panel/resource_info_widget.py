@@ -247,8 +247,13 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self.lbl_hash.setText("—")
             self.lbl_size.setText("—")
 
-        # Estatísticas do dataset
-        is_dataset = resource.resource_type == StrategyResourceType.DATASET
+        # Estatísticas do dataset — também aplicáveis a INTERMEDIATE_DATASET
+        # (datasets produzidos por instruções; o JSON paralelo é gerado sob
+        # demanda na primeira seleção).
+        is_dataset = resource.resource_type in (
+            StrategyResourceType.DATASET,
+            StrategyResourceType.INTERMEDIATE_DATASET,
+        )
         self._stats_section.setVisible(is_dataset)
         if is_dataset and abs_path:
             self._load_stats(abs_path)
@@ -301,8 +306,15 @@ class ResourceInfoWidget(QtWidgets.QWidget):
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _load_stats(self, dataset_abs_path: Path) -> None:
-        """Tenta carregar stats do JSON paralelo ao parquet."""
+        """
+        Tenta carregar stats do JSON paralelo ao parquet. Se não existir
+        (caso típico de INTERMEDIATE_DATASET produzido por instruções),
+        computa via pyarrow metadata e cacheia o JSON ao lado do parquet.
+        """
         stats_path = dataset_abs_path.parent / (dataset_abs_path.stem + "_stats.json")
+        if not stats_path.exists():
+            self._compute_and_cache_stats(dataset_abs_path, stats_path)
+
         if stats_path.exists():
             try:
                 data = json.loads(stats_path.read_text(encoding="utf-8"))
@@ -321,6 +333,55 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             except Exception:
                 pass
         self._clear_stats()
+
+    def _compute_and_cache_stats(self, parquet_path: Path, stats_path: Path) -> None:
+        """
+        Computa stats leves do parquet (n_imgs, n_ids, colunas de embedding e
+        suas dimensões) via pyarrow metadata, sem materializar embeddings, e
+        salva em JSON ao lado. Silencioso em caso de falha — stats são opcionais.
+        """
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            from faceaudit.services.dataset_stats_service import DatasetStatsService
+
+            svc = DatasetStatsService()
+            stats = svc._read_parquet_stats(parquet_path)
+
+            embedding_columns = []
+            try:
+                schema = pq.ParquetFile(parquet_path).schema_arrow
+                emb_indices = [
+                    i for i, field in enumerate(schema)
+                    if pa.types.is_list(field.type) or pa.types.is_large_list(field.type)
+                ]
+                if emb_indices:
+                    pq_file = pq.ParquetFile(parquet_path)
+                    for batch in pq_file.iter_batches(batch_size=1):
+                        for pos, idx in enumerate(emb_indices):
+                            val = batch.column(idx)[0].as_py()
+                            dim = len(val) if (val is not None and hasattr(val, "__len__")) else 0
+                            col_name = schema.field(idx).name
+                            embedding_columns.append({
+                                "index": pos,
+                                "parquet_index": idx,
+                                "name": col_name,
+                                "dim": dim,
+                            })
+                        break
+            except Exception:
+                pass
+
+            payload = {
+                "n_imgs": stats.n_imgs,
+                "n_ids": stats.n_ids,
+                "embedding_columns": embedding_columns,
+            }
+            stats_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
 
     def _clear_stats(self) -> None:
         self.lbl_n_imgs.setText("—")

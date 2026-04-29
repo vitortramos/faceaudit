@@ -1,0 +1,673 @@
+# interface/tabs/strategy_manager_v2/strategy_editor/nested_dto_widget.py
+
+from __future__ import annotations
+
+from dataclasses import fields, is_dataclass
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from PyQt6 import QtWidgets, QtCore
+
+
+_BTN_STYLE = (
+    "QPushButton { border: 1px solid #ccc; border-radius: 3px;"
+    " background: white; padding: 3px 8px; font-size: 11px; }"
+    "QPushButton:hover { background: #e8f0fe; }"
+)
+
+
+class NestedDTOInlineWidget(QtWidgets.QWidget):
+    """
+    Widget colapsável para edição inline de DTOs aninhados rasos
+    (ex: PipelineTrainingPolicy, PipelineApplicationPolicy).
+
+    Mostra um cabeçalho clicável (▶/▼) que expande/colapsa um
+    formulário de checkboxes para cada campo bool do DTO.
+
+    Sinais:
+        value_changed(dto) — emitido quando qualquer campo muda.
+    """
+
+    value_changed = QtCore.pyqtSignal(object)
+
+    def __init__(
+        self,
+        title: str,
+        dto: Any,
+        field_labels: Optional[Dict[str, str]] = None,
+        field_tooltips: Optional[Dict[str, str]] = None,
+        header_tooltip: Optional[str] = None,
+        intro_text: Optional[str] = None,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ):
+        super().__init__(parent)
+        self._dto = dto
+        self._field_labels = field_labels or {}
+        self._field_tooltips = field_tooltips or {}
+        self._field_widgets: Dict[str, QtWidgets.QWidget] = {}
+        # Mapas auxiliares para a descrição contextual de campos enum.
+        self._enum_desc_labels: Dict[str, QtWidgets.QLabel] = {}
+        self._enum_member_descriptions: Dict[str, Dict[str, str]] = {}
+        self._expanded = True
+
+        self._init_ui(title, header_tooltip, intro_text)
+        self._populate_fields()
+
+    def _init_ui(
+        self,
+        title: str,
+        header_tooltip: Optional[str] = None,
+        intro_text: Optional[str] = None,
+    ) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header clicável
+        self._header_btn = QtWidgets.QToolButton()
+        self._header_btn.setText(f"▼  {title}")
+        self._header_btn.setStyleSheet(
+            "QToolButton {"
+            "  text-align: left; padding: 4px 6px;"
+            "  border: 1px solid #ccc; border-radius: 3px;"
+            "  background: #f0f4fa; color: #1a2942;"
+            "  font-size: 11px; font-weight: bold;"
+            "}"
+            "QToolButton:hover { background: #e3ecf7; }"
+        )
+        self._header_btn.setCheckable(True)
+        self._header_btn.setChecked(True)
+        if header_tooltip:
+            self._header_btn.setToolTip(header_tooltip)
+        self._header_btn.clicked.connect(self._on_header_clicked)
+        self._header_title = title
+        layout.addWidget(self._header_btn)
+
+        # Container de campos
+        self._fields_container = QtWidgets.QWidget()
+        self._fields_layout = QtWidgets.QFormLayout(self._fields_container)
+        self._fields_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        self._fields_layout.setContentsMargins(20, 4, 4, 4)
+        self._fields_layout.setSpacing(4)
+
+        # Texto introdutório opcional — visível sempre que o bloco está
+        # expandido. Útil para explicar o propósito/contexto da config para
+        # usuários casuais antes que precisem hover por cada tooltip.
+        if intro_text:
+            intro_lbl = QtWidgets.QLabel(intro_text)
+            intro_lbl.setWordWrap(True)
+            intro_lbl.setStyleSheet(
+                "QLabel {"
+                "  background: #FFF8E8; border-left: 3px solid #E8A020;"
+                "  border-radius: 2px; padding: 6px 8px;"
+                "  color: #5a4500; font-size: 11px; margin-bottom: 4px;"
+                "}"
+            )
+            self._fields_layout.addRow(intro_lbl)
+
+        layout.addWidget(self._fields_container)
+
+    def _populate_fields(self) -> None:
+        if self._dto is None or not is_dataclass(self._dto):
+            empty = QtWidgets.QLabel("(sem configuração)")
+            empty.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+            self._fields_layout.addRow(empty)
+            return
+
+        for f in fields(self._dto):
+            value = getattr(self._dto, f.name, None)
+            label_text = self._field_labels.get(f.name, f.name.replace("_", " ").capitalize())
+
+            if isinstance(value, bool):
+                widget = QtWidgets.QCheckBox()
+                widget.setChecked(value)
+                widget.toggled.connect(
+                    lambda checked, fn=f.name: self._on_field_changed(fn, checked)
+                )
+            elif isinstance(value, Enum):
+                # Enum field — render as combo. Usa label rico se disponível
+                # (atributo .label do enum), senão o nome.
+                widget = QtWidgets.QComboBox()
+                enum_cls = type(value)
+                member_desc: Dict[str, str] = {}
+                for member in enum_cls:
+                    display = getattr(member, "label", member.name)
+                    widget.addItem(display, userData=member.name)
+                    desc = getattr(member, "description", None)
+                    if desc:
+                        member_desc[member.name] = desc
+                # Seleciona o membro atual.
+                for idx in range(widget.count()):
+                    if widget.itemData(idx) == value.name:
+                        widget.setCurrentIndex(idx)
+                        break
+
+                # Linha contextual abaixo do combo, atualizada conforme a
+                # seleção. Só renderiza se o enum carrega `description`
+                # (padrão dos enums "ricos" do projeto).
+                desc_label: Optional[QtWidgets.QLabel] = None
+                if member_desc:
+                    desc_label = QtWidgets.QLabel(
+                        member_desc.get(value.name, "")
+                    )
+                    desc_label.setWordWrap(True)
+                    desc_label.setStyleSheet(
+                        "QLabel {"
+                        "  background: #FFFBE6; border-left: 2px solid #E8A020;"
+                        "  border-radius: 2px; padding: 4px 6px;"
+                        "  color: #5a4500; font-size: 10px;"
+                        "}"
+                    )
+                    self._enum_desc_labels[f.name] = desc_label
+                    self._enum_member_descriptions[f.name] = member_desc
+
+                def _on_enum_changed(_i, fn=f.name, w=widget, ec=enum_cls):
+                    selected_name = w.itemData(w.currentIndex())
+                    self._on_field_changed(fn, ec[selected_name])
+                    lbl = self._enum_desc_labels.get(fn)
+                    descs = self._enum_member_descriptions.get(fn, {})
+                    if lbl is not None:
+                        lbl.setText(descs.get(selected_name, ""))
+
+                widget.currentIndexChanged.connect(_on_enum_changed)
+            elif isinstance(value, int) and not isinstance(value, bool):
+                widget = QtWidgets.QSpinBox()
+                widget.setRange(-(10**9), 10**9)
+                widget.setValue(value)
+                widget.valueChanged.connect(
+                    lambda v, fn=f.name: self._on_field_changed(fn, v)
+                )
+            elif isinstance(value, float):
+                widget = QtWidgets.QDoubleSpinBox()
+                widget.setRange(-1e9, 1e9)
+                widget.setDecimals(4)
+                widget.setValue(value)
+                widget.valueChanged.connect(
+                    lambda v, fn=f.name: self._on_field_changed(fn, v)
+                )
+            elif isinstance(value, str):
+                widget = QtWidgets.QLineEdit(value)
+                widget.editingFinished.connect(
+                    lambda fn=f.name, w=widget:
+                    self._on_field_changed(fn, w.text().strip())
+                )
+            elif isinstance(value, (list, tuple)) and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in value
+            ):
+                # Lista numérica (list[int] ou list[float]) — entrada via texto
+                # separado por vírgula. Mantém o tipo dos elementos no parse:
+                # se TODOS forem int, persiste como list[int]; senão list[float].
+                is_all_int = all(isinstance(v, int) for v in value)
+                text = ", ".join(str(v) for v in value)
+                widget = QtWidgets.QLineEdit(text)
+                widget.setPlaceholderText("ex: 0.01, 0.1, 1.0, 10")
+
+                def _on_list_edit(fn=f.name, w=widget, force_int=is_all_int):
+                    raw = w.text().strip()
+                    if not raw:
+                        self._on_field_changed(fn, [])
+                        return
+                    parsed = []
+                    for tok in raw.split(","):
+                        tok = tok.strip()
+                        if not tok:
+                            continue
+                        try:
+                            parsed.append(int(tok) if force_int else float(tok))
+                        except ValueError:
+                            # token inválido — ignora silenciosamente.
+                            pass
+                    self._on_field_changed(fn, parsed)
+
+                widget.editingFinished.connect(_on_list_edit)
+            elif isinstance(value, list) and not value:
+                # Lista vazia — não conhecemos o tipo dos elementos. Tratar
+                # como lista de strings (caso degenerado raro).
+                widget = QtWidgets.QLineEdit("")
+                widget.setPlaceholderText("itens separados por vírgula")
+                widget.editingFinished.connect(
+                    lambda fn=f.name, w=widget: self._on_field_changed(
+                        fn, [t.strip() for t in w.text().split(",") if t.strip()]
+                    )
+                )
+            else:
+                # Tipos não-primitivos: ignora silenciosamente (DTO aninhado profundo
+                # deve usar NestedDTODialogTrigger, não inline).
+                continue
+
+            help_text = self._field_tooltips.get(f.name) or (
+                f.metadata.get("help") if f.metadata else None
+            )
+            if help_text:
+                widget.setToolTip(help_text)
+
+            self._field_widgets[f.name] = widget
+            self._fields_layout.addRow(f"{label_text}:", widget)
+
+            # Se este campo é um Enum com descrição, adiciona a linha
+            # contextual ABAIXO do combo, sem coluna de label.
+            enum_desc_label = self._enum_desc_labels.get(f.name)
+            if enum_desc_label is not None:
+                self._fields_layout.addRow(enum_desc_label)
+
+    def _on_header_clicked(self) -> None:
+        self._expanded = self._header_btn.isChecked()
+        self._fields_container.setVisible(self._expanded)
+        arrow = "▼" if self._expanded else "▶"
+        self._header_btn.setText(f"{arrow}  {self._header_title}")
+
+    def _on_field_changed(self, field_name: str, new_value: Any) -> None:
+        if self._dto is None:
+            return
+        setattr(self._dto, field_name, new_value)
+        self.value_changed.emit(self._dto)
+
+    def value(self) -> Any:
+        return self._dto
+
+
+class NestedDTODialogTrigger(QtWidgets.QWidget):
+    """
+    Widget para edição de DTOs aninhados profundos via dialog separado
+    (ex: ComparisonMiningConfig).
+
+    Mostra:
+    - Linha-resumo do DTO (extraída via summary_fn)
+    - Botão que abre um dialog de edição (provido via open_dialog_fn)
+
+    Sinais:
+        value_changed(dto) — emitido quando o dialog retorna OK e o DTO mudou.
+    """
+
+    value_changed = QtCore.pyqtSignal(object)
+
+    def __init__(
+        self,
+        title: str,
+        dto: Any,
+        summary_fn: Callable[[Any], str],
+        open_dialog_fn: Callable[[Any, QtWidgets.QWidget], Optional[Any]],
+        parent: Optional[QtWidgets.QWidget] = None,
+    ):
+        """
+        Args:
+            title: rótulo curto exibido acima do botão.
+            dto: instância atual do DTO (pode ser None).
+            summary_fn: produz a linha-resumo a partir do DTO.
+            open_dialog_fn: abre o dialog de edição. Recebe (dto, parent_widget) e
+                retorna o DTO atualizado em caso de OK ou None se cancelado.
+        """
+        super().__init__(parent)
+        self._dto = dto
+        self._summary_fn = summary_fn
+        self._open_dialog_fn = open_dialog_fn
+
+        self._init_ui(title)
+        self._refresh_summary()
+
+    def _init_ui(self, title: str) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        title_lbl = QtWidgets.QLabel(title)
+        title_lbl.setStyleSheet("font-size: 11px; color: #1a2942; font-weight: bold;")
+        layout.addWidget(title_lbl)
+
+        self._summary_lbl = QtWidgets.QLabel("(sem configuração)")
+        self._summary_lbl.setStyleSheet(
+            "font-size: 10px; color: #555; padding-left: 4px;"
+        )
+        self._summary_lbl.setWordWrap(True)
+        layout.addWidget(self._summary_lbl)
+
+        self._btn_edit = QtWidgets.QPushButton("⚙ Editar…")
+        self._btn_edit.setMaximumWidth(180)
+        self._btn_edit.setStyleSheet(_BTN_STYLE)
+        self._btn_edit.clicked.connect(self._on_edit_clicked)
+        layout.addWidget(self._btn_edit)
+
+    def _refresh_summary(self) -> None:
+        text = self._summary_fn(self._dto) if self._dto is not None else "(sem configuração)"
+        self._summary_lbl.setText(text)
+
+    def _on_edit_clicked(self) -> None:
+        new_dto = self._open_dialog_fn(self._dto, self)
+        if new_dto is not None:
+            self._dto = new_dto
+            self._refresh_summary()
+            self.value_changed.emit(new_dto)
+
+    def value(self) -> Any:
+        return self._dto
+
+
+# ─── Helpers de detecção e dispatch para DTOs aninhados ──────────────────────
+
+# Atributos da instrução que carregam DTO aninhado e como devem ser renderizados.
+# Cada entrada: (attr_name, render_strategy)
+#
+# `training_policy` foi removido da UI: os defaults aplicados pelo executor
+# (PipelineTrainingPolicy.default_linear / default_dual) cobrem o uso esperado
+# pelos peritos. Variantes de pesquisa podem ser editadas via JSON do template.
+NESTED_DTO_ATTRS: Tuple[Tuple[str, str], ...] = (
+    ("application_policy", "inline"),
+    ("mining_config", "dialog"),
+    # Configs embutidas das instruções de modelo de similaridade/calibração —
+    # exibidas inline quando o tipo correspondente está selecionado.
+    # O painel filtra qual aparecer via uses_plda / uses_logistic_regression / uses_kde.
+    ("similarity_model_config", "inline"),
+    ("logreg_config", "inline"),
+    ("kde_config", "inline"),
+)
+
+
+_PIPELINE_TRAINING_POLICY_LABELS = {
+    "use_target_for_coral":         "CORAL alinha covariância ao target  (recomendado)",
+    "use_target_for_whitening":     "Whitening conjunto (source ∪ target)  (raro)",
+    "use_target_for_lda":           "LDA conjunto (source ∪ target)  (raro)",
+    "copy_shared_state_to_target":  "Replicar estado de steps compartilhados  (recomendado)",
+}
+
+_PIPELINE_APPLICATION_POLICY_LABELS = {
+    "save_checkpoints":          "Salvar checkpoints intermediários",
+    "save_transformed_dataset":  "Salvar dataset final transformado",
+    "save_trajectory_data":      "Salvar dados de trajetória (visualização 3D)",
+}
+
+
+_PIPELINE_TRAINING_POLICY_TOOLTIPS = {
+    "use_target_for_coral":
+        "Padrão: ATIVADO.\n\n"
+        "ATIVADO: CORAL alinha a covariância do source à do target — "
+        "uso clássico de CORAL para adaptação de domínio entre populações.\n\n"
+        "DESATIVADO: CORAL é treinado apenas com o source, perdendo o efeito "
+        "de adaptação. Útil apenas para comparar com/sem alinhamento.",
+    "use_target_for_whitening":
+        "Padrão: DESATIVADO.\n\n"
+        "ATIVADO: Whitening é fit em source ∪ target (whitening conjunto). "
+        "Variante de pesquisa pouco comum.\n\n"
+        "DESATIVADO: Whitening é fit apenas no source — comportamento padrão "
+        "da literatura.",
+    "use_target_for_lda":
+        "Padrão: DESATIVADO.\n\n"
+        "ATIVADO: LDA é fit usando identidades de source + target combinados. "
+        "Exige rótulos em ambos os datasets. Variante exótica.\n\n"
+        "DESATIVADO: LDA é fit apenas no source — comportamento padrão.",
+    "copy_shared_state_to_target":
+        "Padrão: ATIVADO em DUAL.\n\n"
+        "ATIVADO: steps comuns aos dois ramos (Centering, Whitening, L2) "
+        "treinados no source têm seu estado replicado no ramo target — "
+        "necessário para que a transformação seja consistente entre ramos.\n\n"
+        "DESATIVADO: cada ramo treinaria seu próprio estado independente, "
+        "quebrando a comparabilidade no scoring DUAL.",
+}
+
+_PIPELINE_APPLICATION_POLICY_TOOLTIPS = {
+    "save_checkpoints":
+        "Persiste em disco o estado intermediário do pipeline a cada step "
+        "durante a aplicação. Útil para auditoria/debug. Aumenta uso de disco.",
+    "save_transformed_dataset":
+        "Persiste em disco o dataset final após todas as transformações. "
+        "Permite reusá-lo em outras instruções sem reaplicar o pipeline.",
+    "save_trajectory_data":
+        "Captura dados intermediários necessários para visualização 3D da "
+        "trajetória de transformação via PipelineTrajectoryService.",
+}
+
+
+_PLDA_CONFIG_LABELS = {
+    "em_iterations": "Iterações EM",
+    "plda_mode":     "Modo PLDA",
+    "latent_dim":    "Dimensão Latente",
+    "random_seed":   "Semente Aleatória",
+}
+
+_PLDA_CONFIG_TOOLTIPS = {
+    "em_iterations":
+        "Número de iterações do algoritmo Expectation-Maximization no treino "
+        "do PLDA. Mais iterações = treino mais lento mas potencialmente mais "
+        "estável. Padrão 20 funciona bem na maioria dos casos.",
+    "plda_mode":
+        "FULL_RANK: usa o maior rank permitido pelos dados (latent_dim ignorado).\n"
+        "LOW_RANK: usa latent_dim como limite do espaço latente. Reduz "
+        "dimensionalidade e geralmente é mais robusto.",
+    "latent_dim":
+        "Dimensão do espaço latente quando plda_mode=LOW_RANK. Valores típicos: "
+        "64–256. Aumentar pode capturar mais variabilidade mas exige mais dados "
+        "para evitar overfitting.",
+    "random_seed":
+        "Semente aleatória para reprodutibilidade do treino.",
+}
+
+
+_LOGREG_CONFIG_LABELS = {
+    "C":              "C (regularização inversa)",
+    "use_gridsearch": "Otimizar C via GridSearch",
+    "c_grid":         "Grade de C (GridSearch)",
+    "cv_folds":       "Folds do CV (GridSearch)",
+    "scoring":        "Métrica do GridSearch",
+}
+
+_LOGREG_CONFIG_TOOLTIPS = {
+    "C":
+        "Parâmetro de regularização inversa da Regressão Logística. "
+        "C menor → mais regularização (mais robusto a outliers, menos "
+        "overfitting). C maior → menos regularização. Padrão 1.0. "
+        "Ignorado quando 'Otimizar C via GridSearch' está ATIVO.",
+    "use_gridsearch":
+        "Se ATIVO, ignora o C fixo e busca o melhor valor em c_grid via "
+        "cross-validation estratificada. Recomendado quando há scores e "
+        "labels suficientes (≥ algumas centenas de pares por classe).",
+    "c_grid":
+        "Grade de valores de C testados pelo GridSearch. Lista separada "
+        "por vírgula (ex: 0.01, 0.1, 1.0, 10, 100). Ignorado quando "
+        "use_gridsearch=False.",
+    "cv_folds":
+        "Número de folds da cross-validation estratificada (StratifiedKFold). "
+        "Padrão 5. Reduzido automaticamente se a classe minoritária tem "
+        "menos amostras. Ignorado quando use_gridsearch=False.",
+    "scoring":
+        "Métrica usada pelo GridSearch:\n"
+        "- 'neg_log_loss' (padrão): penaliza miscalibração diretamente. "
+        "Ideal para calibradores.\n"
+        "- 'roc_auc': otimiza separabilidade, não calibração. Útil "
+        "quando o objetivo é apenas ranking.",
+}
+
+
+_KDE_CONFIG_LABELS = {
+    "bandwidth_genuine":         "Bandwidth (genuínos)",
+    "bandwidth_impostor":        "Bandwidth (impostores)",
+    "use_gridsearch":            "Otimizar bandwidth via GridSearch",
+    "max_samples_for_gridsearch": "Máx. amostras (GridSearch)",
+    "max_stored_samples":        "Máx. amostras armazenadas",
+    "fisher_eps":                "Epsilon (Fisher)",
+    "min_bandwidth_abs":         "Bandwidth mínimo absoluto",
+    "max_grid_expansions":       "Máx. expansões do grid",
+    "min_log_lr":                "log-LR mínimo",
+    "max_log_lr":                "log-LR máximo",
+    "interpolation_points":      "Pontos da interpolação",
+    "random_seed":               "Semente Aleatória",
+    "kernel":                    "Kernel KDE",
+}
+
+_KDE_CONFIG_TOOLTIPS = {
+    "bandwidth_genuine":
+        "Bandwidth do KDE para a distribuição de scores genuínos. "
+        "Ignorado quando use_gridsearch=True.",
+    "bandwidth_impostor":
+        "Bandwidth do KDE para a distribuição de scores impostores. "
+        "Ignorado quando use_gridsearch=True.",
+    "use_gridsearch":
+        "Se ATIVO, otimiza o bandwidth via GridSearch + cross-validation, "
+        "ignorando bandwidth_genuine/impostor. Recomendado para a maioria dos casos.",
+    "max_samples_for_gridsearch":
+        "Limite de amostras usadas no GridSearch para acelerar. O ajuste final "
+        "ainda usa todas as amostras (até max_stored_samples).",
+    "max_stored_samples":
+        "Máximo de amostras retidas por classe (genuínos/impostores) para "
+        "ajuste final do KDE.",
+    "fisher_eps":
+        "Epsilon numérico aplicado em clipping antes da transformação de Fisher "
+        "(evita Inf/NaN em scores próximos de ±1).",
+    "min_bandwidth_abs":
+        "Bandwidth mínimo absoluto no espaço transformado pelo Fisher — evita "
+        "que o GridSearch escolha bandwidth degenerado próximo de zero.",
+    "max_grid_expansions":
+        "Número máximo de vezes que o grid de busca pode ser expandido se o "
+        "melhor bandwidth cair na borda do grid atual.",
+    "min_log_lr":
+        "Limite inferior do log-LR calibrado (clipping de saída).",
+    "max_log_lr":
+        "Limite superior do log-LR calibrado (clipping de saída).",
+    "interpolation_points":
+        "Quantidade de pontos usados para construir a curva interpolada "
+        "score → LR. Mais pontos = mais preciso, levemente mais lento.",
+    "random_seed":
+        "Semente aleatória usada em amostragens internas, quando aplicável.",
+    "kernel":
+        "Kernel do sklearn.neighbors.KernelDensity. Padrão 'gaussian'.",
+}
+
+
+def get_inline_field_labels(attr_name: str) -> Dict[str, str]:
+    """Retorna o mapa de field_name → label legível para o DTO inline conhecido."""
+    if attr_name == "training_policy":
+        return _PIPELINE_TRAINING_POLICY_LABELS
+    if attr_name == "application_policy":
+        return _PIPELINE_APPLICATION_POLICY_LABELS
+    if attr_name == "similarity_model_config":
+        return _PLDA_CONFIG_LABELS
+    if attr_name == "logreg_config":
+        return _LOGREG_CONFIG_LABELS
+    if attr_name == "kde_config":
+        return _KDE_CONFIG_LABELS
+    return {}
+
+
+def get_inline_field_tooltips(attr_name: str) -> Dict[str, str]:
+    """Retorna o mapa de field_name → tooltip explicativo para o DTO inline."""
+    if attr_name == "training_policy":
+        return _PIPELINE_TRAINING_POLICY_TOOLTIPS
+    if attr_name == "application_policy":
+        return _PIPELINE_APPLICATION_POLICY_TOOLTIPS
+    if attr_name == "similarity_model_config":
+        return _PLDA_CONFIG_TOOLTIPS
+    if attr_name == "logreg_config":
+        return _LOGREG_CONFIG_TOOLTIPS
+    if attr_name == "kde_config":
+        return _KDE_CONFIG_TOOLTIPS
+    return {}
+
+
+_INLINE_INTRO_TEXTS = {
+    "logreg_config": (
+        "A Regressão Logística é o calibrador padrão para converter scores brutos "
+        "em probabilidades (e, daí, em LRs). O hiperparâmetro mais sensível é o "
+        "C — controla o quanto o modelo é regularizado. C pequeno = mais "
+        "regularização, fronteira de decisão mais suave; C grande = menos "
+        "regularização, fronteira mais ajustada aos dados de treino.\n\n"
+        "💡 Como o C ótimo varia muito entre datasets, recomenda-se deixar "
+        "'Otimizar C via GridSearch' ATIVO (padrão). Os parâmetros abaixo "
+        "controlam a busca; passe o mouse sobre cada um para ver detalhes."
+    ),
+    "kde_config": (
+        "O calibrador KDE estima duas densidades de probabilidade não-paramétricas "
+        "(uma para genuínos, outra para impostores) usando Kernel Density Estimation, "
+        "com transformação de Fisher para estabilizar scores próximos de ±1. "
+        "O parâmetro mais crítico é o bandwidth — passe o mouse sobre cada campo "
+        "para ver detalhes específicos."
+    ),
+    "similarity_model_config": (
+        "Hyperparâmetros do PLDA (Probabilistic Linear Discriminant Analysis). "
+        "FULL_RANK preserva o máximo de informação mas exige muitas identidades; "
+        "LOW_RANK reduz a dimensão latente para latent_dim, geralmente mais "
+        "estável com poucos dados."
+    ),
+}
+
+
+def get_inline_intro_text(attr_name: str) -> Optional[str]:
+    """Retorna o texto introdutório (visível ao expandir) do bloco DTO inline."""
+    return _INLINE_INTRO_TEXTS.get(attr_name)
+
+
+def get_inline_title(attr_name: str) -> str:
+    if attr_name == "training_policy":
+        return "Política de Treinamento"
+    if attr_name == "application_policy":
+        return "Política de Aplicação"
+    if attr_name == "similarity_model_config":
+        return "Config PLDA"
+    if attr_name == "logreg_config":
+        return "Config Logistic Regression"
+    if attr_name == "kde_config":
+        return "Config KDE"
+    return attr_name.replace("_", " ").title()
+
+
+def make_default_dto(attr_name: str) -> Any:
+    """Constrói um DTO default para o atributo conhecido quando o valor é None."""
+    if attr_name == "training_policy":
+        from faceaudit.models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
+        return PipelineTrainingPolicy()
+    if attr_name == "application_policy":
+        from faceaudit.models.pipeline.pipeline_application_policy import PipelineApplicationPolicy
+        return PipelineApplicationPolicy()
+    if attr_name == "similarity_model_config":
+        from faceaudit.models.similarity.plda_similarity_model_config import (
+            PLDASimilarityModelConfig,
+        )
+        return PLDASimilarityModelConfig()
+    if attr_name == "logreg_config":
+        from faceaudit.models.calibration.logistic_regression_calibration_model_config import (
+            LogisticRegressionCalibrationModelConfig,
+        )
+        return LogisticRegressionCalibrationModelConfig()
+    if attr_name == "kde_config":
+        from faceaudit.models.calibration.kde_calibration_model_config import (
+            KDECalibrationModelConfig,
+        )
+        return KDECalibrationModelConfig()
+    return None
+
+
+# ─── Dialog wrappers (estratégia "dialog") ───────────────────────────────────
+
+def summarize_mining_config(cfg: Any) -> str:
+    if cfg is None:
+        return "(nenhuma configuração)"
+    name = getattr(cfg, "name", "—")
+    parts: List[str] = [f"nome: {name}"]
+    seed = getattr(cfg, "seed", None)
+    if seed is not None:
+        parts.append(f"seed: {seed}")
+
+    imp_rule = getattr(cfg, "impostors_rule", None)
+    gen_rule = getattr(cfg, "genuines_rule", None)
+    if imp_rule is not None:
+        strat = getattr(imp_rule.strategy, "value", str(imp_rule.strategy))
+        parts.append(f"imp: {strat}")
+    if gen_rule is not None:
+        strat = getattr(gen_rule.strategy, "value", str(gen_rule.strategy))
+        parts.append(f"gen: {strat}")
+    return " · ".join(parts)
+
+
+def open_mining_config_dialog(
+    current: Any, parent: QtWidgets.QWidget
+) -> Optional[Any]:
+    """Abre o NewMiningConfigDialogController, hidratado com o config atual."""
+    from interface.tabs.strategy_manager.new_mining_config_dialog.new_mining_config_dialog_controller import (
+        NewMiningConfigDialogController,
+    )
+    from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
+
+    controller = NewMiningConfigDialogController(parent=parent)
+    if isinstance(current, ComparisonMiningConfig):
+        controller.load_config(current)
+
+    if controller.exec() == QtWidgets.QDialog.DialogCode.Accepted:
+        return controller.get_config()
+    return None

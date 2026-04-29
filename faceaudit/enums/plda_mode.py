@@ -24,10 +24,19 @@ class PLDAMode(Enum):
         "Geralmente mais estável com menos identidades e com variações fortes de domínio.",
     )
 
-    def __init__(self, value: str, label: str, description: str):
-        self._value_ = value
-        self.label = label
-        self.description = description
+    def __new__(cls, value: str, label: str, description: str) -> "PLDAMode":
+        # Definir _value_ aqui (em __new__) é crítico para que a metaclass do
+        # Enum registre o membro no _value2member_map_ pelo VALOR string
+        # ("LOW_RANK"), e não pela tupla. Isso é o que faz PLDAMode("LOW_RANK")
+        # funcionar — incluindo o caminho que pickle usa para reconstruir o
+        # enum durante a desserialização. Definir em __init__ era um bug:
+        # a metaclass já tinha indexado pelo valor inicial (a tupla) antes
+        # de __init__ rodar.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label = label
+        obj.description = description
+        return obj
 
     def __str__(self):
         """Retorna o label amigável para a interface."""

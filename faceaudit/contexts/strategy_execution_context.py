@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
@@ -31,6 +31,19 @@ class StrategyExecutionContext(JSONSerializableMixin):
     validation_rules: Dict[str, ValidationRuleProtocol] = field(default_factory=dict)
     execution_logs: List[str] = field(default_factory=list)
     execution_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # Listeners de log — invocados em tempo real a cada chamada de log().
+    # Usado pelos workers de UI (PyQt) para refletir progresso no dialog
+    # de execução enquanto o executor está rodando. Não persistido no JSON
+    # (excluído via to_dict abaixo).
+    log_listeners: List[Callable[[str], None]] = field(default_factory=list)
+
+    # Capability para hidratação preguiçosa de payloads. Preenchidos por
+    # StrategyExecutor.prepare_context. Não persistidos no JSON.
+    # `Any` em vez de StrategyResourceLoaderService evita ciclo de import
+    # (loader -> resource -> context -> loader).
+    resource_loader: Any = None
+    embedding_column: Optional[str] = None
 
     # =========================================================================
     # RECURSOS
@@ -67,6 +80,52 @@ class StrategyExecutionContext(JSONSerializableMixin):
         Lista todos os recursos registrados no contexto.
         """
         return list(self.resources.values())
+
+    def ensure_payload(self, resource_id: str) -> Optional[StrategyResource]:
+        """
+        Retorna o resource garantindo que `payload` esteja carregado quando possível.
+
+        Hidrata sob demanda via `resource_loader` se:
+        - resource existe no contexto
+        - resource.payload is None
+        - resource.artifact_ref is not None
+        - self.resource_loader is not None
+
+        Idempotente: se payload já está carregado, retorna direto.
+        Se não há loader registrado, retorna o resource como está (payload=None) —
+        consumidores precisam tratar como erro de validação normal.
+        """
+        resource = self.resources.get(resource_id)
+        if resource is None:
+            return None
+        if resource.payload is not None:
+            return resource
+        if resource.artifact_ref is None or self.resource_loader is None:
+            return resource
+
+        try:
+            self.resource_loader.hydrate(
+                resource, embedding_column=self.embedding_column
+            )
+        except Exception as exc:
+            # Falha não-fatal: o resource permanece sem payload e o consumidor
+            # reporta erro normal de validação. Loga para visibilidade.
+            self.log(
+                f"⚠️ Falha ao hidratar '{resource_id}' sob demanda: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return resource
+
+        # Mesmo sem exceção, o loader pode ter retornado None silenciosamente
+        # (ex: pickle incompatível). Expor o motivo via `_last_error` para
+        # que o usuário veja no LogProgressDialog em vez de só em stderr.
+        if resource.payload is None:
+            last_error = getattr(self.resource_loader, "_last_error", None)
+            if last_error:
+                self.log(
+                    f"⚠️ Falha ao carregar '{resource_id}' do disco: {last_error}"
+                )
+        return resource
 
     # =========================================================================
     # ARTEFATOS
@@ -146,12 +205,47 @@ class StrategyExecutionContext(JSONSerializableMixin):
     # LOGS E METADADOS
     # =========================================================================
 
+    # Limite duro para evitar crescimento ilimitado da lista de logs entre
+    # múltiplas execuções na mesma sessão (acumulação que se traduzia em
+    # pickle/serialização cada vez mais lenta porque `execution_metadata`
+    # captura essa lista).
+    _MAX_EXECUTION_LOGS = 5000
+
     def log(self, message: str) -> None:
         """
-        Registra uma mensagem de log no contexto.
+        Registra uma mensagem de log no contexto e notifica listeners
+        registrados (ex: worker UI repassando ao dialog de progresso).
+
+        A lista é truncada (rotação simples) ao ultrapassar
+        `_MAX_EXECUTION_LOGS` para evitar inchaço sem limite ao longo de
+        sessões com múltiplas execuções.
         """
-        if message:
-            self.execution_logs.append(message)
+        if not message:
+            return
+        self.execution_logs.append(message)
+        if len(self.execution_logs) > self._MAX_EXECUTION_LOGS:
+            # Mantém os últimos 80% — descarta o terço mais antigo de uma vez
+            # (evita custar O(N) a cada append).
+            keep = int(self._MAX_EXECUTION_LOGS * 0.8)
+            del self.execution_logs[:-keep]
+        for listener in self.log_listeners:
+            try:
+                listener(message)
+            except Exception:
+                # Listener falho não pode quebrar a execução do executor.
+                pass
+
+    def add_log_listener(self, listener: Callable[[str], None]) -> None:
+        """Registra um callback que será invocado a cada chamada de log()."""
+        if listener is not None and listener not in self.log_listeners:
+            self.log_listeners.append(listener)
+
+    def remove_log_listener(self, listener: Callable[[str], None]) -> None:
+        """Remove um callback previamente registrado via add_log_listener."""
+        try:
+            self.log_listeners.remove(listener)
+        except ValueError:
+            pass
 
     def set_metadata(self, key: str, value: Any) -> None:
         """
@@ -169,6 +263,17 @@ class StrategyExecutionContext(JSONSerializableMixin):
     # SERIALIZAÇÃO
     # =========================================================================
 
+    def to_dict(self) -> dict:
+        """
+        Override do mixin: remove campos runtime-only (não serializáveis
+        com sentido pelo asdict): log_listeners (callbacks), resource_loader
+        (objeto de serviço), embedding_column (estado de runtime).
+        """
+        data = super().to_dict()
+        for runtime_key in ("log_listeners", "resource_loader", "embedding_column"):
+            data.pop(runtime_key, None)
+        return data
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """
@@ -178,6 +283,7 @@ class StrategyExecutionContext(JSONSerializableMixin):
         - resources e artifacts são hidratados
         - validation_rules não é reconstruído automaticamente, pois contém
           objetos comportamentais e será normalmente re-registrado em runtime
+        - resource_loader, embedding_column e log_listeners são runtime-only
         """
         if not data:
             return cls()
@@ -199,5 +305,9 @@ class StrategyExecutionContext(JSONSerializableMixin):
         # validation_rules não é serializado/hidratado automaticamente
         if "validation_rules" in processed_data:
             processed_data["validation_rules"] = {}
+
+        # Campos runtime-only nunca vêm do JSON
+        for runtime_key in ("resource_loader", "embedding_column", "log_listeners"):
+            processed_data.pop(runtime_key, None)
 
         return cls(**processed_data)

@@ -31,7 +31,10 @@ class CosineSimilarityModel(SimilarityModelProtocol):
 
     def __init__(self, name: str = "Cosine Similarity Model"):
         self._name = name
-        self._is_fitted = False
+        # Cosine não tem estado treinável — fica "fitted" desde a construção.
+        # fit() pode ser chamado opcionalmente para registrar metadados, mas
+        # scoring funciona sem ele.
+        self._is_fitted = True
         self.input_dimension: int | None = None
         self.n_samples_seen: int = 0
 

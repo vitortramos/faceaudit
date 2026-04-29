@@ -8,6 +8,7 @@ from typing import Callable
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
 
 from faceaudit.models.calibration.logistic_regression_calibration_model_config import (
     LogisticRegressionCalibrationModelConfig,
@@ -36,9 +37,15 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         self.config = config or LogisticRegressionCalibrationModelConfig()
         self._name = name
         self._is_fitted = False
+        # Preenchido após fit() quando use_gridsearch=True. Útil para
+        # diagnóstico (log + execution_metadata) e para reprodução.
+        self.best_C_: float | None = None
 
-        self.logreg = LogisticRegression(
-            C=float(self.config.C),
+        self.logreg = self._build_estimator(self.config.C)
+
+    def _build_estimator(self, c_value: float) -> LogisticRegression:
+        return LogisticRegression(
+            C=float(c_value),
             solver="lbfgs",
             class_weight="balanced",
             max_iter=1000,
@@ -99,14 +106,61 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         n_hp = int(np.sum(labels_arr == 1))
         n_hd = int(np.sum(labels_arr == 0))
 
-        logger_callback(
-            f"[{self.name}] 🧠 Treinando calibrador LogReg "
-            f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | C={self.config.C})..."
-        )
+        if self.config.use_gridsearch:
+            # Garante que o número de folds não excede a classe minoritária —
+            # StratifiedKFold exige pelo menos `cv_folds` amostras por classe.
+            min_class_size = min(n_hp, n_hd)
+            cv_folds = max(2, min(self.config.cv_folds, min_class_size))
+            if cv_folds < self.config.cv_folds:
+                logger_callback(
+                    f"[{self.name}] ⚠️ cv_folds reduzido de "
+                    f"{self.config.cv_folds} para {cv_folds} — classe "
+                    f"minoritária tem {min_class_size} amostras."
+                )
 
-        self.logreg.fit(X, labels_arr)
+            # scoring é um LogRegGridScoringMetric enum — passar o .value
+            # ("neg_log_loss" ou "roc_auc") para o sklearn.
+            scoring_str = (
+                self.config.scoring.value
+                if hasattr(self.config.scoring, "value")
+                else str(self.config.scoring)
+            )
+
+            logger_callback(
+                f"[{self.name}] 🧠 GridSearch LogReg "
+                f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | "
+                f"c_grid={self.config.c_grid} | cv={cv_folds} | "
+                f"scoring={scoring_str})..."
+            )
+
+            cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+            grid = GridSearchCV(
+                estimator=self._build_estimator(self.config.C),
+                param_grid={"C": list(self.config.c_grid)},
+                cv=cv,
+                scoring=scoring_str,
+                n_jobs=-1,
+                refit=True,
+            )
+            grid.fit(X, labels_arr)
+
+            best_estimator = grid.best_estimator_
+            self.logreg = best_estimator
+            self.best_C_ = float(grid.best_params_.get("C", self.config.C))
+
+            logger_callback(
+                f"[{self.name}] ✅ Melhor C: {self.best_C_} "
+                f"(score={grid.best_score_:.4f})."
+            )
+        else:
+            logger_callback(
+                f"[{self.name}] 🧠 Treinando calibrador LogReg "
+                f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | C={self.config.C})..."
+            )
+            self.logreg.fit(X, labels_arr)
+            self.best_C_ = float(self.config.C)
+
         self._is_fitted = True
-
         logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
 
     # =========================================================================
@@ -165,6 +219,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "config": self.config.to_dict(),
             "logreg": self.logreg,
             "is_fitted": self._is_fitted,
+            "best_C_": self.best_C_,
         }
 
         path_obj = Path(path)
@@ -190,6 +245,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         self._name = payload.get("name", self._name)
         self.logreg = payload.get("logreg", self.logreg)
         self._is_fitted = bool(payload.get("is_fitted", False))
+        best_c = payload.get("best_C_")
+        self.best_C_ = float(best_c) if best_c is not None else None
 
     # =========================================================================
     # AUXILIARES

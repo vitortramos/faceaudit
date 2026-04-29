@@ -76,6 +76,13 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
         metadata={"help": "Recurso de saída do dataset transformado do ramo Target na aplicação dual."}
     )
 
+    trajectory_data_resource_id: Optional[str] = field(
+        default=None,
+        metadata={"help": "Recurso de saída opcional contendo TransformationTrajectoryData "
+                          "para visualização 3D. Auto-preenchido quando "
+                          "application_policy.save_trajectory_data=True."}
+    )
+
     def __post_init__(self) -> None:
         """
         Garante o tipo da instrução e sincroniza entradas/saídas declarativas mínimas.
@@ -85,7 +92,25 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
         if not self.name:
             self.name = "Pipeline Application"
 
+        # Auto-preenche o resource_id da trajetória quando a política está
+        # configurada para salvar e o usuário ainda não nomeou o recurso.
+        if (
+            self._should_save_trajectory()
+            and not self.trajectory_data_resource_id
+        ):
+            self.trajectory_data_resource_id = f"{self.instruction_id}_trajectory"
+
         self._sync_declared_io()
+
+    def _should_save_trajectory(self) -> bool:
+        """
+        Retorna True se a política de aplicação está configurada para salvar
+        os dados de trajetória 3D.
+        """
+        return bool(
+            self.application_policy is not None
+            and getattr(self.application_policy, "save_trajectory_data", False)
+        )
 
     @property
     def is_linear(self) -> bool:
@@ -104,21 +129,31 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
         DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
         TP = (StrategyResourceType.TRAINED_PIPELINE,)
         ID = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        TRAJ = (StrategyResourceType.TRAJECTORY_DATA,)
 
         if self.is_linear:
-            return [
+            specs = [
                 ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP),
                 ResourceFieldSpec("dataset_resource_id", "Dataset", DS),
                 ResourceFieldSpec("transformed_dataset_resource_id", "Dataset Transformado", ID, is_output=True),
             ]
         else:
-            return [
+            specs = [
                 ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP),
                 ResourceFieldSpec("source_dataset_resource_id", "Dataset (Source)", DS),
                 ResourceFieldSpec("target_dataset_resource_id", "Dataset (Target)", DS),
                 ResourceFieldSpec("transformed_source_dataset_resource_id", "Transformado (Source)", ID, is_output=True),
                 ResourceFieldSpec("transformed_target_dataset_resource_id", "Transformado (Target)", ID, is_output=True),
             ]
+
+        # Output condicional: só aparece quando a política está configurada
+        # para salvar os dados de trajetória 3D.
+        if self._should_save_trajectory():
+            specs.append(
+                ResourceFieldSpec("trajectory_data_resource_id", "Trajetória 3D", TRAJ, is_output=True)
+            )
+
+        return specs
 
     def _sync_declared_io(self) -> None:
         """
@@ -146,6 +181,11 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
                 outputs.append(self.transformed_source_dataset_resource_id)
             if self.transformed_target_dataset_resource_id:
                 outputs.append(self.transformed_target_dataset_resource_id)
+
+        # Output de trajetória 3D — só entra na lista se policy.save_trajectory_data
+        # estiver ativo e o id já tiver sido atribuído (auto-fill em __post_init__).
+        if self._should_save_trajectory() and self.trajectory_data_resource_id:
+            outputs.append(self.trajectory_data_resource_id)
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))

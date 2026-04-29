@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from PyQt6 import QtWidgets, QtCore
 
@@ -13,9 +13,13 @@ from faceaudit.models.strategy.strategy_resource import StrategyResource
 _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.DATASET: "Datasets",
     StrategyResourceType.INTERMEDIATE_DATASET: "Datasets Intermediários",
+    StrategyResourceType.SIMILARITY_SCORES: "Scores de Similaridade",
+    StrategyResourceType.CALIBRATED_SCORES: "Scores Calibrados",
+    StrategyResourceType.VALIDATION_RESULT: "Resultados de Validação",
     StrategyResourceType.TRAINED_PIPELINE: "Pipelines Treinados",
     StrategyResourceType.TRAINED_SIMILARITY_MODEL: "Modelos de Similaridade",
     StrategyResourceType.TRAINED_CALIBRATION_MODEL: "Modelos de Calibração",
+    StrategyResourceType.TRAJECTORY_DATA: "Trajetórias 3D",
     StrategyResourceType.PIPELINE_CONFIG: "Configs de Pipeline",
     StrategyResourceType.SPLIT_CONFIG: "Configs de Split",
     StrategyResourceType.MERGE_CONFIG: "Configs de Merge",
@@ -23,6 +27,22 @@ _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.CALIBRATION_MODEL_CONFIG: "Configs de Calibração",
     StrategyResourceType.DATASET_STATS: "Estatísticas de Dataset",
     StrategyResourceType.ARTIFACT: "Artefatos",
+}
+
+
+# Tipos de recurso "produzidos" por instruções de estratégia — exibidos com
+# sub-agrupamento por estratégia na árvore. Recursos de input (DATASET,
+# *_CONFIG) ficam como lista plana porque podem ser compartilhados entre
+# múltiplas estratégias.
+_PRODUCED_TYPES = {
+    StrategyResourceType.INTERMEDIATE_DATASET,
+    StrategyResourceType.SIMILARITY_SCORES,
+    StrategyResourceType.CALIBRATED_SCORES,
+    StrategyResourceType.TRAINED_PIPELINE,
+    StrategyResourceType.TRAINED_SIMILARITY_MODEL,
+    StrategyResourceType.TRAINED_CALIBRATION_MODEL,
+    StrategyResourceType.TRAJECTORY_DATA,
+    StrategyResourceType.VALIDATION_RESULT,
 }
 
 
@@ -136,9 +156,20 @@ class ResourceTreeWidget(QtWidgets.QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def populate(self, resources: List[StrategyResource]) -> None:
-        """Repopula a árvore agrupando recursos por tipo."""
+    def populate(
+        self,
+        resources: List[StrategyResource],
+        resource_to_strategy: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """
+        Repopula a árvore agrupando recursos por tipo.
+
+        Para tipos em `_PRODUCED_TYPES` e quando `resource_to_strategy` é
+        fornecido, cria um nível intermediário de sub-agrupamento por
+        estratégia (ex: `Datasets Intermediários (5) / ▼ PLDA / item1`).
+        """
         self.tree.clear()
+        resource_to_strategy = resource_to_strategy or {}
 
         grouped: Dict[StrategyResourceType, List[StrategyResource]] = {}
         for res in resources:
@@ -153,15 +184,58 @@ class ResourceTreeWidget(QtWidgets.QWidget):
             root_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
             self.tree.addTopLevelItem(root_item)
 
-            for res in group_resources:
-                path_str = res.artifact_ref.path if res.artifact_ref else "(sem arquivo)"
-                display_name = res.name if res.name else res.resource_id
-                child = QtWidgets.QTreeWidgetItem([display_name])
-                child.setData(0, QtCore.Qt.ItemDataRole.UserRole, res)
-                child.setToolTip(0, f"ID: {res.resource_id}\nPath: {path_str}")
-                root_item.addChild(child)
+            if res_type in _PRODUCED_TYPES and resource_to_strategy:
+                self._add_grouped_by_strategy(
+                    parent_item=root_item,
+                    resources=group_resources,
+                    resource_to_strategy=resource_to_strategy,
+                )
+            else:
+                for res in group_resources:
+                    self._add_resource_child(root_item, res)
 
             root_item.setExpanded(True)
+
+    def _add_grouped_by_strategy(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        resources: List[StrategyResource],
+        resource_to_strategy: Dict[str, str],
+    ) -> None:
+        """
+        Adiciona um nível intermediário 'Estratégia: <nome>' agrupando os
+        recursos pela estratégia que os produziu.
+        """
+        by_strategy: Dict[str, List[StrategyResource]] = {}
+        for res in resources:
+            strategy_name = resource_to_strategy.get(res.resource_id, "(sem estratégia)")
+            by_strategy.setdefault(strategy_name, []).append(res)
+
+        for strategy_name in sorted(by_strategy.keys()):
+            strategy_resources = by_strategy[strategy_name]
+            strategy_item = QtWidgets.QTreeWidgetItem(
+                [f"📋 {strategy_name} ({len(strategy_resources)})"]
+            )
+            strategy_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
+            parent_item.addChild(strategy_item)
+
+            for res in strategy_resources:
+                self._add_resource_child(strategy_item, res)
+
+            strategy_item.setExpanded(True)
+
+    def _add_resource_child(
+        self,
+        parent_item: QtWidgets.QTreeWidgetItem,
+        res: StrategyResource,
+    ) -> None:
+        """Adiciona um item folha representando um recurso à árvore."""
+        path_str = res.artifact_ref.path if res.artifact_ref else "(sem arquivo)"
+        display_name = res.name if res.name else res.resource_id
+        child = QtWidgets.QTreeWidgetItem([display_name])
+        child.setData(0, QtCore.Qt.ItemDataRole.UserRole, res)
+        child.setToolTip(0, f"ID: {res.resource_id}\nPath: {path_str}")
+        parent_item.addChild(child)
 
     def clear(self) -> None:
         self.tree.clear()

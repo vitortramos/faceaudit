@@ -23,11 +23,45 @@ class ResourceFieldSpec:
 
 @dataclass(frozen=True)
 class ChoiceFieldSpec:
-    """Especificação de um campo de escolha (enum) para renderização no config panel."""
+    """Especificação de um campo de escolha (enum) para renderização no config panel.
+
+    Campos:
+        field_name:   nome do atributo do DTO.
+        label:        rótulo exibido ao lado do combo.
+        choices:      tupla de strings (uma por opção do combo). Os valores
+                      devem ser conversíveis pelo `enum_type.from_str` quando
+                      este existir.
+        enum_type:    classe do enum, usada para conversão segura via from_str
+                      ao gravar o valor de volta no DTO.
+        descriptions: opcional. Mapa choice_value → descrição textual longa
+                      exibida em uma linha de ajuda contextual abaixo do combo,
+                      atualizada conforme a seleção do usuário.
+    """
     field_name: str
     label: str
-    choices: Tuple[str, ...]   # valores do enum (strings)
-    enum_type: Optional[type] = None  # classe do enum para conversão segura via from_str
+    choices: Tuple[str, ...]
+    enum_type: Optional[type] = None
+    descriptions: Optional[Dict[str, str]] = None
+
+
+@dataclass(frozen=True)
+class ValueFieldSpec:
+    """
+    Especificação de um campo primitivo (int, float, str, bool, lista) editável
+    no config panel, fora do `parameters` dict.
+
+    value_type:
+      - "int", "float", "str", "bool" — tipos primitivos diretos
+      - "list_str" — lista de strings (entrada via texto separado por vírgula)
+      - "list_int" — lista de inteiros (entrada via texto separado por vírgula)
+    """
+    field_name: str
+    label: str
+    value_type: str
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    decimals: Optional[int] = None
+    placeholder: Optional[str] = None
 
 
 @dataclass
@@ -77,6 +111,24 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
     def get_resource_field_specs(self) -> List[ResourceFieldSpec]:
         """Retorna specs para renderização no config panel. Override nos DTOs concretos."""
         return []
+
+    def get_value_field_specs(self) -> List[ValueFieldSpec]:
+        """
+        Retorna campos primitivos (int, float, str, bool, listas) editáveis
+        no config panel, declarados como atributos diretos do DTO (fora do
+        `parameters` dict). Override nos DTOs concretos.
+        """
+        return []
+
+    def get_configuration_help(self) -> Optional[str]:
+        """
+        Retorna texto explicativo opcional exibido no topo da seção
+        Configuração da UI. Útil para esclarecer modos/regras semânticas
+        que não cabem em tooltips de campo (ex: auto vs cross-comparison
+        em SIMILARITY_SCORING). Override nos DTOs concretos quando
+        relevante. None = sem ajuda contextual.
+        """
+        return None
 
     def build_validation_rules(self) -> list:
         """
@@ -160,6 +212,12 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return DatasetSplitInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.PAIRED_DATASET_SPLIT:
+            from faceaudit.models.instructions.paired_dataset_split_instruction import (
+                PairedDatasetSplitInstruction,
+            )
+            return PairedDatasetSplitInstruction.from_dict(processed_data)
+
         if instruction_type == StrategyInstructionType.DATASET_MERGE:
             from faceaudit.models.instructions.dataset_merge_instruction import (
                 DatasetMergeInstruction,
@@ -189,5 +247,17 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
                 CalibrationModelTrainingInstruction,
             )
             return CalibrationModelTrainingInstruction.from_dict(processed_data)
+
+        if instruction_type == StrategyInstructionType.SCORE_CALIBRATION:
+            from faceaudit.models.instructions.score_calibration_instruction import (
+                ScoreCalibrationInstruction,
+            )
+            return ScoreCalibrationInstruction.from_dict(processed_data)
+
+        if instruction_type == StrategyInstructionType.STRATEGY_EVALUATION:
+            from faceaudit.models.instructions.strategy_evaluation_instruction import (
+                StrategyEvaluationInstruction,
+            )
+            return StrategyEvaluationInstruction.from_dict(processed_data)
 
         return cls(**processed_data)

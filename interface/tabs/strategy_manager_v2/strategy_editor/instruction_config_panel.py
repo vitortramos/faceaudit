@@ -2,49 +2,126 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore
 
-from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
+from faceaudit.models.instructions.pipeline_application_instruction import (
+    PipelineApplicationInstruction,
+)
+from faceaudit.models.instructions.similarity_scoring_instruction import (
+    SimilarityScoringInstruction,
+)
+from faceaudit.models.instructions.score_calibration_instruction import (
+    ScoreCalibrationInstruction,
+)
+from faceaudit.models.instructions.strategy_evaluation_instruction import (
+    StrategyEvaluationInstruction,
+)
+from faceaudit.models.instructions.strategy_instruction_definition import (
+    ResourceFieldSpec,
+    StrategyInstructionDefinition,
+    ValueFieldSpec,
+)
+from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
+from faceaudit.protocols.strategy_execution_context_protocol import (
+    StrategyExecutionContextProtocol,
+)
 
-_MAX_FIELD_WIDTH = 340
+from .nested_dto_widget import (
+    NESTED_DTO_ATTRS,
+    NestedDTODialogTrigger,
+    NestedDTOInlineWidget,
+    get_inline_field_labels,
+    get_inline_field_tooltips,
+    get_inline_intro_text,
+    get_inline_title,
+    make_default_dto,
+    open_mining_config_dialog,
+    summarize_mining_config,
+)
+from .output_row_widget import OutputRowWidget
+from .section_header import SectionHeader
+
+
+_PAIR_SUFFIXES = ("_source", "_target")
+
+
+_HEADER_TOOLTIPS: Dict[str, str] = {
+    "training_policy":
+        "Controla como os steps do pipeline usam o dataset target durante o "
+        "treino DUAL. Os defaults já são adequados para o uso clássico de CORAL "
+        "— modifique apenas para variantes de pesquisa específicas.",
+    "application_policy":
+        "Controla artefatos opcionais persistidos durante a aplicação do "
+        "pipeline (checkpoints, dataset transformado, dados de trajetória).",
+}
 
 
 class InstructionConfigPanel(QtWidgets.QWidget):
     """
     Painel de configuração da instrução selecionada na lista.
 
-    Renderiza dinamicamente os campos de configuração da instrução:
-    - name, description
-    - input_resource_ids (dropdowns com recursos disponíveis no contexto)
-    - output_resource_ids (campos de texto livres — o usuário nomeia os outputs)
-    - parameters (campos genéricos chave/valor para a instrução específica)
+    Layout em 3 seções verticais:
+    - IDENTIFICAÇÃO: nome, descrição
+    - CONFIGURAÇÃO: choice fields, resource inputs (com pareamento Source/Target),
+      DTOs aninhados (inline ou via dialog)
+    - SAÍDAS: uma OutputRowWidget por output declarado, com status + resumo
 
     Sinais:
-        config_changed(StrategyInstructionDefinition) — emitido quando o usuário
-            confirma alterações no formulário
+        config_changed(StrategyInstructionDefinition) — alteração aplicada
+        validate_requested(StrategyInstructionDefinition) — usuário clicou em Validar
     """
 
     config_changed = QtCore.pyqtSignal(object)
+    instruction_applied = QtCore.pyqtSignal(object)
     validate_requested = QtCore.pyqtSignal(object)
+    view_trajectory_requested = QtCore.pyqtSignal(object)
+    view_score_distribution_requested = QtCore.pyqtSignal(object)
+    view_validation_result_requested = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._instruction: Optional[StrategyInstructionDefinition] = None
+        self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
+
+        # Estado de runtime para colorir as Saídas após execução
+        self._latest_definition: Optional[LRStrategyDefinition] = None
+        self._latest_executed_ids: Set[str] = set()
+        self._latest_context: Optional[StrategyExecutionContextProtocol] = None
+
+        # Widgets internos do form (recriados em cada _rebuild_form)
+        self._field_name: Optional[QtWidgets.QLineEdit] = None
+        self._field_desc: Optional[QtWidgets.QPlainTextEdit] = None
+        self._choice_field_widgets: Dict[str, QtWidgets.QComboBox] = {}
+        self._choice_specs: Dict[str, object] = {}
+        self._resource_field_widgets: Dict[str, QtWidgets.QWidget] = {}
+        self._value_field_widgets: Dict[str, QtWidgets.QWidget] = {}
+        self._value_specs: Dict[str, ValueFieldSpec] = {}
+        self._param_fields: Dict[str, QtWidgets.QWidget] = {}
+        self._nested_inline_widgets: Dict[str, NestedDTOInlineWidget] = {}
+        self._nested_dialog_widgets: Dict[str, NestedDTODialogTrigger] = {}
+        self._output_widgets: Dict[str, OutputRowWidget] = {}
+
+        # Layouts das três seções (criados uma vez em _init_ui)
+        self._form_id: Optional[QtWidgets.QFormLayout] = None
+        self._form_cfg: Optional[QtWidgets.QFormLayout] = None
+        self._outputs_layout: Optional[QtWidgets.QVBoxLayout] = None
+
         self._init_ui()
         self.show_empty()
+
+    # ── UI build ──────────────────────────────────────────────────────────────
 
     def _init_ui(self) -> None:
         self._root_layout = QtWidgets.QVBoxLayout(self)
         self._root_layout.setContentsMargins(8, 8, 8, 8)
-        self._root_layout.setSpacing(8)
+        self._root_layout.setSpacing(6)
 
-        # Stack: empty ↔ form
         self.stack = QtWidgets.QStackedWidget()
-        self._root_layout.addWidget(self.stack)
+        self._root_layout.addWidget(self.stack, 1)
 
         # Página 0 — vazia
         empty_page = QtWidgets.QWidget()
@@ -56,131 +133,470 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         empty_layout.addWidget(lbl)
         self.stack.addWidget(empty_page)   # index 0
 
-        # Página 1 — formulário
+        # Página 1 — formulário em 3 seções
         self.form_page = QtWidgets.QWidget()
-        form_layout = QtWidgets.QVBoxLayout(self.form_page)
-        form_layout.setContentsMargins(0, 0, 0, 0)
-        form_layout.setSpacing(6)
+        form_root = QtWidgets.QVBoxLayout(self.form_page)
+        form_root.setContentsMargins(0, 0, 0, 0)
+        form_root.setSpacing(4)
 
+        # Header bar (tipo + id)
+        self._header_lbl = QtWidgets.QLabel()
+        self._header_lbl.setStyleSheet(
+            "padding: 4px 8px; background: #2c3e50; color: white;"
+            " font-size: 11px; font-weight: bold; border-radius: 3px;"
+        )
+        form_root.addWidget(self._header_lbl)
+
+        # Scroll area para o conteúdo das seções
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        self.form_container = QtWidgets.QWidget()
-        self.form_container.setMaximumWidth(500)
-        self.form_inner = QtWidgets.QFormLayout(self.form_container)
-        self.form_inner.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
-        self.form_inner.setFieldGrowthPolicy(
+        scroll_content = QtWidgets.QWidget()
+        scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
+        scroll_layout.setContentsMargins(0, 0, 0, 0)
+        scroll_layout.setSpacing(2)
+        scroll_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        # ─── Seção 1: Identificação ───────────────────────────────────────
+        scroll_layout.addWidget(SectionHeader("Identificação", "identification"))
+        self._form_id = QtWidgets.QFormLayout()
+        self._form_id.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        self._form_id.setFieldGrowthPolicy(
             QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
-        self.form_inner.setSpacing(6)
-        scroll.setWidget(self.form_container)
-        form_layout.addWidget(scroll, 1)
+        self._form_id.setContentsMargins(8, 6, 8, 8)
+        self._form_id.setSpacing(6)
+        wrapper_id = QtWidgets.QWidget()
+        wrapper_id.setLayout(self._form_id)
+        scroll_layout.addWidget(wrapper_id)
 
-        # Botões Aplicar + Validar
+        # ─── Seção 2: Configuração ────────────────────────────────────────
+        scroll_layout.addWidget(SectionHeader("Configuração", "configuration"))
+        self._form_cfg = QtWidgets.QFormLayout()
+        self._form_cfg.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        self._form_cfg.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        self._form_cfg.setContentsMargins(8, 6, 8, 8)
+        self._form_cfg.setSpacing(6)
+        wrapper_cfg = QtWidgets.QWidget()
+        wrapper_cfg.setLayout(self._form_cfg)
+        scroll_layout.addWidget(wrapper_cfg)
+
+        # ─── Seção 3: Saídas ──────────────────────────────────────────────
+        scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
+        self._outputs_layout = QtWidgets.QVBoxLayout()
+        self._outputs_layout.setContentsMargins(8, 6, 8, 8)
+        self._outputs_layout.setSpacing(6)
+        wrapper_out = QtWidgets.QWidget()
+        wrapper_out.setLayout(self._outputs_layout)
+        scroll_layout.addWidget(wrapper_out)
+
+        scroll_layout.addStretch(1)  # ANCORA conteúdo ao topo
+
+        scroll.setWidget(scroll_content)
+        form_root.addWidget(scroll, 1)
+
+        # Botões: ações específicas à esquerda (ex: Visualizar Trajetória 3D)
+        # e ações genéricas (Validar / Aplicar) à direita.
         btn_row = QtWidgets.QHBoxLayout()
+        btn_row.setContentsMargins(0, 6, 0, 0)
 
-        self.btn_apply = QtWidgets.QPushButton("Aplicar alterações")
-        self.btn_apply.setMaximumWidth(200)
-        self.btn_apply.setStyleSheet("""
-            QPushButton { border: 1px solid #2e7d32; border-radius: 4px;
-                          background: #e8f5e9; color: #2e7d32;
-                          padding: 4px 12px; font-weight: bold; }
-            QPushButton:hover { background: #c8e6c9; }
-        """)
-        self.btn_apply.clicked.connect(self._on_apply)
-        btn_row.addWidget(self.btn_apply)
+        # Botão de visualização da trajetória — visível apenas em
+        # PipelineApplicationInstruction; habilitado quando há trajetória
+        # disponível em memória ou em disco.
+        self.btn_view_trajectory = QtWidgets.QPushButton("📊 Visualizar Trajetória 3D")
+        self.btn_view_trajectory.setMinimumWidth(220)
+        self.btn_view_trajectory.setStyleSheet(
+            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
+            " background: #FFF8E8; color: #8B5E00;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
+            " border: 1px solid #ccc; }"
+        )
+        self.btn_view_trajectory.setVisible(False)
+        self.btn_view_trajectory.setEnabled(False)
+        self.btn_view_trajectory.clicked.connect(self._on_view_trajectory)
+        btn_row.addWidget(self.btn_view_trajectory)
+
+        # Botão de visualização da distribuição de scores — visível apenas em
+        # SimilarityScoringInstruction; habilitado quando há scores disponíveis.
+        self.btn_view_distribution = QtWidgets.QPushButton(
+            "📊 Visualizar Distribuição de Scores"
+        )
+        self.btn_view_distribution.setMinimumWidth(240)
+        self.btn_view_distribution.setStyleSheet(
+            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
+            " background: #FFF8E8; color: #8B5E00;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
+            " border: 1px solid #ccc; }"
+        )
+        self.btn_view_distribution.setVisible(False)
+        self.btn_view_distribution.setEnabled(False)
+        self.btn_view_distribution.clicked.connect(self._on_view_distribution)
+        btn_row.addWidget(self.btn_view_distribution)
+
+        # Botão de visualização do resultado de validação — visível apenas
+        # em StrategyEvaluationInstruction; habilitado quando o recurso de
+        # validação está disponível (em memória ou em disco).
+        self.btn_view_validation_result = QtWidgets.QPushButton(
+            "📊 Visualizar Resultado de Validação"
+        )
+        self.btn_view_validation_result.setMinimumWidth(260)
+        self.btn_view_validation_result.setStyleSheet(
+            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
+            " background: #FFF8E8; color: #8B5E00;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
+            " border: 1px solid #ccc; }"
+        )
+        self.btn_view_validation_result.setVisible(False)
+        self.btn_view_validation_result.setEnabled(False)
+        self.btn_view_validation_result.clicked.connect(self._on_view_validation_result)
+        btn_row.addWidget(self.btn_view_validation_result)
+
+        btn_row.addStretch(1)
 
         self.btn_validate = QtWidgets.QPushButton("Validar")
-        self.btn_validate.setMaximumWidth(200)
-        self.btn_validate.setStyleSheet("""
-            QPushButton { border: 1px solid #1565c0; border-radius: 4px;
-                          background: #e3f2fd; color: #1565c0;
-                          padding: 4px 12px; font-weight: bold; }
-            QPushButton:hover { background: #bbdefb; }
-        """)
+        self.btn_validate.setMinimumWidth(120)
+        self.btn_validate.setStyleSheet(
+            "QPushButton { border: 1px solid #1565c0; border-radius: 4px;"
+            " background: #e3f2fd; color: #1565c0;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #bbdefb; }"
+        )
         self.btn_validate.clicked.connect(self._on_validate)
         btn_row.addWidget(self.btn_validate)
 
-        form_layout.addLayout(btn_row)
+        self.btn_apply = QtWidgets.QPushButton("Aplicar alterações")
+        self.btn_apply.setMinimumWidth(160)
+        self.btn_apply.setStyleSheet(
+            "QPushButton { border: 1px solid #2e7d32; border-radius: 4px;"
+            " background: #e8f5e9; color: #2e7d32;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #c8e6c9; }"
+        )
+        self.btn_apply.clicked.connect(self._on_apply)
+        btn_row.addWidget(self.btn_apply)
+
+        form_root.addLayout(btn_row)
 
         self.stack.addWidget(self.form_page)   # index 1
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_available_resources(self, resources: List[StrategyResource]) -> None:
-        """Define os recursos disponíveis para popular os dropdowns de input.
-        Se já há uma instrução carregada, reconstrói o formulário para refletir os novos recursos."""
         self._available_resources = list(resources)
         if self._instruction is not None:
             self._rebuild_form()
 
     def load_instruction(self, instruction: StrategyInstructionDefinition) -> None:
-        """Carrega a instrução no formulário."""
         self._instruction = instruction
+        # Snapshot da instrução no momento do load — usado em _on_apply para
+        # detectar quando o usuário clica "Aplicar Alterações" SEM ter
+        # alterado nada de fato (no-op): nesse caso não emitimos sinais que
+        # invalidariam os outputs persistidos.
+        self._instruction_snapshot = self._snapshot_instruction(instruction)
         self._rebuild_form()
         self.stack.setCurrentIndex(1)
 
     def show_empty(self) -> None:
         self._instruction = None
+        self._instruction_snapshot = None
         self.stack.setCurrentIndex(0)
 
+    @staticmethod
+    def _snapshot_instruction(instr: StrategyInstructionDefinition):
+        """
+        Tira um snapshot serializável da instrução para comparação posterior.
+        Falha de serialização cai para None — no caso, _on_apply trata como
+        "sempre modificado" (comportamento conservador).
+        """
+        try:
+            return instr.to_dict()
+        except Exception:
+            return None
+
+    def update_runtime_state(
+        self,
+        definition: LRStrategyDefinition,
+        executed_ids: Set[str],
+        context: Optional[StrategyExecutionContextProtocol] = None,
+    ) -> None:
+        """Atualiza o estado visual das Saídas com base no runtime atual."""
+        self._latest_definition = definition
+        self._latest_executed_ids = executed_ids or set()
+        self._latest_context = context
+
+        if self._instruction is None:
+            return
+
+        executed = self._instruction.instruction_id in self._latest_executed_ids
+        for row in self._output_widgets.values():
+            row.update_state(
+                definition=definition,
+                instruction_id=self._instruction.instruction_id,
+                executed=executed,
+                context=context,
+            )
+
+        self._refresh_view_trajectory_button_state()
+        self._refresh_view_distribution_button_state()
+        self._refresh_view_validation_result_button_state()
+
+    def _refresh_view_distribution_button_state(self) -> None:
+        """
+        Atualiza a habilitação do botão "Visualizar Distribuição de Scores"
+        com base na disponibilidade do recurso de scores (em memória ou em disco).
+
+        Aplicável a SIMILARITY_SCORING (raw_score) e a SCORE_CALIBRATION
+        (log_lr calibrado) — ambos produzem SimilarityScoreDataset.
+        """
+        if not isinstance(
+            self._instruction,
+            (SimilarityScoringInstruction, ScoreCalibrationInstruction),
+        ):
+            self.btn_view_distribution.setEnabled(False)
+            return
+
+        scores_id = self._resolve_scores_resource_id()
+        if scores_id is None:
+            self.btn_view_distribution.setEnabled(False)
+            return
+
+        has_data = False
+        if self._latest_context is not None and self._latest_context.has_resource(scores_id):
+            ctx_resource = self._latest_context.get_resource(scores_id)
+            if ctx_resource and ctx_resource.has_payload:
+                has_data = True
+
+        if not has_data and self._latest_definition is not None:
+            existing = self._latest_definition.get_resource_by_id(scores_id)
+            if existing and (existing.has_artifact or existing.has_payload):
+                has_data = True
+
+        self.btn_view_distribution.setEnabled(has_data)
+
+    def _resolve_scores_resource_id(self) -> Optional[str]:
+        """
+        Retorna o resource_id do output de scores da instrução atual ou None.
+
+        Para SIMILARITY_SCORING → output_similarity_scores_resource_id (raw).
+        Para SCORE_CALIBRATION → output_calibrated_scores_resource_id (log-LR).
+        """
+        if isinstance(self._instruction, SimilarityScoringInstruction):
+            return self._instruction.output_similarity_scores_resource_id or None
+        if isinstance(self._instruction, ScoreCalibrationInstruction):
+            return self._instruction.output_calibrated_scores_resource_id or None
+        return None
+
+    def _refresh_view_validation_result_button_state(self) -> None:
+        """
+        Atualiza a habilitação do botão "Visualizar Resultado de Validação"
+        com base na disponibilidade do recurso VALIDATION_RESULT (em memória
+        ou em disco). Aplicável apenas a StrategyEvaluationInstruction.
+        """
+        if not isinstance(self._instruction, StrategyEvaluationInstruction):
+            self.btn_view_validation_result.setEnabled(False)
+            return
+
+        result_id = self._resolve_validation_result_resource_id()
+        if result_id is None:
+            self.btn_view_validation_result.setEnabled(False)
+            return
+
+        has_data = False
+        if self._latest_context is not None and self._latest_context.has_resource(result_id):
+            ctx_resource = self._latest_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                has_data = True
+
+        if not has_data and self._latest_definition is not None:
+            existing = self._latest_definition.get_resource_by_id(result_id)
+            if existing and (existing.has_artifact or existing.has_payload):
+                has_data = True
+
+        self.btn_view_validation_result.setEnabled(has_data)
+
+    def _resolve_validation_result_resource_id(self) -> Optional[str]:
+        """Retorna o resource_id do output de validação ou None."""
+        if not isinstance(self._instruction, StrategyEvaluationInstruction):
+            return None
+        return self._instruction.output_validation_result_resource_id or None
+
+    def _refresh_view_trajectory_button_state(self) -> None:
+        """
+        Atualiza a habilitação do botão "Visualizar Trajetória 3D" com base
+        na disponibilidade do recurso de trajetória (em memória ou em disco).
+        """
+        if not isinstance(self._instruction, PipelineApplicationInstruction):
+            self.btn_view_trajectory.setEnabled(False)
+            return
+
+        trajectory_id = self._resolve_trajectory_resource_id()
+        if trajectory_id is None:
+            self.btn_view_trajectory.setEnabled(False)
+            return
+
+        has_data = False
+
+        # Em memória — recurso no contexto com payload.
+        if self._latest_context is not None and self._latest_context.has_resource(trajectory_id):
+            ctx_resource = self._latest_context.get_resource(trajectory_id)
+            if ctx_resource and ctx_resource.has_payload:
+                has_data = True
+
+        # Em disco — recurso na definição com artifact_ref persistido.
+        if not has_data and self._latest_definition is not None:
+            existing = self._latest_definition.get_resource_by_id(trajectory_id)
+            if existing and (existing.has_artifact or existing.has_payload):
+                has_data = True
+
+        self.btn_view_trajectory.setEnabled(has_data)
+
+    def _resolve_trajectory_resource_id(self) -> Optional[str]:
+        """Retorna o resource_id da trajetória 3D da instrução atual ou None."""
+        if not isinstance(self._instruction, PipelineApplicationInstruction):
+            return None
+        explicit = self._instruction.trajectory_data_resource_id
+        if explicit:
+            return explicit
+        # Fallback à convenção usada pelo executor quando o id não foi atribuído.
+        return f"{self._instruction.instruction_id}_trajectory"
+
     # ── Form building ─────────────────────────────────────────────────────────
+
+    def _clear_form_layout(self, form_layout: QtWidgets.QFormLayout) -> None:
+        while form_layout.rowCount():
+            form_layout.removeRow(0)
+
+    def _clear_outputs_layout(self) -> None:
+        while self._outputs_layout.count():
+            item = self._outputs_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
 
     def _rebuild_form(self) -> None:
         instr = self._instruction
         if not instr:
             return
 
-        # Bloqueia sinais dos combos antigos para evitar efeitos colaterais durante remoção
-        for combo in getattr(self, '_choice_field_widgets', {}).values():
+        # Bloqueia sinais dos combos antigos para evitar efeitos colaterais
+        for combo in self._choice_field_widgets.values():
             combo.blockSignals(True)
 
-        # Limpa o formulário anterior
-        while self.form_inner.rowCount():
-            self.form_inner.removeRow(0)
+        # Reset widget caches
+        self._choice_field_widgets = {}
+        self._choice_specs = {}
+        self._resource_field_widgets = {}
+        self._value_field_widgets = {}
+        self._value_specs = {}
+        self._param_fields = {}
+        self._nested_inline_widgets = {}
+        self._nested_dialog_widgets = {}
+        self._output_widgets = {}
 
-        # Header compacto: tipo + ID na mesma linha
-        header = QtWidgets.QLabel(
-            f"<span style='font-size:11px; color:#2c3e50;'>"
-            f"<b>{instr.instruction_type.value}</b>"
-            f"<span style='color:#888;'>  {instr.instruction_id}</span></span>"
+        # Limpa as três seções
+        self._clear_form_layout(self._form_id)
+        self._clear_form_layout(self._form_cfg)
+        self._clear_outputs_layout()
+
+        # ─── Header bar ──────────────────────────────────────────────────
+        self._header_lbl.setText(
+            f"  {instr.instruction_type.value}    "
+            f"<span style='color:#aac7e0; font-weight:normal;'>id: {instr.instruction_id}</span>"
         )
-        self.form_inner.addRow(header)
 
-        # Nome
-        self._field_name = QtWidgets.QLineEdit(instr.name)
-        self._field_name.setMaximumWidth(_MAX_FIELD_WIDTH)
-        self.form_inner.addRow("Nome:", self._field_name)
+        # ─── Seção Identificação ────────────────────────────────────────
+        self._field_name = QtWidgets.QLineEdit(instr.name or "")
+        self._form_id.addRow("Nome:", self._field_name)
 
-        # Descrição
         self._field_desc = QtWidgets.QPlainTextEdit(instr.description or "")
-        self._field_desc.setMaximumHeight(50)
-        self._field_desc.setMaximumWidth(_MAX_FIELD_WIDTH)
-        self.form_inner.addRow("Descrição:", self._field_desc)
+        self._field_desc.setMaximumHeight(54)
+        self._form_id.addRow("Descrição:", self._field_desc)
 
-        self.form_inner.addRow(self._make_separator())
+        # ─── Seção Configuração ─────────────────────────────────────────
+        self._build_configuration_section(instr)
 
-        # Campos de escolha (enums) — ex: pipeline_mode LINEAR/DUAL
-        self._choice_field_widgets: Dict[str, QtWidgets.QComboBox] = {}
-        self._choice_specs: Dict[str, object] = {}  # field_name → ChoiceFieldSpec
+        # ─── Seção Saídas ────────────────────────────────────────────────
+        self._build_outputs_section(instr)
+
+        # Visibilidade do botão "Visualizar Trajetória 3D" — apenas em PIPELINE_APPLICATION.
+        self.btn_view_trajectory.setVisible(
+            isinstance(instr, PipelineApplicationInstruction)
+        )
+
+        # Visibilidade do botão "Visualizar Distribuição de Scores" —
+        # SIMILARITY_SCORING (raw_score) e SCORE_CALIBRATION (log_lr calibrado).
+        self.btn_view_distribution.setVisible(
+            isinstance(instr, (SimilarityScoringInstruction, ScoreCalibrationInstruction))
+        )
+
+        # Visibilidade do botão "Visualizar Resultado de Validação" —
+        # apenas em STRATEGY_EVALUATION.
+        self.btn_view_validation_result.setVisible(
+            isinstance(instr, StrategyEvaluationInstruction)
+        )
+
+        # Aplica estado de runtime se houver
+        if self._latest_definition is not None:
+            executed = instr.instruction_id in self._latest_executed_ids
+            for row in self._output_widgets.values():
+                row.update_state(
+                    definition=self._latest_definition,
+                    instruction_id=instr.instruction_id,
+                    executed=executed,
+                    context=self._latest_context,
+                )
+
+        self._refresh_view_trajectory_button_state()
+        self._refresh_view_distribution_button_state()
+        self._refresh_view_validation_result_button_state()
+
+    def _build_configuration_section(self, instr: StrategyInstructionDefinition) -> None:
+        # Ajuda contextual da instrução (texto explicativo opcional no topo
+        # da seção). Renderizada como caixa âmbar — mesmo padrão visual da
+        # descrição contextual de choice fields, para coerência cromática.
+        help_text = instr.get_configuration_help() if hasattr(instr, "get_configuration_help") else None
+        if help_text:
+            help_box = QtWidgets.QFrame()
+            help_box.setStyleSheet(
+                "QFrame { background-color: #FFF8E8;"
+                " border-left: 3px solid #E8A020;"
+                " border-radius: 2px;"
+                " margin: 0px 0px 6px 0px; }"
+            )
+            help_layout = QtWidgets.QHBoxLayout(help_box)
+            help_layout.setContentsMargins(8, 6, 8, 6)
+            help_lbl = QtWidgets.QLabel(help_text)
+            help_lbl.setStyleSheet(
+                "background: transparent; border: none;"
+                " color: #5a4500; font-size: 11px;"
+            )
+            help_lbl.setWordWrap(True)
+            help_layout.addWidget(help_lbl, 1)
+            self._form_cfg.addRow(help_box)
+
+        # Choice fields (ex: pipeline_mode LINEAR/DUAL)
         choice_specs = instr.get_choice_field_specs()
         for cspec in choice_specs:
             combo = QtWidgets.QComboBox()
-            combo.setMaximumWidth(_MAX_FIELD_WIDTH)
             combo.addItems(cspec.choices)
 
-            # Resolve valor atual do campo (pode ser enum ou string)
             raw_val = getattr(instr, cspec.field_name, None)
             if raw_val is not None:
-                # Tenta .name (enum), senão str() com normalização
                 if hasattr(raw_val, "name"):
-                    current_str = raw_val.name      # ex: PipelineMode.DUAL → "DUAL"
+                    current_str = raw_val.name
                 else:
                     current_str = str(raw_val)
                     current_str = current_str.split(".")[-1] if "." in current_str else current_str
 
-                # Comparação case-insensitive
                 choices_upper = {c.upper(): c for c in cspec.choices}
                 match = choices_upper.get(current_str.upper())
                 if match:
@@ -188,74 +604,135 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
             self._choice_field_widgets[cspec.field_name] = combo
             self._choice_specs[cspec.field_name] = cspec
-            self.form_inner.addRow(f"{cspec.label}:", combo)
-            # Ao mudar o modo, aplica imediatamente e reconstrói o formulário
+            self._form_cfg.addRow(f"{cspec.label}:", combo)
             combo.currentTextChanged.connect(
                 lambda _text, fn=cspec.field_name: self._on_choice_changed(fn)
             )
 
-        if choice_specs:
-            self.form_inner.addRow(self._make_separator())
+            # Linha de ajuda contextual logo abaixo do combo, atualizada
+            # imediatamente conforme a seleção (antes do rebuild completo).
+            if cspec.descriptions:
+                desc_box = QtWidgets.QFrame()
+                desc_box.setStyleSheet(
+                    "QFrame { background-color: #FFF8E8;"
+                    " border-left: 3px solid #E8A020;"
+                    " border-radius: 2px;"
+                    " margin: 0px 0px 4px 4px; }"
+                )
+                desc_layout = QtWidgets.QHBoxLayout(desc_box)
+                desc_layout.setContentsMargins(8, 4, 8, 4)
+                desc_layout.setSpacing(4)
 
-        # Campos de recurso tipados via get_resource_field_specs()
+                desc_lbl = QtWidgets.QLabel(
+                    cspec.descriptions.get(combo.currentText(), "")
+                )
+                desc_lbl.setStyleSheet(
+                    "background: transparent; border: none;"
+                    " color: #5a4500; font-size: 11px;"
+                )
+                desc_lbl.setWordWrap(True)
+                desc_layout.addWidget(desc_lbl, 1)
+
+                # Spans both columns for full width — limpo e compacto.
+                self._form_cfg.addRow(desc_box)
+                combo.currentTextChanged.connect(
+                    lambda text, lbl=desc_lbl, ds=cspec.descriptions:
+                    lbl.setText(ds.get(text, ""))
+                )
+
+        # Resource fields — somente os de input (outputs vão para a seção Saídas)
         specs = instr.get_resource_field_specs()
-        self._resource_field_widgets: Dict[str, QtWidgets.QWidget] = {}
+        input_specs = [s for s in specs if not s.is_output]
 
-        if specs:
-            for spec in specs:
-                if spec.is_output:
-                    widget = QtWidgets.QLineEdit(getattr(instr, spec.field_name, "") or "")
-                    widget.setPlaceholderText("nome do recurso de saída")
-                    widget.setMaximumWidth(_MAX_FIELD_WIDTH)
-                else:
-                    widget = QtWidgets.QComboBox()
-                    widget.setMaximumWidth(_MAX_FIELD_WIDTH)
-                    widget.addItem("(nenhum)", userData=None)
-                    for res in self._available_resources:
-                        if res.resource_type in spec.accepted_types:
-                            display = res.name if res.name else res.resource_id
-                            widget.addItem(display, userData=res.resource_id)
-                            widget.setItemData(
-                                widget.count() - 1,
-                                f"ID: {res.resource_id}\nTipo: {res.resource_type.value}",
-                                QtCore.Qt.ItemDataRole.ToolTipRole,
-                            )
-                    current_val = getattr(instr, spec.field_name, None)
-                    if current_val:
-                        for idx in range(widget.count()):
-                            if widget.itemData(idx) == current_val:
-                                widget.setCurrentIndex(idx)
-                                break
+        # Detecta pares Source/Target pelo sufixo do field_name
+        rendered_field_names: Set[str] = set()
+        i = 0
+        while i < len(input_specs):
+            spec = input_specs[i]
+            if spec.field_name in rendered_field_names:
+                i += 1
+                continue
 
+            pair_partner = self._find_pair_partner(spec, input_specs)
+            if pair_partner is not None:
+                self._render_paired_inputs(spec, pair_partner)
+                rendered_field_names.add(spec.field_name)
+                rendered_field_names.add(pair_partner.field_name)
+            else:
+                widget = self._make_input_resource_combo(instr, spec)
                 self._resource_field_widgets[spec.field_name] = widget
-                self.form_inner.addRow(f"{spec.label}:", widget)
+                self._form_cfg.addRow(f"{spec.label}:", widget)
+                rendered_field_names.add(spec.field_name)
 
-            self.form_inner.addRow(self._make_separator())
-        else:
-            # Fallback genérico para instruções sem specs
-            resource_ids = [r.resource_id for r in self._available_resources]
-            self._input_combos: List[QtWidgets.QComboBox] = []
-            for i, inp_id in enumerate(instr.input_resource_ids):
-                combo = QtWidgets.QComboBox()
-                combo.addItems(["(nenhum)"] + resource_ids)
-                if inp_id in resource_ids:
-                    combo.setCurrentText(inp_id)
-                self._input_combos.append(combo)
-                self.form_inner.addRow(f"Input {i+1}:", combo)
+            i += 1
 
-            self._output_fields: List[QtWidgets.QLineEdit] = []
-            for i, out_id in enumerate(instr.output_resource_ids):
-                field = QtWidgets.QLineEdit(out_id)
-                field.setPlaceholderText("nome do recurso de saída")
-                self._output_fields.append(field)
-                self.form_inner.addRow(f"Output {i+1}:", field)
+        # DTOs aninhados (PipelineApplicationPolicy / ComparisonMiningConfig /
+        # configs de modelo de similaridade e calibração).
+        for attr_name, render_strategy in NESTED_DTO_ATTRS:
+            if not hasattr(instr, attr_name):
+                continue
 
-            if instr.input_resource_ids or instr.output_resource_ids:
-                self.form_inner.addRow(self._make_separator())
+            # Configs de modelo só renderizam quando o tipo correspondente
+            # está selecionado na instrução.
+            if attr_name == "similarity_model_config" and not getattr(
+                instr, "uses_plda", False
+            ):
+                continue
+            if attr_name == "logreg_config" and not getattr(
+                instr, "uses_logistic_regression", False
+            ):
+                continue
+            if attr_name == "kde_config" and not getattr(
+                instr, "uses_kde", False
+            ):
+                continue
 
-        # Parâmetros
-        self._param_fields: Dict[str, QtWidgets.QWidget] = {}
-        for key, val in instr.parameters.items():
+            current_dto = getattr(instr, attr_name, None)
+
+            if render_strategy == "inline":
+                if current_dto is None:
+                    current_dto = make_default_dto(attr_name)
+                    setattr(instr, attr_name, current_dto)
+                widget = NestedDTOInlineWidget(
+                    title=get_inline_title(attr_name),
+                    dto=current_dto,
+                    field_labels=get_inline_field_labels(attr_name),
+                    field_tooltips=get_inline_field_tooltips(attr_name),
+                    header_tooltip=_HEADER_TOOLTIPS.get(attr_name),
+                    intro_text=get_inline_intro_text(attr_name),
+                )
+                widget.value_changed.connect(
+                    lambda new_dto, an=attr_name: self._on_nested_changed(an, new_dto)
+                )
+                self._nested_inline_widgets[attr_name] = widget
+                self._form_cfg.addRow(widget)
+
+            elif render_strategy == "dialog":
+                widget = NestedDTODialogTrigger(
+                    title=get_inline_title(attr_name),
+                    dto=current_dto,
+                    summary_fn=summarize_mining_config,
+                    open_dialog_fn=open_mining_config_dialog,
+                )
+                widget.value_changed.connect(
+                    lambda new_dto, an=attr_name: self._on_nested_changed(an, new_dto)
+                )
+                self._nested_dialog_widgets[attr_name] = widget
+                self._form_cfg.addRow(widget)
+
+        # Campos primitivos do DTO declarados via get_value_field_specs
+        # (ex: split_ratio, random_seed, identity_list, output_dataset_a_name).
+        for vspec in instr.get_value_field_specs():
+            current = getattr(instr, vspec.field_name, None)
+            widget = self._make_value_widget(vspec, current)
+            if widget is None:
+                continue
+            self._value_field_widgets[vspec.field_name] = widget
+            self._value_specs[vspec.field_name] = vspec
+            self._form_cfg.addRow(f"{vspec.label}:", widget)
+
+        # Parâmetros genéricos (parameters dict)
+        for key, val in (instr.parameters or {}).items():
             if isinstance(val, bool):
                 widget = QtWidgets.QCheckBox()
                 widget.setChecked(val)
@@ -263,82 +740,318 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 widget = QtWidgets.QDoubleSpinBox()
                 widget.setRange(-1e9, 1e9)
                 widget.setValue(float(val))
-                widget.setMaximumWidth(160)
             else:
                 widget = QtWidgets.QLineEdit(str(val) if val is not None else "")
-                widget.setMaximumWidth(_MAX_FIELD_WIDTH)
             self._param_fields[key] = widget
-            self.form_inner.addRow(f"{key}:", widget)
+            self._form_cfg.addRow(f"{key}:", widget)
+
+    def _make_value_widget(
+        self, spec: ValueFieldSpec, current: Any
+    ) -> Optional[QtWidgets.QWidget]:
+        """Cria o widget apropriado para um ValueFieldSpec."""
+        vt = spec.value_type
+
+        if vt == "bool":
+            w = QtWidgets.QCheckBox()
+            w.setChecked(bool(current))
+            return w
+
+        if vt == "int":
+            w = QtWidgets.QSpinBox()
+            lo = int(spec.min_value) if spec.min_value is not None else -(10 ** 9)
+            hi = int(spec.max_value) if spec.max_value is not None else (10 ** 9)
+            w.setRange(lo, hi)
+            if current is not None:
+                try:
+                    w.setValue(int(current))
+                except Exception:
+                    pass
+            return w
+
+        if vt == "float":
+            w = QtWidgets.QDoubleSpinBox()
+            lo = float(spec.min_value) if spec.min_value is not None else -1e9
+            hi = float(spec.max_value) if spec.max_value is not None else 1e9
+            w.setRange(lo, hi)
+            if spec.decimals is not None:
+                w.setDecimals(spec.decimals)
+                w.setSingleStep(10 ** -spec.decimals)
+            if current is not None:
+                try:
+                    w.setValue(float(current))
+                except Exception:
+                    pass
+            return w
+
+        if vt == "str":
+            w = QtWidgets.QLineEdit(str(current) if current else "")
+            if spec.placeholder:
+                w.setPlaceholderText(spec.placeholder)
+            return w
+
+        if vt in ("list_str", "list_int"):
+            text = ""
+            if isinstance(current, (list, tuple)):
+                text = ", ".join(str(x) for x in current)
+            w = QtWidgets.QLineEdit(text)
+            w.setPlaceholderText(spec.placeholder or "valores separados por vírgula")
+            return w
+
+        return None
+
+    def _read_value_widget(
+        self, widget: QtWidgets.QWidget, spec: ValueFieldSpec
+    ) -> Any:
+        """Lê o valor atual do widget conforme o value_type do spec."""
+        vt = spec.value_type
+
+        if vt == "bool" and isinstance(widget, QtWidgets.QCheckBox):
+            return widget.isChecked()
+
+        if vt == "int" and isinstance(widget, QtWidgets.QSpinBox):
+            return int(widget.value())
+
+        if vt == "float" and isinstance(widget, QtWidgets.QDoubleSpinBox):
+            return float(widget.value())
+
+        if vt == "str" and isinstance(widget, QtWidgets.QLineEdit):
+            return widget.text().strip() or None
+
+        if vt == "list_str" and isinstance(widget, QtWidgets.QLineEdit):
+            text = widget.text().strip()
+            if not text:
+                return []
+            return [tok.strip() for tok in text.split(",") if tok.strip()]
+
+        if vt == "list_int" and isinstance(widget, QtWidgets.QLineEdit):
+            text = widget.text().strip()
+            if not text:
+                return []
+            result: list = []
+            for tok in text.split(","):
+                tok = tok.strip()
+                if not tok:
+                    continue
+                try:
+                    result.append(int(tok))
+                except ValueError:
+                    pass
+            return result
+
+        return None
+
+    def _find_pair_partner(
+        self, spec: ResourceFieldSpec, all_specs: List[ResourceFieldSpec]
+    ) -> Optional[ResourceFieldSpec]:
+        """Retorna o spec irmão se field_name termina com _source/_target e há um par."""
+        for suffix in _PAIR_SUFFIXES:
+            if spec.field_name.endswith(suffix):
+                base = spec.field_name[: -len(suffix)]
+                other_suffix = "_target" if suffix == "_source" else "_source"
+                target_name = base + other_suffix
+                for other in all_specs:
+                    if other.field_name == target_name and other.accepted_types == spec.accepted_types:
+                        # Retorna apenas se este spec for o de Source (para ordenação consistente)
+                        return other if suffix == "_source" else None
+        return None
+
+    def _render_paired_inputs(
+        self, source_spec: ResourceFieldSpec, target_spec: ResourceFieldSpec
+    ) -> None:
+        """Renderiza Source/Target lado a lado em duas colunas."""
+        if not self._instruction:
+            return
+
+        container = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(8)
+
+        for spec in (source_spec, target_spec):
+            col = QtWidgets.QWidget()
+            cv = QtWidgets.QVBoxLayout(col)
+            cv.setContentsMargins(0, 0, 0, 0)
+            cv.setSpacing(2)
+
+            lbl = QtWidgets.QLabel(spec.label)
+            lbl.setStyleSheet("font-size: 10px; color: #555;")
+            cv.addWidget(lbl)
+
+            combo = self._make_input_resource_combo(self._instruction, spec)
+            cv.addWidget(combo)
+
+            self._resource_field_widgets[spec.field_name] = combo
+            h.addWidget(col, 1)
+
+        # Adiciona como um row sem label (ocupa toda a largura)
+        self._form_cfg.addRow(container)
+
+    def _make_input_resource_combo(
+        self, instr: StrategyInstructionDefinition, spec: ResourceFieldSpec
+    ) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox()
+        combo.addItem("(nenhum)", userData=None)
+        for res in self._available_resources:
+            if res.resource_type in spec.accepted_types:
+                display = res.name if res.name else res.resource_id
+                combo.addItem(display, userData=res.resource_id)
+                combo.setItemData(
+                    combo.count() - 1,
+                    f"ID: {res.resource_id}\nTipo: {res.resource_type.value}",
+                    QtCore.Qt.ItemDataRole.ToolTipRole,
+                )
+
+        current_val = getattr(instr, spec.field_name, None)
+        if current_val:
+            for idx in range(combo.count()):
+                if combo.itemData(idx) == current_val:
+                    combo.setCurrentIndex(idx)
+                    break
+        return combo
+
+    def _build_outputs_section(self, instr: StrategyInstructionDefinition) -> None:
+        specs = instr.get_resource_field_specs()
+        output_specs = [s for s in specs if s.is_output]
+
+        if not output_specs:
+            empty = QtWidgets.QLabel("(esta instrução não declara saídas)")
+            empty.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+            self._outputs_layout.addWidget(empty)
+            return
+
+        for spec in output_specs:
+            current_id = getattr(instr, spec.field_name, None)
+            resource_type = (
+                spec.accepted_types[0] if spec.accepted_types else None
+            )
+            if resource_type is None:
+                continue
+
+            row = OutputRowWidget(
+                field_name=spec.field_name,
+                label=spec.label,
+                resource_id=current_id,
+                resource_type=resource_type,
+            )
+            # Sincronia imediata: cada edição do nome do output grava no DTO
+            # logo no instante em que o usuário digita, sem depender de o painel
+            # invocar _on_apply antes da validação/execução.
+            row.name_changed.connect(self._on_output_name_changed)
+            self._output_widgets[spec.field_name] = row
+            self._outputs_layout.addWidget(row)
+
+    # ── Apply / Validate ──────────────────────────────────────────────────────
 
     def _on_apply(self) -> None:
         if not self._instruction:
             return
 
-        # Atualiza campos simples
-        self._instruction.name = self._field_name.text().strip() or self._instruction.name
-        self._instruction.description = self._field_desc.toPlainText().strip() or None
+        instr = self._instruction
 
-        # IMPORTANTE: atualizar recurso fields ANTES dos choice fields, pois os
-        # specs dependem do estado atual do choice (ex: pipeline_mode DUAL → 4 campos).
-        # Se atualizássemos o choice primeiro, get_resource_field_specs() poderia
-        # retornar specs diferentes dos widgets que existem no formulário.
+        # Identificação
+        instr.name = self._field_name.text().strip() or instr.name
+        instr.description = self._field_desc.toPlainText().strip() or None
 
-        # Atualiza campos de recurso tipados (usando specs do estado ATUAL)
-        specs = self._instruction.get_resource_field_specs()
-        if specs and hasattr(self, '_resource_field_widgets'):
-            for spec in specs:
+        # Resource fields ANTES dos choice fields (specs dependem do choice atual)
+        specs = instr.get_resource_field_specs()
+        for spec in specs:
+            if spec.is_output:
+                widget = self._output_widgets.get(spec.field_name)
+                val = widget.current_value() if widget else None
+                setattr(instr, spec.field_name, val or None)
+            else:
                 widget = self._resource_field_widgets.get(spec.field_name)
                 if widget is None:
                     continue
-                if spec.is_output:
-                    val = widget.text().strip() or None
-                else:
-                    val = widget.currentData()
-                setattr(self._instruction, spec.field_name, val)
+                if isinstance(widget, QtWidgets.QComboBox):
+                    setattr(instr, spec.field_name, widget.currentData())
 
-            if hasattr(self._instruction, '_sync_declared_io'):
-                self._instruction._sync_declared_io()
-        else:
-            # Fallback genérico
-            if hasattr(self, '_input_combos'):
-                for i, combo in enumerate(self._input_combos):
-                    val = combo.currentText()
-                    if val != "(nenhum)" and i < len(self._instruction.input_resource_ids):
-                        self._instruction.input_resource_ids[i] = val
+        # DTOs aninhados — já estão sincronizados via signals, mas garante atribuição
+        for attr_name, widget in self._nested_inline_widgets.items():
+            setattr(instr, attr_name, widget.value())
+        for attr_name, widget in self._nested_dialog_widgets.items():
+            setattr(instr, attr_name, widget.value())
 
-            if hasattr(self, '_output_fields'):
-                for i, field in enumerate(self._output_fields):
-                    val = field.text().strip()
-                    if val and i < len(self._instruction.output_resource_ids):
-                        self._instruction.output_resource_ids[i] = val
+        # Value fields — também ANTES dos choice fields, pois algumas specs
+        # podem depender do choice atual (ex: split_ratio só existe em modos *_RATIO).
+        for field_name, widget in self._value_field_widgets.items():
+            spec = self._value_specs.get(field_name)
+            if spec is None:
+                continue
+            value = self._read_value_widget(widget, spec)
+            setattr(instr, field_name, value)
 
-        # Atualiza campos de escolha (enums) — DEPOIS dos resource fields
-        for field_name, combo in getattr(self, '_choice_field_widgets', {}).items():
+        if hasattr(instr, "_sync_declared_io"):
+            instr._sync_declared_io()
+
+        # Choice fields — DEPOIS dos resource fields
+        for field_name, combo in self._choice_field_widgets.items():
             new_val = combo.currentText()
             new_val = self._convert_choice_value(field_name, new_val)
-            setattr(self._instruction, field_name, new_val)
+            setattr(instr, field_name, new_val)
 
-        # Atualiza parâmetros
+        # Parâmetros genéricos
         for key, widget in self._param_fields.items():
             if isinstance(widget, QtWidgets.QCheckBox):
-                self._instruction.parameters[key] = widget.isChecked()
+                instr.parameters[key] = widget.isChecked()
             elif isinstance(widget, QtWidgets.QDoubleSpinBox):
-                self._instruction.parameters[key] = widget.value()
+                instr.parameters[key] = widget.value()
             elif isinstance(widget, QtWidgets.QLineEdit):
-                self._instruction.parameters[key] = widget.text().strip()
+                instr.parameters[key] = widget.text().strip()
 
         # Sincroniza io novamente após choice fields (modo pode ter mudado)
-        if hasattr(self._instruction, '_sync_declared_io'):
-            self._instruction._sync_declared_io()
+        if hasattr(instr, "_sync_declared_io"):
+            instr._sync_declared_io()
 
-        self.config_changed.emit(self._instruction)
+        # No-op detection: se nada mudou desde o último load/apply, não
+        # invalidamos outputs nem marcamos a estratégia como modificada.
+        new_snapshot = self._snapshot_instruction(instr)
+        baseline = getattr(self, "_instruction_snapshot", None)
+        if baseline is not None and new_snapshot == baseline:
+            return
 
-    def _rebuild_and_notify(self) -> None:
-        """Reconstrói o formulário e emite config_changed. Chamado via QTimer para evitar crash."""
+        # Atualiza snapshot para refletir o estado pós-apply (a próxima
+        # chamada com os mesmos valores será detectada como no-op).
+        self._instruction_snapshot = new_snapshot
+
+        self.config_changed.emit(instr)
+        # Sinal específico do Aplicar — usado para invalidar outputs
+        # persistidos da instrução cuja configuração mudou.
+        self.instruction_applied.emit(instr)
+
+    def _on_validate(self) -> None:
+        if self._instruction:
+            self._on_apply()
+            self.validate_requested.emit(self._instruction)
+
+    def _on_view_trajectory(self) -> None:
+        if isinstance(self._instruction, PipelineApplicationInstruction):
+            self.view_trajectory_requested.emit(self._instruction)
+
+    def _on_view_distribution(self) -> None:
+        if isinstance(
+            self._instruction,
+            (SimilarityScoringInstruction, ScoreCalibrationInstruction),
+        ):
+            self.view_score_distribution_requested.emit(self._instruction)
+
+    def _on_view_validation_result(self) -> None:
+        if isinstance(self._instruction, StrategyEvaluationInstruction):
+            self.view_validation_result_requested.emit(self._instruction)
+
+    def _on_output_name_changed(self, field_name: str, new_value: str) -> None:
+        """
+        Atualiza o DTO assim que o usuário edita um nome de recurso de saída,
+        sem precisar clicar em Aplicar. Garante que validações/execuções
+        subsequentes vejam o valor digitado mesmo que o foco ainda esteja no
+        campo. Não emite config_changed para evitar reset do contexto a cada
+        keystroke — quem decide salvar é o Aplicar/Validar.
+        """
         if not self._instruction:
             return
-        self._rebuild_form()
-        self.config_changed.emit(self._instruction)
+        setattr(self._instruction, field_name, new_value or None)
+        if hasattr(self._instruction, "_sync_declared_io"):
+            self._instruction._sync_declared_io()
 
     def _on_choice_changed(self, field_name: str) -> None:
         """Aplica o valor do campo de escolha e agenda reconstrução do formulário."""
@@ -347,37 +1060,44 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         combo = self._choice_field_widgets.get(field_name)
         if combo is None:
             return
-        new_val = combo.currentText()
-        # Converte para o tipo correto usando enum_type do ChoiceFieldSpec
-        new_val = self._convert_choice_value(field_name, new_val)
+        new_val = self._convert_choice_value(field_name, combo.currentText())
         setattr(self._instruction, field_name, new_val)
         if hasattr(self._instruction, "_sync_declared_io"):
             self._instruction._sync_declared_io()
-        # Adia o rebuild para depois do processamento do sinal atual terminar,
+        # Adia o rebuild para depois do processamento do sinal atual,
         # evitando crash por destruição do widget que originou o sinal.
         QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
 
+    def _on_nested_changed(self, attr_name: str, new_dto: Any) -> None:
+        if not self._instruction:
+            return
+        setattr(self._instruction, attr_name, new_dto)
+        self.config_changed.emit(self._instruction)
+
+    def _rebuild_and_notify(self) -> None:
+        if not self._instruction:
+            return
+        self._rebuild_form()
+        self.config_changed.emit(self._instruction)
+
     def _convert_choice_value(self, field_name: str, text: str) -> Any:
-        """
-        Converte o texto do combo para o enum correto usando o enum_type
-        registrado no ChoiceFieldSpec. Garante que o campo NUNCA fique como
-        string se um enum_type foi declarado.
-        """
-        cspec = getattr(self, '_choice_specs', {}).get(field_name)
-        if cspec is not None and cspec.enum_type is not None:
+        cspec = self._choice_specs.get(field_name)
+        if cspec is not None and getattr(cspec, "enum_type", None) is not None:
             enum_cls = cspec.enum_type
+            # Preferir from_str se existir (semântica custom do projeto).
             if hasattr(enum_cls, "from_str"):
-                return enum_cls.from_str(text)
+                try:
+                    return enum_cls.from_str(text)
+                except Exception:
+                    pass
+            # Fallback genérico: tenta construtor (vale para Enum por value),
+            # depois lookup por nome (`enum_cls[name]`).
+            try:
+                return enum_cls(text)
+            except Exception:
+                pass
+            try:
+                return enum_cls[text]
+            except Exception:
+                pass
         return text
-
-    def _on_validate(self) -> None:
-        if self._instruction:
-            self._on_apply()
-            self.validate_requested.emit(self._instruction)
-
-    @staticmethod
-    def _make_separator() -> QtWidgets.QFrame:
-        sep = QtWidgets.QFrame()
-        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #e0e0e0; margin: 4px 0;")
-        return sep

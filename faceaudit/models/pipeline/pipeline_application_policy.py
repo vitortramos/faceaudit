@@ -25,27 +25,27 @@ class PipelineApplicationPolicy(JSONSerializableMixin):
     """
 
     save_checkpoints: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Indica se checkpoints intermediários devem ser persistidos."}
     )
     save_transformed_dataset: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Indica se o dataset final transformado deve ser persistido."}
     )
     save_trajectory_data: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Indica se os dados da trajetória da transformação devem ser preservados."}
     )
 
     @classmethod
     def default(cls: Type[T]) -> T:
         """
-        Fábrica para a política padrão de aplicação.
+        Fábrica para a política padrão de aplicação (todos os artefatos persistidos).
         """
         return cls(
-            save_checkpoints=False,
-            save_transformed_dataset=False,
-            save_trajectory_data=False
+            save_checkpoints=True,
+            save_transformed_dataset=True,
+            save_trajectory_data=True
         )
 
     @classmethod

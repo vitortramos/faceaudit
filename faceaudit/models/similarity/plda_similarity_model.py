@@ -71,6 +71,16 @@ class PLDASimilarityModel(SimilarityModelProtocol):
     def requires_training(self) -> bool:
         return True
 
+    @property
+    def input_dimension(self) -> Optional[int]:
+        """
+        Dimensão dos embeddings esperados na entrada (D), gravada durante o
+        fit como `trained_dim`. Property unificada com CosineSimilarityModel
+        para validação cross-arch (ex: SIMILARITY_SCORING checa se o
+        dataset bate com a dim do modelo).
+        """
+        return self.trained_dim
+
     # =========================================================================
     # TREINO
     # =========================================================================

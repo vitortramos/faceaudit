@@ -254,6 +254,42 @@ class LRStrategyDefinition(JSONSerializableMixin):
             if current_rule_id != rule_id
         ]
 
+    def to_dict(self) -> dict:
+        """
+        Serializa a definição para JSON delegando aos `to_dict()` dos filhos.
+
+        ATENÇÃO: a implementação padrão do JSONSerializableMixin usa
+        `dataclasses.asdict()`, que recursa em dataclasses filhos por conta
+        própria — SEM chamar o `to_dict()` deles. Como `StrategyResource`
+        precisa omitir o campo `payload` (objeto runtime, não JSON-serializável,
+        ex: EmbeddingTransformationPipeline) e as instruções concretas podem ter
+        DTOs aninhados com Enums que exigem `to_str()`, é necessário despachar
+        manualmente para os `to_dict()` dos filhos.
+        """
+        def _child_dict(obj):
+            if obj is None:
+                return None
+            if hasattr(obj, "to_dict"):
+                return obj.to_dict()
+            return obj
+
+        return {
+            "strategy_id": self.strategy_id,
+            "name": self.name,
+            "description": self.description,
+            "resources": [_child_dict(r) for r in self.resources],
+            "preparation_instructions": [_child_dict(i) for i in self.preparation_instructions],
+            "validation_instructions": [_child_dict(i) for i in self.validation_instructions],
+            "casework_instructions": [_child_dict(i) for i in self.casework_instructions],
+            "validation_rule_ids": list(self.validation_rule_ids),
+            "embedding_type": (
+                self.embedding_type.to_str()
+                if self.embedding_type is not None
+                else None
+            ),
+            "version": self.version,
+        }
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.executors.instructions.strategy_instruction_executor_base import (
     StrategyInstructionExecutorBase,
@@ -97,7 +99,7 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
             output_resource = StrategyResource(
                 resource_id=output_resource_id,
                 name=output_resource_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.SIMILARITY_SCORES,
                 payload=score_dataset,
                 artifact_ref=None,
             )
@@ -157,12 +159,37 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
             model_resource = context.get_resource(
                 instruction.trained_similarity_model_resource_id
             )
-            if model_resource is None or not isinstance(
-                model_resource.payload, SimilarityModelProtocol
-            ):
+            if model_resource is None:
                 result.add_error(
                     f"O recurso '{instruction.trained_similarity_model_resource_id}' "
-                    "não contém um SimilarityModelProtocol válido."
+                    "está registrado mas é nulo no contexto."
+                )
+            elif model_resource.payload is None:
+                # Distinguir o caso "load do disco falhou" do caso "tipo errado".
+                ref_path = (
+                    model_resource.artifact_ref.path
+                    if model_resource.artifact_ref is not None
+                    else None
+                )
+                if ref_path:
+                    result.add_error(
+                        f"O recurso '{instruction.trained_similarity_model_resource_id}' "
+                        f"tem artifact_ref ('{ref_path}') mas o payload está vazio — "
+                        "falha ao desserializar o modelo do disco. "
+                        "Re-execute a instrução SIMILARITY_MODEL_TRAINING que produz este "
+                        "modelo (ou veja o log do console para detalhes da exceção)."
+                    )
+                else:
+                    result.add_error(
+                        f"O recurso '{instruction.trained_similarity_model_resource_id}' "
+                        "ainda não foi produzido. Execute a instrução "
+                        "SIMILARITY_MODEL_TRAINING que produz este modelo antes."
+                    )
+            elif not isinstance(model_resource.payload, SimilarityModelProtocol):
+                result.add_error(
+                    f"O recurso '{instruction.trained_similarity_model_resource_id}' "
+                    f"contém um payload do tipo {type(model_resource.payload).__name__}, "
+                    "que não satisfaz SimilarityModelProtocol."
                 )
 
         if not instruction.probe_dataset_resource_id:
@@ -200,6 +227,37 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     result.add_error(
                         f"O recurso '{instruction.reference_dataset_resource_id}' "
                         "não contém um EmbeddingDataset válido."
+                    )
+
+        # ── Compatibilidade de dimensões: modelo vs datasets ───────────────
+        # Evita o erro "operands could not be broadcast together with shapes
+        # (N, dim_dataset) (dim_modelo,)" que ocorre lá dentro do score_matrix
+        # quando o usuário aplica um PLDA treinado em 512D sobre um dataset
+        # de 256D (ou vice-versa). Falha cedo aqui com mensagem explícita.
+        model_dim = self._get_model_input_dimension(instruction, context)
+        if model_dim is not None:
+            for ds_field, ds_id in (
+                ("probe_dataset_resource_id", instruction.probe_dataset_resource_id),
+                ("reference_dataset_resource_id", instruction.reference_dataset_resource_id),
+            ):
+                if not ds_id or not context.has_resource(ds_id):
+                    continue
+                ds_resource = context.get_resource(ds_id)
+                if ds_resource is None or not isinstance(
+                    ds_resource.payload, EmbeddingDataset
+                ):
+                    continue
+                ds_dim = self._get_dataset_dim(ds_resource.payload)
+                if ds_dim is not None and ds_dim != model_dim:
+                    result.add_error(
+                        f"Incompatibilidade de dimensões: o modelo de "
+                        f"similaridade foi treinado com embeddings de "
+                        f"dimensão {model_dim}, mas o recurso '{ds_id}' "
+                        f"({ds_field}) contém embeddings de dimensão "
+                        f"{ds_dim}. Aplique antes um pipeline que reduza/"
+                        f"projete o dataset para {model_dim} dimensões, "
+                        f"ou treine o modelo de similaridade com embeddings "
+                        f"da dimensão correta."
                     )
 
         if not instruction.output_similarity_scores_resource_id:
@@ -265,17 +323,29 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
         )
 
         n = len(dataset)
+        n_pairs = (n * (n - 1)) // 2
         self._log(
             context,
-            f"📐 Gerando scores por auto-comparação "
-            f"(N={n}, pares={(n * (n - 1)) // 2})..."
+            f"📐 Auto-comparação: N={n}, pares={n_pairs:,}".replace(",", "."),
         )
 
+        if n < 2:
+            return result
+
+        # Vetoriza o cálculo via score_matrix em vez de N² chamadas a score_pair —
+        # ganho de ordens de grandeza para PLDA/Cosine.
+        self._log(context, "🔢 Computando matriz de scores (vetorizado)…")
+        self._check_dim_compatibility(model, dataset)
+        score_mat = model.score_matrix(dataset.matrix, dataset.matrix)
+        self._log(context, f"✅ Matriz {score_mat.shape} pronta. Empacotando pares…")
+
+        progress_every = max(1, n_pairs // 20)  # ~5% steps
+        emitted = 0
         for i in range(n):
             probe = dataset[i]
             for j in range(i + 1, n):
                 reference = dataset[j]
-                raw_score = float(model.score_pair(probe, reference))
+                raw_score = float(score_mat[i, j])
 
                 metadata = {}
                 if instruction.store_metadata_per_sample:
@@ -292,7 +362,15 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                         metadata=metadata,
                     )
                 )
+                emitted += 1
+                if emitted % progress_every == 0:
+                    pct = 100.0 * emitted / n_pairs
+                    self._log(
+                        context,
+                        f"  … {emitted:,}/{n_pairs:,} pares ({pct:.0f}%)".replace(",", "."),
+                    )
 
+        self._log(context, f"✅ {emitted:,} pares empacotados.".replace(",", "."))
         return result
 
     def _score_cross_comparison(
@@ -324,15 +402,30 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
         n_probe = len(probe_dataset)
         n_ref = len(reference_dataset)
+        n_pairs = n_probe * n_ref
         self._log(
             context,
-            f"📐 Gerando scores por comparação cruzada "
-            f"(Probe={n_probe}, Reference={n_ref}, pares={n_probe * n_ref})..."
+            f"📐 Comparação cruzada: Probe={n_probe}, Reference={n_ref}, "
+            f"pares={n_pairs:,}".replace(",", "."),
         )
 
+        if n_probe == 0 or n_ref == 0:
+            return result
+
+        # Vetoriza via score_matrix em vez de N_probe × N_ref chamadas a score_pair.
+        self._log(context, "🔢 Computando matriz de scores (vetorizado)…")
+        # Validação de defesa em runtime: se a dim do dataset não bate com a
+        # do modelo, falha aqui com mensagem clara em vez de propagar o
+        # cryptic "operands could not be broadcast together" do numpy.
+        self._check_dim_compatibility(model, probe_dataset, reference_dataset)
+        score_mat = model.score_matrix(probe_dataset.matrix, reference_dataset.matrix)
+        self._log(context, f"✅ Matriz {score_mat.shape} pronta. Empacotando pares…")
+
+        progress_every = max(1, n_pairs // 20)
+        emitted = 0
         for i, probe in enumerate(probe_dataset):
             for j, reference in enumerate(reference_dataset):
-                raw_score = float(model.score_pair(probe, reference))
+                raw_score = float(score_mat[i, j])
 
                 metadata = {}
                 if instruction.store_metadata_per_sample:
@@ -349,5 +442,85 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                         metadata=metadata,
                     )
                 )
+                emitted += 1
+                if emitted % progress_every == 0:
+                    pct = 100.0 * emitted / n_pairs
+                    self._log(
+                        context,
+                        f"  … {emitted:,}/{n_pairs:,} pares ({pct:.0f}%)".replace(",", "."),
+                    )
 
+        self._log(context, f"✅ {emitted:,} pares empacotados.".replace(",", "."))
         return result
+    # =========================================================================
+    # HELPERS DE COMPATIBILIDADE DE DIMENSÕES
+    # =========================================================================
+
+    @staticmethod
+    def _get_model_input_dimension(
+        instruction: SimilarityScoringInstruction,
+        context: StrategyExecutionContextProtocol,
+    ) -> Optional[int]:
+        """
+        Lê a dimensão de entrada do modelo de similaridade. Tenta primeiro a
+        property unificada `input_dimension` (Cosine + PLDA), com fallback
+        para `trained_dim` (atributo legado do PLDA).
+        """
+        rid = instruction.trained_similarity_model_resource_id
+        if not rid or not context.has_resource(rid):
+            return None
+        resource = context.get_resource(rid)
+        if resource is None or resource.payload is None:
+            return None
+        model = resource.payload
+        dim = getattr(model, "input_dimension", None)
+        if dim is None:
+            dim = getattr(model, "trained_dim", None)
+        return int(dim) if dim is not None else None
+
+    @staticmethod
+    def _get_dataset_dim(dataset: EmbeddingDataset) -> Optional[int]:
+        """
+        Retorna a dimensão dos embeddings do dataset sem materializar a
+        matriz inteira (que `dataset.matrix` aloca). Pega a forma do
+        primeiro item; assume homogeneidade entre samples (pré-condição
+        para qualquer scoring vetorizado).
+        """
+        items = getattr(dataset, "items", None) or []
+        if not items:
+            return None
+        emb = getattr(items[0], "embedding", None)
+        if emb is None:
+            return None
+        try:
+            return int(emb.shape[0])
+        except Exception:
+            return None
+
+    def _check_dim_compatibility(
+        self,
+        model,
+        *datasets: EmbeddingDataset,
+    ) -> None:
+        """
+        Levanta ValueError com mensagem clara se a dimensão dos datasets
+        não bate com a dim de entrada do modelo. Usado como defesa em
+        runtime no execute() — a validação semântica ANTES da execução
+        já é feita em _validate_instruction_specifics, mas esta camada
+        protege também os caminhos onde a UI não passa pela validação
+        (ex: re-execução forçada com Executar habilitado sempre).
+        """
+        model_dim = getattr(model, "input_dimension", None)
+        if model_dim is None:
+            model_dim = getattr(model, "trained_dim", None)
+        if model_dim is None:
+            return
+        for ds in datasets:
+            ds_dim = self._get_dataset_dim(ds)
+            if ds_dim is None or ds_dim == model_dim:
+                continue
+            raise ValueError(
+                f"Incompatibilidade de dimensões: modelo treinado com {model_dim} "
+                f"dimensões, mas dataset '{getattr(ds, 'name', '?')}' tem "
+                f"embeddings de {ds_dim} dimensões."
+            )

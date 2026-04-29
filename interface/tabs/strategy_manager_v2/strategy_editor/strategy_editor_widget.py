@@ -19,7 +19,6 @@ from faceaudit.protocols.strategy_execution_context_protocol import (
 
 from .instruction_list_widget import InstructionListWidget
 from .instruction_config_panel import InstructionConfigPanel
-from .produced_resources_widget import ProducedResourcesWidget
 
 _PHASES: List[Tuple[str, str]] = [
     ("preparation", "Preparação"),
@@ -45,11 +44,15 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     run_instruction_requested = QtCore.pyqtSignal(object)
     run_all_requested = QtCore.pyqtSignal()
     validate_instruction_requested = QtCore.pyqtSignal(object)
+    view_trajectory_requested = QtCore.pyqtSignal(object)
+    view_score_distribution_requested = QtCore.pyqtSignal(object)
+    view_validation_result_requested = QtCore.pyqtSignal(object)
+    instruction_applied = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._definition: Optional[LRStrategyDefinition] = None
-        self._phase_widgets: Dict[str, Tuple[InstructionListWidget, InstructionConfigPanel, ProducedResourcesWidget]] = {}
+        self._phase_widgets: Dict[str, Tuple[InstructionListWidget, InstructionConfigPanel]] = {}
         self._init_ui()
         self.show_empty()
 
@@ -114,26 +117,17 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         self._tabs = QtWidgets.QTabWidget()
 
         for phase_key, phase_label in _PHASES:
-            instr_list = InstructionListWidget()
+            instr_list = InstructionListWidget(phase=phase_key)
             config_panel = InstructionConfigPanel()
-            produced_widget = ProducedResourcesWidget()
-
-            # Container esquerdo: instruções + recursos produzidos
-            left_container = QtWidgets.QWidget()
-            left_layout = QtWidgets.QVBoxLayout(left_container)
-            left_layout.setContentsMargins(0, 0, 0, 0)
-            left_layout.setSpacing(0)
-            left_layout.addWidget(instr_list, 1)
-            left_layout.addWidget(produced_widget, 0)
 
             splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
             splitter.setChildrenCollapsible(False)
-            splitter.addWidget(left_container)
+            splitter.addWidget(instr_list)
             splitter.addWidget(config_panel)
             splitter.setSizes([240, 460])
 
             self._tabs.addTab(splitter, phase_label)
-            self._phase_widgets[phase_key] = (instr_list, config_panel, produced_widget)
+            self._phase_widgets[phase_key] = (instr_list, config_panel)
 
             # Conexões — default args capturam valores corretamente
             instr_list.instruction_selected.connect(
@@ -150,6 +144,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             )
             config_panel.config_changed.connect(self._on_config_changed)
             config_panel.validate_requested.connect(self._on_validate_instruction_requested)
+            config_panel.view_trajectory_requested.connect(self._on_view_trajectory_requested)
+            config_panel.view_score_distribution_requested.connect(self._on_view_score_distribution_requested)
+            config_panel.view_validation_result_requested.connect(self._on_view_validation_result_requested)
+            config_panel.instruction_applied.connect(self._on_instruction_applied)
             instr_list.run_instruction_requested.connect(self._on_run_instruction_requested)
 
         editor_layout.addWidget(self._tabs, 1)
@@ -166,13 +164,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         self.lbl_strategy_name.setText(f"Estratégia: {definition.name}")
 
         for phase_key, _ in _PHASES:
-            instr_list, config_panel, produced_widget = self._phase_widgets[phase_key]
+            instr_list, config_panel = self._phase_widgets[phase_key]
             config_panel.set_available_resources(available_resources or [])
             instr_list.load_strategy(definition._get_phase_list(phase_key))
             config_panel.show_empty()
-            produced_widget.refresh(
-                definition._get_phase_list(phase_key), definition, set()
-            )
 
         # Selecionar embedding_type correto
         self.combo_embedding_type.blockSignals(True)
@@ -191,15 +186,14 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         self.lbl_strategy_name.setText(f"Estratégia: {name}")
 
     def update_available_resources(self, resources: List[StrategyResource]) -> None:
-        for _, (_, config_panel, _) in self._phase_widgets.items():
+        for _, (_, config_panel) in self._phase_widgets.items():
             config_panel.set_available_resources(resources)
 
     def show_empty(self) -> None:
         self._definition = None
-        for _, (instr_list, config_panel, produced_widget) in self._phase_widgets.items():
+        for _, (instr_list, config_panel) in self._phase_widgets.items():
             instr_list.clear()
             config_panel.show_empty()
-            produced_widget.clear()
         self.combo_embedding_type.blockSignals(True)
         self.combo_embedding_type.setCurrentIndex(0)
         self.combo_embedding_type.blockSignals(False)
@@ -211,7 +205,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         executed_ids: Set[str],
     ) -> None:
         """Atualiza os indicadores visuais de todas as instruções em todas as abas."""
-        for _, (instr_list, _, _) in self._phase_widgets.items():
+        for _, (instr_list, _) in self._phase_widgets.items():
             instr_list.update_states(runnable_ids, executed_ids)
 
     def update_produced_resources(
@@ -220,15 +214,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         executed_ids: Set[str],
         context: Optional[StrategyExecutionContextProtocol] = None,
     ) -> None:
-        """Atualiza o widget de recursos produzidos em todas as abas."""
+        """Atualiza o estado runtime das Saídas no InstructionConfigPanel de cada aba."""
         for phase_key, _ in _PHASES:
-            _, _, produced_widget = self._phase_widgets[phase_key]
-            produced_widget.refresh(
-                definition._get_phase_list(phase_key),
-                definition,
-                executed_ids,
-                context,
-            )
+            _, config_panel = self._phase_widgets[phase_key]
+            config_panel.update_runtime_state(definition, executed_ids, context)
 
     # ── Internal slots ────────────────────────────────────────────────────────
 
@@ -250,7 +239,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             return
         phase_list = self._definition._get_phase_list(phase_key)
         phase_list[:] = [i for i in phase_list if i.instruction_id != instr.instruction_id]
-        instr_list, config_panel, _ = self._phase_widgets[phase_key]
+        instr_list, config_panel = self._phase_widgets[phase_key]
         instr_list.load_strategy(phase_list)
         config_panel.show_empty()
         self.strategy_modified.emit(self._definition)
@@ -270,6 +259,18 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
     def _on_validate_instruction_requested(self, instr: StrategyInstructionDefinition) -> None:
         self.validate_instruction_requested.emit(instr)
+
+    def _on_view_trajectory_requested(self, instr: StrategyInstructionDefinition) -> None:
+        self.view_trajectory_requested.emit(instr)
+
+    def _on_view_score_distribution_requested(self, instr: StrategyInstructionDefinition) -> None:
+        self.view_score_distribution_requested.emit(instr)
+
+    def _on_view_validation_result_requested(self, instr: StrategyInstructionDefinition) -> None:
+        self.view_validation_result_requested.emit(instr)
+
+    def _on_instruction_applied(self, instr: StrategyInstructionDefinition) -> None:
+        self.instruction_applied.emit(instr)
 
     def _on_embedding_type_changed(self, index: int) -> None:
         if not self._definition:

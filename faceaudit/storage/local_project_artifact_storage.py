@@ -106,14 +106,49 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         Raises:
             ValueError: Se kwargs não contiver as variáveis necessárias para o template.
         """
+        import time as _time
+
+        # progress_callback é meta — não vai para o template de path.
+        progress_callback = kwargs.pop("progress_callback", None)
+
+        def _emit(msg: str) -> None:
+            if progress_callback is not None:
+                try:
+                    progress_callback(msg)
+                except Exception:
+                    pass
+
+        t_start = _time.perf_counter()
+
         file_type = StrategyFileType.for_artifact(artifact_type)
         relative_path = file_type.build_path(**kwargs)
         abs_path = self._root / relative_path
 
         abs_path.parent.mkdir(parents=True, exist_ok=True)
-        self._write(abs_path, data, file_type.extension)
 
+        # ETAPA 1 — escrita em disco
+        t1 = _time.perf_counter()
+        self._write(abs_path, data, file_type.extension, progress_callback=progress_callback)
+        t_write = _time.perf_counter() - t1
+
+        # ETAPA 2 — hash SHA-256 (lê o arquivo inteiro)
+        t2 = _time.perf_counter()
         file_hash = self._hash.calculate_file_hash(abs_path)
+        t_hash = _time.perf_counter() - t2
+
+        # Telemetria: tempo total + tamanho do arquivo. Permite ao perito
+        # ver onde o gargalo está (write ou hash) caso a persistência fique
+        # lenta. Só emite se houver progress_callback (no fluxo normal de
+        # execução de instrução; chamadas programáticas ficam silenciosas).
+        try:
+            file_mb = abs_path.stat().st_size / (1024 * 1024)
+        except Exception:
+            file_mb = 0.0
+        t_total = _time.perf_counter() - t_start
+        _emit(
+            f"⏱  Persistência '{relative_path}': {file_mb:.1f} MB | "
+            f"write={t_write:.2f}s, hash={t_hash:.2f}s, total={t_total:.2f}s"
+        )
 
         return StrategyArtifactReference(
             artifact_type=artifact_type,
@@ -309,7 +344,7 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
     # AUXILIARES
     # =========================================================================
 
-    def _write(self, path: Path, data: Any, extension: str) -> None:
+    def _write(self, path: Path, data: Any, extension: str, progress_callback=None) -> None:
         """
         Serializa data para o disco no formato adequado à extensão.
 
@@ -337,8 +372,12 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         elif extension == ".parquet":
             if hasattr(data, "to_parquet"):
-                # pandas DataFrame
-                data.to_parquet(path)
+                # Tenta passar progress_callback se a implementação aceitar.
+                try:
+                    data.to_parquet(path, progress_callback=progress_callback)
+                except TypeError:
+                    # pandas DataFrame não aceita o kwarg — chama sem ele.
+                    data.to_parquet(path)
             elif hasattr(data, "to_dataframe"):
                 # EmbeddingDataset ou similar com to_dataframe()
                 data.to_dataframe().to_parquet(path)

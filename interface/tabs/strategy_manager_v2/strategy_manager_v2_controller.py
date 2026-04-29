@@ -71,6 +71,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._executed_instruction_ids: set = set()
         self._executor = None
 
+        # Flag de "alterações não salvas". Setada por _on_strategy_modified
+        # (edição em andamento via UI), zerada em todo save bem-sucedido e
+        # ao abrir/fechar projeto. Consultada por request_close().
+        self._is_dirty: bool = False
+
         self._build_ui(parent)
         self._connect_signals()
 
@@ -135,6 +140,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.strategy_modified.connect(self._on_strategy_modified)
         self._strategy_editor.run_instruction_requested.connect(self._on_run_instruction)
         self._strategy_editor.validate_instruction_requested.connect(self._on_validate_instruction)
+        self._strategy_editor.view_trajectory_requested.connect(self._on_view_trajectory)
+        self._strategy_editor.view_score_distribution_requested.connect(
+            self._on_view_score_distribution
+        )
+        self._strategy_editor.view_validation_result_requested.connect(
+            self._on_view_validation_result
+        )
+        self._strategy_editor.instruction_applied.connect(
+            self._on_instruction_applied
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -226,6 +241,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         try:
             for defn in self._definitions:
                 self._project.definition_repository.save_definition(defn)
+            self._is_dirty = False
             QtWidgets.QMessageBox.information(
                 self._view, "Projeto salvo", "Projeto salvo com sucesso."
             )
@@ -245,6 +261,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.set_project_open(False)
         self._left_panel.set_strategy_actions_enabled(False)
         self._view.show_welcome_screen()
+        self._is_dirty = False
 
     def _add_dataset(self) -> None:
         """Importa um dataset (.parquet) da biblioteca global para o projeto."""
@@ -373,6 +390,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._reset_execution_state()
 
         dialog = LogProgressDialog("Executando estratégia…", parent=self._view)
+        # NonModal para liberar entrega de sinais queued no Windows (ver CLAUDE.md).
+        dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         dialog.show()
 
         try:
@@ -390,25 +409,50 @@ class StrategyManagerV2Controller(QtCore.QObject):
         worker = StrategyExecutionWorker(executor, self._current_definition)
         worker.moveToThread(thread)
 
+        # Mantém referência Python ao worker para evitar GC prematuro.
+        self._active_worker = worker
+
+        cancel_state = {"requested": False}
+
         thread.started.connect(worker.run)
         worker.log_message.connect(dialog.append_log)
+
+        def on_cancel_requested():
+            cancel_state["requested"] = True
+
+        dialog.cancellation_requested.connect(on_cancel_requested)
+
+        def close_dialog_if_cancelled():
+            if cancel_state["requested"]:
+                dialog.accept()
 
         def on_finished(model):
             for instr in self._current_definition.instructions:
                 self._executed_instruction_ids.add(instr.instruction_id)
 
-            # Persistir todos os recursos produzidos pelo Run All
-            self._persist_trained_model_resources(model, executor)
+            # A persistência (pickle/parquet pesado) já rodou na thread do
+            # worker — aqui só sincronizamos os artifact_refs já gravados
+            # com a definição em memória (operação rápida, sem I/O).
+            self._sync_trained_model_to_definition(model)
 
             self._refresh_instruction_states()
             self._refresh_produced_resources()
+            # Repopula a árvore de recursos e os combos do editor para refletir
+            # os recursos produzidos durante o Run All.
+            self._refresh_left_panel()
             dialog.finish(True)
+            close_dialog_if_cancelled()
+
+        def on_error(_msg):
+            dialog.finish(False)
+            close_dialog_if_cancelled()
 
         worker.finished.connect(on_finished)
-        worker.error.connect(lambda msg: dialog.finish(False))
+        worker.error.connect(on_error)
         worker.finished.connect(thread.quit)
         worker.error.connect(thread.quit)
         worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
 
         self._active_thread = thread
@@ -452,32 +496,111 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._refresh_left_panel()
         self._strategy_editor.show_empty()
         self._view.show_workspace_screen()
+        # Projeto recém-aberto não tem alterações pendentes.
+        self._is_dirty = False
 
     def _refresh_left_panel(self) -> None:
         if not self._project:
             return
         self._definitions = list(self._project.definition_repository.list_definitions())
-        resources = self._collect_project_resources()
+        # Árvore esquerda mostra TODOS os recursos do projeto (agrupados por
+        # estratégia para tipos produzidos). Editor recebe apenas os recursos
+        # acessíveis à estratégia atual: globais (datasets, configs) + os
+        # produzidos pela própria estratégia.
+        all_resources = self._collect_project_resources()
+        resource_to_strategy = self._build_resource_to_strategy_map()
         self._left_panel.populate_strategies(self._definitions)
-        self._left_panel.populate_resources(resources)
-        # Propaga recursos atualizados ao editor para que dropdowns reflitam novos recursos
-        self._strategy_editor.update_available_resources(resources)
+        self._left_panel.populate_resources(all_resources, resource_to_strategy=resource_to_strategy)
+
+        editor_resources = self._collect_editor_resources(self._current_definition)
+        self._strategy_editor.update_available_resources(editor_resources)
+
+    def _collect_editor_resources(self, current_definition) -> List[StrategyResource]:
+        """
+        Lista de recursos disponíveis aos dropdowns do editor para a estratégia
+        atualmente aberta:
+
+        - Recursos globais (DATASET, PIPELINE_CONFIG, SPLIT_CONFIG, MERGE_CONFIG,
+          SIMILARITY_MODEL_CONFIG, CALIBRATION_MODEL_CONFIG, ARTIFACT) — visíveis
+          a qualquer estratégia, vindos de _collect_project_resources (definições
+          + disk-scan).
+        - Recursos produzidos (INTERMEDIATE_DATASET, TRAINED_PIPELINE,
+          TRAINED_SIMILARITY_MODEL, TRAINED_CALIBRATION_MODEL, SIMILARITY_SCORES,
+          TRAJECTORY_DATA, etc) — APENAS os declarados pela própria estratégia
+          atual. Recursos produzidos por outras estratégias ficam invisíveis aqui.
+
+        Sem `current_definition` (nenhuma estratégia aberta) retorna lista vazia.
+        """
+        if current_definition is None:
+            return []
+
+        _GLOBAL_TYPES = {
+            StrategyResourceType.DATASET,
+            StrategyResourceType.PIPELINE_CONFIG,
+            StrategyResourceType.SPLIT_CONFIG,
+            StrategyResourceType.MERGE_CONFIG,
+            StrategyResourceType.SIMILARITY_MODEL_CONFIG,
+            StrategyResourceType.CALIBRATION_MODEL_CONFIG,
+            StrategyResourceType.ARTIFACT,
+        }
+
+        seen_ids: set = set()
+        resources: List[StrategyResource] = []
+
+        # 1. Globais (vindos de qualquer estratégia ou do disk-scan).
+        for r in self._collect_project_resources():
+            if r.resource_type in _GLOBAL_TYPES and r.resource_id not in seen_ids:
+                seen_ids.add(r.resource_id)
+                resources.append(r)
+
+        # 2. Produzidos: somente os da estratégia atual.
+        for r in current_definition.resources:
+            if r.resource_type not in _GLOBAL_TYPES and r.resource_id not in seen_ids:
+                seen_ids.add(r.resource_id)
+                resources.append(r)
+
+        return resources
+
+    def _build_resource_to_strategy_map(self) -> dict:
+        """
+        Mapeia resource_id → nome da estratégia que o produziu/declara.
+
+        Usado pela árvore de recursos para sub-agrupar por estratégia os
+        recursos produzidos por instruções (INTERMEDIATE_DATASET,
+        TRAINED_PIPELINE, etc).
+        """
+        mapping: dict = {}
+        for defn in self._definitions:
+            for res in defn.resources:
+                if res.resource_id not in mapping:
+                    mapping[res.resource_id] = defn.name
+        return mapping
 
     def _collect_project_resources(self) -> List[StrategyResource]:
         """
         Coleta recursos para exibição na árvore:
         1. Recursos declarados nas definições de estratégia.
         2. Arquivos importados em disco mas ainda não referenciados em nenhuma definição.
+
+        A deduplicação entre (1) e (2) é feita por **path do artefato** — a
+        pasta `datasets/` contém tanto datasets globais importados quanto
+        intermediários produzidos por instruções; sem dedup por path, os
+        intermediários aparecem em duplicidade (uma vez como DATASET via
+        disk scan e outra como INTERMEDIATE_DATASET via definição).
         """
         seen_ids: set = set()
+        seen_paths: set = set()
         resources: List[StrategyResource] = []
 
         # 1. Recursos declarados nas definições
         for defn in self._definitions:
             for res in defn.resources:
-                if res.resource_id not in seen_ids:
-                    seen_ids.add(res.resource_id)
-                    resources.append(res)
+                if res.resource_id in seen_ids:
+                    continue
+                seen_ids.add(res.resource_id)
+                if res.artifact_ref and res.artifact_ref.path:
+                    seen_paths.add(res.artifact_ref.path)
+                resources.append(res)
 
         # 2. Arquivos importados no disco (não vinculados a nenhuma definição ainda)
         _import_scan = [
@@ -488,23 +611,38 @@ class StrategyManagerV2Controller(QtCore.QObject):
         ]
         for artifact_type, resource_type in _import_scan:
             for ref in self._project.storage.list_artifacts(artifact_type):
+                # Skip se o arquivo já está declarado como recurso de alguma estratégia.
+                if ref.path in seen_paths:
+                    continue
                 resource_id = Path(ref.path).stem
-                if resource_id not in seen_ids:
-                    seen_ids.add(resource_id)
-                    resources.append(StrategyResource(
-                        resource_id=resource_id,
-                        name=resource_id,
-                        resource_type=resource_type,
-                        artifact_ref=ref,
-                    ))
+                if resource_id in seen_ids:
+                    continue
+
+                # Heurística defensiva: arquivos cujo stem contém algum
+                # resource_id já declarado (ex: prefixo "{strategy_id}_") são
+                # considerados órfãos de uma versão anterior do recurso e
+                # não devem aparecer novamente como "Datasets" soltos.
+                if any(rid and rid in resource_id for rid in seen_ids):
+                    continue
+
+                seen_ids.add(resource_id)
+                resources.append(StrategyResource(
+                    resource_id=resource_id,
+                    name=resource_id,
+                    resource_type=resource_type,
+                    artifact_ref=ref,
+                ))
 
         return resources
 
     def _on_strategy_opened(self, definition: LRStrategyDefinition) -> None:
         self._current_definition = definition
         self._left_panel.set_strategy_actions_enabled(True)
-        resources = self._collect_project_resources()
-        self._strategy_editor.load_strategy(definition, available_resources=resources)
+        # Editor recebe apenas recursos acessíveis à estratégia atual:
+        # globais + produzidos pela própria estratégia. Produzidos por
+        # outras estratégias não aparecem nos dropdowns.
+        editor_resources = self._collect_editor_resources(definition)
+        self._strategy_editor.load_strategy(definition, available_resources=editor_resources)
         self._reset_execution_state()
         self._refresh_produced_resources()
 
@@ -523,6 +661,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if definition and self._project:
             try:
                 self._project.definition_repository.save_definition(definition)
+                self._is_dirty = False
                 self._refresh_left_panel()
             except Exception as exc:
                 QtWidgets.QMessageBox.critical(
@@ -537,6 +676,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         cloned.name = f"{definition.name} (cópia)"
         try:
             self._project.definition_repository.save_definition(cloned)
+            self._is_dirty = False
             self._refresh_left_panel()
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
@@ -561,6 +701,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         definition.name = new_name
         try:
             self._project.definition_repository.save_definition(definition)
+            self._is_dirty = False
             self._refresh_left_panel()
             if self._current_definition and self._current_definition.strategy_id == definition.strategy_id:
                 self._strategy_editor.set_strategy_name(new_name)
@@ -605,27 +746,143 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._sync_all_output_placeholders()
         self._reset_execution_state()
         self._refresh_produced_resources()
+        # Edição em andamento: marca o projeto como sujo até que algo persista.
+        self._is_dirty = True
 
     # ── Execution state management ─────────────────────────────────────────────
 
     def _reset_execution_state(self) -> None:
-        """Reseta contexto e estados visuais quando a estratégia muda."""
+        """Reseta contexto e estados visuais quando a estratégia muda.
+
+        OBS: o conjunto `_executed_instruction_ids` é zerado aqui, mas
+        `_refresh_instruction_states` o repovoa imediatamente com base no
+        estado do disco — instruções cujos outputs já estão persistidos
+        continuam marcadas como executadas. Isso garante que reabrir o
+        projeto preserve os ✅.
+        """
         self._execution_context = None
         self._executed_instruction_ids.clear()
         self._executor = None
         self._refresh_instruction_states()
 
-    def _ensure_executor_and_context(self) -> bool:
-        """Cria executor e contexto se ainda não existem. Retorna False em caso de erro."""
+    def _on_instruction_applied(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Disparado quando o usuário clica "Aplicar alterações" numa instrução.
+        Invalida os outputs persistidos: limpa artifact_ref/payload do recurso
+        e apaga o arquivo do disco. Resultado: a instrução perde o ✅ até ser
+        reexecutada.
+        """
+        if not self._project or not self._current_definition or instruction is None:
+            return
+
+        try:
+            specs = instruction.get_resource_field_specs()
+        except Exception:
+            specs = []
+
+        any_invalidated = False
+        for spec in specs:
+            if not spec.is_output:
+                continue
+            output_id = getattr(instruction, spec.field_name, None)
+            if not output_id:
+                continue
+
+            existing = self._current_definition.get_resource_by_id(output_id)
+            if existing is None:
+                continue
+
+            old_ref = existing.artifact_ref
+            existing.artifact_ref = None
+            existing.payload = None
+            any_invalidated = True
+
+            # Apaga arquivo do disco — o output anterior está stale relativo
+            # à nova configuração e não deve continuar sendo claimed como o
+            # output da instrução.
+            if old_ref is not None and old_ref.path:
+                try:
+                    abs_path = self._project.storage.project_root / old_ref.path
+                    if abs_path.exists():
+                        abs_path.unlink()
+                    # Stats JSON paralelo, se existir.
+                    stats_path = abs_path.parent / (abs_path.stem + "_stats.json")
+                    if stats_path.exists():
+                        stats_path.unlink()
+                except Exception:
+                    pass
+
+            # Remove também do contexto vivo se estiver lá — força nova execução.
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(output_id)
+            ):
+                try:
+                    self._execution_context.remove_resource(output_id)
+                except Exception:
+                    pass
+
+        if any_invalidated:
+            # Marca a instrução como não-executada e salva.
+            self._executed_instruction_ids.discard(instruction.instruction_id)
+            self._save_current_definition()
+            # Recursos foram invalidados — instruções DOWNSTREAM que dependem
+            # delas precisam ser revalidadas pelo gate de dependência.
+            self._refresh_instruction_states()
+            self._refresh_produced_resources()
+            self._refresh_left_panel()
+
+    def _compute_executed_ids_from_disk(self) -> set:
+        """
+        Retorna o conjunto de instruction_ids cujos outputs declarados estão
+        TODOS persistidos no projeto (têm StrategyResource com artifact_ref
+        na definição). Usado para reconstruir o estado "executada" ao abrir
+        o projeto e para sobreviver a resets em memória.
+        """
+        executed: set = set()
+        if not self._current_definition:
+            return executed
+
+        for instr in self._current_definition.instructions:
+            try:
+                specs = instr.get_resource_field_specs()
+            except Exception:
+                continue
+            output_specs = [s for s in specs if s.is_output]
+            if not output_specs:
+                # Sem outputs declarados — não dá para inferir do disco.
+                continue
+            all_persisted = True
+            for spec in output_specs:
+                resource_id = getattr(instr, spec.field_name, None)
+                if not resource_id:
+                    all_persisted = False
+                    break
+                existing = self._current_definition.get_resource_by_id(resource_id)
+                if existing is None or not existing.has_artifact:
+                    all_persisted = False
+                    break
+            if all_persisted:
+                executed.add(instr.instruction_id)
+        return executed
+
+    def _ensure_executor_and_context(self, silent: bool = False) -> bool:
+        """Cria executor e contexto se ainda não existem. Retorna False em caso de erro.
+
+        Quando silent=True, falhas não exibem QMessageBox — útil para refreshes
+        passivos (ex: cálculo de quais instruções são runnable enquanto o usuário
+        ainda está editando).
+        """
         if self._executor is None:
             try:
                 self._executor = StrategyExecutorFactory.build(
                     artifact_storage=self._project.storage,
                 )
             except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível inicializar executor:\n{exc}"
-                )
+                if not silent:
+                    QtWidgets.QMessageBox.critical(
+                        self._view, "Erro", f"Não foi possível inicializar executor:\n{exc}"
+                    )
                 return False
 
         if self._execution_context is None:
@@ -651,41 +908,50 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         self._current_definition.embedding_type.dimensions,
                     )
             except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível preparar contexto:\n{exc}"
-                )
+                if not silent:
+                    QtWidgets.QMessageBox.critical(
+                        self._view, "Erro", f"Não foi possível preparar contexto:\n{exc}"
+                    )
+                self._execution_context = None
                 return False
 
         return True
 
     def _register_project_resources_in_context(self) -> None:
-        """Registra no contexto recursos do projeto que não estão na definição da estratégia."""
+        """
+        Registra no contexto recursos do projeto que não estão na definição
+        da estratégia, SEM hidratar.
+
+        Esses resources existem no contexto apenas para popular dropdowns da
+        UI (que precisam só de resource_id/resource_type). Quando uma instrução
+        for executada e referenciar um deles, `context.ensure_payload(rid)`
+        carrega do disco sob demanda — chamado por `_rehydrate_inputs_if_needed`.
+        """
         if self._execution_context is None or self._executor is None:
             return
-
-        embedding_column = None
-        if (
-            self._current_definition
-            and getattr(self._current_definition, "embedding_type", None) is not None
-        ):
-            embedding_column = self._current_definition.embedding_type.parquet_column
 
         for resource in self._collect_project_resources():
             if self._execution_context.has_resource(resource.resource_id):
                 continue
-            if self._executor._resource_loader is not None:
-                try:
-                    self._executor._resource_loader.hydrate(
-                        resource, embedding_column=embedding_column
-                    )
-                except Exception:
-                    pass  # Recurso sem payload — validação reportará se necessário
             self._execution_context.set_resource(resource)
 
     def _refresh_instruction_states(self) -> None:
         """Recalcula quais instruções são executáveis e atualiza a UI."""
         if not self._current_definition:
             return
+
+        # Garante executor + contexto silenciosamente. Sem isso, o gate de
+        # dependência nunca pode classificar instruções como runnable e o
+        # botão Run fica permanentemente desabilitado até o usuário clicar
+        # em Validar/Run (chicken-and-egg).
+        if self._project is not None:
+            self._ensure_executor_and_context(silent=True)
+
+        # Une o set in-memory (instruções executadas nesta sessão) com o
+        # set derivado do disco (instruções cujos outputs já estão
+        # persistidos). Isso restaura ✅ ao reabrir o projeto e mantém ✅
+        # mesmo após resets acidentais do contexto.
+        self._executed_instruction_ids |= self._compute_executed_ids_from_disk()
 
         runnable_ids: set = set()
         if self._execution_context is not None and self._executor is not None:
@@ -750,6 +1016,330 @@ class StrategyManagerV2Controller(QtCore.QObject):
         )
         msg.exec()
 
+    def _on_view_trajectory(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o TransformationTrajectoryViewerController (arch antiga, reusado)
+        com a TransformationTrajectoryData associada à instrução PIPELINE_APPLICATION.
+
+        Resolve o recurso na ordem:
+          1. Contexto de execução (em memória).
+          2. Definição da estratégia (com hidratação se vier do disco).
+        """
+        from faceaudit.models.instructions.pipeline_application_instruction import (
+            PipelineApplicationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+
+        if not isinstance(instruction, PipelineApplicationInstruction):
+            return
+
+        trajectory_id = (
+            instruction.trajectory_data_resource_id
+            or f"{instruction.instruction_id}_trajectory"
+        )
+
+        trajectory_data = None
+
+        # 1. Tentar do contexto vivo.
+        if self._execution_context is not None and self._execution_context.has_resource(trajectory_id):
+            ctx_resource = self._execution_context.get_resource(trajectory_id)
+            if ctx_resource and ctx_resource.has_payload:
+                trajectory_data = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if trajectory_data is None:
+            existing = self._current_definition.get_resource_by_id(trajectory_id)
+            if existing is not None:
+                if existing.has_payload:
+                    trajectory_data = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            trajectory_data = existing.payload
+
+        if trajectory_data is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Trajetória indisponível",
+                "Não foi encontrada uma trajetória 3D salva para esta instrução. "
+                "Execute o pipeline com 'Salvar dados de trajetória' ativo.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager.panels.preparation.cards.transformation_trajectory_viewer.transformation_trajectory_viewer_controller import (
+                TransformationTrajectoryViewerController,
+            )
+            self._trajectory_viewer = TransformationTrajectoryViewerController(
+                trajectory_data, parent=self._view
+            )
+            self._trajectory_viewer.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o visualizador de trajetória:\n{exc}",
+            )
+
+    def _on_view_score_distribution(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre um dialog com gráfico de distribuição de scores genuínos vs
+        impostores. Aplicável a:
+        - SIMILARITY_SCORING (raw_score por par);
+        - SCORE_CALIBRATION (log-LR calibrado por par).
+        """
+        from faceaudit.models.instructions.similarity_scoring_instruction import (
+            SimilarityScoringInstruction,
+        )
+        from faceaudit.models.instructions.score_calibration_instruction import (
+            ScoreCalibrationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+
+        scores_id: Optional[str] = None
+        use_log_lr = False
+
+        if isinstance(instruction, SimilarityScoringInstruction):
+            scores_id = instruction.output_similarity_scores_resource_id
+        elif isinstance(instruction, ScoreCalibrationInstruction):
+            scores_id = instruction.output_calibrated_scores_resource_id
+            use_log_lr = True
+        else:
+            return
+
+        if not scores_id:
+            return
+
+        score_dataset = None
+
+        # 1. Tentar do contexto vivo.
+        if self._execution_context is not None and self._execution_context.has_resource(scores_id):
+            ctx_resource = self._execution_context.get_resource(scores_id)
+            if ctx_resource and ctx_resource.has_payload:
+                score_dataset = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if score_dataset is None:
+            existing = self._current_definition.get_resource_by_id(scores_id)
+            if existing is not None:
+                if existing.has_payload:
+                    score_dataset = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            score_dataset = existing.payload
+
+        if score_dataset is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Scores indisponíveis",
+                "Não foram encontrados scores salvos para esta instrução. "
+                "Execute a instrução de scoring primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.graph_viewer_dialog import (
+                GraphViewerDialog,
+            )
+            title = (
+                f"Distribuição de log-LR: {instruction.name}"
+                if use_log_lr
+                else f"Distribuição de Scores: {instruction.name}"
+            )
+            dlg = GraphViewerDialog.from_draw_fn(
+                title=title,
+                draw_fn=lambda fig, ds=score_dataset, ull=use_log_lr:
+                    self._draw_score_distribution(fig, ds, use_log_lr=ull),
+                parent=self._view,
+            )
+            self._distribution_viewer = dlg
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o visualizador de distribuição:\n{exc}",
+            )
+
+    def _draw_score_distribution(self, figure, score_dataset, use_log_lr: bool = False) -> None:
+        """
+        Pinta na figure histograma + KDE das distribuições genuínos vs
+        impostores. Robusto a casos onde só uma das classes está presente.
+
+        Quando `use_log_lr=True`, lê o eixo X de `sample.metadata["log_lr"]`
+        em vez de `sample.raw_score` — usado pela instrução SCORE_CALIBRATION
+        cujo output traz log-LR calibrado.
+        """
+        import numpy as np
+
+        figure.clear()
+        ax = figure.add_subplot(111)
+
+        if use_log_lr:
+            # Extrai log_lr de cada sample.metadata; samples sem log_lr
+            # (não calibrados) entram como NaN e são filtrados depois.
+            raw = []
+            raw_labels = []
+            for s in score_dataset.items:
+                md = getattr(s, "metadata", None)
+                v = md.get("log_lr") if isinstance(md, dict) else None
+                if v is None:
+                    continue
+                raw.append(float(v))
+                raw_labels.append(int(s.label))
+            scores = np.asarray(raw, dtype=np.float64)
+            labels = np.asarray(raw_labels, dtype=np.int32)
+        else:
+            scores = np.asarray(score_dataset.scores, dtype=np.float64)
+            labels = np.asarray(score_dataset.labels, dtype=np.int32)
+
+        if scores.size == 0:
+            ax.text(
+                0.5, 0.5, "(sem scores)", transform=ax.transAxes,
+                ha="center", va="center", fontsize=12, color="#888",
+            )
+            return
+
+        gen_mask = labels == 1
+        imp_mask = labels == 0
+        gen_scores = scores[gen_mask]
+        imp_scores = scores[imp_mask]
+        n_gen = int(gen_scores.size)
+        n_imp = int(imp_scores.size)
+
+        x_min = float(np.min(scores))
+        x_max = float(np.max(scores))
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+        bins = np.linspace(x_min, x_max, 60)
+
+        if n_imp > 0:
+            ax.hist(
+                imp_scores, bins=bins, density=True, alpha=0.45,
+                color="#c62828", edgecolor="#7a0000", linewidth=0.5,
+                label=f"Impostores  (n={n_imp:,})".replace(",", "."),
+            )
+        if n_gen > 0:
+            ax.hist(
+                gen_scores, bins=bins, density=True, alpha=0.45,
+                color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
+                label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
+            )
+
+        # Curva KDE leve via gaussian_kde (sem dependência adicional).
+        try:
+            from scipy.stats import gaussian_kde
+            xs = np.linspace(x_min, x_max, 400)
+            if n_imp > 1:
+                kde_i = gaussian_kde(imp_scores)
+                ax.plot(xs, kde_i(xs), color="#7a0000", linewidth=1.4, alpha=0.9)
+            if n_gen > 1:
+                kde_g = gaussian_kde(gen_scores)
+                ax.plot(xs, kde_g(xs), color="#0d3a10", linewidth=1.4, alpha=0.9)
+        except Exception:
+            pass  # Falta scipy ou amostras insuficientes: histograma ainda funciona.
+
+        title_prefix = (
+            "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
+        )
+        ax.set_title(
+            f"{title_prefix} — {score_dataset.name}\n"
+            f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+            fontsize=11,
+        )
+        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
+        ax.set_ylabel("Densidade")
+        if use_log_lr:
+            ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
+                       alpha=0.6, label="log-LR = 0")
+        ax.grid(True, linestyle="--", alpha=0.4)
+        if n_gen > 0 or n_imp > 0:
+            ax.legend(loc="best", fontsize=9)
+
+        figure.tight_layout()
+
+    def _on_view_validation_result(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre um dialog com 4 abas (Distribuição de LRs, Tippett, Curva DET,
+        Calibração ECE) a partir do StrategyValidationResult produzido pela
+        instrução STRATEGY_EVALUATION.
+        """
+        from faceaudit.models.instructions.strategy_evaluation_instruction import (
+            StrategyEvaluationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, StrategyEvaluationInstruction):
+            return
+
+        result_id = instruction.output_validation_result_resource_id
+        if not result_id:
+            return
+
+        validation_result = None
+
+        # 1. Tentar do contexto vivo.
+        if self._execution_context is not None and self._execution_context.has_resource(result_id):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                validation_result = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if validation_result is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    validation_result = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            validation_result = existing.payload
+
+        if validation_result is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Resultado indisponível",
+                "Não foi encontrado um resultado de validação salvo para esta "
+                "instrução. Execute STRATEGY_EVALUATION primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.validation_result_viewer_dialog import (
+                ValidationResultViewerDialog,
+            )
+            dlg = ValidationResultViewerDialog(validation_result, parent=self._view)
+            self._validation_viewer = dlg  # mantém referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o visualizador de validação:\n{exc}",
+            )
+
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         if not self._project or not self._current_definition:
             return
@@ -771,30 +1361,61 @@ class StrategyManagerV2Controller(QtCore.QObject):
         dialog = LogProgressDialog(
             f"Executando: {instruction.name}…", parent=self._view
         )
+        # ApplicationModal bloqueia entrega de sinais queued de threads worker no
+        # Windows (ver CLAUDE.md) — usar NonModal mantém o dialog visível sem
+        # travar a delivery de log_message/finished.
+        dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         dialog.show()
 
         thread = QtCore.QThread()
         worker = InstructionExecutionWorker(
-            self._executor, instruction, self._execution_context
+            self._executor,
+            instruction,
+            self._execution_context,
+            strategy_id=self._current_definition.strategy_id,
         )
         worker.moveToThread(thread)
+
+        # Mantém referência Python ao worker para evitar GC prematuro do wrapper.
+        self._active_worker = worker
+
+        # Estado de cancelamento (cooperative — fechamos o dialog assim que a
+        # instrução terminar; não há ponto de interrupção dentro do executor).
+        cancel_state = {"requested": False}
 
         thread.started.connect(worker.run)
         worker.log_message.connect(dialog.append_log)
 
+        def on_cancel_requested():
+            cancel_state["requested"] = True
+
+        dialog.cancellation_requested.connect(on_cancel_requested)
+
+        def close_dialog_if_cancelled():
+            if cancel_state["requested"]:
+                dialog.accept()
+
         def on_finished(result):
             if result.success:
                 self._executed_instruction_ids.add(instruction.instruction_id)
-                self._persist_produced_resources(result.produced_resource_ids)
+                # A persistência (pickle.dump pesado) já rodou na thread do
+                # worker — aqui só sincronizamos os artifact_refs já gravados
+                # com a definição em memória (operação rápida, sem I/O).
+                self._sync_persisted_resources_to_definition(result.produced_resource_ids)
                 dialog.finish(True)
             else:
                 dialog.finish(False)
             self._refresh_instruction_states()
             self._refresh_produced_resources()
+            # Repopula a árvore de recursos (esquerda) e os combos do editor
+            # com os recursos novos produzidos pela instrução.
+            self._refresh_left_panel()
+            close_dialog_if_cancelled()
 
         def on_error(msg):
             dialog.finish(False)
             self._refresh_instruction_states()
+            close_dialog_if_cancelled()
 
         worker.finished.connect(on_finished)
         worker.error.connect(on_error)
@@ -921,7 +1542,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
             pass  # stats são opcionais; não bloquear importação
 
     def _on_remove_resource(self, resource: StrategyResource) -> None:
-        """Remove o arquivo do recurso do disco e atualiza a árvore."""
+        """
+        Remove o arquivo do recurso do disco, retira da definição da estratégia
+        que o produziu e limpa os campos de output da instrução geradora.
+
+        Sem essa limpeza completa, o recurso voltaria a aparecer na árvore no
+        próximo refresh (porque ainda estaria em `definition.resources` com
+        artifact_ref preenchido apontando para um arquivo já apagado).
+        """
         if not self._project or not resource.artifact_ref:
             return
 
@@ -936,17 +1564,72 @@ class StrategyManagerV2Controller(QtCore.QObject):
             return
 
         try:
+            # 1. Apagar arquivo do disco (e stats JSON se houver).
             abs_path = self._project.storage.project_root / resource.artifact_ref.path
             if abs_path.exists():
                 abs_path.unlink()
 
-            # Remove também o stats JSON se existir
             stats_path = abs_path.parent / (abs_path.stem + "_stats.json")
             if stats_path.exists():
                 stats_path.unlink()
 
+            # 2. Em todas as estratégias, limpar referências e remover da lista
+            #    de recursos. Salvar cada definição modificada.
+            current_strategy_modified = False
+            instructions_unexecuted: list = []
+
+            for defn in self._definitions:
+                modified = False
+
+                # Limpa campos `output_*_resource_id` das instruções que apontam
+                # para este resource_id, mantendo os campos como None.
+                for instr in defn.instructions:
+                    try:
+                        specs = instr.get_resource_field_specs()
+                    except Exception:
+                        specs = []
+                    for spec in specs:
+                        if not spec.is_output:
+                            continue
+                        if getattr(instr, spec.field_name, None) == resource.resource_id:
+                            setattr(instr, spec.field_name, None)
+                            modified = True
+                    if modified and hasattr(instr, "_sync_declared_io"):
+                        try:
+                            instr._sync_declared_io()
+                        except Exception:
+                            pass
+                    if modified:
+                        instructions_unexecuted.append(instr.instruction_id)
+
+                # Remove o recurso da lista de resources da definição.
+                if defn.get_resource_by_id(resource.resource_id) is not None:
+                    defn.remove_resource(resource.resource_id)
+                    modified = True
+
+                if modified:
+                    self._project.definition_repository.save_definition(defn)
+                    self._is_dirty = False
+                    if defn is self._current_definition:
+                        current_strategy_modified = True
+
+            # 3. Se a estratégia ativa foi modificada, marca as instruções
+            #    afetadas como não-executadas e atualiza a UI do editor.
+            if current_strategy_modified:
+                for instr_id in instructions_unexecuted:
+                    self._executed_instruction_ids.discard(instr_id)
+                # Reseta contexto — o recurso removido pode estar no contexto
+                # vivo, e o gate de dependência precisa ser recalculado.
+                self._execution_context = None
+                self._executor = None
+
+            # 4. Limpa o painel de propriedades e atualiza tudo.
             self._left_panel.resource_info.clear()
             self._refresh_left_panel()
+            if self._current_definition:
+                self._refresh_instruction_states()
+                self._refresh_produced_resources()
+
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self._view, "Erro ao remover", f"Não foi possível remover o recurso:\n{exc}"
@@ -965,11 +1648,15 @@ class StrategyManagerV2Controller(QtCore.QObject):
             for placeholder in instr.get_output_resource_placeholders():
                 declared_outputs[placeholder.resource_id] = placeholder
 
-        # Adicionar placeholders que não existem
+        # Adicionar placeholders que não existem; sincronizar resource_type
+        # quando o spec atual da instrução o mudou (migração leve para
+        # recursos persistidos com tipo legado).
         for resource_id, placeholder in declared_outputs.items():
             existing = self._current_definition.get_resource_by_id(resource_id)
             if existing is None:
                 self._current_definition.add_resource(placeholder)
+            elif existing.resource_type != placeholder.resource_type:
+                existing.resource_type = placeholder.resource_type
 
         # Remover placeholders órfãos (output renomeado ou instrução removida)
         # Apenas para recursos sem artifact_ref e sem payload (são placeholders puros)
@@ -988,6 +1675,98 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 if not resource.has_payload and not resource.has_artifact:
                     self._current_definition.remove_resource(resource.resource_id)
 
+    def _sync_trained_model_to_definition(self, model) -> None:
+        """
+        Sincroniza recursos do LRStrategyTrainedModel já persistidos pelo
+        StrategyExecutionWorker com a definição em memória (Run All).
+
+        Não faz I/O — apenas copia artifact_ref/payload do `model.trained_resources`
+        para a `definition.resources`.
+        """
+        if not self._current_definition or model is None:
+            return
+
+        trained_resources = list(getattr(model, "trained_resources", []) or [])
+        for resource in trained_resources:
+            if not getattr(resource, "has_payload", False):
+                continue
+
+            existing = self._current_definition.get_resource_by_id(resource.resource_id)
+            old_ref = existing.artifact_ref if existing else None
+
+            if existing:
+                existing.resource_type = resource.resource_type
+                if resource.artifact_ref is not None:
+                    existing.artifact_ref = resource.artifact_ref
+                existing.payload = resource.payload
+            elif resource.artifact_ref is not None:
+                # Só adiciona se foi efetivamente persistido em disco;
+                # caso contrário não é um recurso "produzido" do projeto.
+                self._current_definition.add_resource(resource)
+
+            # Limpa arquivo órfão quando o path mudou.
+            if (
+                resource.artifact_ref is not None
+                and old_ref is not None
+                and old_ref.path
+                and old_ref.path != resource.artifact_ref.path
+            ):
+                try:
+                    old_abs = self._project.storage.project_root / old_ref.path
+                    if old_abs.exists():
+                        old_abs.unlink()
+                except Exception:
+                    pass
+
+        self._save_current_definition()
+
+    def _sync_persisted_resources_to_definition(self, resource_ids: list) -> None:
+        """
+        Sincroniza recursos já persistidos pelo worker com a definição em memória.
+
+        Esta versão NÃO faz I/O (a persistência aconteceu na thread do worker
+        via InstructionExecutionWorker._persist_produced_resources_inline).
+        Aqui só copiamos artifact_ref/resource_type/payload do contexto vivo
+        para o `existing` na definição da estratégia, e tratamos o caso de
+        arquivo antigo órfão quando o caminho mudou.
+        """
+        if not self._execution_context or not self._current_definition:
+            return
+
+        for resource_id in resource_ids or []:
+            resource = self._execution_context.get_resource(resource_id)
+            if resource is None:
+                continue
+
+            existing = self._current_definition.get_resource_by_id(resource_id)
+            old_ref = existing.artifact_ref if existing else None
+
+            artifact_ref = resource.artifact_ref
+            if existing:
+                existing.resource_type = resource.resource_type
+                if artifact_ref is not None:
+                    existing.artifact_ref = artifact_ref
+                existing.payload = resource.payload
+            else:
+                self._current_definition.add_resource(resource)
+
+            # Limpa arquivo órfão quando o path mudou (ex: tipo do recurso
+            # mudou e a extensão/pasta de destino também).
+            if (
+                artifact_ref is not None
+                and old_ref is not None
+                and old_ref.path
+                and old_ref.path != artifact_ref.path
+            ):
+                try:
+                    old_abs = self._project.storage.project_root / old_ref.path
+                    if old_abs.exists():
+                        old_abs.unlink()
+                except Exception:
+                    pass
+
+        self._save_current_definition()
+
     def _persist_produced_resources(self, resource_ids: list) -> None:
         """Persiste recursos produzidos em disco e atualiza a definição."""
         if not self._execution_context or not self._executor or not self._current_definition:
@@ -999,18 +1778,43 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 continue
 
             try:
+                # Captura o artifact_ref ANTERIOR no `existing` antes de
+                # sobrescrever. Se o tipo do recurso mudou (ex: instrução
+                # passou a registrar como SIMILARITY_SCORES em vez de
+                # INTERMEDIATE_DATASET), o caminho físico muda, e o arquivo
+                # antigo precisa ser apagado para não virar órfão na árvore.
+                existing = self._current_definition.get_resource_by_id(resource_id)
+                old_ref = existing.artifact_ref if existing else None
+
                 artifact_ref = self._executor.persist_produced_resource(
                     resource=resource,
                     strategy_id=self._current_definition.strategy_id,
                 )
                 if artifact_ref:
                     resource.artifact_ref = artifact_ref
-                    existing = self._current_definition.get_resource_by_id(resource_id)
                     if existing:
+                        # Sincroniza tipo (pode ter mudado entre execuções
+                        # quando a definição da instrução foi atualizada).
+                        existing.resource_type = resource.resource_type
                         existing.artifact_ref = artifact_ref
                         existing.payload = resource.payload
                     else:
                         self._current_definition.add_resource(resource)
+
+                    # Limpa arquivo antigo órfão quando o caminho mudou
+                    # (tipicamente porque a extensão/pasta mudou junto com
+                    # o resource_type).
+                    if (
+                        old_ref is not None
+                        and old_ref.path
+                        and old_ref.path != artifact_ref.path
+                    ):
+                        try:
+                            old_abs = self._project.storage.project_root / old_ref.path
+                            if old_abs.exists():
+                                old_abs.unlink()
+                        except Exception:
+                            pass  # Limpeza opcional — não pode quebrar a execução.
             except Exception as exc:
                 print(f"Erro ao persistir recurso '{resource_id}': {exc}")
 
@@ -1023,6 +1827,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._project.definition_repository.save_definition(
                     self._current_definition
                 )
+                self._is_dirty = False
             except Exception:
                 pass
 
@@ -1069,5 +1874,17 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._save_current_definition()
 
     def _has_unsaved_changes(self) -> bool:
-        """Heurística simples: sempre assume que pode haver mudanças não salvas."""
-        return self._project is not None
+        """
+        Retorna True apenas quando há edição em andamento que ainda não foi
+        persistida.
+
+        - `_is_dirty` é setada para True por `_on_strategy_modified` (sinal
+          emitido pelo editor durante edições da UI).
+        - É zerada em todo save bem-sucedido (`_save_current_definition`,
+          `save_project`, criação/duplicação/renomeação de estratégia,
+          remoção de recurso).
+        - É zerada ao abrir e ao fechar projeto.
+
+        Sem projeto aberto, nunca há prompt.
+        """
+        return self._project is not None and self._is_dirty

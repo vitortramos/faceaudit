@@ -84,6 +84,16 @@ class StrategyExecutionContextProtocol(Protocol):
         """
         ...
 
+    def ensure_payload(self, resource_id: str) -> Optional[StrategyResourceProtocol]:
+        """
+        Retorna o resource garantindo `payload` carregado quando possível.
+
+        Implementações que suportem hidratação preguiçosa devem chamar o
+        ResourceLoader sob demanda quando `payload is None` mas `artifact_ref`
+        estiver presente. Idempotente. Retorna None se o resource não existe.
+        """
+        ...
+
     def get_artifact(self, key: str) -> Optional[StrategyArtifactReference]:
         """
         Retorna o artefato correspondente à chave informada.

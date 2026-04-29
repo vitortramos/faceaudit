@@ -66,7 +66,10 @@ class MinCalibrationPairsRule(ValidationRuleBase):
             )
             return result
 
-        payload = context.get_resource(self._scores_id).payload
+        # Hidratação preguiçosa: scores podem ter milhões de pares; só carrega
+        # quando a regra precisa contar genuínos/impostores.
+        resource = context.ensure_payload(self._scores_id)
+        payload = resource.payload if resource is not None else None
 
         if not isinstance(payload, EmbeddingComparisonDataset):
             result.add_error(

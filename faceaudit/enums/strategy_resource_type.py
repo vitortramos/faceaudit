@@ -30,6 +30,16 @@ class StrategyResourceType(Enum):
     TRAINED_SIMILARITY_MODEL = "TRAINED_SIMILARITY_MODEL"
     TRAINED_CALIBRATION_MODEL = "TRAINED_CALIBRATION_MODEL"
 
+    # --- SCORES DE SIMILARIDADE ---
+    SIMILARITY_SCORES = "SIMILARITY_SCORES"
+    CALIBRATED_SCORES = "CALIBRATED_SCORES"
+
+    # --- VISUALIZAÇÃO ---
+    TRAJECTORY_DATA = "TRAJECTORY_DATA"
+
+    # --- VALIDAÇÃO / MÉTRICAS ---
+    VALIDATION_RESULT = "VALIDATION_RESULT"
+
     # --- OUTROS / APOIO ---
     DATASET_STATS = "DATASET_STATS"
     ARTIFACT = "ARTIFACT"
@@ -52,6 +62,10 @@ class StrategyResourceType(Enum):
             StrategyResourceType.TRAINED_SIMILARITY_MODEL:  StrategyArtifactType.TRAINED_SIMILARITY_MODEL,
             StrategyResourceType.TRAINED_CALIBRATION_MODEL: StrategyArtifactType.TRAINED_CALIBRATION_MODEL,
             StrategyResourceType.INTERMEDIATE_DATASET:      StrategyArtifactType.INTERMEDIATE_DATASET,
+            StrategyResourceType.TRAJECTORY_DATA:           StrategyArtifactType.TRAJECTORY_DATA,
+            StrategyResourceType.SIMILARITY_SCORES:         StrategyArtifactType.SIMILARITY_SCORES,
+            StrategyResourceType.CALIBRATED_SCORES:         StrategyArtifactType.CALIBRATED_SCORES,
+            StrategyResourceType.VALIDATION_RESULT:         StrategyArtifactType.VALIDATION_RESULT,
         }
         return _map.get(self)
 

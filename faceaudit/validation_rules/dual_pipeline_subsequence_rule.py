@@ -53,8 +53,11 @@ class DualPipelineSubsequenceRule(ValidationRuleBase):
             result.mark_ok()
             return result
 
-        source_payload = context.get_resource(self._source_id).payload
-        target_payload = context.get_resource(self._target_id).payload
+        # Hidratação preguiçosa: configs são pequenos JSONs.
+        source_resource = context.ensure_payload(self._source_id)
+        target_resource = context.ensure_payload(self._target_id)
+        source_payload = source_resource.payload if source_resource is not None else None
+        target_payload = target_resource.payload if target_resource is not None else None
 
         if (
             not isinstance(source_payload, TransformationPipelineConfig)

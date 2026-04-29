@@ -11,7 +11,7 @@ from faceaudit.models.embedding_info import EmbeddingInfo
 T = TypeVar("T", bound="SimilarityScoreSample")
 
 
-@dataclass
+@dataclass(slots=True)
 class SimilarityScoreSample(JSONSerializableMixin):
     """
     Representa uma amostra individual de score de similaridade entre dois embeddings.

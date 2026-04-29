@@ -1,0 +1,303 @@
+# faceaudit/executors/instructions/score_calibration_instruction_executor.py
+
+from __future__ import annotations
+
+import time
+from typing import List
+
+import numpy as np
+
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.executors.instructions.strategy_instruction_executor_base import (
+    StrategyInstructionExecutorBase,
+)
+from faceaudit.models.instructions.instruction_execution_result import (
+    InstructionExecutionResult,
+)
+from faceaudit.models.instructions.score_calibration_instruction import (
+    ScoreCalibrationInstruction,
+)
+from faceaudit.models.instructions.strategy_instruction_definition import (
+    StrategyInstructionDefinition,
+)
+from faceaudit.models.similarity.similarity_score_dataset import SimilarityScoreDataset
+from faceaudit.models.strategy.strategy_resource import StrategyResource
+from faceaudit.models.validation.validation_result import ValidationResult
+from faceaudit.protocols.calibration_model_protocol import CalibrationModelProtocol
+from faceaudit.protocols.strategy_execution_context_protocol import (
+    StrategyExecutionContextProtocol,
+)
+
+
+class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
+    """
+    Executor concreto da instrução SCORE_CALIBRATION.
+
+    Aplica um modelo de calibração TREINADO a um SimilarityScoreDataset
+    (raw_scores) e produz um novo dataset com `sample.metadata["log_lr"]`
+    populado para cada amostra. O output mantém todos os outros campos
+    do input (raw_score, same_person, probe/reference) preservados.
+    """
+
+    def execute(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> InstructionExecutionResult:
+        validation = self.validate(instruction=instruction, context=context)
+        if not validation.is_valid:
+            return self._failure_result(*validation.errors)
+
+        if not isinstance(instruction, ScoreCalibrationInstruction):
+            return self._failure_result(
+                "O executor ScoreCalibrationInstructionExecutor recebeu uma instrução incompatível."
+            )
+
+        self._log(
+            context,
+            f"▶ Iniciando execução da instrução de calibração de scores: "
+            f"{instruction.name} ({instruction.instruction_id})"
+        )
+
+        try:
+            scores_resource = context.get_resource(
+                instruction.input_similarity_scores_resource_id
+            )
+            calibrator_resource = context.get_resource(
+                instruction.trained_calibration_model_resource_id
+            )
+
+            score_dataset: SimilarityScoreDataset = scores_resource.payload
+            calibrator: CalibrationModelProtocol = calibrator_resource.payload
+
+            n_samples = len(score_dataset.items)
+            self._log(
+                context,
+                f"[{instruction.name}] 🎚️ Calibrando {n_samples:,} pares "
+                f"com {type(calibrator).__name__}…".replace(",", ".")
+            )
+
+            # Vetorização: scores e calibração em um único passe.
+            raw_scores = score_dataset.scores  # np.ndarray float64
+            log_lrs = np.asarray(
+                calibrator.calibrate_scores(raw_scores), dtype=np.float64
+            )
+
+            if log_lrs.shape[0] != n_samples:
+                return self._failure_result(
+                    f"Calibrator retornou {log_lrs.shape[0]} log-LRs para "
+                    f"{n_samples} samples — tamanhos incompatíveis."
+                )
+
+            # Popula log_lr nos samples in-place, em chunks com micro-pausa.
+            #
+            # ANTES: `copy.copy(sample)` + criação de novo dict de metadata
+            # para cada um dos N samples (5M+). Operação Python-pura segurando
+            # a GIL por dezenas de segundos → main thread Qt starved → UI
+            # travava ("Não respondendo").
+            #
+            # AGORA: mutação direta de `sample.metadata["log_lr"]` em chunks
+            # de 50k com `time.sleep(0)` entre eles — libera a GIL
+            # periodicamente para a main thread processar eventos. O input
+            # dataset compartilha referências dos samples com o output, mas
+            # ambos terão `log_lr` populado, o que é o resultado desejado
+            # mesmo (o input não será reusado depois sem este campo).
+            output_items: List = list(score_dataset.items)
+            n = len(output_items)
+            CHUNK = 50_000
+            log_lrs_view = log_lrs  # ndarray indexável
+            for chunk_start in range(0, n, CHUNK):
+                chunk_end = min(chunk_start + CHUNK, n)
+                for j in range(chunk_start, chunk_end):
+                    s = output_items[j]
+                    md = s.metadata if isinstance(s.metadata, dict) else {}
+                    md["log_lr"] = float(log_lrs_view[j])
+                    s.metadata = md
+                # Micro-pausa: cede GIL à main thread para drenar eventos Qt.
+                time.sleep(0)
+
+            output_name = (
+                instruction.output_calibrated_scores_name
+                or f"{score_dataset.name}_calibrated"
+            )
+            calibrated_dataset = SimilarityScoreDataset(
+                name=output_name,
+                description=(
+                    f"Scores calibrados via {type(calibrator).__name__} "
+                    f"de {score_dataset.name}"
+                ),
+                items=output_items,
+                metadata={
+                    "source_dataset_name": score_dataset.name,
+                    "calibrator_type": type(calibrator).__name__,
+                },
+            )
+
+            output_resource_id = instruction.output_calibrated_scores_resource_id
+            calibrated_resource = StrategyResource(
+                resource_id=output_resource_id,
+                name=output_resource_id,
+                resource_type=StrategyResourceType.CALIBRATED_SCORES,
+                payload=calibrated_dataset,
+                artifact_ref=None,
+            )
+            context.set_resource(calibrated_resource)
+
+            # Estatísticas para metadata da execução — diagnóstico rápido.
+            labels_arr = score_dataset.labels
+            mean_log_lr_genuines = (
+                float(np.mean(log_lrs[labels_arr == 1]))
+                if np.any(labels_arr == 1) else None
+            )
+            mean_log_lr_impostors = (
+                float(np.mean(log_lrs[labels_arr == 0]))
+                if np.any(labels_arr == 0) else None
+            )
+
+            self._log(
+                context,
+                f"[{instruction.name}] ✅ Calibração concluída. "
+                f"log-LR médio: gen={mean_log_lr_genuines}, imp={mean_log_lr_impostors}."
+            )
+
+            return InstructionExecutionResult.ok(
+                produced_resource_ids=[output_resource_id],
+                metadata={
+                    "instruction_id": instruction.instruction_id,
+                    "instruction_name": instruction.name,
+                    "input_similarity_scores_resource_id":
+                        instruction.input_similarity_scores_resource_id,
+                    "trained_calibration_model_resource_id":
+                        instruction.trained_calibration_model_resource_id,
+                    "output_calibrated_scores_resource_id": output_resource_id,
+                    "calibrator_type": type(calibrator).__name__,
+                    "n_samples": int(n_samples),
+                    "n_genuine": int(score_dataset.total_genuines),
+                    "n_impostor": int(score_dataset.total_impostors),
+                    "mean_log_lr_genuines": mean_log_lr_genuines,
+                    "mean_log_lr_impostors": mean_log_lr_impostors,
+                },
+            )
+
+        except Exception as exc:
+            self._log(
+                context,
+                f"❌ Erro ao executar a instrução de calibração de scores "
+                f"{instruction.instruction_id}: {exc}"
+            )
+            return self._failure_result(str(exc))
+
+    def _validate_instruction_specifics(
+        self,
+        instruction: StrategyInstructionDefinition,
+        context: StrategyExecutionContextProtocol,
+    ) -> ValidationResult:
+        result = ValidationResult.neutral()
+
+        if not isinstance(instruction, ScoreCalibrationInstruction):
+            result.add_error(
+                "A instrução informada não é do tipo ScoreCalibrationInstruction."
+            )
+            return result
+
+        # ─── Calibrator ────────────────────────────────────────────────────
+        calib_id = instruction.trained_calibration_model_resource_id
+        if not calib_id:
+            result.add_error(
+                "A instrução deve definir 'trained_calibration_model_resource_id'."
+            )
+        elif not context.has_resource(calib_id):
+            result.add_error(
+                f"O recurso de calibrador não foi encontrado no contexto: '{calib_id}'."
+            )
+        else:
+            calib_resource = context.get_resource(calib_id)
+            if calib_resource is None:
+                result.add_error(
+                    f"O recurso '{calib_id}' está registrado mas é nulo no contexto."
+                )
+            elif calib_resource.payload is None:
+                ref_path = (
+                    calib_resource.artifact_ref.path
+                    if calib_resource.artifact_ref is not None else None
+                )
+                if ref_path:
+                    result.add_error(
+                        f"O recurso '{calib_id}' tem artifact_ref ('{ref_path}') "
+                        "mas o payload está vazio — falha ao desserializar o "
+                        "calibrador do disco. Re-execute a instrução "
+                        "CALIBRATION_MODEL_TRAINING que produz este modelo."
+                    )
+                else:
+                    result.add_error(
+                        f"O recurso '{calib_id}' ainda não foi produzido. "
+                        "Execute CALIBRATION_MODEL_TRAINING antes."
+                    )
+            elif not isinstance(calib_resource.payload, CalibrationModelProtocol):
+                result.add_error(
+                    f"O recurso '{calib_id}' contém um payload do tipo "
+                    f"{type(calib_resource.payload).__name__}, que não satisfaz "
+                    "CalibrationModelProtocol."
+                )
+
+        # ─── Scores de entrada ─────────────────────────────────────────────
+        scores_id = instruction.input_similarity_scores_resource_id
+        if not scores_id:
+            result.add_error(
+                "A instrução deve definir 'input_similarity_scores_resource_id'."
+            )
+        elif not context.has_resource(scores_id):
+            result.add_error(
+                f"O recurso de scores de entrada não foi encontrado no contexto: "
+                f"'{scores_id}'."
+            )
+        else:
+            scores_resource = context.get_resource(scores_id)
+            if scores_resource is None:
+                result.add_error(
+                    f"O recurso '{scores_id}' está registrado mas é nulo no contexto."
+                )
+            elif scores_resource.payload is None:
+                ref_path = (
+                    scores_resource.artifact_ref.path
+                    if scores_resource.artifact_ref is not None else None
+                )
+                if ref_path:
+                    result.add_error(
+                        f"O recurso '{scores_id}' tem artifact_ref ('{ref_path}') "
+                        "mas o payload está vazio — falha ao carregar os scores "
+                        "do disco. Re-execute a instrução SIMILARITY_SCORING "
+                        "que produz estes scores."
+                    )
+                else:
+                    result.add_error(
+                        f"O recurso '{scores_id}' ainda não foi produzido. "
+                        "Execute SIMILARITY_SCORING antes."
+                    )
+            elif not isinstance(scores_resource.payload, SimilarityScoreDataset):
+                result.add_error(
+                    f"O recurso '{scores_id}' contém um payload do tipo "
+                    f"{type(scores_resource.payload).__name__}, esperado "
+                    "SimilarityScoreDataset."
+                )
+
+        # ─── Output ────────────────────────────────────────────────────────
+        if not instruction.output_calibrated_scores_resource_id:
+            result.add_error(
+                "A instrução deve definir 'output_calibrated_scores_resource_id'."
+            )
+
+        if (
+            instruction.output_calibrated_scores_resource_id
+            and instruction.output_calibrated_scores_resource_id
+            == instruction.input_similarity_scores_resource_id
+        ):
+            result.add_warning(
+                "output_calibrated_scores_resource_id coincide com o recurso "
+                "de scores de entrada. O contexto irá sobrescrever esse recurso."
+            )
+
+        if result.is_valid and not result.has_warnings:
+            result.mark_ok()
+
+        return result
