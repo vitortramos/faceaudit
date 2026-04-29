@@ -19,19 +19,23 @@ T = TypeVar("T", bound="PairMiningInstruction")
 @dataclass
 class PairMiningInstruction(StrategyInstructionDefinition):
     """
-    Instrução declarativa para curadoria estatística de pares de treino.
+    Instrução declarativa para curadoria estatística de pares de scores.
 
-    Recebe um EmbeddingComparisonDataset já computado (pares com scores) e
-    aplica as regras de mineração definidas em ComparisonMiningConfig, produzindo
-    dois datasets curados: um de impostores e um de genuínos.
+    Recebe um SimilarityScoreDataset (output típico de SIMILARITY_SCORING) e
+    aplica as regras definidas em ComparisonMiningConfig (HARD/EASY/TYPICAL/
+    RANDOM/MIXED, com foco em pares ou identidades), produzindo um único
+    SimilarityScoreDataset curado — concatenação de impostores e genuínos
+    minerados, mantendo a estrutura de SimilarityScoreSample com raw_score,
+    same_person, label e identidades preservadas.
 
-    Os datasets de saída são usados tipicamente como entrada para
-    CalibrationModelTrainingInstruction.
+    O output é tipicamente consumido por CALIBRATION_MODEL_TRAINING para
+    treinar o calibrador em pares mais representativos da dificuldade real
+    do caso forense (ex: top-k impostores difíceis em vez de pares aleatórios).
     """
 
-    comparison_dataset_resource_id: Optional[str] = field(
+    input_similarity_scores_resource_id: Optional[str] = field(
         default=None,
-        metadata={"help": "Recurso de entrada: EmbeddingComparisonDataset com pares pré-calculados."}
+        metadata={"help": "Recurso de entrada: SimilarityScoreDataset com pares pré-calculados."}
     )
 
     mining_config: Optional[ComparisonMiningConfig] = field(
@@ -39,14 +43,14 @@ class PairMiningInstruction(StrategyInstructionDefinition):
         metadata={"help": "Configuração de mineração (regras genuínos/impostores, estratégias)."}
     )
 
-    output_impostors_resource_id: Optional[str] = field(
+    output_mined_scores_resource_id: Optional[str] = field(
         default=None,
-        metadata={"help": "Recurso de saída: impostores minerados (EmbeddingComparisonDataset)."}
+        metadata={"help": "Recurso de saída: SimilarityScoreDataset com pares minerados (gen + imp concatenados)."}
     )
 
-    output_genuines_resource_id: Optional[str] = field(
+    output_mined_scores_name: Optional[str] = field(
         default=None,
-        metadata={"help": "Recurso de saída: genuínos minerados (EmbeddingComparisonDataset)."}
+        metadata={"help": "Nome amigável opcional do dataset minerado gerado."}
     )
 
     def __post_init__(self) -> None:
@@ -58,26 +62,30 @@ class PairMiningInstruction(StrategyInstructionDefinition):
         self._sync_declared_io()
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        ART = (StrategyResourceType.ARTIFACT,)
-        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        SCORES = (StrategyResourceType.SIMILARITY_SCORES,)
         return [
-            ResourceFieldSpec("comparison_dataset_resource_id", "Dataset de Comparação", ART),
-            ResourceFieldSpec("output_impostors_resource_id", "Impostores Minerados", OUT, is_output=True),
-            ResourceFieldSpec("output_genuines_resource_id", "Genuínos Minerados", OUT, is_output=True),
+            ResourceFieldSpec(
+                "input_similarity_scores_resource_id",
+                "Scores de Similaridade",
+                SCORES,
+            ),
+            ResourceFieldSpec(
+                "output_mined_scores_resource_id",
+                "Pares Minerados",
+                SCORES,
+                is_output=True,
+            ),
         ]
 
     def _sync_declared_io(self) -> None:
         inputs = []
         outputs = []
 
-        if self.comparison_dataset_resource_id:
-            inputs.append(self.comparison_dataset_resource_id)
+        if self.input_similarity_scores_resource_id:
+            inputs.append(self.input_similarity_scores_resource_id)
 
-        if self.output_impostors_resource_id:
-            outputs.append(self.output_impostors_resource_id)
-
-        if self.output_genuines_resource_id:
-            outputs.append(self.output_genuines_resource_id)
+        if self.output_mined_scores_resource_id:
+            outputs.append(self.output_mined_scores_resource_id)
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
@@ -86,6 +94,10 @@ class PairMiningInstruction(StrategyInstructionDefinition):
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """
         Reconstrói o DTO, hidratando instruction_type e mining_config.
+
+        Tolera JSONs antigos que ainda carregam os campos da versão pré-refactor
+        (`comparison_dataset_resource_id`, `output_impostors_resource_id`,
+        `output_genuines_resource_id`) — eles são silenciosamente descartados.
         """
         if not data:
             return None
@@ -103,5 +115,10 @@ class PairMiningInstruction(StrategyInstructionDefinition):
             processed_data["mining_config"] = ComparisonMiningConfig.from_dict(
                 processed_data["mining_config"]
             )
+
+        # Retrocompat: campos da arch antiga (DTO acoplado a EmbeddingComparisonDataset)
+        processed_data.pop("comparison_dataset_resource_id", None)
+        processed_data.pop("output_impostors_resource_id", None)
+        processed_data.pop("output_genuines_resource_id", None)
 
         return cls(**processed_data)

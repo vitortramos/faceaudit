@@ -1,173 +1,159 @@
 import random
 from collections import defaultdict
-from typing import Tuple, List
+from typing import List
 
-from faceaudit.models.embedding_comparison import EmbeddingComparison
-from faceaudit.models.embedding_comparison_dataset import EmbeddingComparisonDataset
+from faceaudit.models.similarity.similarity_score_dataset import SimilarityScoreDataset
+from faceaudit.models.similarity.similarity_score_sample import SimilarityScoreSample
 from faceaudit.models.comparison_mining_config import (
     ComparisonMiningConfig,
     MiningRule,
     MiningStrategy,
     MiningFocus,
-    GlobalSelectionMode
+    GlobalSelectionMode,
 )
 
 
 class ComparisonMiningService:
     """
     Serviço central de curadoria estatística e mineração de pares biométricos.
-    
-    Este serviço atua como um 'filtro inteligente' antes do treinamento de calibradores 
-    (como a Regressão Logística do PLDA). Ele recebe uma matriz densa de todas as 
-    comparações possíveis e extrai um subconjunto altamente representativo.
-    
-    Principais responsabilidades:
-    - Evitar overfitting geográfico/demográfico limitando a contribuição por identidade.
-    - Aplicar estratégias de fatiamento de dificuldade (HARD, EASY, TYPICAL).
-    - Orquestrar proporções mistas sem permitir sobreposição ou duplicação de dados.
+
+    Atua como 'filtro inteligente' antes do treinamento de calibradores
+    (Logistic Regression, KDE). Recebe um SimilarityScoreDataset com todos os
+    pares pré-pontuados pelo SIMILARITY_SCORING e extrai um subconjunto
+    representativo segundo as regras configuradas (HARD/EASY/TYPICAL/RANDOM/
+    MIXED, foco em pares ou identidades, balanceamento round-robin).
+
+    Output é um único SimilarityScoreDataset (impostores minerados +
+    genuínos minerados concatenados), pronto para alimentar o
+    CALIBRATION_MODEL_TRAINING — separação interna por classe é dada pelo
+    campo `same_person`/`label` em cada sample.
     """
 
     def mine_pairs(
-        self, 
-        dataset: EmbeddingComparisonDataset, 
-        config: ComparisonMiningConfig
-    ) -> Tuple[EmbeddingComparisonDataset, EmbeddingComparisonDataset]:
+        self,
+        dataset: SimilarityScoreDataset,
+        config: ComparisonMiningConfig,
+    ) -> SimilarityScoreDataset:
         """
-        Executa o pipeline completo de curadoria e separação de pares.
+        Executa o pipeline completo de curadoria.
 
-        Lê o dataset bruto contendo comparações pré-calculadas, separa entre genuínos 
-        (mesma identidade) e impostores (identidades diferentes), remove auto-comparações 
-        (se configurado) e aplica as regras de mineração específicas para cada grupo.
-
-        Args:
-            dataset (EmbeddingComparisonDataset): Dataset bruto contendo todos os pares possíveis.
-            config (ComparisonMiningConfig): Motor de regras definindo semente, limites e estratégias.
-
-        Returns:
-            Tuple[EmbeddingComparisonDataset, EmbeddingComparisonDataset]: 
-                Uma tupla contendo (Dataset_Impostores_Minerados, Dataset_Genuínos_Minerados).
+        Lê o `SimilarityScoreDataset` bruto, separa genuínos e impostores via
+        `sample.same_person`, opcionalmente remove auto-comparações por
+        face_hash, aplica as regras independentes (`genuines_rule` e
+        `impostors_rule`) e retorna **um** SimilarityScoreDataset com os
+        pares curados (impostores primeiro, depois genuínos — a ordem é
+        irrelevante para o treino do calibrador, mas mantém compatibilidade
+        com o histórico do service).
         """
         rng = random.Random(config.seed)
-        
-        # 1. Remoção de Auto-Comparações e Divisão Genuíno/Impostor
-        gen_pool = []
-        imp_pool = []
-        
-        for comp in dataset.items:
-            # Pula comparações da imagem com a sua duplicata exata (mesmo arquivo/hash)
-            if config.exclude_self_comparisons and comp.embedding_1.face_hash == comp.embedding_2.face_hash:
-                continue
-                
-            id1 = comp.embedding_1.identity
-            id2 = comp.embedding_2.identity
-            
-            # Pula casos sem anotação de identidade, pois não podem ser classificados
-            if id1 is None or id2 is None:
-                continue
-                
-            if id1 == id2:
-                gen_pool.append(comp)
-            else:
-                imp_pool.append(comp)
 
-        # 2. Aplicação das Regras Independentes
+        # 1. Separação genuíno/impostor (com remoção opcional de auto-comparações)
+        gen_pool: List[SimilarityScoreSample] = []
+        imp_pool: List[SimilarityScoreSample] = []
+
+        for sample in dataset.items:
+            # Auto-comparação: mesmo face_hash em probe e reference
+            if (
+                config.exclude_self_comparisons
+                and sample.probe.face_hash is not None
+                and sample.probe.face_hash == sample.reference.face_hash
+            ):
+                continue
+
+            # Sem ground truth → não classificável; descarta.
+            if not sample.has_ground_truth:
+                continue
+
+            if sample.same_person:
+                gen_pool.append(sample)
+            else:
+                imp_pool.append(sample)
+
+        # 2. Regras independentes
         final_gen = self._apply_rule(gen_pool, config.genuines_rule, rng)
         final_imp = self._apply_rule(imp_pool, config.impostors_rule, rng)
 
-        # 3. Empacotamento
-        ds_imp = EmbeddingComparisonDataset(name=f"{dataset.name}_Impostors_Mined", items=final_imp)
-        ds_gen = EmbeddingComparisonDataset(name=f"{dataset.name}_Genuines_Mined", items=final_gen)
+        # 3. Empacotamento — output único concatenado
+        mined_items: List[SimilarityScoreSample] = [*final_imp, *final_gen]
 
-        return ds_imp, ds_gen
+        return SimilarityScoreDataset(
+            name=f"{dataset.name}_Mined",
+            description=(
+                f"Pares minerados de {dataset.name} via ComparisonMiningService "
+                f"(impostores={len(final_imp)}, genuínos={len(final_gen)})."
+            ),
+            items=mined_items,
+            metadata={
+                "source_dataset_name": dataset.name,
+                "n_genuines_mined": len(final_gen),
+                "n_impostors_mined": len(final_imp),
+            },
+        )
 
     def _apply_rule(
-        self, 
-        pairs: List[EmbeddingComparison], 
-        rule: MiningRule, 
-        rng: random.Random
-    ) -> List[EmbeddingComparison]:
+        self,
+        pairs: List[SimilarityScoreSample],
+        rule: MiningRule,
+        rng: random.Random,
+    ) -> List[SimilarityScoreSample]:
         """
-        Roteador interno que decide qual motor de extração usar baseado no Foco e Modo de Seleção.
-
-        Args:
-            pairs (List[EmbeddingComparison]): A lista bruta de pares (só genuínos ou só impostores).
-            rule (MiningRule): A regra atômica a ser aplicada.
-            rng (random.Random): Instância do gerador de números aleatórios para reprodutibilidade.
-
-        Returns:
-            List[EmbeddingComparison]: A lista de pares filtrada e minerada.
+        Roteador interno: PAIRS/GLOBAL_ORDER → fatiamento global;
+        IDENTITIES + ROUND_ROBIN_BY_PIVOT → revezamento por identidade.
         """
         if not pairs:
             return []
 
-        # Caso A: Foco direto em Pares (Saco global único) sem balanceamento por indivíduo
         if rule.focus == MiningFocus.PAIRS or rule.global_selection_mode == GlobalSelectionMode.GLOBAL_ORDER:
             return self._slice_from_global_pool(pairs, rule, rng)
-            
-        # Caso B: Foco em Identidades com Balanceamento (Round Robin)
+
         elif rule.global_selection_mode == GlobalSelectionMode.ROUND_ROBIN_BY_PIVOT:
             return self._round_robin_identities(pairs, rule, rng)
-            
+
         return pairs
 
     # =========================================================================
-    # MOTOR 1: O BARALHO DE CARTAS (ROUND ROBIN)
+    # MOTOR 1: ROUND ROBIN POR IDENTIDADE PIVÔ
     # =========================================================================
 
     def _round_robin_identities(
-        self, 
-        pairs: List[EmbeddingComparison], 
-        rule: MiningRule, 
-        rng: random.Random
-    ) -> List[EmbeddingComparison]:
+        self,
+        pairs: List[SimilarityScoreSample],
+        rule: MiningRule,
+        rng: random.Random,
+    ) -> List[SimilarityScoreSample]:
         """
-        Executa a extração usando Revezamento Circular (Round Robin) e "Amostragem sem Reposição".
+        Revezamento circular sem reposição entre identidades pivô (probe).
 
-        Lógica:
-        1. Agrupa todos os pares pela Identidade Pivô (a primeira face da comparação).
-        2. Ordena os pares de cada identidade por score (LLR ou Similaridade).
-        3. Coloca as identidades em uma fila circular.
-        4. Visita cada identidade uma vez por rodada, removendo um par (pop) de acordo 
-           com a estratégia exigida no momento (Hard, Typical, Random).
-        5. Se uma identidade fica sem pares, ela é ejetada da fila silenciosamente.
-
-        Isso garante que pessoas com 10.000 fotos não esmaguem pessoas com 2 fotos na 
-        calibração do modelo, diluindo o viés de frequência do dataset.
-
-        Args:
-            pairs (List[EmbeddingComparison]): Lista de pares brutos.
-            rule (MiningRule): Regra contendo a estratégia e o limite de pares.
-            rng (random.Random): Gerador de números aleatórios.
-
-        Returns:
-            List[EmbeddingComparison]: Pares curados e balanceados por identidade.
+        Agrupa os pares por `sample.probe.identity`, ordena cada baralho por
+        `raw_score` descendente, e visita cada identidade uma vez por rodada
+        retirando uma carta segundo a estratégia (HARD = topo, EASY = fundo,
+        TYPICAL = miolo, RANDOM = sorteio uniforme; MIXED escolhe segundo
+        déficit proporcional). Identidades sem pares são ejetadas
+        silenciosamente. Garante que pessoas com muitas amostras não
+        dominem o conjunto minerado.
         """
         max_global = rule.max_global_pairs
         if max_global is None:
             max_global = len(pairs)
 
-        # 1. Agrupar em Baralhos por Identidade Pivô
+        # 1. Baralhos por identidade pivô
         grouped = defaultdict(list)
-        for comp in pairs:
-            grouped[comp.embedding_1.identity].append(comp)
+        for sample in pairs:
+            grouped[sample.probe.identity].append(sample)
 
-        # 2. Ordenar as cartas de CADA baralho do Mais Difícil (Score Alto) para o Mais Fácil
+        # 2. Ordenação interna de cada baralho — Top score = mais difícil
         decks = {}
         for pivot, p_list in grouped.items():
-            decks[pivot] = sorted(p_list, key=lambda x: x.cosine_similarity, reverse=True)
+            decks[pivot] = sorted(p_list, key=lambda s: s.raw_score, reverse=True)
 
-        # 3. Formar a Fila Inicial (embaralhada para evitar viés alfabético na primeira extração)
+        # 3. Fila inicial embaralhada (evita viés alfabético)
         active_pivots = list(decks.keys())
         rng.shuffle(active_pivots)
 
-        results = []
+        results: List[SimilarityScoreSample] = []
         strategy_counts = {s: 0 for s in MiningStrategy}
 
         def get_next_strategy(current_total: int) -> MiningStrategy:
-            """
-            Calcula qual estratégia deve ser alimentada na rodada atual do modo MIXED,
-            baseando-se no maior déficit proporcional em relação à meta.
-            """
             if rule.strategy != MiningStrategy.MIXED:
                 return rule.strategy
 
@@ -176,14 +162,14 @@ class ComparisonMiningService:
                 MiningStrategy.HARD: props.hard_ratio,
                 MiningStrategy.TYPICAL: props.typical_ratio,
                 MiningStrategy.RANDOM: props.random_ratio,
-                MiningStrategy.EASY: props.easy_ratio
+                MiningStrategy.EASY: props.easy_ratio,
             }
-            
+
             best_st = MiningStrategy.RANDOM
             max_deficit = -1.0
-            
+
             for st, target_ratio in targets.items():
-                if target_ratio <= 0: 
+                if target_ratio <= 0:
                     continue
                 current_ratio = strategy_counts[st] / max(1, current_total)
                 deficit = target_ratio - current_ratio
@@ -192,108 +178,91 @@ class ComparisonMiningService:
                     best_st = st
             return best_st
 
-        # 4. A Fila de Revezamento
+        # 4. Loop de revezamento
         idx = 0
         while len(results) < max_global and active_pivots:
             pivot = active_pivots[idx % len(active_pivots)]
             deck = decks[pivot]
 
-            # Decide qual carta tirar com base na necessidade atual (Déficit)
             st = get_next_strategy(len(results))
-            
-            # EXTRAÇÃO (POP) -> Remove a carta do baralho para evitar duplicatas absolutas
+
             if st == MiningStrategy.HARD:
-                card = deck.pop(0)                   # O Topo (Pior Sósia)
+                card = deck.pop(0)
             elif st == MiningStrategy.EASY:
-                card = deck.pop(-1)                  # O Fundo (Mais Diferente)
+                card = deck.pop(-1)
             elif st == MiningStrategy.TYPICAL:
-                card = deck.pop(len(deck) // 2)      # O Miolo (Mediana)
-            else: # RANDOM
+                card = deck.pop(len(deck) // 2)
+            else:  # RANDOM
                 rand_idx = rng.randrange(len(deck))
-                card = deck.pop(rand_idx)            # Sorteio Uniforme
-            
+                card = deck.pop(rand_idx)
+
             results.append(card)
             strategy_counts[st] += 1
-            
-            # Drop-out: Se a pessoa ficou sem cartas, ela sai da fila de revezamento
+
             if not deck:
                 active_pivots.remove(pivot)
-                # O idx não é incrementado pois a lista encolheu e o próximo ocupou a posição atual
             else:
                 idx += 1
 
         return results
 
     # =========================================================================
-    # MOTOR 2: FATIAMENTO DO SACO GLOBAL (GLOBAL_ORDER)
+    # MOTOR 2: FATIAMENTO DO POOL GLOBAL
     # =========================================================================
 
     def _slice_from_global_pool(
-        self, 
-        pool: List[EmbeddingComparison], 
-        rule: MiningRule, 
-        rng: random.Random
-    ) -> List[EmbeddingComparison]:
+        self,
+        pool: List[SimilarityScoreSample],
+        rule: MiningRule,
+        rng: random.Random,
+    ) -> List[SimilarityScoreSample]:
         """
-        Ordena todos os pares numa lista única e faz recortes geométricos.
+        Ordena globalmente por `raw_score` (desc) e fatia segundo a estratégia.
 
-        Diferente do Round Robin, esta abordagem não protege contra o viés de 
-        identidades frequentes. Ela apenas olha para a matemática global do score.
-        Para o modo MIXED, a função destrói o array à medida que fatia para garantir
-        que não haja sobreposição de pares (Ex: o HARD não pode ser sorteado pelo RANDOM).
-
-        Args:
-            pool (List[EmbeddingComparison]): A piscina global de pares.
-            rule (MiningRule): Regra contendo as proporções e estratégia global.
-            rng (random.Random): Gerador de números aleatórios.
-
-        Returns:
-            List[EmbeddingComparison]: Lista final fatiada.
+        Diferente do Round Robin, não protege contra viés de identidades
+        frequentes — olha apenas a estatística global do score.
+        Modo MIXED faz `destructive slicing`: HARD/EASY/TYPICAL são removidos
+        do pool antes do RANDOM, para evitar sobreposição.
         """
         max_global = rule.max_global_pairs
         if max_global is None or max_global >= len(pool):
             return pool.copy()
 
-        # Ordena do maior (mais similar) para o menor
-        sorted_pool = sorted(pool, key=lambda x: x.cosine_similarity, reverse=True)
+        sorted_pool = sorted(pool, key=lambda s: s.raw_score, reverse=True)
 
         if rule.strategy == MiningStrategy.HARD:
             return sorted_pool[:max_global]
-            
+
         elif rule.strategy == MiningStrategy.EASY:
             return sorted_pool[-max_global:]
-            
+
         elif rule.strategy == MiningStrategy.TYPICAL:
             mid = len(sorted_pool) // 2
             half = max_global // 2
             start = max(0, mid - half)
             return sorted_pool[start : start + max_global]
-            
+
         elif rule.strategy == MiningStrategy.RANDOM:
             return rng.sample(sorted_pool, max_global)
-            
+
         elif rule.strategy == MiningStrategy.MIXED:
-            # Fatiamento cirúrgico sem sobreposição (Destructive Slicing)
             props = rule.mixed_proportions
             n_hard = int(max_global * props.hard_ratio)
             n_easy = int(max_global * props.easy_ratio)
             n_typ = int(max_global * props.typical_ratio)
-            n_rnd = max_global - (n_hard + n_easy + n_typ) # O resto vai pro random
+            n_rnd = max_global - (n_hard + n_easy + n_typ)
 
-            results = []
-            
-            # 1. Pega os mais difíceis (Topo) e os remove da piscina principal
+            results: List[SimilarityScoreSample] = []
+
             if n_hard > 0:
                 results.extend(sorted_pool[:n_hard])
                 sorted_pool = sorted_pool[n_hard:]
-                
-            # 2. Pega os mais fáceis (Fundo) e os remove da piscina
+
             if n_easy > 0 and sorted_pool:
                 n_easy = min(n_easy, len(sorted_pool))
                 results.extend(sorted_pool[-n_easy:])
                 sorted_pool = sorted_pool[:-n_easy]
-                
-            # 3. Pega os típicos (Novo Miolo) e os remove reconstruindo o array
+
             if n_typ > 0 and sorted_pool:
                 n_typ = min(n_typ, len(sorted_pool))
                 mid = len(sorted_pool) // 2
@@ -301,10 +270,11 @@ class ComparisonMiningService:
                 start = max(0, mid - half)
                 results.extend(sorted_pool[start : start + n_typ])
                 sorted_pool = sorted_pool[:start] + sorted_pool[start + n_typ:]
-                
-            # 4. Sorteia os aleatórios do que sobrou intacto na piscina
+
             if n_rnd > 0 and sorted_pool:
                 n_rnd = min(n_rnd, len(sorted_pool))
                 results.extend(rng.sample(sorted_pool, n_rnd))
-                
+
             return results
+
+        return pool.copy()
