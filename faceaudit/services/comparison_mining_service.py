@@ -52,11 +52,18 @@ class ComparisonMiningService:
         imp_pool: List[SimilarityScoreSample] = []
 
         for sample in dataset.items:
-            # Auto-comparação: mesmo face_hash em probe e reference
+            # Auto-comparação: mesmo face_hash em probe e reference.
+            # Trata string vazia como ausência de hash — após round-trip
+            # parquet, face_hash é restaurado como "" (a coluna não é
+            # persistida); o check estrito comparando string vazia com
+            # string vazia descartaria 100% dos samples.
+            probe_hash = sample.probe.face_hash
+            ref_hash = sample.reference.face_hash
             if (
                 config.exclude_self_comparisons
-                and sample.probe.face_hash is not None
-                and sample.probe.face_hash == sample.reference.face_hash
+                and probe_hash
+                and ref_hash
+                and probe_hash == ref_hash
             ):
                 continue
 
@@ -69,9 +76,21 @@ class ComparisonMiningService:
             else:
                 imp_pool.append(sample)
 
-        # 2. Regras independentes
-        final_gen = self._apply_rule(gen_pool, config.genuines_rule, rng)
-        final_imp = self._apply_rule(imp_pool, config.impostors_rule, rng)
+        # 2. Regras independentes.
+        #
+        # Convenção de ordenação por classe (ver _sort_pool_by_difficulty):
+        #   - Para IMPOSTORES: HARD = top score (impostores que se confundem
+        #     com genuínos = epistemicamente difíceis de classificar como Hd).
+        #   - Para GENUÍNOS: HARD = bottom score (genuínos com baixa
+        #     similaridade = epistemicamente difíceis de classificar como Hp).
+        #
+        # Ou seja, "HARD" sempre significa "difícil de classificar"
+        # independente da classe — a posição numérica do score é apenas o
+        # mecanismo de implementação. EASY é o oposto em ambos os casos.
+        final_gen = self._apply_rule(gen_pool, config.genuines_rule, rng,
+                                     is_genuine_pool=True)
+        final_imp = self._apply_rule(imp_pool, config.impostors_rule, rng,
+                                     is_genuine_pool=False)
 
         # 3. Empacotamento — output único concatenado
         mined_items: List[SimilarityScoreSample] = [*final_imp, *final_gen]
@@ -95,21 +114,55 @@ class ComparisonMiningService:
         pairs: List[SimilarityScoreSample],
         rule: MiningRule,
         rng: random.Random,
+        is_genuine_pool: bool = False,
     ) -> List[SimilarityScoreSample]:
         """
         Roteador interno: PAIRS/GLOBAL_ORDER → fatiamento global;
         IDENTITIES + ROUND_ROBIN_BY_PIVOT → revezamento por identidade.
+
+        `is_genuine_pool`: define a semântica de HARD/EASY ao ordenar o pool
+        — ver `_sort_pool_by_difficulty`.
         """
         if not pairs:
             return []
 
         if rule.focus == MiningFocus.PAIRS or rule.global_selection_mode == GlobalSelectionMode.GLOBAL_ORDER:
-            return self._slice_from_global_pool(pairs, rule, rng)
+            return self._slice_from_global_pool(
+                pairs, rule, rng, is_genuine_pool=is_genuine_pool
+            )
 
         elif rule.global_selection_mode == GlobalSelectionMode.ROUND_ROBIN_BY_PIVOT:
-            return self._round_robin_identities(pairs, rule, rng)
+            return self._round_robin_identities(
+                pairs, rule, rng, is_genuine_pool=is_genuine_pool
+            )
 
         return pairs
+
+    @staticmethod
+    def _sort_pool_by_difficulty(
+        pool: List[SimilarityScoreSample],
+        is_genuine_pool: bool,
+    ) -> List[SimilarityScoreSample]:
+        """
+        Ordena o pool de modo que `pool[0]` seja sempre o par mais
+        EPISTEMICAMENTE DIFÍCIL de classificar (HARD), independente da classe:
+
+        - Impostores: pares mais difíceis = top score (impostores que se
+          confundem com genuínos). Ordem: score DESCENDENTE.
+        - Genuínos:   pares mais difíceis = bottom score (genuínos com
+          baixa similaridade visual entre as duas vistas). Ordem: score
+          ASCENDENTE.
+
+        Esta convenção elimina a armadilha histórica em que aplicar HARD
+        nos genuínos pegava os pares triviais (top score) — exatamente o
+        oposto do que o nome sugere e do que faz sentido forensicamente.
+        Após esta normalização, `_pop_card` opera sobre `pool` como um
+        baralho onde o topo é sempre HARD e o fundo é sempre EASY,
+        independente da classe.
+        """
+        # reverse=True para impostores (descendente); reverse=False para
+        # genuínos (ascendente). Em ambos, pool[0] é o par mais difícil.
+        return sorted(pool, key=lambda s: s.raw_score, reverse=not is_genuine_pool)
 
     # =========================================================================
     # MOTOR 1: ROUND ROBIN POR IDENTIDADE PIVÔ
@@ -120,17 +173,20 @@ class ComparisonMiningService:
         pairs: List[SimilarityScoreSample],
         rule: MiningRule,
         rng: random.Random,
+        is_genuine_pool: bool = False,
     ) -> List[SimilarityScoreSample]:
         """
         Revezamento circular sem reposição entre identidades pivô (probe).
 
-        Agrupa os pares por `sample.probe.identity`, ordena cada baralho por
-        `raw_score` descendente, e visita cada identidade uma vez por rodada
-        retirando uma carta segundo a estratégia (HARD = topo, EASY = fundo,
-        TYPICAL = miolo, RANDOM = sorteio uniforme; MIXED escolhe segundo
-        déficit proporcional). Identidades sem pares são ejetadas
-        silenciosamente. Garante que pessoas com muitas amostras não
-        dominem o conjunto minerado.
+        Agrupa os pares por `sample.probe.identity`, ordena cada baralho de
+        modo que o TOPO seja sempre o par mais difícil de classificar (HARD)
+        — para impostores, top score; para genuínos, bottom score (ver
+        `_sort_pool_by_difficulty`). Visita cada identidade uma vez por
+        rodada retirando uma carta segundo a estratégia (HARD = topo,
+        EASY = fundo, TYPICAL = miolo, RANDOM = sorteio uniforme;
+        MIXED escolhe segundo déficit proporcional). Identidades sem pares
+        são ejetadas silenciosamente. Garante que pessoas com muitas
+        amostras não dominem o conjunto minerado.
         """
         max_global = rule.max_global_pairs
         if max_global is None:
@@ -141,10 +197,11 @@ class ComparisonMiningService:
         for sample in pairs:
             grouped[sample.probe.identity].append(sample)
 
-        # 2. Ordenação interna de cada baralho — Top score = mais difícil
+        # 2. Ordenação interna de cada baralho — TOPO = par mais difícil
+        # (impostor top-score / genuíno bottom-score)
         decks = {}
         for pivot, p_list in grouped.items():
-            decks[pivot] = sorted(p_list, key=lambda s: s.raw_score, reverse=True)
+            decks[pivot] = self._sort_pool_by_difficulty(p_list, is_genuine_pool)
 
         # 3. Fila inicial embaralhada (evita viés alfabético)
         active_pivots = list(decks.keys())
@@ -215,9 +272,14 @@ class ComparisonMiningService:
         pool: List[SimilarityScoreSample],
         rule: MiningRule,
         rng: random.Random,
+        is_genuine_pool: bool = False,
     ) -> List[SimilarityScoreSample]:
         """
-        Ordena globalmente por `raw_score` (desc) e fatia segundo a estratégia.
+        Ordena globalmente o pool de modo que `pool[0]` seja sempre o par
+        mais epistemicamente difícil (HARD) e fatia segundo a estratégia.
+
+        Para impostores: ordem por `raw_score` DESCENDENTE (top score = HARD).
+        Para genuínos:   ordem por `raw_score` ASCENDENTE   (bottom score = HARD).
 
         Diferente do Round Robin, não protege contra viés de identidades
         frequentes — olha apenas a estatística global do score.
@@ -228,7 +290,7 @@ class ComparisonMiningService:
         if max_global is None or max_global >= len(pool):
             return pool.copy()
 
-        sorted_pool = sorted(pool, key=lambda s: s.raw_score, reverse=True)
+        sorted_pool = self._sort_pool_by_difficulty(pool, is_genuine_pool)
 
         if rule.strategy == MiningStrategy.HARD:
             return sorted_pool[:max_global]

@@ -184,6 +184,138 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         pipe_layout.addLayout(pipe_form)
         props_layout.addWidget(self._pipeline_section)
 
+        # Detalhes do Modelo de Similaridade (visível apenas para
+        # TRAINED_SIMILARITY_MODEL)
+        self._sim_model_section = QtWidgets.QWidget()
+        sim_layout = QtWidgets.QVBoxLayout(self._sim_model_section)
+        sim_layout.setContentsMargins(0, 4, 0, 0)
+        sim_layout.setSpacing(4)
+
+        sim_sep = QtWidgets.QFrame()
+        sim_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sim_sep.setStyleSheet("color: #ddd;")
+        sim_layout.addWidget(sim_sep)
+
+        sim_header = QtWidgets.QLabel("Detalhes do Modelo de Similaridade")
+        sim_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        sim_layout.addWidget(sim_header)
+
+        sim_form = QtWidgets.QFormLayout()
+        sim_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        sim_form.setSpacing(4)
+
+        self.lbl_sim_type = QtWidgets.QLabel("—")
+        self.lbl_sim_input_dim = QtWidgets.QLabel("—")
+        self.lbl_sim_latent_dim = QtWidgets.QLabel("—")
+        self.lbl_sim_extra = QtWidgets.QLabel("—")
+        self.lbl_sim_extra.setWordWrap(True)
+
+        for lbl in (self.lbl_sim_type, self.lbl_sim_input_dim,
+                    self.lbl_sim_latent_dim, self.lbl_sim_extra):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+
+        for text, value_lbl in [
+            ("Tipo:", self.lbl_sim_type),
+            ("Dim. entrada:", self.lbl_sim_input_dim),
+            ("Dim. latente:", self.lbl_sim_latent_dim),
+            ("Extra:", self.lbl_sim_extra),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            sim_form.addRow(lbl, value_lbl)
+
+        sim_layout.addLayout(sim_form)
+        props_layout.addWidget(self._sim_model_section)
+
+        # Detalhes do Modelo de Calibração (visível apenas para
+        # TRAINED_CALIBRATION_MODEL)
+        self._calib_model_section = QtWidgets.QWidget()
+        calib_layout = QtWidgets.QVBoxLayout(self._calib_model_section)
+        calib_layout.setContentsMargins(0, 4, 0, 0)
+        calib_layout.setSpacing(4)
+
+        calib_sep = QtWidgets.QFrame()
+        calib_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        calib_sep.setStyleSheet("color: #ddd;")
+        calib_layout.addWidget(calib_sep)
+
+        calib_header = QtWidgets.QLabel("Detalhes do Modelo de Calibração")
+        calib_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        calib_layout.addWidget(calib_header)
+
+        calib_form = QtWidgets.QFormLayout()
+        calib_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        calib_form.setSpacing(4)
+
+        self.lbl_calib_type = QtWidgets.QLabel("—")
+        self.lbl_calib_hyperparams = QtWidgets.QLabel("—")
+        self.lbl_calib_hyperparams.setWordWrap(True)
+        self.lbl_calib_clipping = QtWidgets.QLabel("—")
+        self.lbl_calib_extra = QtWidgets.QLabel("—")
+        self.lbl_calib_extra.setWordWrap(True)
+
+        for lbl in (self.lbl_calib_type, self.lbl_calib_hyperparams,
+                    self.lbl_calib_clipping, self.lbl_calib_extra):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+
+        for text, value_lbl in [
+            ("Tipo:", self.lbl_calib_type),
+            ("Hyperparâmetros:", self.lbl_calib_hyperparams),
+            ("Clipping log-LR:", self.lbl_calib_clipping),
+            ("Extra:", self.lbl_calib_extra),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            calib_form.addRow(lbl, value_lbl)
+
+        calib_layout.addLayout(calib_form)
+        props_layout.addWidget(self._calib_model_section)
+
+        # Detalhes de Score Dataset (visível para SIMILARITY_SCORES e
+        # CALIBRATED_SCORES)
+        self._scores_section = QtWidgets.QWidget()
+        scores_layout = QtWidgets.QVBoxLayout(self._scores_section)
+        scores_layout.setContentsMargins(0, 4, 0, 0)
+        scores_layout.setSpacing(4)
+
+        scores_sep = QtWidgets.QFrame()
+        scores_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        scores_sep.setStyleSheet("color: #ddd;")
+        scores_layout.addWidget(scores_sep)
+
+        scores_header = QtWidgets.QLabel("Detalhes do Score Dataset")
+        scores_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        scores_layout.addWidget(scores_header)
+
+        scores_form = QtWidgets.QFormLayout()
+        scores_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        scores_form.setSpacing(4)
+
+        self.lbl_scores_total = QtWidgets.QLabel("—")
+        self.lbl_scores_genuine = QtWidgets.QLabel("—")
+        self.lbl_scores_impostor = QtWidgets.QLabel("—")
+        self.lbl_scores_identities = QtWidgets.QLabel("—")
+        self.lbl_scores_calibrated = QtWidgets.QLabel("—")
+
+        for lbl in (self.lbl_scores_total, self.lbl_scores_genuine,
+                    self.lbl_scores_impostor, self.lbl_scores_identities,
+                    self.lbl_scores_calibrated):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+
+        for text, value_lbl in [
+            ("Total de pares:", self.lbl_scores_total),
+            ("Genuínos (Hp):", self.lbl_scores_genuine),
+            ("Impostores (Hd):", self.lbl_scores_impostor),
+            ("Identidades:", self.lbl_scores_identities),
+            ("Calibrados (log-LR):", self.lbl_scores_calibrated),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            scores_form.addRow(lbl, value_lbl)
+
+        scores_layout.addLayout(scores_form)
+        props_layout.addWidget(self._scores_section)
+
         props_layout.addStretch()
 
         props_scroll.setWidget(props_container)
@@ -268,6 +400,33 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_pipeline()
 
+        # Detalhes do modelo de similaridade treinado
+        is_sim_model = resource.resource_type == StrategyResourceType.TRAINED_SIMILARITY_MODEL
+        self._sim_model_section.setVisible(is_sim_model)
+        if is_sim_model:
+            self._load_similarity_model_details(resource, abs_path)
+        else:
+            self._clear_similarity_model()
+
+        # Detalhes do modelo de calibração treinado
+        is_calib_model = resource.resource_type == StrategyResourceType.TRAINED_CALIBRATION_MODEL
+        self._calib_model_section.setVisible(is_calib_model)
+        if is_calib_model:
+            self._load_calibration_model_details(resource, abs_path)
+        else:
+            self._clear_calibration_model()
+
+        # Detalhes de score dataset (similarity / calibrated)
+        is_scores = resource.resource_type in (
+            StrategyResourceType.SIMILARITY_SCORES,
+            StrategyResourceType.CALIBRATED_SCORES,
+        )
+        self._scores_section.setVisible(is_scores)
+        if is_scores:
+            self._load_scores_details(resource, abs_path)
+        else:
+            self._clear_scores()
+
         # Uso nas estratégias
         self.usage_list.clear()
         if definitions:
@@ -298,8 +457,14 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             lbl.setText("—")
         self._clear_stats()
         self._clear_pipeline()
+        self._clear_similarity_model()
+        self._clear_calibration_model()
+        self._clear_scores()
         self._stats_section.setVisible(False)
         self._pipeline_section.setVisible(False)
+        self._sim_model_section.setVisible(False)
+        self._calib_model_section.setVisible(False)
+        self._scores_section.setVisible(False)
         self.usage_list.clear()
         self.tabs.setTabText(1, "Utilização")
 
@@ -310,9 +475,21 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         Tenta carregar stats do JSON paralelo ao parquet. Se não existir
         (caso típico de INTERMEDIATE_DATASET produzido por instruções),
         computa via pyarrow metadata e cacheia o JSON ao lado do parquet.
+
+        Stale-cache check: se o parquet for mais recente que o sidecar,
+        recomputa (caso típico: re-execução de instrução com parâmetros
+        diferentes, mantendo o mesmo path do output).
         """
         stats_path = dataset_abs_path.parent / (dataset_abs_path.stem + "_stats.json")
-        if not stats_path.exists():
+        is_stale = False
+        if stats_path.exists():
+            try:
+                if dataset_abs_path.stat().st_mtime > stats_path.stat().st_mtime + 1.0:
+                    is_stale = True
+            except Exception:
+                pass
+
+        if not stats_path.exists() or is_stale:
             self._compute_and_cache_stats(dataset_abs_path, stats_path)
 
         if stats_path.exists():
@@ -427,6 +604,470 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_pipe_steps.setText("—")
         self.lbl_pipe_output_dim.setText("—")
         self.lbl_pipe_flags.setText("—")
+
+    def _load_similarity_model_details(
+        self, resource: StrategyResource, abs_path: Optional[Path]
+    ) -> None:
+        """
+        Carrega e exibe detalhes de um modelo de similaridade treinado:
+        tipo, dimensão de entrada (D), dimensão latente (PLDA) e
+        informações extras como nº de iterações EM ou amostras vistas.
+
+        Usa o payload em memória se disponível; caso contrário, carrega o
+        pickle do disco via ResourceLoaderService (lazy).
+        """
+        payload = resource.payload
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                # Reusa a instância única se houver, senão cria sob demanda.
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                # Hidrata diretamente via _load_pickle (sabemos que é pickle).
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self.lbl_sim_type.setText("erro ao carregar")
+            self.lbl_sim_input_dim.setText("—")
+            self.lbl_sim_latent_dim.setText("—")
+            self.lbl_sim_extra.setText("—")
+            return
+
+        type_name = type(payload).__name__
+        self.lbl_sim_type.setText(type_name)
+
+        input_dim = getattr(payload, "input_dimension", None)
+        if input_dim is not None:
+            self.lbl_sim_input_dim.setText(f"{int(input_dim)}D")
+        else:
+            self.lbl_sim_input_dim.setText("—")
+
+        # latent_dim só existe no PLDA; em outros modelos fica oculto.
+        cfg = getattr(payload, "config", None)
+        latent_dim = getattr(cfg, "latent_dim", None) if cfg is not None else None
+        if latent_dim is not None:
+            self.lbl_sim_latent_dim.setText(f"{int(latent_dim)}D")
+        else:
+            self.lbl_sim_latent_dim.setText("n/a")
+
+        # Linha extra: nº de iterações EM (PLDA), nº de amostras vistas
+        # (Cosine), modo PLDA, etc — varia por implementação.
+        extras = []
+        em_iters = getattr(cfg, "em_iterations", None) if cfg is not None else None
+        if em_iters is not None:
+            extras.append(f"EM iters={em_iters}")
+        plda_mode = getattr(cfg, "plda_mode", None) if cfg is not None else None
+        if plda_mode is not None:
+            mode_str = (
+                plda_mode.value if hasattr(plda_mode, "value") else str(plda_mode)
+            )
+            extras.append(f"modo={mode_str}")
+        n_seen = getattr(payload, "n_samples_seen", None)
+        if n_seen is not None:
+            extras.append(f"N treino={n_seen:,}".replace(",", "."))
+        is_fitted = getattr(payload, "is_fitted", None)
+        if is_fitted is False:
+            extras.append("⚠ não treinado")
+        self.lbl_sim_extra.setText(" | ".join(extras) if extras else "—")
+
+    def _clear_similarity_model(self) -> None:
+        self.lbl_sim_type.setText("—")
+        self.lbl_sim_input_dim.setText("—")
+        self.lbl_sim_latent_dim.setText("—")
+        self.lbl_sim_extra.setText("—")
+
+    def _load_calibration_model_details(
+        self, resource: StrategyResource, abs_path: Optional[Path]
+    ) -> None:
+        """
+        Carrega e exibe detalhes de um modelo de calibração treinado:
+        tipo (LogisticRegression / KDE), hyperparâmetros principais, faixa
+        de clipping de log-LR (se aplicável) e métricas auxiliares como
+        coeficiente do LogReg ou bandwidth efetivo do KDE.
+
+        Usa o payload em memória se disponível; caso contrário, hidrata do
+        disco via _load_pickle.
+        """
+        payload = resource.payload
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self.lbl_calib_type.setText("erro ao carregar")
+            self.lbl_calib_hyperparams.setText("—")
+            self.lbl_calib_clipping.setText("—")
+            self.lbl_calib_extra.setText("—")
+            return
+
+        type_name = type(payload).__name__
+        self.lbl_calib_type.setText(type_name)
+
+        cfg = getattr(payload, "config", None)
+        is_logreg = "LogisticRegression" in type_name
+        is_kde = "KDE" in type_name
+
+        # Hyperparâmetros principais por família.
+        hyperparams = []
+        if is_logreg and cfg is not None:
+            best_c = getattr(payload, "best_C_", None)
+            if best_c is not None:
+                hyperparams.append(f"C (efetivo)={best_c:g}")
+            elif getattr(cfg, "C", None) is not None:
+                hyperparams.append(f"C={cfg.C:g}")
+            if getattr(cfg, "use_gridsearch", False):
+                cv = getattr(cfg, "cv_folds", None)
+                scoring = getattr(cfg, "scoring", None)
+                scoring_str = (
+                    scoring.value if hasattr(scoring, "value") else str(scoring)
+                )
+                hyperparams.append(f"GridSearchCV (cv={cv}, scoring={scoring_str})")
+            hyperparams.append("class_weight=balanced (Brümmer π=0.5)")
+        elif is_kde and cfg is not None:
+            kernel = getattr(cfg, "kernel", None)
+            if kernel:
+                hyperparams.append(f"kernel={kernel}")
+            kde_gen = getattr(payload, "kde_genuine", None)
+            kde_imp = getattr(payload, "kde_impostor", None)
+            bw_gen = (
+                getattr(kde_gen, "bandwidth", None)
+                if kde_gen is not None else None
+            )
+            bw_imp = (
+                getattr(kde_imp, "bandwidth", None)
+                if kde_imp is not None else None
+            )
+            if bw_gen is not None:
+                hyperparams.append(f"bw_gen={bw_gen:.4f}")
+            if bw_imp is not None:
+                hyperparams.append(f"bw_imp={bw_imp:.4f}")
+            if getattr(cfg, "use_gridsearch", False):
+                hyperparams.append("GridSearch (bandwidth)")
+        self.lbl_calib_hyperparams.setText(
+            " | ".join(hyperparams) if hyperparams else "—"
+        )
+
+        # Clipping de log-LR (KDE expõe min/max no config; LogReg não tem).
+        if is_kde and cfg is not None:
+            min_lr = getattr(cfg, "min_log_lr", None)
+            max_lr = getattr(cfg, "max_log_lr", None)
+            if min_lr is not None and max_lr is not None:
+                self.lbl_calib_clipping.setText(f"[{min_lr:g}, {max_lr:g}]")
+            else:
+                self.lbl_calib_clipping.setText("—")
+        else:
+            self.lbl_calib_clipping.setText("n/a")
+
+        # Linha extra: para LogReg, coef + intercept; para KDE, n samples
+        # vistas no fit; aviso se não treinado.
+        extras = []
+        is_fitted = getattr(payload, "is_fitted", None)
+        if is_fitted is False:
+            extras.append("⚠ não treinado")
+
+        if is_logreg:
+            sk = getattr(payload, "logreg", None)
+            try:
+                if sk is not None and getattr(sk, "coef_", None) is not None:
+                    coef = float(sk.coef_[0][0])
+                    bias = float(sk.intercept_[0])
+                    extras.append(f"slope={coef:.4f}, intercept={bias:.4f}")
+            except Exception:
+                pass
+        elif is_kde:
+            n_gen = getattr(payload, "n_genuine_seen", None)
+            n_imp = getattr(payload, "n_impostor_seen", None)
+            if n_gen is not None and n_imp is not None:
+                extras.append(
+                    f"N_gen={n_gen:,} | N_imp={n_imp:,}".replace(",", ".")
+                )
+            fisher_eps = getattr(cfg, "fisher_epsilon", None) if cfg else None
+            if fisher_eps is not None:
+                extras.append(f"fisher_eps={fisher_eps:g}")
+
+        self.lbl_calib_extra.setText(" | ".join(extras) if extras else "—")
+
+    def _clear_calibration_model(self) -> None:
+        self.lbl_calib_type.setText("—")
+        self.lbl_calib_hyperparams.setText("—")
+        self.lbl_calib_clipping.setText("—")
+        self.lbl_calib_extra.setText("—")
+
+    def _load_scores_details(
+        self, resource: StrategyResource, abs_path: Optional[Path]
+    ) -> None:
+        """
+        Mostra contagem total/gen/imp e indicador de log-LR para
+        SIMILARITY_SCORES e CALIBRATED_SCORES.
+
+        Estratégia de leitura (em ordem de preferência):
+        1. payload em memória → usa total_genuines / total_impostors (cached).
+        2. JSON sidecar `<stem>_scores_stats.json` ao lado do parquet.
+        3. pyarrow.read_table com colunas mínimas (`same_person`, `log_lr` se
+           houver) — fast path sem hidratar o dataset inteiro. Cacheia em
+           sidecar JSON para o próximo acesso.
+        """
+        # Caminho 1: payload já em memória.
+        payload = resource.payload
+        if payload is not None:
+            n_gen = getattr(payload, "total_genuines", None)
+            n_imp = getattr(payload, "total_impostors", None)
+            n_total = (n_gen or 0) + (n_imp or 0) if (n_gen is not None and n_imp is not None) else None
+            has_log_lr = self._payload_has_log_lr(payload)
+
+            # Identidades únicas: itera samples coletando probe/reference identity.
+            n_ids_total = n_probe_ids = n_ref_ids = None
+            try:
+                items = getattr(payload, "items", None) or []
+                probe_set = set()
+                ref_set = set()
+                for s in items:
+                    pid = getattr(getattr(s, "probe", None), "identity", None)
+                    rid = getattr(getattr(s, "reference", None), "identity", None)
+                    if pid is not None:
+                        probe_set.add(pid)
+                    if rid is not None:
+                        ref_set.add(rid)
+                n_probe_ids = len(probe_set)
+                n_ref_ids = len(ref_set)
+                n_ids_total = len(probe_set | ref_set)
+            except Exception:
+                pass
+
+            self._render_scores_counts(
+                n_total, n_gen, n_imp, has_log_lr,
+                n_identities=n_ids_total,
+                n_probe_ids=n_probe_ids,
+                n_ref_ids=n_ref_ids,
+            )
+            return
+
+        # Caminho 2/3: precisa do parquet.
+        if not abs_path or not abs_path.exists():
+            self.lbl_scores_total.setText("(artefato ausente)")
+            self.lbl_scores_genuine.setText("—")
+            self.lbl_scores_impostor.setText("—")
+            self.lbl_scores_calibrated.setText("—")
+            return
+
+        # Sidecar de cache.
+        cache_path = abs_path.parent / (abs_path.stem + "_scores_stats.json")
+        if cache_path.exists():
+            try:
+                # Stale-cache check: invalida o cache quando o parquet foi
+                # reescrito após a última computação dos stats (caso típico:
+                # re-execução de PAIR_MINING com max_global_pairs diferente,
+                # mantendo o mesmo resource_id/path do output).
+                parquet_mtime = abs_path.stat().st_mtime
+                cache_mtime = cache_path.stat().st_mtime
+                if parquet_mtime > cache_mtime + 1.0:  # 1s de folga
+                    raise ValueError("cache mais antigo que o parquet")
+
+                data = json.loads(cache_path.read_text(encoding="utf-8"))
+                # Garante que o cache antigo (sem identidades) seja revalidado
+                # — se faltar a chave, força recomputação caindo fora.
+                if "n_identities" in data:
+                    self._render_scores_counts(
+                        data.get("n_total"),
+                        data.get("n_genuine"),
+                        data.get("n_impostor"),
+                        bool(data.get("has_log_lr", False)),
+                        n_identities=data.get("n_identities"),
+                        n_probe_ids=data.get("n_probe_ids"),
+                        n_ref_ids=data.get("n_ref_ids"),
+                    )
+                    return
+            except Exception:
+                pass
+
+        # Computa lendo apenas as colunas mínimas.
+        try:
+            import pyarrow.parquet as pq
+
+            schema_columns = set()
+            try:
+                schema_columns = set(pq.ParquetFile(abs_path).schema_arrow.names)
+            except Exception:
+                schema_columns = set()
+
+            cols_to_read = []
+            if "same_person" in schema_columns:
+                cols_to_read.append("same_person")
+            elif "label" in schema_columns:
+                cols_to_read.append("label")
+            else:
+                self.lbl_scores_total.setText("(coluna de classe ausente)")
+                return
+
+            has_probe_id_col = "probe_identity" in schema_columns
+            has_ref_id_col = "reference_identity" in schema_columns
+            if has_probe_id_col:
+                cols_to_read.append("probe_identity")
+            if has_ref_id_col:
+                cols_to_read.append("reference_identity")
+
+            has_log_lr_col = "log_lr" in schema_columns
+
+            tbl = pq.read_table(abs_path, columns=cols_to_read)
+            n_total = tbl.num_rows
+
+            if "same_person" in cols_to_read:
+                arr = tbl.column("same_person").to_pylist()
+                n_gen = sum(1 for v in arr if v is True)
+                n_imp = sum(1 for v in arr if v is False)
+            else:
+                arr = tbl.column("label").to_pylist()
+                n_gen = sum(1 for v in arr if int(v) == 1)
+                n_imp = sum(1 for v in arr if int(v) == 0)
+
+            n_ids_total = n_probe_ids = n_ref_ids = None
+            try:
+                probe_set = (
+                    set(tbl.column("probe_identity").to_pylist())
+                    if has_probe_id_col else set()
+                )
+                ref_set = (
+                    set(tbl.column("reference_identity").to_pylist())
+                    if has_ref_id_col else set()
+                )
+                probe_set.discard(None)
+                ref_set.discard(None)
+                if probe_set or ref_set:
+                    n_probe_ids = len(probe_set)
+                    n_ref_ids = len(ref_set)
+                    n_ids_total = len(probe_set | ref_set)
+            except Exception:
+                pass
+
+            self._render_scores_counts(
+                n_total, n_gen, n_imp, has_log_lr_col,
+                n_identities=n_ids_total,
+                n_probe_ids=n_probe_ids,
+                n_ref_ids=n_ref_ids,
+            )
+
+            # Cacheia.
+            try:
+                cache_path.write_text(
+                    json.dumps({
+                        "n_total": int(n_total),
+                        "n_genuine": int(n_gen),
+                        "n_impostor": int(n_imp),
+                        "has_log_lr": bool(has_log_lr_col),
+                        "n_identities": (
+                            int(n_ids_total) if n_ids_total is not None else None
+                        ),
+                        "n_probe_ids": (
+                            int(n_probe_ids) if n_probe_ids is not None else None
+                        ),
+                        "n_ref_ids": (
+                            int(n_ref_ids) if n_ref_ids is not None else None
+                        ),
+                    }),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
+        except Exception:
+            self.lbl_scores_total.setText("erro ao ler parquet")
+            self.lbl_scores_genuine.setText("—")
+            self.lbl_scores_impostor.setText("—")
+            self.lbl_scores_calibrated.setText("—")
+
+    def _payload_has_log_lr(self, payload) -> bool:
+        """True se ao menos um sample do dataset tem `metadata['log_lr']`."""
+        try:
+            items = getattr(payload, "items", []) or []
+            for s in items[:1000]:
+                md = getattr(s, "metadata", None)
+                if isinstance(md, dict) and md.get("log_lr") is not None:
+                    return True
+        except Exception:
+            pass
+        return False
+
+    def _render_scores_counts(
+        self,
+        n_total: Optional[int],
+        n_gen: Optional[int],
+        n_imp: Optional[int],
+        has_log_lr: bool,
+        n_identities: Optional[int] = None,
+        n_probe_ids: Optional[int] = None,
+        n_ref_ids: Optional[int] = None,
+    ) -> None:
+        def fmt(n):
+            if n is None:
+                return "—"
+            return f"{int(n):,}".replace(",", ".")
+
+        self.lbl_scores_total.setText(fmt(n_total))
+
+        if n_total and n_gen is not None and n_total > 0:
+            pct_gen = 100.0 * n_gen / n_total
+            self.lbl_scores_genuine.setText(f"{fmt(n_gen)}  ({pct_gen:.2f}%)")
+        else:
+            self.lbl_scores_genuine.setText(fmt(n_gen))
+
+        if n_total and n_imp is not None and n_total > 0:
+            pct_imp = 100.0 * n_imp / n_total
+            self.lbl_scores_impostor.setText(f"{fmt(n_imp)}  ({pct_imp:.2f}%)")
+        else:
+            self.lbl_scores_impostor.setText(fmt(n_imp))
+
+        # Razão imp:gen — útil para entender desbalanceamento (típico cross-comp).
+        if n_gen and n_imp and n_gen > 0:
+            ratio = n_imp / n_gen
+            extra = f"  (razão imp:gen = {ratio:.0f}:1)"
+            self.lbl_scores_impostor.setText(
+                self.lbl_scores_impostor.text() + extra
+            )
+
+        # Identidades únicas. Se probe e reference compartilham o mesmo
+        # conjunto, mostra só o total. Se diferem (cross-comparison entre
+        # datasets distintos), mostra a discriminação.
+        if n_identities is not None:
+            label = fmt(n_identities) + " únicas"
+            if (
+                n_probe_ids is not None
+                and n_ref_ids is not None
+                and n_probe_ids != n_ref_ids
+            ):
+                label += (
+                    f"  (probe: {fmt(n_probe_ids)} / "
+                    f"reference: {fmt(n_ref_ids)})"
+                )
+            self.lbl_scores_identities.setText(label)
+        else:
+            self.lbl_scores_identities.setText("—")
+
+        if has_log_lr:
+            self.lbl_scores_calibrated.setText("sim — coluna log_lr presente")
+        else:
+            self.lbl_scores_calibrated.setText("não (raw scores)")
+
+    def _clear_scores(self) -> None:
+        self.lbl_scores_total.setText("—")
+        self.lbl_scores_genuine.setText("—")
+        self.lbl_scores_impostor.setText("—")
+        self.lbl_scores_identities.setText("—")
+        self.lbl_scores_calibrated.setText("—")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:

@@ -22,6 +22,7 @@ _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.TRAJECTORY_DATA: "Trajetórias 3D",
     StrategyResourceType.PIPELINE_CONFIG: "Configs de Pipeline",
     StrategyResourceType.SPLIT_CONFIG: "Configs de Split",
+    StrategyResourceType.MINING_CONFIG: "Configs de Mineração",
     StrategyResourceType.MERGE_CONFIG: "Configs de Merge",
     StrategyResourceType.SIMILARITY_MODEL_CONFIG: "Configs de Similaridade",
     StrategyResourceType.CALIBRATION_MODEL_CONFIG: "Configs de Calibração",

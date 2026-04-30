@@ -21,12 +21,14 @@ class PairMiningInstruction(StrategyInstructionDefinition):
     """
     Instrução declarativa para curadoria estatística de pares de scores.
 
-    Recebe um SimilarityScoreDataset (output típico de SIMILARITY_SCORING) e
-    aplica as regras definidas em ComparisonMiningConfig (HARD/EASY/TYPICAL/
-    RANDOM/MIXED, com foco em pares ou identidades), produzindo um único
-    SimilarityScoreDataset curado — concatenação de impostores e genuínos
-    minerados, mantendo a estrutura de SimilarityScoreSample com raw_score,
-    same_person, label e identidades preservadas.
+    Consome:
+    - um SimilarityScoreDataset (output típico de SIMILARITY_SCORING)
+    - uma ComparisonMiningConfig (recurso `MINING_CONFIG` do projeto/biblioteca)
+
+    Produz um único SimilarityScoreDataset curado — concatenação de
+    impostores e genuínos minerados, mantendo a estrutura de
+    SimilarityScoreSample com raw_score, same_person, label e identidades
+    preservadas.
 
     O output é tipicamente consumido por CALIBRATION_MODEL_TRAINING para
     treinar o calibrador em pares mais representativos da dificuldade real
@@ -38,9 +40,9 @@ class PairMiningInstruction(StrategyInstructionDefinition):
         metadata={"help": "Recurso de entrada: SimilarityScoreDataset com pares pré-calculados."}
     )
 
-    mining_config: Optional[ComparisonMiningConfig] = field(
+    mining_config_resource_id: Optional[str] = field(
         default=None,
-        metadata={"help": "Configuração de mineração (regras genuínos/impostores, estratégias)."}
+        metadata={"help": "Recurso MINING_CONFIG referenciando uma ComparisonMiningConfig."}
     )
 
     output_mined_scores_resource_id: Optional[str] = field(
@@ -63,11 +65,17 @@ class PairMiningInstruction(StrategyInstructionDefinition):
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
         SCORES = (StrategyResourceType.SIMILARITY_SCORES,)
+        MINING = (StrategyResourceType.MINING_CONFIG,)
         return [
             ResourceFieldSpec(
                 "input_similarity_scores_resource_id",
                 "Scores de Similaridade",
                 SCORES,
+            ),
+            ResourceFieldSpec(
+                "mining_config_resource_id",
+                "Config de Mineração",
+                MINING,
             ),
             ResourceFieldSpec(
                 "output_mined_scores_resource_id",
@@ -84,6 +92,9 @@ class PairMiningInstruction(StrategyInstructionDefinition):
         if self.input_similarity_scores_resource_id:
             inputs.append(self.input_similarity_scores_resource_id)
 
+        if self.mining_config_resource_id:
+            inputs.append(self.mining_config_resource_id)
+
         if self.output_mined_scores_resource_id:
             outputs.append(self.output_mined_scores_resource_id)
 
@@ -93,11 +104,15 @@ class PairMiningInstruction(StrategyInstructionDefinition):
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """
-        Reconstrói o DTO, hidratando instruction_type e mining_config.
+        Reconstrói o DTO, hidratando instruction_type.
 
-        Tolera JSONs antigos que ainda carregam os campos da versão pré-refactor
-        (`comparison_dataset_resource_id`, `output_impostors_resource_id`,
-        `output_genuines_resource_id`) — eles são silenciosamente descartados.
+        Tolera JSONs antigos que carregavam:
+        - `mining_config` embutido (ComparisonMiningConfig) — descartado;
+          a estratégia precisa ser refeita apontando para um recurso
+          MINING_CONFIG do projeto.
+        - Campos da arch antiga (`comparison_dataset_resource_id`,
+          `output_impostors_resource_id`, `output_genuines_resource_id`)
+          — descartados silenciosamente.
         """
         if not data:
             return None
@@ -109,14 +124,8 @@ class PairMiningInstruction(StrategyInstructionDefinition):
                 processed_data["instruction_type"]
             )
 
-        if "mining_config" in processed_data and isinstance(
-            processed_data["mining_config"], dict
-        ):
-            processed_data["mining_config"] = ComparisonMiningConfig.from_dict(
-                processed_data["mining_config"]
-            )
-
-        # Retrocompat: campos da arch antiga (DTO acoplado a EmbeddingComparisonDataset)
+        # Retrocompat: campos legados descartados.
+        processed_data.pop("mining_config", None)
         processed_data.pop("comparison_dataset_resource_id", None)
         processed_data.pop("output_impostors_resource_id", None)
         processed_data.pop("output_genuines_resource_id", None)

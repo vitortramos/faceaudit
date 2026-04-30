@@ -21,6 +21,7 @@ class StrategyResourceType(Enum):
     # --- CONFIGURAÇÕES ---
     PIPELINE_CONFIG = "PIPELINE_CONFIG"
     SPLIT_CONFIG = "SPLIT_CONFIG"
+    MINING_CONFIG = "MINING_CONFIG"
     MERGE_CONFIG = "MERGE_CONFIG"
     SIMILARITY_MODEL_CONFIG = "SIMILARITY_MODEL_CONFIG"
     CALIBRATION_MODEL_CONFIG = "CALIBRATION_MODEL_CONFIG"
@@ -66,6 +67,9 @@ class StrategyResourceType(Enum):
             StrategyResourceType.SIMILARITY_SCORES:         StrategyArtifactType.SIMILARITY_SCORES,
             StrategyResourceType.CALIBRATED_SCORES:         StrategyArtifactType.CALIBRATED_SCORES,
             StrategyResourceType.VALIDATION_RESULT:         StrategyArtifactType.VALIDATION_RESULT,
+            StrategyResourceType.MINING_CONFIG:             StrategyArtifactType.MINING_CONFIG,
+            StrategyResourceType.PIPELINE_CONFIG:           StrategyArtifactType.PIPELINE_CONFIG,
+            StrategyResourceType.SPLIT_CONFIG:              StrategyArtifactType.SPLIT_CONFIG,
         }
         return _map.get(self)
 

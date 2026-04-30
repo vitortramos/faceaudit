@@ -54,6 +54,12 @@ class ValueFieldSpec:
       - "int", "float", "str", "bool" — tipos primitivos diretos
       - "list_str" — lista de strings (entrada via texto separado por vírgula)
       - "list_int" — lista de inteiros (entrada via texto separado por vírgula)
+
+    triggers_rebuild:
+      Se True, o config panel deve aplicar o valor ao DTO e reconstruir o
+      formulário imediatamente após o usuário alterar o widget. Útil para
+      campos cujo valor altera os specs subsequentes (ex: bool que habilita
+      ou esconde campos de output condicionais).
     """
     field_name: str
     label: str
@@ -62,6 +68,7 @@ class ValueFieldSpec:
     max_value: Optional[float] = None
     decimals: Optional[int] = None
     placeholder: Optional[str] = None
+    triggers_rebuild: bool = False
 
 
 @dataclass

@@ -732,17 +732,20 @@ def build_s4(story, S):
         ("1. Criação do contexto",
          "StrategyExecutionContext é instanciado via context_factory. "
          "Este objeto será o barramento de estado durante toda a execução."),
-        ("2. Hidratação e carregamento de recursos iniciais",
+        ("2. Registro preguiçoso de recursos iniciais",
          "Os StrategyResources declarados em strategy_definition.resources são "
-         "processados antes de entrar no contexto. Quando o executor foi montado "
-         "com artifact_storage (caso típico ao executar uma estratégia carregada "
-         "de JSON), o StrategyResourceLoaderService hidrata cada recurso cujo "
-         "payload é None mas possui artifact_ref: "
-         "DATASET → EmbeddingDataset.from_parquet(); "
-         "PIPELINE_CONFIG → TransformationPipelineConfig.from_dict(). "
-         "Após a hidratação, os recursos são inseridos no contexto via set_resource(). "
-         "Sem artifact_storage (fluxo programático puro), os recursos são inseridos "
-         "diretamente — o chamador é responsável por preencher os payloads."),
+         "registrados no contexto via set_resource() — SEM hidratar payloads. "
+         "Recursos vindos do disco entram com payload=None e artifact_ref preenchido. "
+         "O StrategyResourceLoaderService é injetado no contexto (atributo runtime "
+         "resource_loader, junto com embedding_column) para hidratação sob demanda. "
+         "A hidratação real acontece em três pontos: (a) execute_single_instruction "
+         "chama _rehydrate_inputs_if_needed antes do executor concreto, carregando "
+         "apenas os inputs declarados daquela instrução; (b) validation rules chamam "
+         "context.ensure_payload(rid) antes de ler payload (configs, datasets para "
+         "stats); (c) UI controllers carregam sob clique (ex: visualizar trajetória). "
+         "Esse design evita pagar o custo de carregar parquets gigantes / pickles de "
+         "modelos a cada troca de estratégia ou refresh — paga-se apenas o que "
+         "realmente é usado."),
         ("3. Registro de regras de validação",
          "As ValidationRules passadas à factory são registradas no contexto, "
          "tornando-as disponíveis para qualquer instrução que as referencie "
@@ -1123,8 +1126,10 @@ def build_s5(story, S):
              "Execução completa: cria contexto, valida, executa todas as fases "
              "(Preparação → Validação → Análise de Caso) e retorna LRStrategyTrainedModel."],
             ["prepare_context(definition)",
-             "Cria e inicializa o contexto: hidrata recursos iniciais e registra regras. "
-             "O contexto retornado persiste entre execuções individuais de instruções."],
+             "Cria e inicializa o contexto: REGISTRA recursos da definição (sem hidratar "
+             "payloads) e injeta resource_loader/embedding_column como atributos runtime "
+             "do contexto. Hidratação é preguiçosa (sob demanda). Retorna contexto "
+             "persistente entre execuções de instruções."],
             ["can_execute_instruction(instr, ctx)",
              "Verifica se todos os input_resource_ids da instrução estão disponíveis. "
              "Retorna (bool, list[missing_ids])."],
@@ -1198,10 +1203,32 @@ def build_s6(story, S):
          "Cada dataset de entrada gera um dataset transformado de saída. "
          "Produz: recursos INTERMEDIATE_DATASET."),
         ("DATASET_SPLIT", "DatasetSplitInstructionExecutor",
-         "Divide um dataset em dois subconjuntos. "
-         "Modos: BY_IDENTITY_RATIO, BY_IDENTITY_LIST, BY_INDEX_RATIO, BY_INDEX_LIST. "
-         "Funciona com FaceDataset e EmbeddingDataset. "
-         "Produz: dois recursos INTERMEDIATE_DATASET."),
+         "Divide um dataset em dois subconjuntos. Modos: BY_IDENTITY_RATIO, "
+         "BY_IDENTITY_LIST, BY_IDENTITY_ABSOLUTE (pisos rígidos de pares/IDs), "
+         "BY_INDEX_RATIO, BY_INDEX_LIST e BY_SUPERVISED_ADAPTATION (recebe "
+         "source+target, prioriza identidades da interseção source∩target para "
+         "calibração e completa com identidades exclusivas do target). "
+         "Modos por identidade aceitam grouping_strategy=PRESERVE_LOOKALIKES "
+         "para preservar pacotes de sósias no mesmo subset. "
+         "Modos avançados (ABSOLUTE, SDA, RATIO+LOOKALIKES) delegam ao "
+         "PLDASplitService da arquitetura antiga via injeção. "
+         "Funciona com FaceDataset e EmbeddingDataset (modos avançados exigem "
+         "EmbeddingDataset). Produz: dois recursos INTERMEDIATE_DATASET."),
+        ("PAIRED_DATASET_SPLIT", "PairedDatasetSplitInstructionExecutor",
+         "Divide DOIS datasets pareados por identidade de forma sincronizada — "
+         "um único sorteio de IDs é aplicado em ambos. Inputs: primary "
+         "(ex: frontais transformados) e secondary (ex: laterais transformados) "
+         "com identidades compartilhadas. Outputs: 4 datasets "
+         "(primary_a/b, secondary_a/b), onde os splits B carregam EXATAMENTE "
+         "as mesmas IDs em primary e secondary — garantindo pares genuínos "
+         "cross-dataset na calibração. Apenas a interseção de identidades é "
+         "candidata ao sorteio; IDs exclusivas de um lado caem em A do seu "
+         "próprio dataset (não pareadas). Suporta PRESERVE_LOOKALIKES via "
+         "cluster_size + min_calibration_pairs/ids/samples_per_id, reusando "
+         "PLDASplitService._select_ids no pool combinado restrito à "
+         "interseção. Caso de uso típico: estratégias forenses cross-pose "
+         "(probe lateral × reference frontal) onde o calibrador deve treinar "
+         "na mesma distribuição de pares do casework."),
         ("DATASET_MERGE", "DatasetMergeInstructionExecutor",
          "Combina ou atualiza datasets. "
          "Modo CONCATENATE une dois datasets; modo UPDATE_BY_INDEX substitui "
@@ -1215,10 +1242,13 @@ def build_s6(story, S):
          "GLOBAL_ORDER (fatiamento direto). "
          "Produz: recursos impostores minerados + genuínos minerados."),
         ("SIMILARITY_MODEL_TRAINING", "SimilarityModelTrainingInstructionExecutor",
-         "Treina ou prepara um modelo de similaridade: CosineSimilarityModel (sem treino, "
-         "baseado em distância cosseno) ou PLDASimilarityModel (PLDA via SpeechBrain). "
-         "O modelo treinado produz scores brutos — não LRs. "
-         "Produz: recurso TRAINED_SIMILARITY_MODEL."),
+         "Treina ou prepara um modelo de similaridade: CosineSimilarityModel "
+         "(stateless, sem dataset de treino) ou PLDASimilarityModel (PLDA via "
+         "SpeechBrain). Hyperparâmetros do PLDA são embutidos diretamente na "
+         "instrução via campo similarity_model_config (PLDASimilarityModelConfig) — "
+         "não há mais dependência de recurso externo *_config_resource_id. "
+         "Cosine não exige config nem dataset. O modelo treinado produz scores "
+         "brutos — não LRs. Produz: recurso TRAINED_SIMILARITY_MODEL."),
         ("SIMILARITY_SCORING", "SimilarityScoringInstructionExecutor",
          "Gera scores de similaridade usando um modelo treinado. "
          "Pode operar em modo self-comparison (um dataset contra si mesmo) ou "
@@ -1228,8 +1258,42 @@ def build_s6(story, S):
          "Treina um modelo de calibração: LogisticRegressionCalibrationModel ou "
          "KDECalibrationModel. Recebe scores brutos + labels e aprende a converter "
          "para LRs. KDE usa dois kernels (genuínos/impostores) com Fisher transform "
-         "e GridSearch de bandwidth. "
-         "Produz: recurso TRAINED_CALIBRATION_MODEL."),
+         "e GridSearch de bandwidth. LogReg suporta GridSearch para o C (DEFAULT "
+         "use_gridsearch=True) via c_grid + cv_folds + scoring "
+         "(LogRegGridScoringMetric enum: NEG_LOG_LOSS/ROC_AUC); usa StratifiedKFold "
+         "com folds auto-reduzidos para a classe minoritária; o melhor C é exposto "
+         "como model.best_C_ e emitido em metadata[\"best_C\"]. "
+         "Hyperparâmetros são embutidos diretamente na instrução em dois campos "
+         "aninhados (logreg_config e kde_config) — apenas o config do tipo "
+         "selecionado é usado pelo executor; o outro pode permanecer preenchido "
+         "para alternância sem perda. Produz: recurso TRAINED_CALIBRATION_MODEL."),
+        ("SCORE_CALIBRATION", "ScoreCalibrationInstructionExecutor",
+         "Aplica um modelo de calibração TREINADO a um SimilarityScoreDataset "
+         "(raw_score) e produz um novo dataset com log_lr por par populado em "
+         "sample.metadata[\"log_lr\"]. O output é registrado com tipo "
+         "StrategyResourceType.CALIBRATED_SCORES (distinto de SIMILARITY_SCORES). "
+         "Reusa a classe SimilarityScoreDataset — to_parquet detecta log_lr no "
+         "metadata e adiciona uma coluna log_lr (float64) nativa; o loader popula "
+         "metadata[\"log_lr\"] quando a coluna existe (parquets legados sem a "
+         "coluna seguem carregando inalterados). Vetorizado via "
+         "calibrator.calibrate_scores(scores); preserva raw_score, same_person, "
+         "probe/reference do input. Sem hyperparâmetros próprios — toda a "
+         "calibração já está embutida no calibrador treinado. "
+         "Produz: recurso CALIBRATED_SCORES."),
+        ("STRATEGY_EVALUATION", "StrategyEvaluationInstructionExecutor",
+         "Instrução exclusiva da fase Validação. Recebe um CALIBRATED_SCORES "
+         "(SimilarityScoreDataset com metadata[\"log_lr\"] preenchido) e "
+         "calcula métricas forenses delegando ao ValidationMathService: EER + "
+         "threshold, Cllr (estável via logaddexp), Cllr_min via PAVA "
+         "(IsotonicRegression do sklearn), AUC e dados de plot ECE por "
+         "broadcasting numpy. O output é um StrategyValidationResult contendo "
+         "ValidationMetrics (escalares) + ValidationPlotData (arrays para "
+         "Tippett, DET, ECE), registrado com tipo VALIDATION_RESULT e "
+         "persistido em pickle (preserva ndarray nativamente). Sem hiperparâmetros "
+         "próprios — cálculo determinístico. A UI oferece um botão "
+         "'📊 Visualizar Resultado de Validação' que abre um dialog com 4 "
+         "abas: Distribuição de LRs, Tippett, Curva DET (escala normit) e "
+         "Calibração ECE. Produz: recurso VALIDATION_RESULT."),
     ]
 
     for i, (itype, executor, desc) in enumerate(instructions):

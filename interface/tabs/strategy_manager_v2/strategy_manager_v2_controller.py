@@ -147,6 +147,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_validation_result_requested.connect(
             self._on_view_validation_result
         )
+        self._strategy_editor.resource_edit_requested.connect(
+            self._on_resource_edit_requested
+        )
         self._strategy_editor.instruction_applied.connect(
             self._on_instruction_applied
         )
@@ -520,10 +523,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Lista de recursos disponíveis aos dropdowns do editor para a estratégia
         atualmente aberta:
 
-        - Recursos globais (DATASET, PIPELINE_CONFIG, SPLIT_CONFIG, MERGE_CONFIG,
-          SIMILARITY_MODEL_CONFIG, CALIBRATION_MODEL_CONFIG, ARTIFACT) — visíveis
-          a qualquer estratégia, vindos de _collect_project_resources (definições
-          + disk-scan).
+        - Recursos globais (DATASET, PIPELINE_CONFIG, SPLIT_CONFIG, MINING_CONFIG,
+          MERGE_CONFIG, SIMILARITY_MODEL_CONFIG, CALIBRATION_MODEL_CONFIG, ARTIFACT)
+          — visíveis a qualquer estratégia, vindos de _collect_project_resources
+          (definições + disk-scan).
         - Recursos produzidos (INTERMEDIATE_DATASET, TRAINED_PIPELINE,
           TRAINED_SIMILARITY_MODEL, TRAINED_CALIBRATION_MODEL, SIMILARITY_SCORES,
           TRAJECTORY_DATA, etc) — APENAS os declarados pela própria estratégia
@@ -538,6 +541,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             StrategyResourceType.DATASET,
             StrategyResourceType.PIPELINE_CONFIG,
             StrategyResourceType.SPLIT_CONFIG,
+            StrategyResourceType.MINING_CONFIG,
             StrategyResourceType.MERGE_CONFIG,
             StrategyResourceType.SIMILARITY_MODEL_CONFIG,
             StrategyResourceType.CALIBRATION_MODEL_CONFIG,
@@ -606,7 +610,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         _import_scan = [
             (StrategyArtifactType.GLOBAL_DATASET,  StrategyResourceType.DATASET),
             (StrategyArtifactType.SPLIT_CONFIG,    StrategyResourceType.SPLIT_CONFIG),
-            (StrategyArtifactType.MINING_CONFIG,   StrategyResourceType.ARTIFACT),
+            (StrategyArtifactType.MINING_CONFIG,   StrategyResourceType.MINING_CONFIG),
             (StrategyArtifactType.PIPELINE_CONFIG, StrategyResourceType.PIPELINE_CONFIG),
         ]
         for artifact_type, resource_type in _import_scan:
@@ -1273,6 +1277,235 @@ class StrategyManagerV2Controller(QtCore.QObject):
             ax.legend(loc="best", fontsize=9)
 
         figure.tight_layout()
+
+    def _on_resource_edit_requested(self, resource_id: str) -> None:
+        """
+        Despacha edição de um recurso de configuração para o dialog
+        apropriado conforme o `resource_type`:
+          - PIPELINE_CONFIG → PipelineCreatorController
+          - MINING_CONFIG   → NewMiningConfigDialogController
+        Hidrata o payload sob demanda, abre o editor, recebe a nova config,
+        atualiza o payload em memória + contexto vivo + re-persiste sobre o
+        mesmo path (preserva o nome do arquivo).
+        """
+        from faceaudit.enums.strategy_resource_type import StrategyResourceType
+
+        if not self._project:
+            return
+
+        # Buscamos no pool completo (definitions + scan de disco) — mesma
+        # fonte que popula o dropdown na UI.
+        target_resource = None
+        for res in self._collect_project_resources():
+            if res.resource_id == resource_id:
+                target_resource = res
+                break
+        if target_resource is None:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Recurso não encontrado",
+                f"O recurso '{resource_id}' não foi localizado no projeto.",
+            )
+            return
+
+        rtype = target_resource.resource_type
+        if rtype == StrategyResourceType.PIPELINE_CONFIG:
+            self._edit_pipeline_config_resource(target_resource)
+        elif rtype == StrategyResourceType.MINING_CONFIG:
+            self._edit_mining_config_resource(target_resource)
+        else:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Edição não suportada",
+                f"Tipo de recurso '{rtype.value}' não tem editor associado.",
+            )
+
+    def _hydrate_resource_if_needed(self, resource) -> bool:
+        """
+        Garante que `resource.payload` está hidratado (lazy-load do disco
+        via loader). Retorna True em sucesso, False (com QMessageBox) em
+        falha.
+        """
+        if resource.payload is not None:
+            return True
+        if resource.artifact_ref is None:
+            return True
+
+        loader = None
+        if self._executor is not None:
+            loader = getattr(self._executor, "_resource_loader", None)
+        if loader is None:
+            from faceaudit.services.strategy_resource_loader_service import (
+                StrategyResourceLoaderService,
+            )
+            loader = StrategyResourceLoaderService(
+                artifact_storage=self._project.storage
+            )
+        try:
+            loader.hydrate(resource)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Falha ao carregar recurso",
+                f"Não foi possível carregar o recurso do disco:\n{exc}",
+            )
+            return False
+        return True
+
+    def _persist_edited_config_resource(
+        self,
+        target_resource,
+        new_config,
+        artifact_type,
+    ) -> bool:
+        """
+        Atualiza payload em memória + contexto vivo, re-persiste o artefato
+        sobre o mesmo path (preserva o nome do arquivo) e propaga o
+        `artifact_ref` novo para qualquer definition que referencie o
+        recurso. Retorna True em sucesso, False (com QMessageBox) em falha.
+        """
+        from pathlib import Path
+
+        resource_id = target_resource.resource_id
+
+        target_resource.payload = new_config
+        if self._execution_context is not None and self._execution_context.has_resource(resource_id):
+            ctx_resource = self._execution_context.get_resource(resource_id)
+            if ctx_resource is not None:
+                ctx_resource.payload = new_config
+
+        try:
+            old_ref = target_resource.artifact_ref
+            config_id = (
+                Path(old_ref.path).stem if old_ref and old_ref.path else resource_id
+            )
+            new_ref = self._project.storage.save_artifact(
+                artifact_type,
+                new_config,
+                config_id=config_id,
+            )
+            target_resource.artifact_ref = new_ref
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao salvar",
+                f"Não foi possível salvar a configuração editada:\n{exc}",
+            )
+            return False
+
+        # Propaga novo hash a qualquer definition que referencie o recurso.
+        for defn in self._definitions:
+            touched = False
+            for res in defn.resources:
+                if res.resource_id == resource_id:
+                    res.payload = new_config
+                    res.artifact_ref = new_ref
+                    touched = True
+            if touched:
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception:
+                    pass
+
+        # Re-renderiza a árvore esquerda SEM recarregar definitions do disco
+        # (o que descartaria seleções pendentes nos dropdowns do editor).
+        # O payload/artifact_ref já foram atualizados in-place na lista
+        # `self._definitions` em memória — só precisamos refletir isso na UI.
+        try:
+            all_resources = self._collect_project_resources()
+            resource_to_strategy = self._build_resource_to_strategy_map()
+            self._left_panel.populate_resources(
+                all_resources, resource_to_strategy=resource_to_strategy
+            )
+        except Exception:
+            pass
+
+        self._is_dirty = True
+        return True
+
+    def _edit_pipeline_config_resource(self, target_resource) -> None:
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.models.transformation_pipeline_config import (
+            TransformationPipelineConfig,
+        )
+        from interface.tabs.strategy_manager.pipeline_creator.pipeline_creator_controller import (
+            PipelineCreatorController,
+        )
+
+        if not self._hydrate_resource_if_needed(target_resource):
+            return
+        if not isinstance(target_resource.payload, TransformationPipelineConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Pipeline indisponível",
+                "O payload carregado não é um TransformationPipelineConfig válido.",
+            )
+            return
+
+        ctrl = PipelineCreatorController(
+            parent=self._view,
+            existing_config=target_resource.payload,
+            lock_name=True,
+        )
+        new_config = ctrl.run()
+        if new_config is None:
+            return
+        if not isinstance(new_config, TransformationPipelineConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Edição inválida",
+                "A configuração editada não é um TransformationPipelineConfig válido.",
+            )
+            return
+
+        if self._persist_edited_config_resource(
+            target_resource, new_config, StrategyArtifactType.PIPELINE_CONFIG
+        ):
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Pipeline atualizado",
+                f"A configuração de '{target_resource.resource_id}' foi atualizada e salva.",
+            )
+
+    def _edit_mining_config_resource(self, target_resource) -> None:
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
+        from interface.tabs.strategy_manager.new_mining_config_dialog.new_mining_config_dialog_controller import (
+            NewMiningConfigDialogController,
+        )
+
+        if not self._hydrate_resource_if_needed(target_resource):
+            return
+        if not isinstance(target_resource.payload, ComparisonMiningConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Mining config indisponível",
+                "O payload carregado não é um ComparisonMiningConfig válido.",
+            )
+            return
+
+        ctrl = NewMiningConfigDialogController(parent=self._view, lock_name=True)
+        ctrl.load_config(target_resource.payload)
+        if ctrl.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        new_config = ctrl.get_config()
+        if not isinstance(new_config, ComparisonMiningConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Edição inválida",
+                "A configuração editada não é um ComparisonMiningConfig válido.",
+            )
+            return
+
+        if self._persist_edited_config_resource(
+            target_resource, new_config, StrategyArtifactType.MINING_CONFIG
+        ):
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Mining config atualizado",
+                f"A configuração de '{target_resource.resource_id}' foi atualizada e salva.",
+            )
 
     def _on_view_validation_result(self, instruction: StrategyInstructionDefinition) -> None:
         """

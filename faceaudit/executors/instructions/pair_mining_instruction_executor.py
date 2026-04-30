@@ -62,6 +62,11 @@ class PairMiningInstructionExecutor(StrategyInstructionExecutorBase):
             )
             score_dataset: SimilarityScoreDataset = scores_resource.payload
 
+            mining_resource = context.get_resource(
+                instruction.mining_config_resource_id
+            )
+            mining_config = mining_resource.payload
+
             n_in = len(score_dataset.items)
             self._log(
                 context,
@@ -71,7 +76,7 @@ class PairMiningInstructionExecutor(StrategyInstructionExecutorBase):
 
             mined: SimilarityScoreDataset = self._mining_service.mine_pairs(
                 dataset=score_dataset,
-                config=instruction.mining_config,
+                config=mining_config,
             )
 
             output_name = (
@@ -94,7 +99,7 @@ class PairMiningInstructionExecutor(StrategyInstructionExecutorBase):
             n_imp = int(mined.metadata.get("n_impostors_mined", mined.total_impostors))
             n_total = len(mined.items)
 
-            cfg = instruction.mining_config
+            cfg = mining_config
             mining_summary = {
                 "seed": cfg.seed,
                 "exclude_self_comparisons": cfg.exclude_self_comparisons,
@@ -201,11 +206,46 @@ class PairMiningInstructionExecutor(StrategyInstructionExecutorBase):
                     "SimilarityScoreDataset."
                 )
 
-        # ─── Mining config ─────────────────────────────────────────────────
-        if instruction.mining_config is None:
+        # ─── Mining config (referência a recurso MINING_CONFIG) ───────────
+        from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
+
+        mining_id = instruction.mining_config_resource_id
+        if not mining_id:
             result.add_error(
-                "A instrução de pair mining deve definir 'mining_config'."
+                "A instrução de pair mining deve definir 'mining_config_resource_id'."
             )
+        elif not context.has_resource(mining_id):
+            result.add_error(
+                f"O recurso de configuração de mineração não foi encontrado no "
+                f"contexto: '{mining_id}'."
+            )
+        else:
+            mining_resource = context.get_resource(mining_id)
+            if mining_resource is None:
+                result.add_error(
+                    f"O recurso '{mining_id}' está registrado mas é nulo no contexto."
+                )
+            elif mining_resource.payload is None:
+                ref_path = (
+                    mining_resource.artifact_ref.path
+                    if mining_resource.artifact_ref is not None else None
+                )
+                if ref_path:
+                    result.add_error(
+                        f"O recurso '{mining_id}' tem artifact_ref ('{ref_path}') "
+                        "mas o payload está vazio — falha ao carregar a config "
+                        "de mineração do disco."
+                    )
+                else:
+                    result.add_error(
+                        f"O recurso '{mining_id}' não tem payload nem artifact_ref."
+                    )
+            elif not isinstance(mining_resource.payload, ComparisonMiningConfig):
+                result.add_error(
+                    f"O recurso '{mining_id}' contém um payload do tipo "
+                    f"{type(mining_resource.payload).__name__}, esperado "
+                    "ComparisonMiningConfig."
+                )
 
         # ─── Output ────────────────────────────────────────────────────────
         if not instruction.output_mined_scores_resource_id:

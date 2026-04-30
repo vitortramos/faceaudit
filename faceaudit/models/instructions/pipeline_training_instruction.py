@@ -11,6 +11,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     ChoiceFieldSpec,
     ResourceFieldSpec,
     StrategyInstructionDefinition,
+    ValueFieldSpec,
 )
 from faceaudit.models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
 
@@ -76,6 +77,34 @@ class PipelineTrainingInstruction(StrategyInstructionDefinition):
         metadata={"help": "Identificador do recurso de saída que representará o pipeline treinado."}
     )
 
+    apply_to_training_datasets: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Se marcado, aplica o pipeline recém-treinado nos datasets de "
+                "treino logo após o fit, produzindo recursos transformados como "
+                "outputs adicionais — evita ter que encadear PIPELINE_APPLICATION "
+                "no mesmo dataset. LINEAR: 1 output extra (Dataset Transformado). "
+                "DUAL: 2 outputs extras (Transformado Source + Target)."
+            )
+        }
+    )
+
+    output_transformed_dataset_resource_id: Optional[str] = field(
+        default=None,
+        metadata={"help": "Recurso de saída do dataset transformado (modo LINEAR + apply_to_training_datasets)."}
+    )
+
+    output_transformed_source_dataset_resource_id: Optional[str] = field(
+        default=None,
+        metadata={"help": "Recurso de saída do dataset Source transformado (modo DUAL + apply_to_training_datasets)."}
+    )
+
+    output_transformed_target_dataset_resource_id: Optional[str] = field(
+        default=None,
+        metadata={"help": "Recurso de saída do dataset Target transformado (modo DUAL + apply_to_training_datasets)."}
+    )
+
     def __post_init__(self) -> None:
         """
         Garante o tipo da instrução e sincroniza entradas/saídas declarativas mínimas.
@@ -131,25 +160,58 @@ class PipelineTrainingInstruction(StrategyInstructionDefinition):
             ChoiceFieldSpec("pipeline_mode", "Modo do Pipeline", ("LINEAR", "DUAL"), PipelineMode),
         ]
 
+    def get_value_field_specs(self) -> list[ValueFieldSpec]:
+        return [
+            ValueFieldSpec(
+                "apply_to_training_datasets",
+                "Aplicar pipeline nos datasets de treino",
+                "bool",
+                triggers_rebuild=True,
+            ),
+        ]
+
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
         DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
         PC = (StrategyResourceType.PIPELINE_CONFIG,)
         TP = (StrategyResourceType.TRAINED_PIPELINE,)
+        OUT_DS = (StrategyResourceType.INTERMEDIATE_DATASET,)
 
         if self.is_linear:
-            return [
+            specs = [
                 ResourceFieldSpec("pipeline_config_resource_id", "Pipeline Config", PC),
                 ResourceFieldSpec("dataset_resource_id", "Dataset", DS),
                 ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP, is_output=True),
             ]
+            if self.apply_to_training_datasets:
+                specs.append(ResourceFieldSpec(
+                    "output_transformed_dataset_resource_id",
+                    "Dataset Transformado",
+                    OUT_DS,
+                    is_output=True,
+                ))
+            return specs
         else:
-            return [
+            specs = [
                 ResourceFieldSpec("source_pipeline_config_resource_id", "Pipeline Config (Source)", PC),
                 ResourceFieldSpec("target_pipeline_config_resource_id", "Pipeline Config (Target)", PC),
                 ResourceFieldSpec("source_dataset_resource_id", "Dataset (Source)", DS),
                 ResourceFieldSpec("target_dataset_resource_id", "Dataset (Target)", DS),
                 ResourceFieldSpec("trained_pipeline_resource_id", "Pipeline Treinado", TP, is_output=True),
             ]
+            if self.apply_to_training_datasets:
+                specs.append(ResourceFieldSpec(
+                    "output_transformed_source_dataset_resource_id",
+                    "Transformado (Source)",
+                    OUT_DS,
+                    is_output=True,
+                ))
+                specs.append(ResourceFieldSpec(
+                    "output_transformed_target_dataset_resource_id",
+                    "Transformado (Target)",
+                    OUT_DS,
+                    is_output=True,
+                ))
+            return specs
 
     def _sync_declared_io(self) -> None:
         """
@@ -180,6 +242,16 @@ class PipelineTrainingInstruction(StrategyInstructionDefinition):
 
         if self.trained_pipeline_resource_id:
             outputs.append(self.trained_pipeline_resource_id)
+
+        if self.apply_to_training_datasets:
+            if self.is_linear:
+                if self.output_transformed_dataset_resource_id:
+                    outputs.append(self.output_transformed_dataset_resource_id)
+            else:
+                if self.output_transformed_source_dataset_resource_id:
+                    outputs.append(self.output_transformed_source_dataset_resource_id)
+                if self.output_transformed_target_dataset_resource_id:
+                    outputs.append(self.output_transformed_target_dataset_resource_id)
 
         # Remove duplicados preservando ordem
         self.input_resource_ids = list(dict.fromkeys(inputs))

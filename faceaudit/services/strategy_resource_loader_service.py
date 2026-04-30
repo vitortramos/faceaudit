@@ -143,6 +143,9 @@ class StrategyResourceLoaderService:
         if resource_type == StrategyResourceType.PIPELINE_CONFIG:
             return self._load_pipeline_config(path)
 
+        if resource_type == StrategyResourceType.MINING_CONFIG:
+            return self._load_mining_config(path)
+
         # Modelos treinados, dados de trajetória e resultados de validação
         # são persistidos como pickle (preserva ndarray e estrutura Python).
         if resource_type in (
@@ -206,6 +209,20 @@ class StrategyResourceLoaderService:
             return TransformationPipelineConfig.from_dict(data)
         except Exception as exc:
             msg = f"falha ao carregar pipeline config '{path}': {exc!r}"
+            self._last_error = msg
+            warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
+            return None
+
+    def _load_mining_config(self, path: Path):
+        """
+        Carrega uma ComparisonMiningConfig a partir de um arquivo .json.
+        """
+        from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return ComparisonMiningConfig.from_dict(data)
+        except Exception as exc:
+            msg = f"falha ao carregar mining config '{path}': {exc!r}"
             self._last_error = msg
             warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
             return None

@@ -8,12 +8,28 @@ from faceaudit.models.comparison_mining_config import (
 )
 
 class NewMiningConfigDialogController(QtCore.QObject):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, lock_name: bool = False):
         super().__init__(parent)
         self.view = NewMiningConfigDialogView(parent)
-        self._editing_id = None 
+        self._editing_id = None
+        self.lock_name = bool(lock_name)
         self._connect_signals()
         self._sync_ui_states()
+
+        # lock_name: usado quando a edição vem do botão ✎ ao lado de um
+        # dropdown na nova arch — o nome do recurso é o stem do arquivo no
+        # disco e não pode ser alterado por aqui (renomear será operação
+        # dedicada no painel esquerdo, ainda não implementada).
+        if self.lock_name:
+            self.view.txt_name.setReadOnly(True)
+            self.view.txt_name.setToolTip(
+                "O nome do recurso não pode ser alterado por aqui. "
+                "Renomear a config de mineração será uma operação dedicada "
+                "no painel esquerdo (ainda não disponível)."
+            )
+            self.view.txt_name.setStyleSheet(
+                "QLineEdit { background-color: #f0f0f0; color: #555; }"
+            )
 
     def _connect_signals(self):
         self.view.button_box.accepted.connect(self._validate_and_accept)

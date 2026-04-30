@@ -15,6 +15,7 @@ from faceaudit.models.instructions.pipeline_training_instruction import (
     PipelineTrainingInstruction,
 )
 from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
+from faceaudit.models.pipeline.pipeline_application_policy import PipelineApplicationPolicy
 from faceaudit.models.pipeline.pipeline_training_policy import PipelineTrainingPolicy
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.models.transformation_pipeline_config import TransformationPipelineConfig
@@ -82,13 +83,27 @@ class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
                 f"✅ Pipeline treinado registrado como recurso: '{output_resource_id}'."
             )
 
+            produced_ids = [output_resource_id]
+
+            if instruction.apply_to_training_datasets:
+                produced_ids.extend(
+                    self._apply_to_training_datasets(
+                        instruction=instruction,
+                        context=context,
+                        pipeline=pipeline,
+                    )
+                )
+
             return InstructionExecutionResult.ok(
-                produced_resource_ids=[output_resource_id],
+                produced_resource_ids=produced_ids,
                 metadata={
                     "instruction_id": instruction.instruction_id,
                     "instruction_name": instruction.name,
                     "pipeline_mode": instruction.pipeline_mode.to_str(),
                     "training_metrics": pipeline.get_training_metrics(),
+                    "applied_to_training_datasets": bool(
+                        instruction.apply_to_training_datasets
+                    ),
                 },
             )
 
@@ -118,6 +133,25 @@ class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
                 "A instrução de treino de pipeline deve definir "
                 "'trained_pipeline_resource_id'."
             )
+
+        if instruction.apply_to_training_datasets:
+            if instruction.pipeline_mode == PipelineMode.LINEAR:
+                if not instruction.output_transformed_dataset_resource_id:
+                    result.add_error(
+                        "Com 'apply_to_training_datasets' marcado, o pipeline "
+                        "linear exige 'output_transformed_dataset_resource_id'."
+                    )
+            elif instruction.pipeline_mode == PipelineMode.DUAL:
+                if not instruction.output_transformed_source_dataset_resource_id:
+                    result.add_error(
+                        "Com 'apply_to_training_datasets' marcado, o pipeline "
+                        "dual exige 'output_transformed_source_dataset_resource_id'."
+                    )
+                if not instruction.output_transformed_target_dataset_resource_id:
+                    result.add_error(
+                        "Com 'apply_to_training_datasets' marcado, o pipeline "
+                        "dual exige 'output_transformed_target_dataset_resource_id'."
+                    )
 
         if instruction.pipeline_mode == PipelineMode.LINEAR:
             self._validate_linear_instruction(
@@ -271,3 +305,95 @@ class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
         )
 
         return pipeline
+
+    def _apply_to_training_datasets(
+        self,
+        instruction: PipelineTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+        pipeline: EmbeddingTransformationPipeline,
+    ) -> list:
+        """
+        Aplica o pipeline recém-treinado nos datasets de treino e registra os
+        recursos transformados no contexto. Retorna a lista de resource_ids
+        produzidos para serem incluídos em produced_resource_ids.
+
+        Reusa a mesma lógica de PIPELINE_APPLICATION (transform / transform_source /
+        transform_target). Política de aplicação é a default — sem checkpoints
+        nem trajetória, já que o usuário pode rodar PIPELINE_APPLICATION
+        explícito depois se quiser esses artefatos.
+        """
+        application_policy = PipelineApplicationPolicy.default()
+        produced_ids: list = []
+
+        if instruction.pipeline_mode == PipelineMode.LINEAR:
+            dataset = context.get_resource(instruction.dataset_resource_id).payload
+
+            self._log(
+                context,
+                f"[{instruction.name}] 🔄 Aplicando pipeline ao dataset de treino…"
+            )
+            transformed = pipeline.transform(
+                dataset=dataset,
+                application_policy=application_policy,
+            )
+
+            output_id = instruction.output_transformed_dataset_resource_id
+            context.set_resource(StrategyResource(
+                resource_id=output_id,
+                name=output_id,
+                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                payload=transformed,
+                artifact_ref=None,
+            ))
+            produced_ids.append(output_id)
+            self._log(
+                context,
+                f"✅ Dataset transformado registrado como recurso: '{output_id}'."
+            )
+
+        else:  # DUAL
+            source_dataset = context.get_resource(
+                instruction.source_dataset_resource_id
+            ).payload
+            target_dataset = context.get_resource(
+                instruction.target_dataset_resource_id
+            ).payload
+
+            self._log(
+                context,
+                f"[{instruction.name}] 🔄 Aplicando pipeline aos datasets Source/Target…"
+            )
+            transformed_source = pipeline.transform_source(
+                dataset=source_dataset,
+                application_policy=application_policy,
+            )
+            transformed_target = pipeline.transform_target(
+                dataset=target_dataset,
+                application_policy=application_policy,
+            )
+
+            source_id = instruction.output_transformed_source_dataset_resource_id
+            target_id = instruction.output_transformed_target_dataset_resource_id
+
+            context.set_resource(StrategyResource(
+                resource_id=source_id,
+                name=source_id,
+                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                payload=transformed_source,
+                artifact_ref=None,
+            ))
+            context.set_resource(StrategyResource(
+                resource_id=target_id,
+                name=target_id,
+                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                payload=transformed_target,
+                artifact_ref=None,
+            ))
+            produced_ids.extend([source_id, target_id])
+            self._log(
+                context,
+                f"✅ Datasets transformados registrados como recursos: "
+                f"'{source_id}' e '{target_id}'."
+            )
+
+        return produced_ids

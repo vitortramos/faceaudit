@@ -23,6 +23,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     StrategyInstructionDefinition,
     ValueFieldSpec,
 )
+from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.protocols.strategy_execution_context_protocol import (
@@ -80,6 +81,11 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     view_trajectory_requested = QtCore.pyqtSignal(object)
     view_score_distribution_requested = QtCore.pyqtSignal(object)
     view_validation_result_requested = QtCore.pyqtSignal(object)
+    # Emitido quando o usuário clica no botão ✎ ao lado de um dropdown de
+    # config editável (PIPELINE_CONFIG, MINING_CONFIG, ...). O controller é
+    # responsável por hidratar o payload, abrir o dialog de edição apropriado
+    # ao tipo, atualizar o payload e re-persistir o artefato.
+    resource_edit_requested = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -659,9 +665,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 rendered_field_names.add(spec.field_name)
                 rendered_field_names.add(pair_partner.field_name)
             else:
-                widget = self._make_input_resource_combo(instr, spec)
-                self._resource_field_widgets[spec.field_name] = widget
-                self._form_cfg.addRow(f"{spec.label}:", widget)
+                combo = self._make_input_resource_combo(instr, spec)
+                self._resource_field_widgets[spec.field_name] = combo
+                row_widget = self._wrap_combo_with_edit_button_if_needed(combo, spec)
+                self._form_cfg.addRow(f"{spec.label}:", row_widget)
                 rendered_field_names.add(spec.field_name)
 
             i += 1
@@ -730,6 +737,30 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             self._value_field_widgets[vspec.field_name] = widget
             self._value_specs[vspec.field_name] = vspec
             self._form_cfg.addRow(f"{vspec.label}:", widget)
+
+            # Conexão de rebuild para campos cujo valor altera o conjunto de
+            # specs subsequentes (ex: bool que habilita outputs condicionais).
+            if vspec.triggers_rebuild:
+                if isinstance(widget, QtWidgets.QCheckBox):
+                    widget.toggled.connect(
+                        lambda _checked, fn=vspec.field_name:
+                        self._on_value_triggers_rebuild(fn)
+                    )
+                elif isinstance(widget, QtWidgets.QComboBox):
+                    widget.currentTextChanged.connect(
+                        lambda _text, fn=vspec.field_name:
+                        self._on_value_triggers_rebuild(fn)
+                    )
+                elif isinstance(widget, (QtWidgets.QSpinBox, QtWidgets.QDoubleSpinBox)):
+                    widget.valueChanged.connect(
+                        lambda _v, fn=vspec.field_name:
+                        self._on_value_triggers_rebuild(fn)
+                    )
+                elif isinstance(widget, QtWidgets.QLineEdit):
+                    widget.editingFinished.connect(
+                        lambda fn=vspec.field_name:
+                        self._on_value_triggers_rebuild(fn)
+                    )
 
         # Parâmetros genéricos (parameters dict)
         for key, val in (instr.parameters or {}).items():
@@ -878,7 +909,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             cv.addWidget(lbl)
 
             combo = self._make_input_resource_combo(self._instruction, spec)
-            cv.addWidget(combo)
+            row_widget = self._wrap_combo_with_edit_button_if_needed(combo, spec)
+            cv.addWidget(row_widget)
 
             self._resource_field_widgets[spec.field_name] = combo
             h.addWidget(col, 1)
@@ -908,6 +940,67 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     combo.setCurrentIndex(idx)
                     break
         return combo
+
+    # Tipos de recurso que ganham um botão ✎ ao lado do combo, abrindo um
+    # editor dedicado. O controller resolve qual dialog abrir com base no
+    # resource_type do recurso selecionado.
+    _EDITABLE_RESOURCE_TYPES = (
+        StrategyResourceType.PIPELINE_CONFIG,
+        StrategyResourceType.MINING_CONFIG,
+    )
+
+    _EDIT_TOOLTIPS = {
+        StrategyResourceType.PIPELINE_CONFIG: "Editar a configuração de pipeline selecionada",
+        StrategyResourceType.MINING_CONFIG: "Editar a configuração de mineração selecionada",
+    }
+
+    def _wrap_combo_with_edit_button_if_needed(
+        self, combo: QtWidgets.QComboBox, spec: ResourceFieldSpec
+    ) -> QtWidgets.QWidget:
+        """
+        Quando o spec aceita um tipo editável (PIPELINE_CONFIG ou
+        MINING_CONFIG), envolve o combo num container horizontal com um
+        botão ✎ que solicita ao controller a edição do recurso selecionado.
+        """
+        editable = next(
+            (t for t in self._EDITABLE_RESOURCE_TYPES if t in spec.accepted_types),
+            None,
+        )
+        if editable is None:
+            return combo
+
+        container = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(container)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        h.addWidget(combo, 1)
+
+        edit_btn = QtWidgets.QToolButton()
+        edit_btn.setText("✎")
+        edit_btn.setToolTip(self._EDIT_TOOLTIPS.get(editable, "Editar configuração"))
+        edit_btn.setFixedWidth(28)
+        edit_btn.clicked.connect(
+            lambda _checked=False, c=combo: self._on_edit_resource(c)
+        )
+        edit_btn.setEnabled(combo.currentData() is not None)
+        combo.currentIndexChanged.connect(
+            lambda _idx, b=edit_btn, c=combo: b.setEnabled(c.currentData() is not None)
+        )
+
+        h.addWidget(edit_btn, 0)
+        return container
+
+    def _on_edit_resource(self, combo: QtWidgets.QComboBox) -> None:
+        """
+        Solicita ao controller que abra o dialog de edição apropriado para
+        o recurso selecionado no combo. O controller resolve por
+        resource_type (PIPELINE_CONFIG → PipelineCreatorController,
+        MINING_CONFIG → NewMiningConfigDialogController).
+        """
+        resource_id = combo.currentData()
+        if not resource_id:
+            return
+        self.resource_edit_requested.emit(str(resource_id))
 
     def _build_outputs_section(self, instr: StrategyInstructionDefinition) -> None:
         specs = instr.get_resource_field_specs()
@@ -1066,6 +1159,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             self._instruction._sync_declared_io()
         # Adia o rebuild para depois do processamento do sinal atual,
         # evitando crash por destruição do widget que originou o sinal.
+        QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
+
+    def _on_value_triggers_rebuild(self, field_name: str) -> None:
+        """
+        Aplica o valor atual do widget de ValueFieldSpec ao DTO e dispara
+        rebuild do formulário. Usado para campos com triggers_rebuild=True
+        (ex: bool que controla outputs condicionais).
+        """
+        if not self._instruction:
+            return
+        widget = self._value_field_widgets.get(field_name)
+        spec = self._value_specs.get(field_name)
+        if widget is None or spec is None:
+            return
+        new_val = self._read_value_widget(widget, spec)
+        setattr(self._instruction, field_name, new_val)
+        if hasattr(self._instruction, "_sync_declared_io"):
+            self._instruction._sync_declared_io()
         QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
 
     def _on_nested_changed(self, attr_name: str, new_dto: Any) -> None:
