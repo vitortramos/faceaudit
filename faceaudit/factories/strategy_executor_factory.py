@@ -40,6 +40,9 @@ from faceaudit.executors.instructions.strategy_evaluation_instruction_executor i
 from faceaudit.executors.instructions.casework_visualization_instruction_executor import (
     CaseworkVisualizationInstructionExecutor,
 )
+from faceaudit.executors.instructions.dataset_balancing_instruction_executor import (
+    DatasetBalancingInstructionExecutor,
+)
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
 )
@@ -126,6 +129,11 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.CASEWORK_VISUALIZATION,
             CaseworkVisualizationInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.DATASET_BALANCING,
+            DatasetBalancingInstructionExecutor(),
         )
 
         return registry

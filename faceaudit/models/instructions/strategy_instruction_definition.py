@@ -273,4 +273,10 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return CaseworkVisualizationInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.DATASET_BALANCING:
+            from faceaudit.models.instructions.dataset_balancing_instruction import (
+                DatasetBalancingInstruction,
+            )
+            return DatasetBalancingInstruction.from_dict(processed_data)
+
         return cls(**processed_data)

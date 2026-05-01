@@ -89,6 +89,14 @@ class StrategyInstructionType(Enum):
         "tracejadas com valor numérico anotado quando há menos.",
     )
 
+    DATASET_BALANCING = (
+        "DATASET_BALANCING",
+        "Dataset Balancing",
+        "Balanceia o número de amostras por identidade (cap, floor+cap ou "
+        "auto-min) selecionando descartes por sorteio aleatório ou por "
+        "métrica de qualidade (FIQA, OFIQ, SERFIQ, norma do embedding).",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label
