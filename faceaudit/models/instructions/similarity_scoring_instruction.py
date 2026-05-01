@@ -9,6 +9,7 @@ from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
+    ValueFieldSpec,
 )
 
 
@@ -62,6 +63,21 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
         metadata={"help": "Indica se metadados adicionais devem ser armazenados em cada amostra."}
     )
 
+    is_casework: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Se marcado, os pares são tratados como caso forense (sem "
+                "ground truth). Os samples produzidos têm same_person=None "
+                "(não impostor por default), o output do dataset é marcado "
+                "com metadata['is_casework']=True, e a UI exibe 'Pares de "
+                "caso' em vez de 'Genuínos / Impostores'. STRATEGY_EVALUATION "
+                "downstream rejeita este tipo de input por falta de ground "
+                "truth para calcular EER/Cllr/AUC."
+            )
+        }
+    )
+
     def __post_init__(self) -> None:
         self.instruction_type = StrategyInstructionType.SIMILARITY_SCORING
 
@@ -79,6 +95,15 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
             ResourceFieldSpec("probe_dataset_resource_id", "Dataset 1", DS),
             ResourceFieldSpec("reference_dataset_resource_id", "Dataset 2 (opcional)", DS),
             ResourceFieldSpec("output_similarity_scores_resource_id", "Scores de Saída", OUT, is_output=True),
+        ]
+
+    def get_value_field_specs(self) -> list[ValueFieldSpec]:
+        return [
+            ValueFieldSpec(
+                "is_casework",
+                "Modo Casework (sem ground truth)",
+                "bool",
+            ),
         ]
 
     def get_configuration_help(self) -> Optional[str]:

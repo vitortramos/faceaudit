@@ -825,9 +825,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Caminho 1: payload já em memória.
         payload = resource.payload
         if payload is not None:
-            n_gen = getattr(payload, "total_genuines", None)
-            n_imp = getattr(payload, "total_impostors", None)
-            n_total = (n_gen or 0) + (n_imp or 0) if (n_gen is not None and n_imp is not None) else None
+            ds_md = getattr(payload, "metadata", None)
+            is_casework = bool(isinstance(ds_md, dict) and ds_md.get("is_casework"))
+
+            n_total = len(getattr(payload, "items", []) or [])
+            if is_casework:
+                # Casework: total real, gen/imp irrelevantes.
+                n_gen = n_imp = None
+            else:
+                n_gen = getattr(payload, "total_genuines", None)
+                n_imp = getattr(payload, "total_impostors", None)
+                if n_gen is not None and n_imp is not None:
+                    n_total = (n_gen or 0) + (n_imp or 0)
             has_log_lr = self._payload_has_log_lr(payload)
 
             # Identidades únicas: itera samples coletando probe/reference identity.
@@ -854,6 +863,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 n_identities=n_ids_total,
                 n_probe_ids=n_probe_ids,
                 n_ref_ids=n_ref_ids,
+                is_casework=is_casework,
             )
             return
 
@@ -890,6 +900,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                         n_identities=data.get("n_identities"),
                         n_probe_ids=data.get("n_probe_ids"),
                         n_ref_ids=data.get("n_ref_ids"),
+                        is_casework=bool(data.get("is_casework", False)),
                     )
                     return
             except Exception:
@@ -930,10 +941,21 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 arr = tbl.column("same_person").to_pylist()
                 n_gen = sum(1 for v in arr if v is True)
                 n_imp = sum(1 for v in arr if v is False)
+                # Detecção de casework: nenhum sample com ground truth
+                # → todos same_person == None.
+                is_casework = (n_total > 0 and n_gen == 0 and n_imp == 0)
             else:
                 arr = tbl.column("label").to_pylist()
+                # label==-1 (sentinela) significa same_person=None (casework)
                 n_gen = sum(1 for v in arr if int(v) == 1)
                 n_imp = sum(1 for v in arr if int(v) == 0)
+                n_unknown = sum(1 for v in arr if int(v) == -1)
+                is_casework = (n_total > 0 and n_unknown == n_total)
+
+            # Em casework, gen/imp deixam de fazer sentido — não exibir.
+            if is_casework:
+                n_gen = None
+                n_imp = None
 
             n_ids_total = n_probe_ids = n_ref_ids = None
             try:
@@ -959,6 +981,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 n_identities=n_ids_total,
                 n_probe_ids=n_probe_ids,
                 n_ref_ids=n_ref_ids,
+                is_casework=is_casework,
             )
 
             # Cacheia.
@@ -966,8 +989,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 cache_path.write_text(
                     json.dumps({
                         "n_total": int(n_total),
-                        "n_genuine": int(n_gen),
-                        "n_impostor": int(n_imp),
+                        "n_genuine": int(n_gen) if n_gen is not None else None,
+                        "n_impostor": int(n_imp) if n_imp is not None else None,
                         "has_log_lr": bool(has_log_lr_col),
                         "n_identities": (
                             int(n_ids_total) if n_ids_total is not None else None
@@ -978,6 +1001,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                         "n_ref_ids": (
                             int(n_ref_ids) if n_ref_ids is not None else None
                         ),
+                        "is_casework": bool(is_casework),
                     }),
                     encoding="utf-8",
                 )
@@ -1011,33 +1035,43 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         n_identities: Optional[int] = None,
         n_probe_ids: Optional[int] = None,
         n_ref_ids: Optional[int] = None,
+        is_casework: bool = False,
     ) -> None:
         def fmt(n):
             if n is None:
                 return "—"
             return f"{int(n):,}".replace(",", ".")
 
-        self.lbl_scores_total.setText(fmt(n_total))
-
-        if n_total and n_gen is not None and n_total > 0:
-            pct_gen = 100.0 * n_gen / n_total
-            self.lbl_scores_genuine.setText(f"{fmt(n_gen)}  ({pct_gen:.2f}%)")
-        else:
-            self.lbl_scores_genuine.setText(fmt(n_gen))
-
-        if n_total and n_imp is not None and n_total > 0:
-            pct_imp = 100.0 * n_imp / n_total
-            self.lbl_scores_impostor.setText(f"{fmt(n_imp)}  ({pct_imp:.2f}%)")
-        else:
-            self.lbl_scores_impostor.setText(fmt(n_imp))
-
-        # Razão imp:gen — útil para entender desbalanceamento (típico cross-comp).
-        if n_gen and n_imp and n_gen > 0:
-            ratio = n_imp / n_gen
-            extra = f"  (razão imp:gen = {ratio:.0f}:1)"
-            self.lbl_scores_impostor.setText(
-                self.lbl_scores_impostor.text() + extra
+        if is_casework:
+            # Modo casework: substitui rótulo "Total de pares" e suprime
+            # gen/imp (que são sempre 0 sem ground truth).
+            self.lbl_scores_total.setText(
+                f"{fmt(n_total)} (caso forense — sem ground truth)"
             )
+            self.lbl_scores_genuine.setText("n/a (casework)")
+            self.lbl_scores_impostor.setText("n/a (casework)")
+        else:
+            self.lbl_scores_total.setText(fmt(n_total))
+
+            if n_total and n_gen is not None and n_total > 0:
+                pct_gen = 100.0 * n_gen / n_total
+                self.lbl_scores_genuine.setText(f"{fmt(n_gen)}  ({pct_gen:.2f}%)")
+            else:
+                self.lbl_scores_genuine.setText(fmt(n_gen))
+
+            if n_total and n_imp is not None and n_total > 0:
+                pct_imp = 100.0 * n_imp / n_total
+                self.lbl_scores_impostor.setText(f"{fmt(n_imp)}  ({pct_imp:.2f}%)")
+            else:
+                self.lbl_scores_impostor.setText(fmt(n_imp))
+
+            # Razão imp:gen — útil para entender desbalanceamento (típico cross-comp).
+            if n_gen and n_imp and n_gen > 0:
+                ratio = n_imp / n_gen
+                extra = f"  (razão imp:gen = {ratio:.0f}:1)"
+                self.lbl_scores_impostor.setText(
+                    self.lbl_scores_impostor.text() + extra
+                )
 
         # Identidades únicas. Se probe e reference compartilham o mesmo
         # conjunto, mostra só o total. Se diferem (cross-comparison entre

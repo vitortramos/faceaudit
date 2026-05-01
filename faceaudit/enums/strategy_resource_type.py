@@ -41,6 +41,9 @@ class StrategyResourceType(Enum):
     # --- VALIDAÇÃO / MÉTRICAS ---
     VALIDATION_RESULT = "VALIDATION_RESULT"
 
+    # --- VISUALIZAÇÃO FORENSE ---
+    CASEWORK_VISUALIZATION = "CASEWORK_VISUALIZATION"
+
     # --- OUTROS / APOIO ---
     DATASET_STATS = "DATASET_STATS"
     ARTIFACT = "ARTIFACT"
@@ -67,6 +70,7 @@ class StrategyResourceType(Enum):
             StrategyResourceType.SIMILARITY_SCORES:         StrategyArtifactType.SIMILARITY_SCORES,
             StrategyResourceType.CALIBRATED_SCORES:         StrategyArtifactType.CALIBRATED_SCORES,
             StrategyResourceType.VALIDATION_RESULT:         StrategyArtifactType.VALIDATION_RESULT,
+            StrategyResourceType.CASEWORK_VISUALIZATION:    StrategyArtifactType.CASEWORK_VISUALIZATION,
             StrategyResourceType.MINING_CONFIG:             StrategyArtifactType.MINING_CONFIG,
             StrategyResourceType.PIPELINE_CONFIG:           StrategyArtifactType.PIPELINE_CONFIG,
             StrategyResourceType.SPLIT_CONFIG:              StrategyArtifactType.SPLIT_CONFIG,

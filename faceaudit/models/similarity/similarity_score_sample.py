@@ -52,7 +52,22 @@ class SimilarityScoreSample(JSONSerializableMixin):
 
     def __post_init__(self) -> None:
         """
-        Se same_person não for informado, tenta inferir a partir das identidades.
+        Se same_person não for informado, tenta inferir a partir das identidades
+        — apenas quando AMBAS estão presentes E representam ground truth real
+        (são identidades de pessoas, não placeholders convencionais).
+
+        ATENÇÃO: a inferência é feita estritamente por igualdade de strings.
+        Em casework forense, onde a probe é imagem questionada com identidade
+        desconhecida, o caller (executor de SIMILARITY_SCORING com
+        is_casework=True) deve passar same_person=None E garantir que a
+        inferência **não** seja acionada — caso contrário, identidades
+        convencionais como "questionada" e "padrão" cairiam no ramo de
+        inferência e seriam erroneamente marcadas como impostores.
+
+        Mudança vs versão anterior: removido o fallback `self.same_person =
+        False` quando uma das identidades é None. Sample sem informação
+        suficiente fica como `None` (ground truth desconhecido), não como
+        impostor por default.
         """
         if self.same_person is None:
             id1 = self.probe.identity
@@ -60,16 +75,26 @@ class SimilarityScoreSample(JSONSerializableMixin):
 
             if id1 is not None and id2 is not None:
                 self.same_person = (id1 == id2)
-            else:
-                self.same_person = False
+            # NÃO faz fallback para False — ausência de identidade
+            # significa "ground truth desconhecido", não "impostor".
 
     @property
-    def label(self) -> int:
+    def label(self) -> Optional[int]:
         """
         Retorna o ground truth no formato binário:
         - 1 para genuíno / Hp
         - 0 para impostor / Hd
+        - None quando o ground truth é desconhecido (casework forense)
+
+        Callers que assumem int devem validar via `has_ground_truth` antes
+        de chamar `label`. O calibrador (SCORE_CALIBRATION) usa o output
+        para mapear scores → log-LR e não consulta label; o calibrador
+        treinado (CALIBRATION_MODEL_TRAINING) e o avaliador
+        (STRATEGY_EVALUATION) exigem ambas as classes e devem usar
+        `has_ground_truth` para filtrar samples casework.
         """
+        if self.same_person is None:
+            return None
         return 1 if self.same_person else 0
 
     @property

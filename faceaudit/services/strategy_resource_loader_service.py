@@ -146,14 +146,16 @@ class StrategyResourceLoaderService:
         if resource_type == StrategyResourceType.MINING_CONFIG:
             return self._load_mining_config(path)
 
-        # Modelos treinados, dados de trajetória e resultados de validação
-        # são persistidos como pickle (preserva ndarray e estrutura Python).
+        # Modelos treinados, dados de trajetória, resultados de validação e
+        # visualizações forenses são persistidos como pickle (preserva
+        # ndarray e estrutura Python).
         if resource_type in (
             StrategyResourceType.TRAINED_PIPELINE,
             StrategyResourceType.TRAINED_SIMILARITY_MODEL,
             StrategyResourceType.TRAINED_CALIBRATION_MODEL,
             StrategyResourceType.TRAJECTORY_DATA,
             StrategyResourceType.VALIDATION_RESULT,
+            StrategyResourceType.CASEWORK_VISUALIZATION,
         ):
             return self._load_pickle(path)
 
@@ -348,8 +350,18 @@ class StrategyResourceLoaderService:
                 continue
             items.append(sample)
 
+        # Inferência de casework: se nenhum sample tem ground truth (todos
+        # com same_person=None), o dataset foi produzido em modo casework.
+        # Marca no metadata para a UI e validators downstream tratarem.
+        is_casework = (
+            len(items) > 0
+            and all(s.same_person is None for s in items)
+        )
+        ds_metadata = {"is_casework": True} if is_casework else {}
+
         return SimilarityScoreDataset(
             name=name,
             description=description,
             items=items,
+            metadata=ds_metadata,
         )

@@ -16,6 +16,7 @@ _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.SIMILARITY_SCORES: "Scores de Similaridade",
     StrategyResourceType.CALIBRATED_SCORES: "Scores Calibrados",
     StrategyResourceType.VALIDATION_RESULT: "Resultados de Validação",
+    StrategyResourceType.CASEWORK_VISUALIZATION: "Visualizações de Caso",
     StrategyResourceType.TRAINED_PIPELINE: "Pipelines Treinados",
     StrategyResourceType.TRAINED_SIMILARITY_MODEL: "Modelos de Similaridade",
     StrategyResourceType.TRAINED_CALIBRATION_MODEL: "Modelos de Calibração",
@@ -44,6 +45,7 @@ _PRODUCED_TYPES = {
     StrategyResourceType.TRAINED_CALIBRATION_MODEL,
     StrategyResourceType.TRAJECTORY_DATA,
     StrategyResourceType.VALIDATION_RESULT,
+    StrategyResourceType.CASEWORK_VISUALIZATION,
 }
 
 

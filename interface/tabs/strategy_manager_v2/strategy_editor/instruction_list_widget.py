@@ -22,6 +22,7 @@ _INSTRUCTION_ICONS = {
     StrategyInstructionType.CALIBRATION_MODEL_TRAINING: "🎯",
     StrategyInstructionType.SCORE_CALIBRATION: "🎚️",
     StrategyInstructionType.STRATEGY_EVALUATION: "📈",
+    StrategyInstructionType.CASEWORK_VISUALIZATION: "🎯",
 }
 
 
@@ -39,24 +40,38 @@ _VALIDATION_ONLY_TYPES = {
     StrategyInstructionType.STRATEGY_EVALUATION,
 }
 
+# Instruções exclusivas da fase Análise de Caso. Não devem aparecer em
+# Preparação nem em Validação — produzem ou consomem datasets de casework
+# que não fazem sentido fora desse contexto.
+_CASEWORK_ONLY_TYPES = {
+    StrategyInstructionType.CASEWORK_VISUALIZATION,
+}
+
 
 def _allowed_types_for_phase(phase: Optional[str]) -> List[StrategyInstructionType]:
     """
     Retorna a lista de tipos de instrução que o menu "Adicionar" deve listar
     para a fase informada.
 
-    - preparation: tudo MENOS instruções exclusivas da Validação.
-    - validation:  tudo MENOS instruções exclusivas da Preparação (treinamento).
-    - casework:    tudo MENOS instruções de treinamento E exclusivas da Validação.
+    - preparation: tudo MENOS exclusivas de Validação E casework.
+    - validation:  tudo MENOS exclusivas de Preparação (treinamento) E casework.
+    - casework:    tudo MENOS treinamento E exclusivas de Validação. INCLUI
+                   instruções _CASEWORK_ONLY_TYPES.
     - None:        comportamento legado — lista todos os tipos.
     """
     if phase is None:
         return list(StrategyInstructionType)
     if phase == "preparation":
-        return [t for t in StrategyInstructionType if t not in _VALIDATION_ONLY_TYPES]
+        return [
+            t for t in StrategyInstructionType
+            if t not in _VALIDATION_ONLY_TYPES and t not in _CASEWORK_ONLY_TYPES
+        ]
     if phase == "validation":
-        return [t for t in StrategyInstructionType if t not in _TRAINING_ONLY_TYPES]
-    # casework e qualquer outra fase: sem treinamento e sem validação.
+        return [
+            t for t in StrategyInstructionType
+            if t not in _TRAINING_ONLY_TYPES and t not in _CASEWORK_ONLY_TYPES
+        ]
+    # casework: sem treinamento e sem validação; inclui CASEWORK_ONLY.
     return [
         t for t in StrategyInstructionType
         if t not in _TRAINING_ONLY_TYPES and t not in _VALIDATION_ONLY_TYPES

@@ -47,6 +47,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     view_trajectory_requested = QtCore.pyqtSignal(object)
     view_score_distribution_requested = QtCore.pyqtSignal(object)
     view_validation_result_requested = QtCore.pyqtSignal(object)
+    view_casework_visualization_requested = QtCore.pyqtSignal(object)
     resource_edit_requested = QtCore.pyqtSignal(str)
     instruction_applied = QtCore.pyqtSignal(object)
 
@@ -148,6 +149,9 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             config_panel.view_trajectory_requested.connect(self._on_view_trajectory_requested)
             config_panel.view_score_distribution_requested.connect(self._on_view_score_distribution_requested)
             config_panel.view_validation_result_requested.connect(self._on_view_validation_result_requested)
+            config_panel.view_casework_visualization_requested.connect(
+                self._on_view_casework_visualization_requested
+            )
             config_panel.resource_edit_requested.connect(
                 self._on_resource_edit_requested
             )
@@ -272,6 +276,9 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
     def _on_view_validation_result_requested(self, instr: StrategyInstructionDefinition) -> None:
         self.view_validation_result_requested.emit(instr)
+
+    def _on_view_casework_visualization_requested(self, instr: StrategyInstructionDefinition) -> None:
+        self.view_casework_visualization_requested.emit(instr)
 
     def _on_resource_edit_requested(self, resource_id: str) -> None:
         self.resource_edit_requested.emit(resource_id)

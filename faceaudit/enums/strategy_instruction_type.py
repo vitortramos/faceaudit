@@ -81,6 +81,14 @@ class StrategyInstructionType(Enum):
         "de plot (DET, Tippett, ECE) a partir de um CALIBRATED_SCORES.",
     )
 
+    CASEWORK_VISUALIZATION = (
+        "CASEWORK_VISUALIZATION",
+        "Casework Visualization",
+        "Plota distribuições de referência (gen/imp) sobrepostas com escores "
+        "do caso forense — KDE quando há ≥30 pares de caso, linhas verticais "
+        "tracejadas com valor numérico anotado quando há menos.",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label

@@ -34,6 +34,7 @@ class StrategyArtifactType(Enum):
     SIMILARITY_SCORES = "similarity_scores"
     CALIBRATED_SCORES = "calibrated_scores"
     VALIDATION_RESULT = "validation_result"
+    CASEWORK_VISUALIZATION = "casework_visualization"
 
     # --- VISUALIZAÇÕES ---
     GRAPHIC = "graphic"

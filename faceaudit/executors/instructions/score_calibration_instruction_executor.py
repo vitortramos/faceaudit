@@ -130,6 +130,9 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 metadata={
                     "source_dataset_name": score_dataset.name,
                     "calibrator_type": type(calibrator).__name__,
+                    # Propaga marcador de casework para downstream — preserva
+                    # a semântica "sem ground truth" através da calibração.
+                    "is_casework": bool(score_dataset.metadata.get("is_casework", False)),
                 },
             )
 

@@ -151,6 +151,14 @@ def _summarize_similarity_scores(payload: Any) -> List[str]:
     if n == 0:
         return ["(0 pares)"]
 
+    # Modo casework: sem ground truth → exibe contagem como "pares de caso"
+    # em vez de gen/imp (que seriam ambos zero ou enganosos).
+    md = getattr(payload, "metadata", None)
+    if isinstance(md, dict) and md.get("is_casework"):
+        return [
+            f"{n:,} pares de caso (sem ground truth)".replace(",", ".")
+        ]
+
     n_gen = getattr(payload, "total_genuines", None)
     n_imp = getattr(payload, "total_impostors", None)
 
@@ -196,6 +204,28 @@ def _summarize_calibrated_scores(payload: Any) -> List[str]:
             sampled = items
             sample_note = ""
 
+        # Modo casework: sem ground truth → exibe log-LR médio e range
+        # geral em vez de discriminar por classe.
+        ds_md = getattr(payload, "metadata", None)
+        is_casework = isinstance(ds_md, dict) and ds_md.get("is_casework")
+
+        if is_casework:
+            log_lrs = []
+            for s in sampled:
+                md = getattr(s, "metadata", None)
+                if isinstance(md, dict):
+                    v = md.get("log_lr")
+                    if v is not None:
+                        log_lrs.append(float(v))
+            if log_lrs:
+                mean = sum(log_lrs) / len(log_lrs)
+                lo, hi = min(log_lrs), max(log_lrs)
+                lines.append(
+                    f"log-LR (caso): médio={mean:+.2f} | "
+                    f"range=[{lo:+.2f}, {hi:+.2f}]{sample_note}"
+                )
+            return lines
+
         sum_gen = 0.0; n_gen = 0
         sum_imp = 0.0; n_imp = 0
         for s in sampled:
@@ -220,6 +250,40 @@ def _summarize_calibrated_scores(payload: Any) -> List[str]:
         pass
 
     return lines
+
+
+def _summarize_casework_visualization(payload: Any) -> List[str]:
+    """
+    Resumo para CaseworkVisualizationResult — modo (RAW/CALIBRATED),
+    contagens da referência e do caso, EER threshold (se RAW).
+    """
+    try:
+        score_type = getattr(payload, "score_type", "?")
+        n_gen = int(getattr(payload, "n_genuine", 0) or 0)
+        n_imp = int(getattr(payload, "n_impostor", 0) or 0)
+        n_case = int(getattr(payload, "n_case", 0) or 0)
+        eer_threshold = getattr(payload, "eer_threshold", None)
+        case_summary = getattr(payload, "case_summary", {}) or {}
+
+        lines = [f"Modo: {score_type}"]
+        lines.append(
+            f"ref={n_gen:,} gen / {n_imp:,} imp".replace(",", ".")
+        )
+
+        if n_case > 0 and case_summary:
+            lines.append(
+                f"caso: {n_case} pares "
+                f"(mean={case_summary.get('mean', 0):+.2f})"
+            )
+        elif n_case > 0:
+            lines.append(f"caso: {n_case} pares")
+
+        if eer_threshold is not None:
+            lines.append(f"EER threshold={float(eer_threshold):.4f}")
+
+        return lines
+    except Exception:
+        return ["(erro ao resumir visualização)"]
 
 
 def _summarize_validation_result(payload: Any) -> List[str]:
@@ -276,6 +340,7 @@ _OUTPUT_SUMMARIZERS: Dict[StrategyResourceType, Callable[[Any], List[str]]] = {
     StrategyResourceType.SIMILARITY_SCORES:         _summarize_similarity_scores,
     StrategyResourceType.CALIBRATED_SCORES:         _summarize_calibrated_scores,
     StrategyResourceType.VALIDATION_RESULT:         _summarize_validation_result,
+    StrategyResourceType.CASEWORK_VISUALIZATION:    _summarize_casework_visualization,
     # Forward-compat: VISUALIZATION → mostra botão "Visualizar gráfico..."
     # (registrado via OutputRowWidget._is_visualization_type abaixo).
 }

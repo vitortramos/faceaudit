@@ -147,6 +147,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_validation_result_requested.connect(
             self._on_view_validation_result
         )
+        self._strategy_editor.view_casework_visualization_requested.connect(
+            self._on_view_casework_visualization
+        )
         self._strategy_editor.resource_edit_requested.connect(
             self._on_resource_edit_requested
         )
@@ -1571,6 +1574,73 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._view,
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o visualizador de validação:\n{exc}",
+            )
+
+    def _on_view_casework_visualization(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o CaseworkVisualizationViewerDialog a partir do
+        CaseworkVisualizationResult produzido pela instrução.
+        Padrão idêntico a _on_view_validation_result — tenta contexto vivo
+        primeiro, depois hidrata do disco via loader.
+        """
+        from faceaudit.models.instructions.casework_visualization_instruction import (
+            CaseworkVisualizationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, CaseworkVisualizationInstruction):
+            return
+
+        result_id = instruction.output_visualization_resource_id
+        if not result_id:
+            return
+
+        casework_result = None
+
+        # 1. Tentar do contexto vivo.
+        if self._execution_context is not None and self._execution_context.has_resource(result_id):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                casework_result = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if casework_result is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    casework_result = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            casework_result = existing.payload
+
+        if casework_result is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Visualização indisponível",
+                "Não foi encontrada uma visualização salva para esta "
+                "instrução. Execute CASEWORK_VISUALIZATION primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.casework_visualization_viewer_dialog import (
+                CaseworkVisualizationViewerDialog,
+            )
+            dlg = CaseworkVisualizationViewerDialog(casework_result, parent=self._view)
+            self._casework_viewer = dlg  # mantém referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o visualizador de caso:\n{exc}",
             )
 
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:

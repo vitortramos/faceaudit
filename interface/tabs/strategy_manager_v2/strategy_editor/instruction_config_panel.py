@@ -18,6 +18,9 @@ from faceaudit.models.instructions.score_calibration_instruction import (
 from faceaudit.models.instructions.strategy_evaluation_instruction import (
     StrategyEvaluationInstruction,
 )
+from faceaudit.models.instructions.casework_visualization_instruction import (
+    CaseworkVisualizationInstruction,
+)
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
@@ -81,6 +84,11 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     view_trajectory_requested = QtCore.pyqtSignal(object)
     view_score_distribution_requested = QtCore.pyqtSignal(object)
     view_validation_result_requested = QtCore.pyqtSignal(object)
+    # Emitido quando o usuário clica no botão "Visualizar Caso" de uma
+    # CaseworkVisualizationInstruction. O controller resolve, hidrata o
+    # CaseworkVisualizationResult do disco se necessário, e abre o
+    # CaseworkVisualizationViewerDialog.
+    view_casework_visualization_requested = QtCore.pyqtSignal(object)
     # Emitido quando o usuário clica no botão ✎ ao lado de um dropdown de
     # config editável (PIPELINE_CONFIG, MINING_CONFIG, ...). O controller é
     # responsável por hidratar o payload, abrir o dialog de edição apropriado
@@ -266,6 +274,28 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_validation_result.clicked.connect(self._on_view_validation_result)
         btn_row.addWidget(self.btn_view_validation_result)
 
+        # Botão de visualização forense de caso — visível apenas em
+        # CaseworkVisualizationInstruction; habilitado quando o recurso de
+        # CaseworkVisualizationResult está disponível (em memória ou disco).
+        self.btn_view_casework_visualization = QtWidgets.QPushButton(
+            "📊 Visualizar Caso"
+        )
+        self.btn_view_casework_visualization.setMinimumWidth(220)
+        self.btn_view_casework_visualization.setStyleSheet(
+            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
+            " background: #FFF8E8; color: #8B5E00;"
+            " padding: 5px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
+            " border: 1px solid #ccc; }"
+        )
+        self.btn_view_casework_visualization.setVisible(False)
+        self.btn_view_casework_visualization.setEnabled(False)
+        self.btn_view_casework_visualization.clicked.connect(
+            self._on_view_casework_visualization
+        )
+        btn_row.addWidget(self.btn_view_casework_visualization)
+
         btn_row.addStretch(1)
 
         self.btn_validate = QtWidgets.QPushButton("Validar")
@@ -354,6 +384,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._refresh_view_trajectory_button_state()
         self._refresh_view_distribution_button_state()
         self._refresh_view_validation_result_button_state()
+        self._refresh_view_casework_visualization_button_state()
 
     def _refresh_view_distribution_button_state(self) -> None:
         """
@@ -550,6 +581,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             isinstance(instr, StrategyEvaluationInstruction)
         )
 
+        # Visibilidade do botão "Visualizar Caso" — apenas em
+        # CASEWORK_VISUALIZATION.
+        self.btn_view_casework_visualization.setVisible(
+            isinstance(instr, CaseworkVisualizationInstruction)
+        )
+        self._refresh_view_casework_visualization_button_state()
+
         # Aplica estado de runtime se houver
         if self._latest_definition is not None:
             executed = instr.instruction_id in self._latest_executed_ids
@@ -564,6 +602,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._refresh_view_trajectory_button_state()
         self._refresh_view_distribution_button_state()
         self._refresh_view_validation_result_button_state()
+        self._refresh_view_casework_visualization_button_state()
 
     def _build_configuration_section(self, instr: StrategyInstructionDefinition) -> None:
         # Ajuda contextual da instrução (texto explicativo opcional no topo
@@ -1131,6 +1170,46 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     def _on_view_validation_result(self) -> None:
         if isinstance(self._instruction, StrategyEvaluationInstruction):
             self.view_validation_result_requested.emit(self._instruction)
+
+    def _on_view_casework_visualization(self) -> None:
+        if isinstance(self._instruction, CaseworkVisualizationInstruction):
+            self.view_casework_visualization_requested.emit(self._instruction)
+
+    def _refresh_view_casework_visualization_button_state(self) -> None:
+        """
+        Habilita o botão "Visualizar Caso" quando o recurso de output da
+        instrução existe (em memória ou em disco). Mesmo padrão de
+        _refresh_view_validation_result_button_state.
+        """
+        if not isinstance(self._instruction, CaseworkVisualizationInstruction):
+            self.btn_view_casework_visualization.setEnabled(False)
+            return
+        instr = self._instruction
+        rid = instr.output_visualization_resource_id
+        if not rid:
+            self.btn_view_casework_visualization.setEnabled(False)
+            return
+        # Verifica se o recurso está vivo no contexto OU tem artifact_ref no disco
+        enabled = False
+        ctx = self._latest_context
+        if ctx is not None:
+            try:
+                if ctx.has_resource(rid):
+                    res = ctx.get_resource(rid)
+                    if res is not None and (
+                        getattr(res, "has_payload", lambda: res.payload is not None)()
+                        if callable(getattr(res, "has_payload", None))
+                        else (res.payload is not None or res.artifact_ref is not None)
+                    ):
+                        enabled = True
+            except Exception:
+                pass
+        if not enabled and self._latest_definition is not None:
+            for r in self._latest_definition.resources:
+                if r.resource_id == rid and r.artifact_ref is not None:
+                    enabled = True
+                    break
+        self.btn_view_casework_visualization.setEnabled(enabled)
 
     def _on_output_name_changed(self, field_name: str, new_value: str) -> None:
         """

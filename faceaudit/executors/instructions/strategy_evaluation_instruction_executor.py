@@ -229,18 +229,31 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 )
             else:
                 ds: SimilarityScoreDataset = scores_resource.payload
-                # Verifica se ao menos UM sample tem log_lr.
-                has_log_lr = any(
-                    isinstance(getattr(s, "metadata", None), dict)
-                    and s.metadata.get("log_lr") is not None
-                    for s in ds.items
-                )
-                if not has_log_lr:
+
+                # Rejeita explicitamente datasets de casework — sem ground
+                # truth não há como calcular EER/Cllr/AUC.
+                if ds.metadata.get("is_casework"):
                     result.add_error(
-                        f"O recurso '{scores_id}' não contém scores calibrados — "
-                        "nenhum sample tem 'log_lr' em metadata. Execute "
-                        "SCORE_CALIBRATION antes da avaliação."
+                        f"O recurso '{scores_id}' está marcado como "
+                        "is_casework=True (sem ground truth). "
+                        "STRATEGY_EVALUATION exige rótulos genuíno/impostor "
+                        "para calcular EER/Cllr/AUC e só pode operar sobre "
+                        "CALIBRATED_SCORES produzidos por SIMILARITY_SCORING "
+                        "com is_casework=False."
                     )
+                else:
+                    # Verifica se ao menos UM sample tem log_lr.
+                    has_log_lr = any(
+                        isinstance(getattr(s, "metadata", None), dict)
+                        and s.metadata.get("log_lr") is not None
+                        for s in ds.items
+                    )
+                    if not has_log_lr:
+                        result.add_error(
+                            f"O recurso '{scores_id}' não contém scores calibrados — "
+                            "nenhum sample tem 'log_lr' em metadata. Execute "
+                            "SCORE_CALIBRATION antes da avaliação."
+                        )
 
         # ─── Output ────────────────────────────────────────────────────────
         if not instruction.output_validation_result_resource_id:

@@ -95,6 +95,23 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     "e opcionalmente reference_dataset_resource_id."
                 )
 
+            # Modo casework: marca o dataset como sem ground truth e zera
+            # `same_person` em todos os samples (sobrescreve qualquer
+            # inferência feita pelo __post_init__ a partir das identidades
+            # convencionais como "questionada"/"padrão").
+            if instruction.is_casework:
+                score_dataset.metadata["is_casework"] = True
+                for s in score_dataset.items:
+                    s.same_person = None
+                # Invalida cache de contagens (já zeradas, mas seguro).
+                score_dataset.__dict__.pop("_cached_n_gen", None)
+                score_dataset.__dict__.pop("_cached_n_imp", None)
+                self._log(
+                    context,
+                    f"🔍 Modo casework — {len(score_dataset.items):,} pares "
+                    "sem ground truth gerados.".replace(",", ".")
+                )
+
             output_resource_id = instruction.output_similarity_scores_resource_id
             output_resource = StrategyResource(
                 resource_id=output_resource_id,
@@ -122,6 +139,7 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     "n_samples": len(score_dataset),
                     "n_genuine": score_dataset.total_genuines,
                     "n_impostor": score_dataset.total_impostors,
+                    "is_casework": bool(instruction.is_casework),
                 },
             )
 

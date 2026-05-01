@@ -110,6 +110,11 @@ class StrategyFileType(Enum):
         ProjectFolder.ARTIFACTS,
         "{strategy_id}_{resource_id}",
     )
+    CASEWORK_VISUALIZATION = (
+        ".pkl",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
+    )
     GRAPHIC = (
         ".png",
         ProjectFolder.GRAPHICS,
@@ -249,6 +254,7 @@ class StrategyFileType(Enum):
             StrategyArtifactType.SIMILARITY_SCORES:         cls.SIMILARITY_SCORES,
             StrategyArtifactType.CALIBRATED_SCORES:         cls.CALIBRATED_SCORES,
             StrategyArtifactType.VALIDATION_RESULT:         cls.VALIDATION_RESULT,
+            StrategyArtifactType.CASEWORK_VISUALIZATION:    cls.CASEWORK_VISUALIZATION,
             StrategyArtifactType.GRAPHIC:                   cls.GRAPHIC,
             StrategyArtifactType.CHECKPOINT:                cls.CHECKPOINT,
             # Tipos de biblioteca global → destino dentro do projeto

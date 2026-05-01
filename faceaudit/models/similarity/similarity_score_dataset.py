@@ -91,7 +91,19 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
     @property
     def labels(self) -> np.ndarray:
-        return np.asarray([int(item.label) for item in self.items], dtype=np.int32)
+        """
+        Retorna labels binários (1=Hp, 0=Hd) por sample.
+
+        Samples sem ground truth (`label is None`) são representados como
+        sentinela **-1**. Callers que treinam calibradores devem filtrar
+        `labels >= 0` antes de usar — alternativamente, validar via
+        `is_casework` no metadata do dataset (se True, NÃO chamar `labels`
+        com expectativa de int).
+        """
+        return np.asarray(
+            [int(item.label) if item.label is not None else -1 for item in self.items],
+            dtype=np.int32,
+        )
 
     def to_pandas(self) -> pd.DataFrame:
         """
@@ -218,8 +230,9 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                     for j in range(size):
                         s = items_local[chunk_start + j]
                         scores[j]      = s.raw_score
-                        labels[j]      = s.label
-                        same_person[j] = s.same_person
+                        # label = -1 sentinela para casework (s.label is None)
+                        labels[j]      = s.label if s.label is not None else -1
+                        same_person[j] = s.same_person  # None preservado como null no Parquet bool
                         probe_id[j]    = s.probe.identity
                         ref_id[j]      = s.reference.identity
                         if has_log_lr:

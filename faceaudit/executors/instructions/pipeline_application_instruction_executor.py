@@ -347,6 +347,26 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
         if not getattr(policy, "save_trajectory_data", False):
             return None
 
+        # Early-skip: PCA 3D exige n_components <= min(n_samples, n_features).
+        # Com poucos pares (caso típico: casework com 1 probe + 1 reference),
+        # a redução para 3 dimensões é matematicamente impossível e a
+        # visualização não traria informação útil mesmo se possível.
+        # Mínimo 4 amostras = 3 (PCA 3D) + 1 de folga numérica.
+        MIN_SAMPLES_FOR_3D = 4
+        n_total = len(source_dataset) if source_dataset is not None else 0
+        if target_dataset is not None:
+            n_total += len(target_dataset)
+        if n_total < MIN_SAMPLES_FOR_3D:
+            self._log(
+                context,
+                f"ℹ️ Trajetória 3D não computada — apenas {n_total} amostra(s) "
+                f"disponíveis (mínimo {MIN_SAMPLES_FOR_3D} para PCA 3D). "
+                "Visualização trajetorial não faz sentido em casework de "
+                "poucos pares; outputs de dataset transformado registrados "
+                "normalmente."
+            )
+            return None
+
         trajectory_id = (
             instruction.trajectory_data_resource_id
             or f"{instruction.instruction_id}_trajectory"
