@@ -127,16 +127,25 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_n_imgs = QtWidgets.QLabel("—")
         self.lbl_n_ids = QtWidgets.QLabel("—")
         self.lbl_emb_cols = QtWidgets.QLabel("—")
+        self.lbl_balance = QtWidgets.QLabel("—")
+        self.lbl_samples_per_id = QtWidgets.QLabel("—")
 
-        for lbl in (self.lbl_n_imgs, self.lbl_n_ids, self.lbl_emb_cols):
+        for lbl in (
+            self.lbl_n_imgs, self.lbl_n_ids, self.lbl_emb_cols,
+            self.lbl_balance, self.lbl_samples_per_id,
+        ):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
 
         self.lbl_emb_cols.setWordWrap(True)
+        self.lbl_balance.setWordWrap(True)
+        self.lbl_samples_per_id.setWordWrap(True)
 
         for text, value_lbl in [
             ("Amostras:", self.lbl_n_imgs),
             ("Identidades:", self.lbl_n_ids),
             ("Embeddings:", self.lbl_emb_cols),
+            ("Balanceamento:", self.lbl_balance),
+            ("Amostras/ID:", self.lbl_samples_per_id),
         ]:
             lbl = QtWidgets.QLabel(text)
             lbl.setStyleSheet(_lbl_style)
@@ -489,7 +498,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        if not stats_path.exists() or is_stale:
+        # Cache antigo sem balance_metrics → força recomputação (mesmo padrão
+        # usado em _load_scores_details para n_identities).
+        needs_recompute = not stats_path.exists() or is_stale
+        if not needs_recompute:
+            try:
+                _peek = json.loads(stats_path.read_text(encoding="utf-8"))
+                if "balance_metrics" not in _peek:
+                    needs_recompute = True
+            except Exception:
+                needs_recompute = True
+
+        if needs_recompute:
             self._compute_and_cache_stats(dataset_abs_path, stats_path)
 
         if stats_path.exists():
@@ -506,6 +526,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                     self.lbl_emb_cols.setText("\n".join(lines))
                 else:
                     self.lbl_emb_cols.setText("—")
+                self._render_balance(data.get("balance_metrics"))
                 return
             except Exception:
                 pass
@@ -554,6 +575,28 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 "n_ids": stats.n_ids,
                 "embedding_columns": embedding_columns,
             }
+
+            # Métricas de balanceamento (None quando inaplicável: 0 ou 1
+            # identidade). Persistido como dict simples — JSON-friendly.
+            bm = stats.balance_metrics
+            if bm is not None:
+                payload["balance_metrics"] = {
+                    "n_identities": bm.n_identities,
+                    "min_samples": bm.min_samples,
+                    "max_samples": bm.max_samples,
+                    "mean_samples": bm.mean_samples,
+                    "median_samples": bm.median_samples,
+                    "std_samples": bm.std_samples,
+                    "cv": bm.cv,
+                    "imbalance_ratio": (
+                        bm.imbalance_ratio
+                        if bm.imbalance_ratio != float("inf") else None
+                    ),
+                    "verdict": bm.verdict,
+                }
+            else:
+                payload["balance_metrics"] = None
+
             stats_path.write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
             )
@@ -564,6 +607,37 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_n_imgs.setText("—")
         self.lbl_n_ids.setText("—")
         self.lbl_emb_cols.setText("—")
+        self.lbl_balance.setText("—")
+        self.lbl_samples_per_id.setText("—")
+
+    def _render_balance(self, bm: Optional[dict]) -> None:
+        """
+        Pinta as duas linhas de balanceamento a partir do dict serializado
+        no sidecar (ou None quando inaplicável: 0 ou 1 identidade).
+        """
+        if not bm:
+            self.lbl_balance.setText("n/a (≤ 1 identidade)")
+            self.lbl_samples_per_id.setText("—")
+            return
+
+        verdict = bm.get("verdict") or "—"
+        cv = bm.get("cv")
+        ratio = bm.get("imbalance_ratio")
+
+        ratio_txt = f"{ratio:.1f}:1" if isinstance(ratio, (int, float)) else "—"
+        cv_txt = f"{cv:.3f}" if isinstance(cv, (int, float)) else "—"
+        self.lbl_balance.setText(f"{verdict}  (CV={cv_txt}, max/min={ratio_txt})")
+
+        mn = bm.get("min_samples")
+        mx = bm.get("max_samples")
+        mean = bm.get("mean_samples")
+        median = bm.get("median_samples")
+        if mn is not None and mx is not None and mean is not None and median is not None:
+            self.lbl_samples_per_id.setText(
+                f"{int(mn)}–{int(mx)}  (média {float(mean):.1f}, mediana {float(median):.1f})"
+            )
+        else:
+            self.lbl_samples_per_id.setText("—")
 
     def _load_pipeline_details(
         self, pipeline_abs_path: Path, embedding_dimensions: Optional[int]
