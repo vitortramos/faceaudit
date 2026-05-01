@@ -417,25 +417,43 @@ _PIPELINE_APPLICATION_POLICY_TOOLTIPS = {
 
 
 _PLDA_CONFIG_LABELS = {
-    "em_iterations": "Iterações EM",
-    "plda_mode":     "Modo PLDA",
-    "latent_dim":    "Dimensão Latente",
-    "random_seed":   "Semente Aleatória",
+    "plda_variant":   "Variante",
+    "em_iterations":  "Iterações EM",
+    "plda_mode":      "Modo PLDA",
+    "latent_dim":     "Dimensão Latente",
+    "regularization": "Regularização (TwoCov)",
+    "random_seed":    "Semente Aleatória",
 }
 
 _PLDA_CONFIG_TOOLTIPS = {
+    "plda_variant":
+        "SIMPLE (padrão): formulação SpeechBrain com subspace F entre-classes "
+        "(rank configurável). Treinada via EM iterativo. Usa em_iterations, "
+        "plda_mode e latent_dim.\n\n"
+        "TWO_COVARIANCE: formulação Brümmer 2010 com covariâncias completas "
+        "B (entre-classes) e W (intra-classe). Treinada em forma fechada — "
+        "sem EM. Recomendada na literatura forense (FoCal toolkit). "
+        "em_iterations / plda_mode / latent_dim são IGNORADOS; usa "
+        "`regularization` opcional.",
     "em_iterations":
         "Número de iterações do algoritmo Expectation-Maximization no treino "
         "do PLDA. Mais iterações = treino mais lento mas potencialmente mais "
-        "estável. Padrão 20 funciona bem na maioria dos casos.",
+        "estável. Padrão 20 funciona bem na maioria dos casos. "
+        "Usado apenas em variant=SIMPLE.",
     "plda_mode":
         "FULL_RANK: usa o maior rank permitido pelos dados (latent_dim ignorado).\n"
         "LOW_RANK: usa latent_dim como limite do espaço latente. Reduz "
-        "dimensionalidade e geralmente é mais robusto.",
+        "dimensionalidade e geralmente é mais robusto.\n\n"
+        "Usado apenas em variant=SIMPLE.",
     "latent_dim":
         "Dimensão do espaço latente quando plda_mode=LOW_RANK. Valores típicos: "
         "64–256. Aumentar pode capturar mais variabilidade mas exige mais dados "
-        "para evitar overfitting.",
+        "para evitar overfitting. Usado apenas em variant=SIMPLE.",
+    "regularization":
+        "Termo ε ≥ 0 somado a B e W como ε·I antes da inversão no scoring. "
+        "Estabiliza numericamente quando D é alto comparado ao número de "
+        "classes/amostras. Padrão 0 = sem regularização. "
+        "Usado apenas em variant=TWO_COVARIANCE.",
     "random_seed":
         "Semente aleatória para reprodutibilidade do treino.",
 }
@@ -580,10 +598,14 @@ _INLINE_INTRO_TEXTS = {
         "para ver detalhes específicos."
     ),
     "similarity_model_config": (
-        "Hyperparâmetros do PLDA (Probabilistic Linear Discriminant Analysis). "
-        "FULL_RANK preserva o máximo de informação mas exige muitas identidades; "
-        "LOW_RANK reduz a dimensão latente para latent_dim, geralmente mais "
-        "estável com poucos dados."
+        "Hyperparâmetros do PLDA (Probabilistic Linear Discriminant Analysis).\n\n"
+        "Escolha primeiro a VARIANTE:\n"
+        "• SIMPLE (SpeechBrain): subspace F entre-classes, treino EM. "
+        "FULL_RANK preserva o máximo de informação; LOW_RANK reduz para "
+        "latent_dim, geralmente mais estável com poucos dados.\n"
+        "• TWO_COVARIANCE (Brümmer): covariâncias completas B/W em forma "
+        "fechada — sem EM. Padrão da literatura forense; ignora plda_mode "
+        "e latent_dim, mas aceita `regularization` para estabilizar."
     ),
 }
 

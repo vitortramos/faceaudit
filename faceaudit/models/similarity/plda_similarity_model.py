@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 from speechbrain.processing.PLDA_LDA import PLDA, StatObject_SB, Ndx, fast_PLDA_scoring
 
 from faceaudit.enums.plda_mode import PLDAMode
+from faceaudit.enums.plda_variant import PLDAVariant
 from faceaudit.models.embedding_dataset import EmbeddingDataset
 from faceaudit.models.embedding_info import EmbeddingInfo
 from faceaudit.models.similarity.plda_similarity_model_config import (
     PLDASimilarityModelConfig,
 )
 from faceaudit.protocols.similarity_model_protocol import SimilarityModelProtocol
+from faceaudit.services.two_covariance_plda_service import (
+    TwoCovariancePLDAState,
+    fit_two_covariance,
+    score_two_covariance_matrix,
+    score_two_covariance_pair,
+    _compute_scoring_kernels,
+)
 
 
 class PLDASimilarityModel(SimilarityModelProtocol):
@@ -34,7 +42,7 @@ class PLDASimilarityModel(SimilarityModelProtocol):
     - geração de LR final
     """
 
-    MODEL_VERSION = 1
+    MODEL_VERSION = 2
 
     def __init__(
         self,
@@ -44,8 +52,14 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         self.config = config or PLDASimilarityModelConfig()
         self._name = name
 
-        # Backend SpeechBrain
+        # Backend SpeechBrain (variante SIMPLE)
         self.plda: Optional[PLDA] = None
+
+        # Backend numpy puro (variante TWO_COVARIANCE)
+        self.two_cov_state: Optional[TwoCovariancePLDAState] = None
+        # Kernels Q/P/const pré-computados para scoring rápido em batch.
+        # Cacheados em fit() e load(), reutilizados em score_*.
+        self._two_cov_kernels: Optional[Tuple[np.ndarray, np.ndarray, float]] = None
 
         # Estado treinado
         self._is_fitted = False
@@ -91,9 +105,10 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         logger_callback: Callable[[str], None] = print,
     ) -> None:
         """
-        Treina o modelo PLDA puro a partir de um EmbeddingDataset.
+        Treina o modelo PLDA a partir de um EmbeddingDataset, ramificando
+        para o backend correspondente à variante configurada.
 
-        Regras:
+        Regras (válidas para ambas as variantes):
         - embeddings devem estar presentes
         - identity=None é removido
         - apenas IDs com >= 2 embeddings entram no treino
@@ -104,21 +119,47 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if len(dataset) == 0:
             raise ValueError("Dataset vazio. Não é possível treinar PLDA.")
 
-        logger_callback(
-            f"[{self.name}] 🧠 Treinando PLDA puro "
-            f"(EM={self.config.em_iterations} | "
-            f"Mode={self.config.plda_mode.value} | "
-            f"latent_dim={self.config.latent_dim} | "
-            f"seed={self.config.random_seed})..."
-        )
+        # Pré-processamento comum: extrai X/y filtrando identity=None e
+        # IDs com < 2 amostras.
+        X_train, y_train = self._extract_training_arrays(dataset)
+        D = int(X_train.shape[1])
+        C = int(len(np.unique(y_train)))
+        N = int(X_train.shape[0])
 
+        # Ramificação por variante.
+        if self.config.uses_two_covariance_variant:
+            self._fit_two_covariance(
+                X_train=X_train,
+                y_train=y_train,
+                D=D, C=C, N=N,
+                logger_callback=logger_callback,
+            )
+        else:
+            self._fit_simple(
+                X_train=X_train,
+                y_train=y_train,
+                D=D, C=C, N=N,
+                logger_callback=logger_callback,
+            )
+
+        self.trained_dim = D
+        self._is_fitted = True
+
+        logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
+
+    def _extract_training_arrays(
+        self, dataset: EmbeddingDataset
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Filtragem comum: remove identity=None e identidades singleton.
+        Retorna (X_train, y_train) prontos para os backends.
+        """
         X_all = dataset.matrix.astype(np.float64)
         y_all = np.array([item.identity for item in dataset.items], dtype=object)
 
         if X_all.size == 0:
             raise ValueError("Dataset sem embeddings válidos.")
 
-        # Remove identity=None
         mask_labeled = np.array([identity is not None for identity in y_all], dtype=bool)
         X = X_all[mask_labeled]
         y = np.array([str(identity) for identity in y_all[mask_labeled]], dtype=str)
@@ -126,7 +167,6 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if X.shape[0] < 2:
             raise ValueError("Dados insuficientes após remover identity=None.")
 
-        # Mantém apenas IDs com >= 2 amostras
         unique_ids, counts = np.unique(y, return_counts=True)
         valid_ids = set(unique_ids[counts > 1])
         mask_multi = np.array([identity in valid_ids for identity in y], dtype=bool)
@@ -140,26 +180,65 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 "(são necessárias identidades com >= 2 embeddings)."
             )
 
-        D = int(X_train.shape[1])
-        C = int(len(np.unique(y_train)))
-        N = int(X_train.shape[0])
+        return X_train, y_train
+
+    def _fit_simple(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        D: int, C: int, N: int,
+        logger_callback: Callable[[str], None],
+    ) -> None:
+        """Backend SpeechBrain (formulação simplificada com subspace F)."""
+        logger_callback(
+            f"[{self.name}] 🧠 Treinando PLDA SIMPLE "
+            f"(EM={self.config.em_iterations} | "
+            f"Mode={self.config.plda_mode.value} | "
+            f"latent_dim={self.config.latent_dim} | "
+            f"seed={self.config.random_seed})..."
+        )
 
         rank_f = self._decide_rank_f(D=D, C=C)
         self.trained_rank = rank_f
-        self.trained_dim = D
 
         logger_callback(
             f"[{self.name}] 📊 Treino: N={N} | Classes={C} | D={D} | rank_f={rank_f}"
         )
 
         train_stat = self._make_stat_object(X_train, y_train)
-
         self.plda = PLDA(rank_f=rank_f, nb_iter=self.config.em_iterations)
         self.plda.plda(train_stat, whiten=False)
 
-        self._is_fitted = True
+    def _fit_two_covariance(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        D: int, C: int, N: int,
+        logger_callback: Callable[[str], None],
+    ) -> None:
+        """Backend Brümmer 2010 (forma fechada, sem EM)."""
+        logger_callback(
+            f"[{self.name}] 🧠 Treinando PLDA TWO_COVARIANCE "
+            f"(forma fechada | regularization={self.config.regularization} | "
+            f"seed={self.config.random_seed})..."
+        )
 
-        logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
+        logger_callback(
+            f"[{self.name}] 📊 Treino: N={N} | Classes={C} | D={D}"
+        )
+
+        self.two_cov_state = fit_two_covariance(
+            X=X_train,
+            y=y_train,
+            regularization=self.config.regularization,
+        )
+
+        # Pré-computa kernels de scoring para reuso em score_*.
+        self._two_cov_kernels = _compute_scoring_kernels(self.two_cov_state)
+
+        # `trained_rank` não se aplica em duas covariâncias; usamos D como
+        # marcador (covariância full-rank).
+        self.trained_rank = D
 
     # =========================================================================
     # SCORING
@@ -185,6 +264,7 @@ class PLDASimilarityModel(SimilarityModelProtocol):
     ) -> float:
         """
         Calcula o score bruto PLDA (LLR bruto) entre dois vetores.
+        Ramifica para o backend correspondente à variante.
         """
         self._ensure_fitted()
 
@@ -197,6 +277,10 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if v1.shape[0] != v2.shape[0]:
             raise ValueError("Os vetores devem ter a mesma dimensionalidade.")
 
+        if self.config.uses_two_covariance_variant:
+            return score_two_covariance_pair(self.two_cov_state, v1, v2)
+
+        # Backend SpeechBrain (SIMPLE).
         probe_ids = np.array(["p_00000001"], dtype="|O")
         ref_ids = np.array(["r_00000001"], dtype="|O")
 
@@ -223,7 +307,8 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         ref_matrix: np.ndarray,
     ) -> np.ndarray:
         """
-        Calcula a matriz completa de scores brutos PLDA.
+        Calcula a matriz completa de scores brutos PLDA. Ramifica para o
+        backend correspondente à variante.
         """
         self._ensure_fitted()
 
@@ -241,6 +326,12 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if n_p == 0 or n_r == 0:
             return np.empty((n_p, n_r), dtype=np.float64)
 
+        if self.config.uses_two_covariance_variant:
+            return score_two_covariance_matrix(
+                self.two_cov_state, P, R, kernels=self._two_cov_kernels
+            )
+
+        # Backend SpeechBrain (SIMPLE).
         probe_ids = np.array([f"p_{i:08d}" for i in range(n_p)], dtype="|O")
         ref_ids = np.array([f"r_{i:08d}" for i in range(n_r)], dtype="|O")
 
@@ -267,15 +358,38 @@ class PLDASimilarityModel(SimilarityModelProtocol):
 
     def save(self, path: str) -> None:
         """
-        Persiste o estado do modelo em disco.
+        Persiste o estado do modelo em disco. O payload inclui o estado
+        de ambas as variantes — apenas a relevante estará populada.
         """
+        backend = (
+            "two_covariance"
+            if self.config.uses_two_covariance_variant
+            else "speechbrain"
+        )
+
+        # Estado da variante TWO_COVARIANCE serializado como dict (cópia
+        # rasa do dataclass frozen, JSON/pickle-friendly).
+        two_cov_serialized = None
+        if self.two_cov_state is not None:
+            two_cov_serialized = {
+                "mu": self.two_cov_state.mu,
+                "B": self.two_cov_state.B,
+                "W": self.two_cov_state.W,
+                "n_classes": self.two_cov_state.n_classes,
+                "n_samples": self.two_cov_state.n_samples,
+                "D": self.two_cov_state.D,
+            }
+
         payload = {
             "model_version": self.MODEL_VERSION,
             "model_type": "plda_similarity_model",
-            "backend": "speechbrain",
+            "backend": backend,
             "name": self._name,
             "config": self.config.to_dict(),
+            # Variante SIMPLE (SpeechBrain).
             "plda": self.plda,
+            # Variante TWO_COVARIANCE.
+            "two_cov_state": two_cov_serialized,
             "trained_rank": self.trained_rank,
             "trained_dim": self.trained_dim,
             "is_fitted": self._is_fitted,
@@ -290,6 +404,9 @@ class PLDASimilarityModel(SimilarityModelProtocol):
     def load(self, path: str) -> None:
         """
         Restaura o estado do modelo a partir do disco.
+
+        Retrocompat: payloads de model_version=1 (apenas SpeechBrain) são
+        carregados como variante SIMPLE — comportamento idêntico ao anterior.
         """
         path_obj = Path(path)
         if not path_obj.exists():
@@ -305,7 +422,32 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         self.plda = payload.get("plda")
         self.trained_rank = payload.get("trained_rank")
         self.trained_dim = payload.get("trained_dim")
-        self._is_fitted = bool(payload.get("is_fitted", self.plda is not None))
+
+        # Hidrata estado TWO_COVARIANCE se presente no payload (model_version
+        # ≥ 2). Em payloads antigos (v1), o campo não existe — ignora.
+        two_cov_dict = payload.get("two_cov_state")
+        if two_cov_dict is not None:
+            self.two_cov_state = TwoCovariancePLDAState(
+                mu=np.asarray(two_cov_dict["mu"], dtype=np.float64),
+                B=np.asarray(two_cov_dict["B"], dtype=np.float64),
+                W=np.asarray(two_cov_dict["W"], dtype=np.float64),
+                n_classes=int(two_cov_dict["n_classes"]),
+                n_samples=int(two_cov_dict["n_samples"]),
+                D=int(two_cov_dict["D"]),
+            )
+            # Recomputa kernels — não persistidos para evitar bloat e desync
+            # quando regularização muda.
+            self._two_cov_kernels = _compute_scoring_kernels(self.two_cov_state)
+        else:
+            self.two_cov_state = None
+            self._two_cov_kernels = None
+
+        # is_fitted: válido se qualquer dos backends tem estado.
+        has_simple = self.plda is not None
+        has_two_cov = self.two_cov_state is not None
+        self._is_fitted = bool(
+            payload.get("is_fitted", has_simple or has_two_cov)
+        )
 
         self._rng = np.random.default_rng(self.config.random_seed)
 
@@ -314,8 +456,23 @@ class PLDASimilarityModel(SimilarityModelProtocol):
     # =========================================================================
 
     def _ensure_fitted(self) -> None:
-        if not self._is_fitted or self.plda is None:
-            raise RuntimeError("Modelo PLDASimilarityModel não treinado. Execute fit() primeiro.")
+        if not self._is_fitted:
+            raise RuntimeError(
+                "Modelo PLDASimilarityModel não treinado. Execute fit() primeiro."
+            )
+
+        if self.config.uses_two_covariance_variant:
+            if self.two_cov_state is None:
+                raise RuntimeError(
+                    "Variante TWO_COVARIANCE marcada como treinada mas sem "
+                    "estado interno (two_cov_state)."
+                )
+        else:
+            if self.plda is None:
+                raise RuntimeError(
+                    "Variante SIMPLE marcada como treinada mas sem backend "
+                    "SpeechBrain (plda)."
+                )
 
     def _make_stat_object(self, X: np.ndarray, ids: np.ndarray) -> StatObject_SB:
         X = np.asarray(X, dtype=np.float64)
