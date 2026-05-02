@@ -95,8 +95,20 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     # ao tipo, atualizar o payload e re-persistir o artefato.
     resource_edit_requested = QtCore.pyqtSignal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, outputs_in_results_panel: bool = False):
+        """
+        Args:
+            parent: pai Qt opcional.
+            outputs_in_results_panel: quando True, a seção "Saídas" e os
+                botões de visualização (📊 Trajetória, 📊 Distribuição,
+                📊 Validação, 📊 Caso) ficam ocultos — usado quando o
+                editor delega esses elementos ao `InstructionResultsPanel`
+                (3ª coluna). Default False preserva o layout antigo
+                (instâncias usadas isoladamente em outros contextos).
+        """
         super().__init__(parent)
+        self._outputs_in_results_panel = bool(outputs_in_results_panel)
+
         self._instruction: Optional[StrategyInstructionDefinition] = None
         self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
@@ -199,13 +211,22 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         scroll_layout.addWidget(wrapper_cfg)
 
         # ─── Seção 3: Saídas ──────────────────────────────────────────────
-        scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
-        self._outputs_layout = QtWidgets.QVBoxLayout()
-        self._outputs_layout.setContentsMargins(8, 6, 8, 8)
-        self._outputs_layout.setSpacing(6)
-        wrapper_out = QtWidgets.QWidget()
-        wrapper_out.setLayout(self._outputs_layout)
-        scroll_layout.addWidget(wrapper_out)
+        # Quando o painel de resultados (3ª coluna) está ativo, esta seção
+        # fica oculta — outputs são renderizados lá. Mas o layout/dict
+        # ainda é criado para preservar o caminho antigo (chamadas a
+        # update_runtime_state via legacy callers ou tests).
+        if not self._outputs_in_results_panel:
+            scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
+            self._outputs_layout = QtWidgets.QVBoxLayout()
+            self._outputs_layout.setContentsMargins(8, 6, 8, 8)
+            self._outputs_layout.setSpacing(6)
+            wrapper_out = QtWidgets.QWidget()
+            wrapper_out.setLayout(self._outputs_layout)
+            scroll_layout.addWidget(wrapper_out)
+        else:
+            # Layout vazio (não embedded em widget) — usado pelos métodos
+            # internos pra evitar branches; fica orphan e sem efeito visual.
+            self._outputs_layout = QtWidgets.QVBoxLayout()
 
         scroll_layout.addStretch(1)  # ANCORA conteúdo ao topo
 
@@ -216,6 +237,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # e ações genéricas (Validar / Aplicar) à direita.
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setContentsMargins(0, 6, 0, 0)
+
+        # Quando o painel de resultados (3ª coluna) está ativo, os 4 botões
+        # de visualização migram pra lá — neste painel só ficam Validar/Aplicar.
+        # Os botões ainda são instanciados (e mantidos como atributos) mas
+        # invisíveis, preservando referências internas que outros métodos
+        # consultam.
+        _vis_buttons_visible = not self._outputs_in_results_panel
 
         # Botão de visualização da trajetória — visível apenas em
         # PipelineApplicationInstruction; habilitado quando há trajetória
@@ -233,7 +261,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_trajectory.setVisible(False)
         self.btn_view_trajectory.setEnabled(False)
         self.btn_view_trajectory.clicked.connect(self._on_view_trajectory)
-        btn_row.addWidget(self.btn_view_trajectory)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_trajectory)
 
         # Botão de visualização da distribuição de scores — visível apenas em
         # SimilarityScoringInstruction; habilitado quando há scores disponíveis.
@@ -252,7 +281,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_distribution.setVisible(False)
         self.btn_view_distribution.setEnabled(False)
         self.btn_view_distribution.clicked.connect(self._on_view_distribution)
-        btn_row.addWidget(self.btn_view_distribution)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_distribution)
 
         # Botão de visualização do resultado de validação — visível apenas
         # em StrategyEvaluationInstruction; habilitado quando o recurso de
@@ -272,7 +302,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_validation_result.setVisible(False)
         self.btn_view_validation_result.setEnabled(False)
         self.btn_view_validation_result.clicked.connect(self._on_view_validation_result)
-        btn_row.addWidget(self.btn_view_validation_result)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_validation_result)
 
         # Botão de visualização forense de caso — visível apenas em
         # CaseworkVisualizationInstruction; habilitado quando o recurso de
@@ -294,7 +325,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_casework_visualization.clicked.connect(
             self._on_view_casework_visualization
         )
-        btn_row.addWidget(self.btn_view_casework_visualization)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_casework_visualization)
 
         btn_row.addStretch(1)
 

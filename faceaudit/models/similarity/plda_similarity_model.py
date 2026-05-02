@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple, TYPE_CHECKING
 
 import numpy as np
 from speechbrain.processing.PLDA_LDA import PLDA, StatObject_SB, Ndx, fast_PLDA_scoring
@@ -17,13 +17,18 @@ from faceaudit.models.similarity.plda_similarity_model_config import (
     PLDASimilarityModelConfig,
 )
 from faceaudit.protocols.similarity_model_protocol import SimilarityModelProtocol
-from faceaudit.services.two_covariance_plda_service import (
-    TwoCovariancePLDAState,
-    fit_two_covariance,
-    score_two_covariance_matrix,
-    score_two_covariance_pair,
-    _compute_scoring_kernels,
-)
+
+# `two_covariance_plda_service` é importado APENAS para type-checking em tempo
+# top-level — em runtime os símbolos são resolvidos via `import` local dentro
+# das funções que os usam. Razão: `faceaudit.services.__init__` carrega
+# FileSystemService → ProjectConfig → StrategyEntry → PLDAConfig →
+# PLDAParameters durante a importação top-level, colidindo com a init de
+# `faceaudit.parameters` em ordens específicas (ex: via `faceaudit.enums` em
+# testes). Imports locais quebram o ciclo sem afetar comportamento.
+if TYPE_CHECKING:
+    from faceaudit.services.two_covariance_plda_service import (
+        TwoCovariancePLDAState,
+    )
 
 
 class PLDASimilarityModel(SimilarityModelProtocol):
@@ -55,8 +60,8 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         # Backend SpeechBrain (variante SIMPLE)
         self.plda: Optional[PLDA] = None
 
-        # Backend numpy puro (variante TWO_COVARIANCE)
-        self.two_cov_state: Optional[TwoCovariancePLDAState] = None
+        # Backend numpy puro (variante TWO_COVARIANCE) — type via TYPE_CHECKING
+        self.two_cov_state: Optional["TwoCovariancePLDAState"] = None
         # Kernels Q/P/const pré-computados para scoring rápido em batch.
         # Cacheados em fit() e load(), reutilizados em score_*.
         self._two_cov_kernels: Optional[Tuple[np.ndarray, np.ndarray, float]] = None
@@ -217,6 +222,12 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         logger_callback: Callable[[str], None],
     ) -> None:
         """Backend Brümmer 2010 (forma fechada, sem EM)."""
+        # Import preguiçoso — vide nota no topo do arquivo.
+        from faceaudit.services.two_covariance_plda_service import (
+            fit_two_covariance,
+            _compute_scoring_kernels,
+        )
+
         logger_callback(
             f"[{self.name}] 🧠 Treinando PLDA TWO_COVARIANCE "
             f"(forma fechada | regularization={self.config.regularization} | "
@@ -278,6 +289,9 @@ class PLDASimilarityModel(SimilarityModelProtocol):
             raise ValueError("Os vetores devem ter a mesma dimensionalidade.")
 
         if self.config.uses_two_covariance_variant:
+            from faceaudit.services.two_covariance_plda_service import (
+                score_two_covariance_pair,
+            )
             return score_two_covariance_pair(self.two_cov_state, v1, v2)
 
         # Backend SpeechBrain (SIMPLE).
@@ -327,6 +341,9 @@ class PLDASimilarityModel(SimilarityModelProtocol):
             return np.empty((n_p, n_r), dtype=np.float64)
 
         if self.config.uses_two_covariance_variant:
+            from faceaudit.services.two_covariance_plda_service import (
+                score_two_covariance_matrix,
+            )
             return score_two_covariance_matrix(
                 self.two_cov_state, P, R, kernels=self._two_cov_kernels
             )
@@ -427,6 +444,10 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         # ≥ 2). Em payloads antigos (v1), o campo não existe — ignora.
         two_cov_dict = payload.get("two_cov_state")
         if two_cov_dict is not None:
+            from faceaudit.services.two_covariance_plda_service import (
+                TwoCovariancePLDAState,
+                _compute_scoring_kernels,
+            )
             self.two_cov_state = TwoCovariancePLDAState(
                 mu=np.asarray(two_cov_dict["mu"], dtype=np.float64),
                 B=np.asarray(two_cov_dict["B"], dtype=np.float64),
