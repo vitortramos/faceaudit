@@ -296,10 +296,18 @@ interface/tabs/strategy_manager_v2/
 │   ├── resource_tree_widget.py         ← QTreeWidget grouped by StrategyResourceType; "Adicionar Recurso" dropdown
 │   └── resource_info_widget.py         ← Metadata + usage + pipeline details + dataset stats of selected resource
 ├── strategy_editor/
-│   ├── strategy_editor_widget.py       ← QTabWidget with 3 tabs (Preparação/Validação/Caso), each with InstructionListWidget + InstructionConfigPanel in horizontal splitter
+│   ├── strategy_editor_widget.py       ← QTabWidget with 3 tabs (Preparação/Validação/Caso), each with InstructionListWidget + InstructionConfigPanel + InstructionResultsPanel in horizontal splitter (3 columns ~200/400/600)
 │   ├── instruction_list_widget.py      ← Drag-and-drop list with ▶ Run button + visual states (🔒/✅)
-│   ├── instruction_config_panel.py     ← Dynamic form with type-filtered dropdowns via ResourceFieldSpec + Validate button + runtime status of declared outputs (⬜ placeholder / 🟡 in memory / 🟢 saved) rendered inline per output row
-│   ├── output_row_widget.py            ← Per-output row inside InstructionConfigPanel showing the runtime state above
+│   ├── instruction_config_panel.py     ← Dynamic form with type-filtered dropdowns via ResourceFieldSpec + Validate button. Constructor flag `outputs_in_results_panel: bool = False` (default preserves old layout); when True, the "Saídas" section and the 4 view buttons (📊) are hidden — they migrate to InstructionResultsPanel
+│   ├── instruction_results_panel.py    ← 3rd column: outputs (OutputRowWidget) + inline plot (when applicable) + 🔍 Expandir button. Per-instruction _ResultsCard cache via QStackedWidget. Lazy hydrate button for big score datasets on disk
+│   ├── result_widgets/                 ← Plot widgets reusable inline (results panel) and in dialogs (full-screen):
+│   │   ├── score_distribution_widget.py     — histogram + KDE (gen vs imp), use_log_lr flag for SCORE_CALIBRATION
+│   │   ├── validation_result_widget.py      — QTabWidget with 4 lazy tabs (LRs / Tippett / DET / ECE), header + help
+│   │   └── casework_visualization_widget.py — single plot, KDE for n_case≥30 or vertical lines for fewer
+│   ├── validation_result_viewer_dialog.py    ← Thin wrapper around ValidationResultWidget (used by 🔍 Expandir)
+│   ├── casework_visualization_viewer_dialog.py ← Thin wrapper around CaseworkVisualizationWidget
+│   ├── graph_viewer_dialog.py          ← Generic Figure dialog (used for trajectory 3D + score distribution from 🔍 Expandir)
+│   ├── output_row_widget.py            ← Per-output row used by InstructionResultsPanel showing runtime state (⬜ placeholder / 🟡 in memory / 🟢 saved) and lazy summary of payload
 │   └── nested_dto_widget.py            ← Inline editor for nested config DTOs (PLDA / LogReg / KDE / pipeline policies)
 ├── comparison_tab/
 │   └── comparison_tab_widget.py        ← Placeholder for future strategy comparison
