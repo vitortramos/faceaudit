@@ -23,6 +23,9 @@ notebooks/.ipynb_checkpoints/
 # Arquivos de saída temporários
 *.log
 
+# Documento PDF gerado por generate_arch_doc.py (regenerar com `python generate_arch_doc.py`)
+FaceAudit_Nova_Arquitetura.pdf
+
 # IDE
 .vscode/settings.json
 *.swp
