@@ -664,7 +664,21 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         choice_specs = instr.get_choice_field_specs()
         for cspec in choice_specs:
             combo = QtWidgets.QComboBox()
-            combo.addItems(cspec.choices)
+
+            # `dynamic_choices` permite que o DTO filtre as opções a cada
+            # rebuild, com base no estado atual de outras seleções e nos
+            # recursos disponíveis (ex: DATASET_BALANCING filtra
+            # quality_metric pelas métricas presentes no dataset).
+            effective_choices = cspec.choices
+            if cspec.dynamic_choices is not None:
+                try:
+                    filtered = cspec.dynamic_choices(self._available_resources)
+                except Exception:
+                    filtered = None
+                if filtered:
+                    effective_choices = filtered
+
+            combo.addItems(effective_choices)
 
             raw_val = getattr(instr, cspec.field_name, None)
             if raw_val is not None:
@@ -674,7 +688,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     current_str = str(raw_val)
                     current_str = current_str.split(".")[-1] if "." in current_str else current_str
 
-                choices_upper = {c.upper(): c for c in cspec.choices}
+                choices_upper = {c.upper(): c for c in effective_choices}
                 match = choices_upper.get(current_str.upper())
                 if match:
                     combo.setCurrentText(match)
@@ -984,6 +998,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             cv.addWidget(row_widget)
 
             self._resource_field_widgets[spec.field_name] = combo
+
+            # Quando o spec marcou triggers_rebuild=True, mudanças no
+            # dropdown disparam um rebuild completo do form. Útil pra
+            # specs cujos `dynamic_choices` dependem do recurso escolhido
+            # (ex: DATASET_BALANCING.quality_metric filtra pelo dataset).
+            if getattr(spec, "triggers_rebuild", False):
+                combo.currentIndexChanged.connect(
+                    lambda _idx, fn=spec.field_name:
+                        self._on_resource_triggers_rebuild(fn)
+                )
+
             h.addWidget(col, 1)
 
         # Adiciona como um row sem label (ocupa toda a largura)
@@ -1285,6 +1310,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         if widget is None or spec is None:
             return
         new_val = self._read_value_widget(widget, spec)
+        setattr(self._instruction, field_name, new_val)
+        if hasattr(self._instruction, "_sync_declared_io"):
+            self._instruction._sync_declared_io()
+        QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
+
+    def _on_resource_triggers_rebuild(self, field_name: str) -> None:
+        """
+        Aplica o resource_id atualmente selecionado ao DTO e dispara
+        rebuild. Usado por ResourceFieldSpec com triggers_rebuild=True
+        (ex: DATASET_BALANCING.dataset_resource_id, cujo valor afeta as
+        opções do dropdown quality_metric via dynamic_choices).
+        """
+        if not self._instruction:
+            return
+        combo = self._resource_field_widgets.get(field_name)
+        if combo is None:
+            return
+        new_val = combo.currentData()  # resource_id ou None
         setattr(self._instruction, field_name, new_val)
         if hasattr(self._instruction, "_sync_declared_io"):
             self._instruction._sync_declared_io()

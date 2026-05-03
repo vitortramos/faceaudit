@@ -107,6 +107,30 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
     def uses_two_covariance_variant(self) -> bool:
         return self.plda_variant == PLDAVariant.TWO_COVARIANCE
 
+    # ── Visibilidade de campos na UI ─────────────────────────────────
+
+    # Campo cuja mudança deve disparar rebuild do nested form (porque
+    # afeta a visibilidade de outros fields). Lido pelo nested_dto_widget.
+    REACTIVE_FIELDS = ("plda_variant",)
+
+    def get_hidden_fields(self):
+        """
+        Retorna o conjunto de nomes de campos que devem ser OCULTADOS pela
+        UI dado o estado atual do config. Usado pelo `nested_dto_widget`
+        para esconder dinamicamente campos que não se aplicam à variante
+        selecionada.
+
+        - SIMPLE: oculta `regularization` (só faz sentido em TWO_COVARIANCE).
+        - TWO_COVARIANCE: oculta `em_iterations`, `plda_mode`, `latent_dim`
+          (formulação Brümmer não usa EM nem subspace de baixo rank).
+
+        Returns:
+            Set[str] com nomes de campos a esconder.
+        """
+        if self.uses_simple_variant:
+            return {"regularization"}
+        return {"em_iterations", "plda_mode", "latent_dim"}
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """

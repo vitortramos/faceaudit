@@ -140,9 +140,11 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
         ]
 
         # Métrica de qualidade só aparece quando o critério é BY_QUALITY.
-        # Filtragem dinâmica por disponibilidade no dataset será feita pelo
-        # painel da UI (lê stats/parquet e desabilita opções inviáveis); o
-        # DTO sempre oferece o conjunto completo.
+        # Filtragem dinâmica por disponibilidade no dataset acontece via
+        # `dynamic_choices`: o painel chama o callback a cada rebuild do form
+        # passando `available_resources`; retornamos só as métricas que de
+        # fato existem no dataset selecionado (≥ 50% de cobertura).
+        # EMBEDDING_NORM sempre está disponível (calculada on-the-fly).
         if self.uses_quality_selection:
             specs.append(
                 ChoiceFieldSpec(
@@ -150,6 +152,7 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
                     label="Métrica de Qualidade",
                     choices=tuple(qt.name for qt in QualityScoreType),
                     enum_type=QualityScoreType,
+                    dynamic_choices=self._available_quality_metric_choices,
                     descriptions={
                         "FIQA":
                             "Score do ForensicFace (0.0–1.0). Lê de "
@@ -175,7 +178,13 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
         OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
 
         return [
-            ResourceFieldSpec("dataset_resource_id", "Dataset de entrada", DS),
+            # triggers_rebuild=True: a métrica de qualidade é filtrada
+            # dinamicamente pelo dataset escolhido, então mudar de dataset
+            # precisa re-renderizar o dropdown de quality_metric.
+            ResourceFieldSpec(
+                "dataset_resource_id", "Dataset de entrada", DS,
+                triggers_rebuild=True,
+            ),
             ResourceFieldSpec(
                 "output_dataset_resource_id",
                 "Dataset balanceado",
@@ -255,6 +264,61 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
     @property
     def uses_random_selection(self) -> bool:
         return self.selection_criterion == DatasetBalancingSelection.RANDOM
+
+    # ── Hooks dinâmicos para a UI ────────────────────────────────────
+
+    def _available_quality_metric_choices(
+        self, available_resources
+    ):
+        """
+        Callback de `dynamic_choices` do ChoiceFieldSpec `quality_metric`.
+
+        Inspeciona o dataset selecionado (`self.dataset_resource_id`) e
+        retorna apenas as métricas com cobertura suficiente (≥ 50%).
+        Quando `dataset_resource_id` está vazio, ou o recurso não está em
+        `available_resources`, ou a inspeção falha, retorna None — o
+        painel mantém as 4 opções default.
+
+        EMBEDDING_NORM sempre aparece (calculada on-the-fly, não exige
+        coluna no parquet nem campo no objeto).
+
+        Args:
+            available_resources: lista de StrategyResource passada pelo
+                painel (set_available_resources do panel V2).
+
+        Returns:
+            Optional[Tuple[str, ...]] com nomes de QualityScoreType
+            disponíveis, ou None para preservar `choices` default.
+        """
+        if not self.dataset_resource_id or not available_resources:
+            return None
+
+        target = None
+        for r in available_resources:
+            if getattr(r, "resource_id", None) == self.dataset_resource_id:
+                target = r
+                break
+
+        if target is None:
+            return None
+
+        try:
+            from faceaudit.services.quality_metric_availability_service import (
+                QualityMetricAvailabilityService,
+            )
+            project_root = getattr(self, "_project_root_hint", None)
+            available = QualityMetricAvailabilityService.available_metrics(
+                resource=target,
+                project_root=project_root,
+            )
+        except Exception:
+            return None
+
+        if not available:
+            return None
+
+        # Mantém a ordem canônica do enum (FIQA, OFIQ, SERFIQ, EMBEDDING_NORM).
+        return tuple(qt.name for qt in QualityScoreType if qt in available)
 
     @property
     def uses_quality_selection(self) -> bool:

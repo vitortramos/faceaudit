@@ -49,6 +49,9 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
         self._enum_desc_labels: Dict[str, QtWidgets.QLabel] = {}
         self._enum_member_descriptions: Dict[str, Dict[str, str]] = {}
         self._expanded = True
+        # Guarda o intro_text pra reuso em _rebuild_form (re-adicionado
+        # ao topo do layout após limpeza).
+        self._intro_text = intro_text
 
         self._init_ui(title, header_tooltip, intro_text)
         self._populate_fields()
@@ -114,7 +117,24 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             self._fields_layout.addRow(empty)
             return
 
+        # Hooks opcionais para visibilidade dinâmica de fields:
+        # - get_hidden_fields(): retorna set de nomes de fields a esconder
+        #   condicionalmente (ex: PLDA esconde plda_mode/latent_dim quando
+        #   variant=TWO_COVARIANCE).
+        # - REACTIVE_FIELDS: tupla de nomes de fields cuja mudança deve
+        #   disparar rebuild do form (ex: plda_variant). O reset é feito
+        #   por _rebuild_form() abaixo.
+        hidden_fields = set()
+        if hasattr(self._dto, "get_hidden_fields"):
+            try:
+                hidden_fields = set(self._dto.get_hidden_fields()) or set()
+            except Exception:
+                hidden_fields = set()
+        reactive_fields = set(getattr(self._dto, "REACTIVE_FIELDS", ()) or ())
+
         for f in fields(self._dto):
+            if f.name in hidden_fields:
+                continue
             value = getattr(self._dto, f.name, None)
             label_text = self._field_labels.get(f.name, f.name.replace("_", " ").capitalize())
 
@@ -161,13 +181,18 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                     self._enum_desc_labels[f.name] = desc_label
                     self._enum_member_descriptions[f.name] = member_desc
 
-                def _on_enum_changed(_i, fn=f.name, w=widget, ec=enum_cls):
+                def _on_enum_changed(_i, fn=f.name, w=widget, ec=enum_cls,
+                                     is_reactive=(f.name in reactive_fields)):
                     selected_name = w.itemData(w.currentIndex())
                     self._on_field_changed(fn, ec[selected_name])
                     lbl = self._enum_desc_labels.get(fn)
                     descs = self._enum_member_descriptions.get(fn, {})
                     if lbl is not None:
                         lbl.setText(descs.get(selected_name, ""))
+                    # Field marcado como reativo (ex: plda_variant) — força
+                    # rebuild do form pra refletir mudanças em get_hidden_fields().
+                    if is_reactive:
+                        QtCore.QTimer.singleShot(0, self._rebuild_form)
 
                 widget.currentIndexChanged.connect(_on_enum_changed)
             elif isinstance(value, int) and not isinstance(value, bool):
@@ -261,6 +286,34 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             return
         setattr(self._dto, field_name, new_value)
         self.value_changed.emit(self._dto)
+
+    def _rebuild_form(self) -> None:
+        """
+        Recria o formulário com a visibilidade atual dos fields.
+        Usado quando um campo `REACTIVE_FIELDS` muda (ex: plda_variant)
+        e a função `get_hidden_fields()` retorna outro conjunto.
+        """
+        # Limpa widgets e mapas auxiliares.
+        self._field_widgets.clear()
+        self._enum_desc_labels.clear()
+        self._enum_member_descriptions.clear()
+        # Remove todas as rows do form layout (do fim pro começo).
+        while self._fields_layout.rowCount() > 0:
+            self._fields_layout.removeRow(self._fields_layout.rowCount() - 1)
+        # Re-adiciona o intro_text (foi removido no clear acima).
+        if self._intro_text:
+            intro_lbl = QtWidgets.QLabel(self._intro_text)
+            intro_lbl.setWordWrap(True)
+            intro_lbl.setStyleSheet(
+                "QLabel {"
+                "  background: #FFF8E8; border-left: 3px solid #E8A020;"
+                "  border-radius: 2px; padding: 6px 8px;"
+                "  color: #5a4500; font-size: 11px; margin-bottom: 4px;"
+                "}"
+            )
+            self._fields_layout.addRow(intro_lbl)
+        # Repopula com as novas hidden_fields.
+        self._populate_fields()
 
     def value(self) -> Any:
         return self._dto

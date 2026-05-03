@@ -2979,7 +2979,7 @@ def build_s16(story, S):
     story.append(Spacer(1, 8))
     story.append(Paragraph(
         "Documento gerado automaticamente a partir do código-fonte do FaceAudit · "
-        "Versão 1.8 · Maio 2026",
+        "Versão 1.9 · Maio 2026",
         S["caption"]
     ))
 

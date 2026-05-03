@@ -14,11 +14,25 @@ T = TypeVar("T", bound="StrategyInstructionDefinition")
 
 @dataclass(frozen=True)
 class ResourceFieldSpec:
-    """Especificação de um campo de recurso para renderização no config panel."""
+    """Especificação de um campo de recurso para renderização no config panel.
+
+    Campos:
+        field_name: nome do atributo do DTO (ex: 'dataset_resource_id').
+        label: rótulo exibido no formulário.
+        accepted_types: tipos de recurso permitidos no dropdown.
+        is_output: True se este field é uma saída produzida pela instrução
+            (renderiza como linha de output em vez de dropdown).
+        triggers_rebuild: se True, mudanças no dropdown disparam um rebuild
+            completo do form. Útil quando outros field specs dependem do
+            recurso selecionado (ex: DATASET_BALANCING.quality_metric usa
+            `dynamic_choices` que inspeciona o dataset para filtrar as
+            métricas disponíveis). Default False (sem rebuild).
+    """
     field_name: str
     label: str
     accepted_types: Tuple[StrategyResourceType, ...]
     is_output: bool = False
+    triggers_rebuild: bool = False
 
 
 @dataclass(frozen=True)
@@ -36,12 +50,20 @@ class ChoiceFieldSpec:
         descriptions: opcional. Mapa choice_value → descrição textual longa
                       exibida em uma linha de ajuda contextual abaixo do combo,
                       atualizada conforme a seleção do usuário.
+        dynamic_choices: opcional. Callable[[List[StrategyResource]], Optional[Tuple[str, ...]]]
+                      executado pelo painel a cada rebuild do form. Quando
+                      retorna uma tupla, substitui `choices` (típico: filtrar
+                      opções de acordo com o estado atual de outras seleções
+                      do DTO ou recursos disponíveis no projeto). Retornar None
+                      preserva `choices`. O painel sempre passa a lista de
+                      recursos disponíveis como argumento.
     """
     field_name: str
     label: str
     choices: Tuple[str, ...]
     enum_type: Optional[type] = None
     descriptions: Optional[Dict[str, str]] = None
+    dynamic_choices: Optional[Any] = None
 
 
 @dataclass(frozen=True)
