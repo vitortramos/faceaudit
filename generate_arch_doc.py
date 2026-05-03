@@ -1168,7 +1168,7 @@ def build_s5(story, S):
 # ---------------------------------------------------------------------------
 
 def build_s6(story, S):
-    section_banner(story, S, "6. Os 12 Tipos de Instrução")
+    section_banner(story, S, "6. Os 14 Tipos de Instrução")
 
     story.append(Paragraph(
         "Cada instrução é um <code>@dataclass</code> que herda de "
@@ -1360,6 +1360,40 @@ def build_s6(story, S):
          "ocultado da UI quando AUTO_MIN_BALANCE está selecionado. Logs "
          "registram N efetivo, IDs descartadas no floor e contagem de fallbacks "
          "(samples sem métrica). Produz: recurso INTERMEDIATE_DATASET."),
+        ("HUBNESS_ANALYSIS", "HubnessAnalysisInstructionExecutor",
+         "Diagnóstico de viés topológico (hubness) em alta dimensionalidade — "
+         "quantifica quais faces atraem vizinhos errados via Nk score, similaridade "
+         "impostora e correlações com pose/norma. Recebe um <code>EmbeddingDataset</code>, "
+         "instancia <code>HubnessAnalysisService</code> (com <code>ComparisonService</code> "
+         "injetado pela <code>StrategyExecutorFactory</code>), executa "
+         "<code>compute_analysis</code> (custoso: O(N²) com batching B×C, soma por "
+         "exclusão e top-K contínuo) + os 4 estudos derivados (stratification, "
+         "paired_study, quality_diagnostics, optimization_study) e empacota tudo "
+         "em um <code>HubnessReport</code> compósito persistido como pickle "
+         "(preserva ndarrays). Hyperparâmetros: <code>k_neighbors</code>, "
+         "<code>batch_size</code>, <code>chunk_size</code>, "
+         "<code>paired_study_threshold_nf</code>. O service aceita "
+         "<code>logger_callback</code> opcional que substitui prints+tqdm por "
+         "progresso periódico (a cada 10%) — o executor passa "
+         "<code>lambda msg: context.log(msg)</code>. Validador exige "
+         "EmbeddingDataset, k_neighbors &lt; n_samples e avisa quando há &lt; 5 "
+         "identidades. UI: 3ª coluna do editor (InstructionResultsPanel) instancia "
+         "<code>HubnessReportWidget</code> com 5 abas inline (Diagnóstico Topológico, "
+         "Estratificação por Pose, Estudo Pareado, Qualidade × Norma, Densidade); "
+         "botão 🔍 Expandir abre <code>HubnessReportViewerDialog</code> com 5 abas "
+         "curadas + galeria scrollável de 16 plots. Produz: recurso HUBNESS_REPORT."),
+        ("HUBNESS_ABLATION", "HubnessAblationInstructionExecutor",
+         "Estudo de ablação topológica — recorta progressivamente o dataset (1, 2, 3 "
+         "fotos por ID + total) seguindo critério escolhido via "
+         "<code>ablation_mode: HubnessAblationMode</code>: <b>BY_QUANTITY</b> "
+         "prioriza melhores fotos por FIQA; <b>BY_POSE</b> prioriza mais frontais "
+         "(menor abs(yaw)+abs(pitch)). Mede o hubness em cada cenário. "
+         "<b>Custoso:</b> refaz O(N²) em N subsets — use HUBNESS_ANALYSIS para "
+         "diagnóstico geral barato e use ABLATION apenas para o estudo formal de "
+         "evolução do Nk. Validador avisa quando BY_QUANTITY é usado em dataset "
+         "sem quality_score. Produz: AblationStudyInfo registrado como recurso "
+         "HUBNESS_ABLATION_RESULT (pickle). UI inline ainda não implementada — "
+         "usuário vê o summary via OutputRowWidget."),
     ]
 
     for i, (itype, executor, desc) in enumerate(instructions):
@@ -2868,6 +2902,17 @@ def build_s16(story, S):
              "(Brümmer &amp; de Villiers 2010): fit_two_covariance em forma fechada, "
              "score_two_covariance_pair/_matrix por log-LR vetorizado. "
              "Usado pelo PLDASimilarityModel quando plda_variant=TWO_COVARIANCE."],
+            ["faceaudit/services/hubness_analysis_service.py", "Nova arch",
+             "HubnessAnalysisService — diagnóstico de viés topológico em alta "
+             "dimensionalidade. compute_analysis (KNN exaustivo O(N²) com "
+             "batching B×C, soma por exclusão, label encoding e top-K contínuo) "
+             "+ 4 estudos derivados + 2 ablações. Aceita logger_callback "
+             "opcional pra integração com o LogProgressDialog da UI."],
+            ["faceaudit/services/hubness_plot_service.py", "Nova arch",
+             "HubnessPlotService — 20 métodos matplotlib/seaborn para visualizar "
+             "os DTOs do HubnessAnalysisService. Reutilizados pelo "
+             "HubnessReportWidget via monkey-patch local de plt.show + captura de "
+             "plt.gcf() + transplante via PNG buffer (evita refatorar 20 métodos)."],
             ["faceaudit/models/calibration/", "Nova arch",
              "Configs e implementações de modelos de calibração"],
             ["faceaudit/models/instructions/", "Nova arch",
@@ -2911,8 +2956,9 @@ def build_s16(story, S):
              "Nova arch",
              "Widgets de plot reutilizáveis (inline na coluna de resultados ou "
              "em dialog full-screen): ScoreDistributionWidget, "
-             "ValidationResultWidget (4 tabs lazy), CaseworkVisualizationWidget. "
-             "Cada um aceita flags show_header/show_toolbar/show_help."],
+             "ValidationResultWidget (4 tabs lazy), CaseworkVisualizationWidget, "
+             "HubnessReportWidget (5 tabs lazy: topology/stratification/paired/"
+             "quality/density). Cada um aceita flags show_header/show_toolbar/show_help."],
             ["interface/tabs/strategy_manager_v2/strategy_editor/instruction_results_panel.py",
              "Nova arch",
              "InstructionResultsPanel — 3ª coluna do editor: outputs com estado "
@@ -2930,7 +2976,7 @@ def build_s16(story, S):
     story.append(Spacer(1, 8))
     story.append(Paragraph(
         "Documento gerado automaticamente a partir do código-fonte do FaceAudit · "
-        "Versão 1.6 · Maio 2026",
+        "Versão 1.7 · Maio 2026",
         S["caption"]
     ))
 
