@@ -85,14 +85,21 @@ class HubnessAnalysisInstructionExecutor(StrategyInstructionExecutorBase):
             )
 
             # Estudos derivados — todos baratos em cima do resultado base.
+            # `stratification` e `paired_study` precisam ser injetados de volta
+            # no `analysis` porque os métodos plot_stratified_hubness e
+            # plot_paired_* do HubnessPlotService leem desses atributos.
+            # `quality_diagnostics` e `optimization_study` são passados como
+            # arg direto para seus respectivos plots — não precisam de atribuição.
             self._log(context, "  ↳ Computando estratificação por pose...")
             stratification = service.compute_stratification(analysis)
+            analysis.stratification = stratification
 
             self._log(context, "  ↳ Computando estudo pareado...")
             paired = service.compute_paired_study(
                 analysis,
                 threshold_nf=instruction.paired_study_threshold_nf,
             )
+            analysis.paired_study = paired
 
             self._log(context, "  ↳ Computando diagnóstico de qualidade...")
             quality_diag = service.compute_quality_diagnostics(analysis)

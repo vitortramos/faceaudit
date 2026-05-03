@@ -22,9 +22,11 @@ existentes agora são wrappers finos sobre eles.
 from .score_distribution_widget import ScoreDistributionWidget
 from .validation_result_widget import ValidationResultWidget
 from .casework_visualization_widget import CaseworkVisualizationWidget
+from .hubness_report_widget import HubnessReportWidget
 
 __all__ = [
     "ScoreDistributionWidget",
     "ValidationResultWidget",
     "CaseworkVisualizationWidget",
+    "HubnessReportWidget",
 ]
