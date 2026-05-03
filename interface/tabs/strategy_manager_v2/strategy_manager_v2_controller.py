@@ -1810,57 +1810,124 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_pipeline(self) -> None:
         ctrl = PipelineCreatorController(parent=self._view)
         config = ctrl.run()
-        if config and self._global_storage:
-            try:
-                self._global_storage.save_artifact(
-                    StrategyArtifactType.PIPELINE_CONFIG,
-                    config,
-                    config_id=str(uuid.uuid4())[:8],
-                )
-                QtWidgets.QMessageBox.information(
-                    self._view, "Pipeline salvo", "Configuração de pipeline salva na biblioteca global."
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível salvar o pipeline:\n{exc}"
-                )
+        self._save_config_to_global_library(
+            config=config,
+            artifact_type=StrategyArtifactType.PIPELINE_CONFIG,
+            label="pipeline",
+        )
 
     def _on_mining(self) -> None:
         ctrl = NewMiningConfigDialogController(parent=self._view)
-        if ctrl.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            config = ctrl.get_config()
-            if config and self._global_storage:
-                try:
-                    self._global_storage.save_artifact(
-                        StrategyArtifactType.MINING_CONFIG,
-                        config,
-                        config_id=str(uuid.uuid4())[:8],
-                    )
-                    QtWidgets.QMessageBox.information(
-                        self._view, "Mining salvo", "Configuração de mining salva na biblioteca global."
-                    )
-                except Exception as exc:
-                    QtWidgets.QMessageBox.critical(
-                        self._view, "Erro", f"Não foi possível salvar a config de mining:\n{exc}"
-                    )
+        if ctrl.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return  # usuário cancelou — sem feedback (esperado)
+        self._save_config_to_global_library(
+            config=ctrl.get_config(),
+            artifact_type=StrategyArtifactType.MINING_CONFIG,
+            label="mining",
+        )
 
     def _on_split(self) -> None:
         ctrl = NewSplitConfigDialogController(parent=self._view)
-        result = ctrl.exec()
-        if result and self._global_storage:
-            try:
-                self._global_storage.save_artifact(
-                    StrategyArtifactType.SPLIT_CONFIG,
-                    result,
-                    config_id=str(uuid.uuid4())[:8],
-                )
-                QtWidgets.QMessageBox.information(
-                    self._view, "Split salvo", "Configuração de split salva na biblioteca global."
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível salvar a config de split:\n{exc}"
-                )
+        config = ctrl.exec()  # retorna SplitConfig em sucesso, None se cancelou
+        self._save_config_to_global_library(
+            config=config,
+            artifact_type=StrategyArtifactType.SPLIT_CONFIG,
+            label="split",
+        )
+
+    def _save_config_to_global_library(
+        self,
+        config,
+        artifact_type: StrategyArtifactType,
+        label: str,
+    ) -> None:
+        """
+        Helper compartilhado pelos 3 botões da GlobalResourcesToolbar
+        (Pipeline / Mining / Split).
+
+        Comportamento:
+        - `config is None` → usuário cancelou o dialog. Sai silencioso (UX
+          esperada: sem mensagens incomodando).
+        - `_global_storage is None` → biblioteca não disponível. Mostra warning
+          claro com instruções (mesmo padrão do save_as_template).
+        - `config_id` derivado de `config.name` (sanitizado para filename) —
+          em vez do UUID aleatório truncado que tornava os arquivos
+          impossíveis de identificar na pasta global. Fallback para UUID
+          curto somente se o config não tem name ou está vazio.
+        - Erro de IO → critical message com a exceção real.
+        - Sucesso → information message com o path completo do arquivo.
+        """
+        if config is None:
+            # Cancelado pelo usuário — não atrapalha com mensagens.
+            return
+
+        if not self._global_storage:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Biblioteca global indisponível",
+                "Não foi possível acessar a biblioteca global para salvar a "
+                f"configuração de {label}.\n\nPossíveis causas:\n"
+                "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
+                "verifique permissões.\n"
+                "• Você definiu paths.library no config.json com um caminho "
+                "inválido — corrija ou remova essa entrada para usar o padrão.\n\n"
+                "A configuração que você acabou de criar NÃO foi persistida.",
+            )
+            return
+
+        config_id = self._derive_config_id(config)
+
+        try:
+            ref = self._global_storage.save_artifact(
+                artifact_type,
+                config,
+                config_id=config_id,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao salvar configuração",
+                f"Falha ao salvar a configuração de {label} na biblioteca global:\n{exc}",
+            )
+            return
+
+        library_root = getattr(self._global_storage, "library_root", None)
+        location = (
+            f"\n\nLocal: {library_root}/{ref.path}"
+            if library_root else ""
+        )
+        QtWidgets.QMessageBox.information(
+            self._view,
+            f"Configuração de {label} salva",
+            f"'{config_id}' salvo na biblioteca global.{location}",
+        )
+
+        # Atualiza dropdowns/árvore esquerda — a nova config deve aparecer
+        # imediatamente nos dropdowns das instruções.
+        self._refresh_left_panel()
+
+    @staticmethod
+    def _derive_config_id(config) -> str:
+        """
+        Deriva um config_id legível a partir do `name` do config (sanitizado
+        como filename), com fallback para UUID curto se inviável.
+
+        Sanitização: troca caracteres inválidos por `_`, colapsa repetições
+        e remove `_` nas pontas. Limite de 64 chars para evitar paths longos.
+        """
+        import re
+
+        raw_name = (getattr(config, "name", None) or "").strip()
+        if not raw_name:
+            return str(uuid.uuid4())[:8]
+
+        # Sanitiza: mantém alfanuméricos, _ , - e espaços viram _.
+        sanitized = re.sub(r"[^A-Za-z0-9._\- ]+", "_", raw_name)
+        sanitized = re.sub(r"\s+", "_", sanitized)
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_.- ")
+        sanitized = sanitized[:64]
+
+        return sanitized or str(uuid.uuid4())[:8]
 
     def _on_manage_library(self) -> None:
         ctrl = ManageLibraryController(parent=self._view, global_storage=self._global_storage)
