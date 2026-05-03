@@ -1128,21 +1128,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
             PipelineApplicationInstruction,
         )
 
-        print(f"[V2] _on_view_trajectory called for instruction={getattr(instruction, 'instruction_id', None)}")
-
         if not self._project or not self._current_definition:
-            print("[V2] _on_view_trajectory: no project / no definition — bail")
             return
 
         if not isinstance(instruction, PipelineApplicationInstruction):
-            print(f"[V2] _on_view_trajectory: instruction type is {type(instruction).__name__}, not PipelineApplicationInstruction")
             return
 
         trajectory_id = (
             instruction.trajectory_data_resource_id
             or f"{instruction.instruction_id}_trajectory"
         )
-        print(f"[V2] _on_view_trajectory: trajectory_id='{trajectory_id}'")
 
         trajectory_data = None
 
@@ -1151,17 +1146,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
             ctx_resource = self._execution_context.get_resource(trajectory_id)
             if ctx_resource and ctx_resource.has_payload:
                 trajectory_data = ctx_resource.payload
-                print("[V2] _on_view_trajectory: payload veio do contexto")
 
         # 2. Tentar da definição (hidrata do disco se necessário).
         if trajectory_data is None:
             existing = self._current_definition.get_resource_by_id(trajectory_id)
-            if existing is None:
-                print(f"[V2] _on_view_trajectory: '{trajectory_id}' não está em definition.resources")
-            else:
+            if existing is not None:
                 if existing.has_payload:
                     trajectory_data = existing.payload
-                    print("[V2] _on_view_trajectory: payload veio da definition (memória)")
                 elif existing.has_artifact:
                     loader = getattr(self._executor, "_resource_loader", None) if self._executor else None
                     if loader is None:
@@ -1174,7 +1165,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         try:
                             loader.hydrate(existing)
                         except Exception as hydrate_exc:
-                            print(f"[V2] _on_view_trajectory: hydrate falhou: {hydrate_exc}")
                             traceback.print_exc()
                             QtWidgets.QMessageBox.critical(
                                 self._view,
@@ -1184,11 +1174,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
                             return
                         if existing.has_payload:
                             trajectory_data = existing.payload
-                            print("[V2] _on_view_trajectory: payload hidratado do disco")
-                        else:
-                            print(f"[V2] _on_view_trajectory: hydrate não populou payload (artifact_ref={existing.artifact_ref})")
-                    else:
-                        print("[V2] _on_view_trajectory: loader indisponível mesmo após _ensure_executor_and_context")
 
         if trajectory_data is None:
             QtWidgets.QMessageBox.information(
@@ -1212,7 +1197,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
             view.show()
             view.raise_()
             view.activateWindow()
-            print("[V2] _on_view_trajectory: viewer.show() chamado")
         except Exception as exc:
             traceback.print_exc()
             QtWidgets.QMessageBox.critical(

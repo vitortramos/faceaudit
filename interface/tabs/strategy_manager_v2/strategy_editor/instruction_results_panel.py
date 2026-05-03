@@ -77,10 +77,11 @@ def _instruction_plot_kind(
         return _PLOT_KIND_VALIDATION_RESULT
     if t == StrategyInstructionType.CASEWORK_VISUALIZATION:
         return _PLOT_KIND_CASEWORK_VISUALIZATION
-    if t in (
-        StrategyInstructionType.PIPELINE_TRAINING,
-        StrategyInstructionType.PIPELINE_APPLICATION,
-    ):
+    # Trajetória 3D só é produzida pelo PIPELINE_APPLICATION quando
+    # application_policy.save_trajectory_data=True. PIPELINE_TRAINING
+    # não computa trajetória mesmo com apply_to_training_datasets ligado
+    # (usa PipelineApplicationPolicy default, sem checkpoints/trajetória).
+    if t == StrategyInstructionType.PIPELINE_APPLICATION:
         return _PLOT_KIND_TRAJECTORY_BUTTON
     if t == StrategyInstructionType.HUBNESS_ANALYSIS:
         return _PLOT_KIND_HUBNESS_REPORT
