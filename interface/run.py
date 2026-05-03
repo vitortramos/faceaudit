@@ -1,6 +1,6 @@
 import sys
 from pathlib import Path
-from PyQt6 import QtWidgets
+from PyQt6 import QtWidgets, QtGui, QtCore
 
 # ─── Tuning anti-"Não respondendo" no Windows ─────────────────────────────
 #
@@ -58,9 +58,57 @@ def bootstrap_configuration(config_path: str) -> None:
     else:
         print(f"✅ Configuração encontrada: {path_obj}")
 
+def _apply_light_palette(app: QtWidgets.QApplication) -> None:
+    """
+    Força palette clara independente do modo dark/light do SO.
+
+    A UI mistura widgets cujo CSS tem cores fixas (ex: '#fff', '#fafdf6',
+    'color: #2e7d32') com widgets que usam a palette padrão do Qt. Quando o
+    macOS entra em modo escuro, só a segunda metade muda — o resultado é
+    contraste quebrado (texto branco em fundo branco, etc.). Travar a
+    palette em cores claras evita esse desencontro até o team auditar todos
+    os stylesheets pra serem theme-aware.
+    """
+    palette = QtGui.QPalette()
+    white = QtGui.QColor(255, 255, 255)
+    black = QtGui.QColor(0, 0, 0)
+    almost_black = QtGui.QColor(33, 33, 33)
+    light_gray = QtGui.QColor(240, 240, 240)
+    mid_gray = QtGui.QColor(220, 220, 220)
+    blue_highlight = QtGui.QColor(0, 120, 215)
+
+    palette.setColor(QtGui.QPalette.ColorRole.Window, light_gray)
+    palette.setColor(QtGui.QPalette.ColorRole.WindowText, almost_black)
+    palette.setColor(QtGui.QPalette.ColorRole.Base, white)
+    palette.setColor(QtGui.QPalette.ColorRole.AlternateBase, light_gray)
+    palette.setColor(QtGui.QPalette.ColorRole.Text, almost_black)
+    palette.setColor(QtGui.QPalette.ColorRole.Button, mid_gray)
+    palette.setColor(QtGui.QPalette.ColorRole.ButtonText, almost_black)
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, white)
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipText, almost_black)
+    palette.setColor(QtGui.QPalette.ColorRole.PlaceholderText, QtGui.QColor(120, 120, 120))
+    palette.setColor(QtGui.QPalette.ColorRole.Highlight, blue_highlight)
+    palette.setColor(QtGui.QPalette.ColorRole.HighlightedText, white)
+    palette.setColor(QtGui.QPalette.ColorRole.Link, blue_highlight)
+    palette.setColor(QtGui.QPalette.ColorRole.BrightText, black)
+
+    # Disabled: cinza-médio em fundo claro — legível mas claramente inativo.
+    disabled_text = QtGui.QColor(140, 140, 140)
+    for role in (
+        QtGui.QPalette.ColorRole.WindowText,
+        QtGui.QPalette.ColorRole.Text,
+        QtGui.QPalette.ColorRole.ButtonText,
+        QtGui.QPalette.ColorRole.HighlightedText,
+    ):
+        palette.setColor(QtGui.QPalette.ColorGroup.Disabled, role, disabled_text)
+
+    app.setPalette(palette)
+
+
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
+    _apply_light_palette(app)
 
     # 1) Garante que o JSON existe
     bootstrap_configuration(APP_CONFIG_JSON)
