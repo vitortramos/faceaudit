@@ -15,7 +15,7 @@ from faceaudit.models.hubness_paired_study_info import HubnessPairedStudyInfo, H
 from faceaudit.models.ablation_study_info import AblationStudyInfo
 from faceaudit.models.ablation_scenario_info import AblationScenarioInfo
 from faceaudit.models.embedding_dataset import EmbeddingDataset
-from notebooks.hubness_quality_diagnostics_info import HubnessQualityDiagnosticsInfo, HubnessQualityRange
+from faceaudit.models.hubness_quality_diagnostics_info import HubnessQualityDiagnosticsInfo, HubnessQualityRange
 
 
 class HubnessAnalysisService:
