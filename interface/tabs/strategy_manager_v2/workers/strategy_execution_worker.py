@@ -87,6 +87,14 @@ class StrategyExecutionWorker(QtCore.QObject):
             if not getattr(resource, "has_payload", False):
                 continue
 
+            # Pular recursos que já estão em disco (project resources como
+            # PIPELINE_CONFIG / MINING_CONFIG / DATASET importados, ou
+            # qualquer resource que veio com artifact_ref preexistente).
+            # Regravar exigiria kwargs específicos por tipo (config_id,
+            # dataset_id, etc.) que o caller genérico não tem.
+            if getattr(resource, "artifact_ref", None) is not None:
+                continue
+
             # Pular recursos sem mapeamento de artifact (ex: project resources
             # que já estão em disco e não precisam ser regravados).
             try:
