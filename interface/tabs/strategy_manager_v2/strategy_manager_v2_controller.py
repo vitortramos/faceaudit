@@ -417,8 +417,18 @@ class StrategyManagerV2Controller(QtCore.QObject):
             dialog.finish(success=False)
             return
 
+        # Recolhe recursos do projeto (DATASET / PIPELINE_CONFIG /
+        # MINING_CONFIG do disco) — eles não estão em definition.resources
+        # mas as instruções os referenciam por id. Sem isso, validators e
+        # ensure_payload disparam &quot;Recurso X não encontrado no contexto&quot;.
+        project_resources = self._collect_project_resources()
+
         thread = QtCore.QThread()
-        worker = StrategyExecutionWorker(executor, self._current_definition)
+        worker = StrategyExecutionWorker(
+            executor,
+            self._current_definition,
+            additional_resources=project_resources,
+        )
         worker.moveToThread(thread)
 
         # Mantém referência Python ao worker para evitar GC prematuro.

@@ -85,14 +85,24 @@ class StrategyExecutor:
     def execute(
         self,
         strategy_definition: LRStrategyDefinition,
+        additional_resources: Optional[List[StrategyResource]] = None,
     ) -> LRStrategyTrainedModel:
         """
         Executa completamente a estratégia e retorna o modelo treinado.
+
+        ``additional_resources`` lista recursos de PROJETO (DATASET,
+        PIPELINE_CONFIG, MINING_CONFIG, etc.) que não estão declarados em
+        ``strategy_definition.resources`` mas são referenciados pelas
+        instruções via dropdown. A controller V2 popula isso a partir do
+        scan de disco em ``_collect_project_resources()``.
         """
         if strategy_definition is None:
             raise ValueError("A definição da estratégia não pode ser nula.")
 
-        context = self.prepare_context(strategy_definition)
+        context = self.prepare_context(
+            strategy_definition,
+            additional_resources=additional_resources,
+        )
         self._validate_strategy(strategy_definition, context)
 
         execution_results = self._execute_all_phases(strategy_definition, context)
@@ -110,6 +120,7 @@ class StrategyExecutor:
     def prepare_context(
         self,
         strategy_definition: LRStrategyDefinition,
+        additional_resources: Optional[List[StrategyResource]] = None,
     ) -> StrategyExecutionContextProtocol:
         """
         Cria e inicializa o contexto: registra recursos da definição e regras.
@@ -131,6 +142,10 @@ class StrategyExecutor:
             )
 
         self._register_initial_resources(strategy_definition, context)
+        if additional_resources:
+            for resource in additional_resources:
+                if not context.has_resource(resource.resource_id):
+                    context.set_resource(resource)
         self._register_validation_rules(context)
 
         # Armazena dimensões do embedding para regras de validação

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from PyQt6 import QtCore
 
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
+from faceaudit.models.strategy.strategy_resource import StrategyResource
 
 
 class StrategyExecutionWorker(QtCore.QObject):
@@ -30,11 +31,13 @@ class StrategyExecutionWorker(QtCore.QObject):
         self,
         executor: StrategyExecutor,
         definition: LRStrategyDefinition,
+        additional_resources: Optional[List[StrategyResource]] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._executor = executor
         self._definition = definition
+        self._additional_resources = list(additional_resources or [])
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
@@ -47,7 +50,10 @@ class StrategyExecutionWorker(QtCore.QObject):
                 f"{len(self._definition.casework_instructions)} caso"
             )
 
-            result = self._executor.execute(self._definition)
+            result = self._executor.execute(
+                self._definition,
+                additional_resources=self._additional_resources or None,
+            )
 
             # Persiste recursos AINDA NA THREAD DO WORKER — evita "Não respondendo"
             # na UI quando o pickle/parquet é grande.
