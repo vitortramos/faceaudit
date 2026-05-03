@@ -372,10 +372,12 @@ class OutputRowWidget(QtWidgets.QFrame):
         resource_id: Optional[str],
         resource_type: StrategyResourceType,
         parent: Optional[QtWidgets.QWidget] = None,
+        read_only: bool = False,
     ):
         super().__init__(parent)
         self._field_name = field_name
         self._resource_type = resource_type
+        self._read_only = bool(read_only)
 
         self.setStyleSheet(
             "OutputRowWidget {"
@@ -405,12 +407,21 @@ class OutputRowWidget(QtWidgets.QFrame):
 
         self._name_field = QtWidgets.QLineEdit(resource_id or "")
         self._name_field.setPlaceholderText("nome do recurso de saída")
-        self._name_field.setStyleSheet("font-size: 11px;")
-        # Emite name_changed em CADA edição (textChanged) e também ao sair do
-        # campo (editingFinished) — garante que o DTO fique em sincronia mesmo
-        # se o painel não invocar _on_apply antes de uma validação/execução.
-        self._name_field.textChanged.connect(self._on_name_changed)
-        self._name_field.editingFinished.connect(self._on_name_changed)
+        if self._read_only:
+            self._name_field.setReadOnly(True)
+            self._name_field.setStyleSheet(
+                "font-size: 11px; background-color: #f0f0f0; color: #555;"
+            )
+            self._name_field.setToolTip(
+                "Edite o nome do recurso na coluna de configuração (2ª coluna)."
+            )
+        else:
+            self._name_field.setStyleSheet("font-size: 11px;")
+            # Emite name_changed em CADA edição (textChanged) e também ao sair do
+            # campo (editingFinished) — garante que o DTO fique em sincronia mesmo
+            # se o painel não invocar _on_apply antes de uma validação/execução.
+            self._name_field.textChanged.connect(self._on_name_changed)
+            self._name_field.editingFinished.connect(self._on_name_changed)
         layout.addWidget(self._name_field, 0, 2)
 
         type_lbl = QtWidgets.QLabel(f"[{self._resource_type.value}]")
@@ -531,6 +542,17 @@ class OutputRowWidget(QtWidgets.QFrame):
 
     def current_value(self) -> str:
         return self._name_field.text().strip()
+
+    def set_resource_name(self, name: str) -> None:
+        """Atualiza o texto exibido sem reemitir name_changed (para sincronia
+        entre painéis read-only e editável)."""
+        if self._name_field.text() == name:
+            return
+        was_blocked = self._name_field.blockSignals(True)
+        try:
+            self._name_field.setText(name or "")
+        finally:
+            self._name_field.blockSignals(was_blocked)
 
     def _on_name_changed(self) -> None:
         self.name_changed.emit(self._field_name, self._name_field.text().strip())

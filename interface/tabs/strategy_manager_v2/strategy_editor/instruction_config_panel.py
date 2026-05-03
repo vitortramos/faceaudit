@@ -94,6 +94,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     # responsável por hidratar o payload, abrir o dialog de edição apropriado
     # ao tipo, atualizar o payload e re-persistir o artefato.
     resource_edit_requested = QtCore.pyqtSignal(str)
+    # Emitido quando o usuário edita o nome de um recurso de saída no
+    # campo "Saídas". Permite que outros painéis (ex: results panel na 3ª
+    # coluna) sincronizem o nome exibido em tempo real.
+    output_name_changed = QtCore.pyqtSignal(str, str)  # (field_name, new_value)
 
     def __init__(self, parent=None, outputs_in_results_panel: bool = False):
         """
@@ -211,22 +215,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         scroll_layout.addWidget(wrapper_cfg)
 
         # ─── Seção 3: Saídas ──────────────────────────────────────────────
-        # Quando o painel de resultados (3ª coluna) está ativo, esta seção
-        # fica oculta — outputs são renderizados lá. Mas o layout/dict
-        # ainda é criado para preservar o caminho antigo (chamadas a
-        # update_runtime_state via legacy callers ou tests).
-        if not self._outputs_in_results_panel:
-            scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
-            self._outputs_layout = QtWidgets.QVBoxLayout()
-            self._outputs_layout.setContentsMargins(8, 6, 8, 8)
-            self._outputs_layout.setSpacing(6)
-            wrapper_out = QtWidgets.QWidget()
-            wrapper_out.setLayout(self._outputs_layout)
-            scroll_layout.addWidget(wrapper_out)
-        else:
-            # Layout vazio (não embedded em widget) — usado pelos métodos
-            # internos pra evitar branches; fica orphan e sem efeito visual.
-            self._outputs_layout = QtWidgets.QVBoxLayout()
+        # A seção fica SEMPRE no painel de configuração (2ª coluna): o nome
+        # do recurso de saída é decisão de configuração. O painel de
+        # resultados (3ª coluna) renderiza a mesma OutputRowWidget em modo
+        # read-only com foco em estado de runtime + summary + plot.
+        scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
+        self._outputs_layout = QtWidgets.QVBoxLayout()
+        self._outputs_layout.setContentsMargins(8, 6, 8, 8)
+        self._outputs_layout.setSpacing(6)
+        wrapper_out = QtWidgets.QWidget()
+        wrapper_out.setLayout(self._outputs_layout)
+        scroll_layout.addWidget(wrapper_out)
 
         scroll_layout.addStretch(1)  # ANCORA conteúdo ao topo
 
@@ -1281,6 +1280,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         setattr(self._instruction, field_name, new_value or None)
         if hasattr(self._instruction, "_sync_declared_io"):
             self._instruction._sync_declared_io()
+        self.output_name_changed.emit(field_name, new_value or "")
 
     def _on_choice_changed(self, field_name: str) -> None:
         """Aplica o valor do campo de escolha e agenda reconstrução do formulário."""

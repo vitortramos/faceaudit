@@ -170,6 +170,12 @@ class StrategyEditorWidget(QtWidgets.QWidget):
                 self._on_resource_edit_requested
             )
             config_panel.instruction_applied.connect(self._on_instruction_applied)
+            # Sincroniza o nome de output exibido no painel de resultados
+            # (3ª coluna, read-only) sempre que o usuário edita o nome no
+            # painel de configuração (2ª coluna).
+            config_panel.output_name_changed.connect(
+                lambda fn, val, rp=results_panel: rp.update_output_name(fn, val)
+            )
 
             # Os botões de visualização agora vivem no painel de resultados.
             results_panel.view_trajectory_requested.connect(

@@ -186,6 +186,7 @@ class _ResultsCard(QtWidgets.QWidget):
                 resource_id=resource_id,
                 resource_type=resource_type,
                 parent=self,
+                read_only=True,
             )
             self._outputs_layout.addWidget(row)
             self._output_widgets[field_name] = row
@@ -695,6 +696,21 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         for instr_id in list(self._cards.keys()):
             self.invalidate_instruction(instr_id)
         self.show_empty()
+
+    def update_output_name(self, field_name: str, new_value: str) -> None:
+        """Sincroniza o nome exibido (read-only) no card ativo quando o
+        usuário edita o nome no painel de configuração."""
+        if self._current_instruction is None:
+            return
+        instr_id = getattr(self._current_instruction, "instruction_id", None)
+        if instr_id is None:
+            return
+        card = self._cards.get(instr_id)
+        if card is None:
+            return
+        row = card._output_widgets.get(field_name)
+        if row is not None:
+            row.set_resource_name(new_value)
 
     def set_resource_loader(self, loader: Any) -> None:
         self._resource_loader = loader
