@@ -595,29 +595,26 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # ─── Seção Saídas ────────────────────────────────────────────────
         self._build_outputs_section(instr)
 
-        # Visibilidade do botão "Visualizar Trajetória 3D" — apenas em PIPELINE_APPLICATION.
-        self.btn_view_trajectory.setVisible(
-            isinstance(instr, PipelineApplicationInstruction)
-        )
-
-        # Visibilidade do botão "Visualizar Distribuição de Scores" —
-        # SIMILARITY_SCORING (raw_score) e SCORE_CALIBRATION (log_lr calibrado).
-        self.btn_view_distribution.setVisible(
-            isinstance(instr, (SimilarityScoringInstruction, ScoreCalibrationInstruction))
-        )
-
-        # Visibilidade do botão "Visualizar Resultado de Validação" —
-        # apenas em STRATEGY_EVALUATION.
-        self.btn_view_validation_result.setVisible(
-            isinstance(instr, StrategyEvaluationInstruction)
-        )
-
-        # Visibilidade do botão "Visualizar Caso" — apenas em
-        # CASEWORK_VISUALIZATION.
-        self.btn_view_casework_visualization.setVisible(
-            isinstance(instr, CaseworkVisualizationInstruction)
-        )
-        self._refresh_view_casework_visualization_button_state()
+        # Visibilidade dos botões de visualização — só faz sentido aplicar
+        # quando os botões foram realmente adicionados ao layout deste painel.
+        # Quando outputs_in_results_panel=True, os botões são instanciados
+        # mas NÃO são parentados a nenhum layout (ficam invisíveis no init);
+        # chamar setVisible(True) num widget sem parent faz ele virar uma
+        # top-level window flutuante (a "janelinha pequena" no macOS).
+        if not self._outputs_in_results_panel:
+            self.btn_view_trajectory.setVisible(
+                isinstance(instr, PipelineApplicationInstruction)
+            )
+            self.btn_view_distribution.setVisible(
+                isinstance(instr, (SimilarityScoringInstruction, ScoreCalibrationInstruction))
+            )
+            self.btn_view_validation_result.setVisible(
+                isinstance(instr, StrategyEvaluationInstruction)
+            )
+            self.btn_view_casework_visualization.setVisible(
+                isinstance(instr, CaseworkVisualizationInstruction)
+            )
+            self._refresh_view_casework_visualization_button_state()
 
         # Aplica estado de runtime se houver
         if self._latest_definition is not None:
