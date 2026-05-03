@@ -35,6 +35,8 @@ class StrategyArtifactType(Enum):
     CALIBRATED_SCORES = "calibrated_scores"
     VALIDATION_RESULT = "validation_result"
     CASEWORK_VISUALIZATION = "casework_visualization"
+    HUBNESS_REPORT = "hubness_report"
+    HUBNESS_ABLATION_RESULT = "hubness_ablation_result"
 
     # --- VISUALIZAÇÕES ---
     GRAPHIC = "graphic"

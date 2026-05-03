@@ -156,6 +156,8 @@ class StrategyResourceLoaderService:
             StrategyResourceType.TRAJECTORY_DATA,
             StrategyResourceType.VALIDATION_RESULT,
             StrategyResourceType.CASEWORK_VISUALIZATION,
+            StrategyResourceType.HUBNESS_REPORT,
+            StrategyResourceType.HUBNESS_ABLATION_RESULT,
         ):
             return self._load_pickle(path)
 

@@ -44,6 +44,10 @@ class StrategyResourceType(Enum):
     # --- VISUALIZAÇÃO FORENSE ---
     CASEWORK_VISUALIZATION = "CASEWORK_VISUALIZATION"
 
+    # --- DIAGNÓSTICO DE HUBNESS ---
+    HUBNESS_REPORT = "HUBNESS_REPORT"
+    HUBNESS_ABLATION_RESULT = "HUBNESS_ABLATION_RESULT"
+
     # --- OUTROS / APOIO ---
     DATASET_STATS = "DATASET_STATS"
     ARTIFACT = "ARTIFACT"
@@ -74,6 +78,8 @@ class StrategyResourceType(Enum):
             StrategyResourceType.MINING_CONFIG:             StrategyArtifactType.MINING_CONFIG,
             StrategyResourceType.PIPELINE_CONFIG:           StrategyArtifactType.PIPELINE_CONFIG,
             StrategyResourceType.SPLIT_CONFIG:              StrategyArtifactType.SPLIT_CONFIG,
+            StrategyResourceType.HUBNESS_REPORT:            StrategyArtifactType.HUBNESS_REPORT,
+            StrategyResourceType.HUBNESS_ABLATION_RESULT:   StrategyArtifactType.HUBNESS_ABLATION_RESULT,
         }
         return _map.get(self)
 

@@ -279,4 +279,16 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return DatasetBalancingInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.HUBNESS_ANALYSIS:
+            from faceaudit.models.instructions.hubness_analysis_instruction import (
+                HubnessAnalysisInstruction,
+            )
+            return HubnessAnalysisInstruction.from_dict(processed_data)
+
+        if instruction_type == StrategyInstructionType.HUBNESS_ABLATION:
+            from faceaudit.models.instructions.hubness_ablation_instruction import (
+                HubnessAblationInstruction,
+            )
+            return HubnessAblationInstruction.from_dict(processed_data)
+
         return cls(**processed_data)

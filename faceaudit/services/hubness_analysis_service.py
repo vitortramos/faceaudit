@@ -28,11 +28,22 @@ class HubnessAnalysisService:
         self.comparison_service = comparison_service
         self.k = k_neighbors
 
-    def compute_analysis(self, dataset: EmbeddingDataset, batch_size: int = 1000, chunk_size: int = 10000) -> HubnessAnalysisInfo:
+    def compute_analysis(
+        self,
+        dataset: EmbeddingDataset,
+        batch_size: int = 1000,
+        chunk_size: int = 10000,
+        logger_callback: Optional[callable] = None,
+    ) -> HubnessAnalysisInfo:
         """
         Executa a análise estatística base sobre o EmbeddingDataset de forma LOTEADA DUPLA.
         Versão Ultimate CPU: Zero-Copy Masks, Pré-computação de Índices e Soma por Exclusão.
+
+        `logger_callback` opcional redireciona mensagens de progresso para um
+        sink customizado (ex: log do StrategyExecutionContext). Quando None,
+        mantém o comportamento original com `print` + `tqdm`.
         """
+        log = logger_callback if logger_callback is not None else print
         items = dataset.items
         n = len(items)
         matrix = dataset.matrix
@@ -65,12 +76,24 @@ class HubnessAnalysisService:
         # 2. Normalização Global Única
         norm_matrix = self.comparison_service._l2_normalize_rows(matrix)
 
-        print(f">>> [Processamento Block-Wise] Hubness {n} faces. Batch: {batch_size}, Chunk: {chunk_size}...")
+        log(f">>> [Processamento Block-Wise] Hubness {n} faces. Batch: {batch_size}, Chunk: {chunk_size}...")
+
+        # Quando o caller injetou um logger custom, evitamos tqdm (que escreve
+        # direto em stderr e pode confundir quem está consumindo via UI/log).
+        # Em vez disso, emitimos progresso periódico via o callback.
+        use_tqdm = logger_callback is None
+        outer_range = range(0, n, batch_size)
+        outer_iter = (
+            tqdm(outer_range, desc="Processando Lotes (Queries)", unit="lote")
+            if use_tqdm else outer_range
+        )
+
+        total_batches = (n + batch_size - 1) // batch_size
 
         # =====================================================================
         # LOOP EXTERNO (Lotes de Consulta - Query)
         # =====================================================================
-        for i in tqdm(range(0, n, batch_size), desc="Processando Lotes (Queries)", unit="lote"):
+        for batch_idx, i in enumerate(outer_iter):
             end_i = min(i + batch_size, n)
             batch_query = norm_matrix[i:end_i]
             batch_ids = id_ints[i:end_i]
@@ -179,13 +202,21 @@ class HubnessAnalysisService:
             count_valid_diffs = np.sum(valid_k_mask, axis=1)
             
             mean_delta_pose[i:end_i] = np.divide(
-                sum_diffs, 
-                count_valid_diffs, 
-                out=np.zeros(B, dtype=np.float32), 
+                sum_diffs,
+                count_valid_diffs,
+                out=np.zeros(B, dtype=np.float32),
                 where=count_valid_diffs > 0
             )
 
-        print("\n>>> Matemática O(N²) concluída. Instanciando DTOs...")
+            # Progresso periódico via callback (a cada 10% ou no fim).
+            if not use_tqdm and (
+                batch_idx == total_batches - 1
+                or batch_idx % max(1, total_batches // 10) == 0
+            ):
+                pct = int(100 * (batch_idx + 1) / max(1, total_batches))
+                log(f"  ↳ Hubness analysis: {pct}% ({batch_idx + 1}/{total_batches} lotes)")
+
+        log("\n>>> Matemática O(N²) concluída. Instanciando DTOs...")
 
         # Construção da Lista de Resultados
         samples = []
@@ -398,45 +429,70 @@ class HubnessAnalysisService:
     # MOTORES DE ABLAÇÃO
     # =========================================================================
 
-    def compute_ablation_by_quantity(self, dataset: EmbeddingDataset) -> AblationStudyInfo:
+    def compute_ablation_by_quantity(
+        self,
+        dataset: EmbeddingDataset,
+        batch_size: int = 1000,
+        logger_callback: Optional[callable] = None,
+    ) -> AblationStudyInfo:
         """Ablação topológica baseada na quantidade de melhores fotos (FIQA) por identidade."""
         temp_data = [
-            {'index': i, 'identity': item.identity, 'quality': float(item.quality_score or 0.0)} 
+            {'index': i, 'identity': item.identity, 'quality': float(item.quality_score or 0.0)}
             for i, item in enumerate(dataset.items)
         ]
         df_order = pd.DataFrame(temp_data).sort_values(by=['identity', 'quality'], ascending=[True, False])
-        
+
         scenarios = [
-            ("1 Foto (Melhor)/ID", 1), 
-            ("2 Fotos (Melhores)/ID", 2), 
-            ("3 Fotos (Melhores)/ID", 3), 
+            ("1 Foto (Melhor)/ID", 1),
+            ("2 Fotos (Melhores)/ID", 2),
+            ("3 Fotos (Melhores)/ID", 3),
             ("Dataset Total", None)
         ]
-        
-        return self._run_ablation_engine(dataset, df_order, scenarios)
 
-    def compute_ablation_by_pose(self, dataset: EmbeddingDataset) -> AblationStudyInfo:
+        return self._run_ablation_engine(
+            dataset, df_order, scenarios,
+            batch_size=batch_size, logger_callback=logger_callback,
+        )
+
+    def compute_ablation_by_pose(
+        self,
+        dataset: EmbeddingDataset,
+        batch_size: int = 1000,
+        logger_callback: Optional[callable] = None,
+    ) -> AblationStudyInfo:
         """Ablação topológica priorizando as fotos mais frontais por identidade."""
         temp_data = [
-            {'index': i, 'identity': item.identity, 'pose_err': abs(item.yaw) + abs(item.pitch)} 
+            {'index': i, 'identity': item.identity, 'pose_err': abs(item.yaw) + abs(item.pitch)}
             for i, item in enumerate(dataset.items)
         ]
         df_order = pd.DataFrame(temp_data).sort_values(by=['identity', 'pose_err'], ascending=[True, True])
-        
+
         scenarios = [
-            ("Top 1 (Mais Frontal)/ID", 1), 
-            ("Top 2 (Mais Frontais)/ID", 2), 
-            ("Top 3 (Mais Frontais)/ID", 3), 
+            ("Top 1 (Mais Frontal)/ID", 1),
+            ("Top 2 (Mais Frontais)/ID", 2),
+            ("Top 3 (Mais Frontais)/ID", 3),
             ("Dataset Total", None)
         ]
-        
-        return self._run_ablation_engine(dataset, df_order, scenarios)
 
-    def _run_ablation_engine(self, dataset: EmbeddingDataset, df_ordered: pd.DataFrame, scenarios_config: list, batch_size: int = 1000) -> AblationStudyInfo:
+        return self._run_ablation_engine(
+            dataset, df_order, scenarios,
+            batch_size=batch_size, logger_callback=logger_callback,
+        )
+
+    def _run_ablation_engine(
+        self,
+        dataset: EmbeddingDataset,
+        df_ordered: pd.DataFrame,
+        scenarios_config: list,
+        batch_size: int = 1000,
+        logger_callback: Optional[callable] = None,
+    ) -> AblationStudyInfo:
         """
         Motor Vetorizado Zero-Copy para Ablação.
         Garante que recortes do dataset também sejam processados em lote sem estourar a RAM.
         """
+        log = logger_callback if logger_callback is not None else print
+        use_tqdm = logger_callback is None
         identities_array = np.array(dataset.identities)
         valid_mask_global = np.array([idx is not None for idx in identities_array], dtype=bool)
         k_eff = min(self.k, max(1, len(set(identities_array[valid_mask_global])) - 2))
@@ -447,7 +503,7 @@ class HubnessAnalysisService:
         
         results = []
         for name, limit in scenarios_config:
-            print(f"\n>>> [Ablação] Processando cenário: {name}...")
+            log(f"\n>>> [Ablação] Processando cenário: {name}...")
             
             indices = df_ordered.groupby('identity').head(limit)['index'].values if limit else df_ordered['index'].values
             sub_emb = dataset.matrix[indices]
@@ -468,7 +524,12 @@ class HubnessAnalysisService:
             nk_scores = np.zeros(n_sub, dtype=int)
             normalized_sub_emb = self.comparison_service._l2_normalize_rows(sub_emb)
             
-            for i in tqdm(range(0, n_sub, batch_size), desc=f"    Calculando {name}", unit="lote", leave=False):
+            inner_range = range(0, n_sub, batch_size)
+            inner_iter = (
+                tqdm(inner_range, desc=f"    Calculando {name}", unit="lote", leave=False)
+                if use_tqdm else inner_range
+            )
+            for i in inner_iter:
                 end = min(i + batch_size, n_sub)
                 batch_matrix = normalized_sub_emb[i:end]
                 batch_ints = sub_ints[i:end]
