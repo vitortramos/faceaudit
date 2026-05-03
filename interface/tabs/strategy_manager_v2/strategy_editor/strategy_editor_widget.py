@@ -50,6 +50,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     view_validation_result_requested = QtCore.pyqtSignal(object)
     view_casework_visualization_requested = QtCore.pyqtSignal(object)
     view_hubness_report_requested = QtCore.pyqtSignal(object)
+    view_hubness_ablation_requested = QtCore.pyqtSignal(object)
     # Pedido de hidratação assíncrona de um recurso ainda em disco — emitido
     # pelo botão "Carregar e visualizar" do InstructionResultsPanel quando o
     # usuário pede pra ver gráfico de dataset grande não hidratado.
@@ -185,6 +186,9 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             )
             results_panel.view_hubness_report_requested.connect(
                 self._on_view_hubness_report_requested
+            )
+            results_panel.view_hubness_ablation_requested.connect(
+                self._on_view_hubness_ablation_requested
             )
             results_panel.hydrate_requested.connect(
                 lambda instr, rid: self.hydrate_resource_requested.emit(instr, rid)
@@ -343,6 +347,9 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
     def _on_view_hubness_report_requested(self, instr: StrategyInstructionDefinition) -> None:
         self.view_hubness_report_requested.emit(instr)
+
+    def _on_view_hubness_ablation_requested(self, instr: StrategyInstructionDefinition) -> None:
+        self.view_hubness_ablation_requested.emit(instr)
 
     def _on_resource_edit_requested(self, resource_id: str) -> None:
         self.resource_edit_requested.emit(resource_id)

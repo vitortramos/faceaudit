@@ -1392,8 +1392,10 @@ def build_s6(story, S):
          "diagnóstico geral barato e use ABLATION apenas para o estudo formal de "
          "evolução do Nk. Validador avisa quando BY_QUANTITY é usado em dataset "
          "sem quality_score. Produz: AblationStudyInfo registrado como recurso "
-         "HUBNESS_ABLATION_RESULT (pickle). UI inline ainda não implementada — "
-         "usuário vê o summary via OutputRowWidget."),
+         "HUBNESS_ABLATION_RESULT (pickle). UI: 3ª coluna do editor instancia "
+         "<code>HubnessAblationWidget</code> (single-plot inline com KDEs "
+         "sobrepostas dos cenários); botão 🔍 Expandir abre "
+         "<code>HubnessAblationViewerDialog</code>."),
     ]
 
     for i, (itype, executor, desc) in enumerate(instructions):
@@ -2958,7 +2960,8 @@ def build_s16(story, S):
              "em dialog full-screen): ScoreDistributionWidget, "
              "ValidationResultWidget (4 tabs lazy), CaseworkVisualizationWidget, "
              "HubnessReportWidget (5 tabs lazy: topology/stratification/paired/"
-             "quality/density). Cada um aceita flags show_header/show_toolbar/show_help."],
+             "quality/density), HubnessAblationWidget (single-plot KDE overlay). "
+             "Cada um aceita flags show_header/show_toolbar/show_help."],
             ["interface/tabs/strategy_manager_v2/strategy_editor/instruction_results_panel.py",
              "Nova arch",
              "InstructionResultsPanel — 3ª coluna do editor: outputs com estado "
@@ -2976,7 +2979,7 @@ def build_s16(story, S):
     story.append(Spacer(1, 8))
     story.append(Paragraph(
         "Documento gerado automaticamente a partir do código-fonte do FaceAudit · "
-        "Versão 1.7 · Maio 2026",
+        "Versão 1.8 · Maio 2026",
         S["caption"]
     ))
 

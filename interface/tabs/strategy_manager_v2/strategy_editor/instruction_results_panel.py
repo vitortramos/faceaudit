@@ -57,6 +57,7 @@ _PLOT_KIND_VALIDATION_RESULT = "validation_result"
 _PLOT_KIND_CASEWORK_VISUALIZATION = "casework_visualization"
 _PLOT_KIND_TRAJECTORY_BUTTON = "trajectory_button"  # pseudo-kind: só botão
 _PLOT_KIND_HUBNESS_REPORT = "hubness_report"
+_PLOT_KIND_HUBNESS_ABLATION = "hubness_ablation"
 
 
 def _instruction_plot_kind(
@@ -83,10 +84,8 @@ def _instruction_plot_kind(
         return _PLOT_KIND_TRAJECTORY_BUTTON
     if t == StrategyInstructionType.HUBNESS_ANALYSIS:
         return _PLOT_KIND_HUBNESS_REPORT
-    # HUBNESS_ABLATION também produz gráficos (plot_ablation_study_topology)
-    # — TODO: criar widget próprio ou reusar HubnessReportWidget. Por
-    # enquanto exibe só os outputs (sem plot inline; usuário vê o
-    # AblationStudyInfo via OutputRowWidget summary).
+    if t == StrategyInstructionType.HUBNESS_ABLATION:
+        return _PLOT_KIND_HUBNESS_ABLATION
     return None
 
 
@@ -109,6 +108,7 @@ class _ResultsCard(QtWidgets.QWidget):
     view_validation_result_requested = QtCore.pyqtSignal(object)
     view_casework_visualization_requested = QtCore.pyqtSignal(object)
     view_hubness_report_requested = QtCore.pyqtSignal(object)
+    view_hubness_ablation_requested = QtCore.pyqtSignal(object)
 
     # Pedido de hidratação assíncrona — emitido pelo botão "Carregar e
     # visualizar" para datasets grandes ainda no disco.
@@ -318,6 +318,12 @@ class _ResultsCard(QtWidgets.QWidget):
                                     # OutputRowWidget já mostra o resumo
                 show_toolbar=False, show_help=False,
             )
+        elif self._plot_kind == _PLOT_KIND_HUBNESS_ABLATION:
+            from .result_widgets import HubnessAblationWidget
+            self._plot_widget = HubnessAblationWidget(
+                parent=plot_page, result=None,
+                show_header=False, show_toolbar=False, show_help=False,
+            )
 
         if self._plot_widget is not None:
             pp_layout.addWidget(self._plot_widget, 1)
@@ -375,8 +381,8 @@ class _ResultsCard(QtWidgets.QWidget):
         if self._plot_widget is None:
             return
         # Reset do widget de plot — força redraw.
-        # Importa HubnessReportWidget aqui (lazy) pra evitar dep circular.
-        from .result_widgets import HubnessReportWidget
+        # Importa Hubness widgets aqui (lazy) pra evitar dep circular.
+        from .result_widgets import HubnessReportWidget, HubnessAblationWidget
         try:
             if isinstance(self._plot_widget, ScoreDistributionWidget):
                 self._plot_widget.set_dataset(None)
@@ -385,6 +391,8 @@ class _ResultsCard(QtWidgets.QWidget):
             elif isinstance(self._plot_widget, CaseworkVisualizationWidget):
                 self._plot_widget.set_result(None)
             elif isinstance(self._plot_widget, HubnessReportWidget):
+                self._plot_widget.set_result(None)
+            elif isinstance(self._plot_widget, HubnessAblationWidget):
                 self._plot_widget.set_result(None)
         except Exception:
             pass
@@ -424,12 +432,14 @@ class _ResultsCard(QtWidgets.QWidget):
             self.view_casework_visualization_requested.emit(self._instruction)
         elif self._plot_kind == _PLOT_KIND_HUBNESS_REPORT:
             self.view_hubness_report_requested.emit(self._instruction)
+        elif self._plot_kind == _PLOT_KIND_HUBNESS_ABLATION:
+            self.view_hubness_ablation_requested.emit(self._instruction)
 
     def _render_plot(self, payload: Any) -> None:
         """Atualiza o widget de plot com o payload recebido."""
         if self._plot_widget is None:
             return
-        from .result_widgets import HubnessReportWidget
+        from .result_widgets import HubnessReportWidget, HubnessAblationWidget
         try:
             if isinstance(self._plot_widget, ScoreDistributionWidget):
                 use_log_lr = self._is_calibrated_scores_output()
@@ -441,6 +451,8 @@ class _ResultsCard(QtWidgets.QWidget):
             elif isinstance(self._plot_widget, CaseworkVisualizationWidget):
                 self._plot_widget.set_result(payload)
             elif isinstance(self._plot_widget, HubnessReportWidget):
+                self._plot_widget.set_result(payload)
+            elif isinstance(self._plot_widget, HubnessAblationWidget):
                 self._plot_widget.set_result(payload)
         except Exception:
             self._show_placeholder()
@@ -542,6 +554,8 @@ class _ResultsCard(QtWidgets.QWidget):
             return (StrategyResourceType.CASEWORK_VISUALIZATION,)
         if self._plot_kind == _PLOT_KIND_HUBNESS_REPORT:
             return (StrategyResourceType.HUBNESS_REPORT,)
+        if self._plot_kind == _PLOT_KIND_HUBNESS_ABLATION:
+            return (StrategyResourceType.HUBNESS_ABLATION_RESULT,)
         return ()
 
 
@@ -565,6 +579,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         view_validation_result_requested(StrategyInstructionDefinition)
         view_casework_visualization_requested(StrategyInstructionDefinition)
         view_hubness_report_requested(StrategyInstructionDefinition)
+        view_hubness_ablation_requested(StrategyInstructionDefinition)
         hydrate_requested(StrategyInstructionDefinition, str): instrução +
             resource_id solicitado para carregamento
     """
@@ -574,6 +589,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
     view_validation_result_requested = QtCore.pyqtSignal(object)
     view_casework_visualization_requested = QtCore.pyqtSignal(object)
     view_hubness_report_requested = QtCore.pyqtSignal(object)
+    view_hubness_ablation_requested = QtCore.pyqtSignal(object)
     hydrate_requested = QtCore.pyqtSignal(object, str)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
@@ -702,6 +718,9 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         )
         card.view_hubness_report_requested.connect(
             self.view_hubness_report_requested.emit
+        )
+        card.view_hubness_ablation_requested.connect(
+            self.view_hubness_ablation_requested.emit
         )
         # Hydrate com instrução + resource_id (parent enriquece).
         card.hydrate_requested.connect(

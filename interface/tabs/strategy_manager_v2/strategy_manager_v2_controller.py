@@ -153,6 +153,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_hubness_report_requested.connect(
             self._on_view_hubness_report
         )
+        self._strategy_editor.view_hubness_ablation_requested.connect(
+            self._on_view_hubness_ablation
+        )
         self._strategy_editor.resource_edit_requested.connect(
             self._on_resource_edit_requested
         )
@@ -1788,6 +1791,74 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._view,
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o relatório de hubness:\n{exc}",
+            )
+
+    def _on_view_hubness_ablation(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o HubnessAblationViewerDialog (single-plot full-screen) a
+        partir do AblationStudyInfo produzido pela instrução. Mesmo
+        padrão do _on_view_hubness_report — tenta contexto vivo, depois
+        hidrata do disco.
+        """
+        from faceaudit.models.instructions.hubness_ablation_instruction import (
+            HubnessAblationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, HubnessAblationInstruction):
+            return
+
+        result_id = instruction.output_ablation_resource_id
+        if not result_id:
+            return
+
+        study = None
+
+        if (
+            self._execution_context is not None
+            and self._execution_context.has_resource(result_id)
+        ):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                study = ctx_resource.payload
+
+        if study is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    study = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            study = existing.payload
+
+        if study is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Ablação indisponível",
+                "Não foi encontrado um AblationStudyInfo salvo para esta "
+                "instrução. Execute HUBNESS_ABLATION primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_ablation_viewer_dialog import (
+                HubnessAblationViewerDialog,
+            )
+            dlg = HubnessAblationViewerDialog(study, parent=self._view)
+            self._hubness_ablation_viewer = dlg  # referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o estudo de ablação:\n{exc}",
             )
 
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
