@@ -37,8 +37,22 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
     plda_variant: PLDAVariant = field(
         default=PLDAVariant.SIMPLE,
         metadata={"help": (
-            "Variante matemática do PLDA: SIMPLE (SpeechBrain, com subspace F) "
-            "ou TWO_COVARIANCE (Brümmer 2010, covariâncias completas)."
+            "<html><b>Variante matemática do PLDA.</b><br/><br/>"
+            "<b>SIMPLE</b> — formulação Ioffe simplificada via SpeechBrain. "
+            "Trabalha num <i>subspace</i> entre-classes de baixo rank "
+            "(<code>F ∈ R^{D × latent_dim}</code>) treinado por EM iterativo. "
+            "Direções fora do subspace são truncadas, o que regulariza "
+            "implicitamente mas perde informação. Usa "
+            "<code>em_iterations</code>, <code>plda_mode</code>, "
+            "<code>latent_dim</code>.<br/><br/>"
+            "<b>TWO_COVARIANCE</b> — formulação Brümmer &amp; de Villiers "
+            "(2010), padrão na literatura forense via FoCal toolkit. "
+            "Estima covariâncias <b>B</b> (entre-classes) e <b>W</b> "
+            "(intra-classe) completas <code>D × D</code> em forma fechada "
+            "(sem EM, via scatter matrices). Sem perda de informação por "
+            "truncamento — só use se tiver dados suficientes para estimar "
+            "matrizes cheias. Aceita <code>regularization</code> para "
+            "estabilizar numericamente.</html>"
         )}
     )
 
@@ -69,10 +83,32 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
     regularization: float = field(
         default=0.0,
         metadata={"help": (
-            "Termo de regularização ε ≥ 0 somado a B e W como ε·I antes "
-            "da inversão no scoring. Usado apenas em plda_variant=TWO_COVARIANCE; "
-            "estabiliza numericamente quando D é alto comparado ao número de "
-            "classes ou amostras. Padrão 0 = sem regularização."
+            "<html><b>Regularização Tikhonov (ε ≥ 0).</b> "
+            "Soma <code>ε · I</code> em B e W antes das inversões: "
+            "<code>K=inv(W+B)</code>, <code>M=inv(W+2B)</code>, "
+            "<code>N=inv(W)</code>. Empurra um valor positivo na diagonal, "
+            "garantindo que todas as direções tenham variância mínima "
+            "<code>ε</code>. Usado apenas em "
+            "<b>plda_variant=TWO_COVARIANCE</b>.<br/><br/>"
+            "<b>Quando aumentar:</b><ul>"
+            "<li>D &gt; N efetivo (ex: 512D com poucas identidades × poucas amostras)</li>"
+            "<li>Embeddings colineares (após L2 + transformações fortes)</li>"
+            "<li>Poucas classes com ≥ 2 amostras (muitos singletons descartados)</li>"
+            "<li>Pipeline reduziu dimensionalidade abaixo do n.º de classes</li>"
+            "<li>Erro &quot;W não é positiva definida&quot; no treino</li></ul>"
+            "<b>Valores típicos:</b><ul>"
+            "<li><code>0.0</code> (default) — só use com dataset farto "
+            "(~1000+ identidades × 10+ amostras, D=128–256)</li>"
+            "<li><code>1e-6</code> a <code>1e-4</code> — &quot;leve&quot;, "
+            "evita instabilidade numérica sem alterar log-LRs. Default seguro.</li>"
+            "<li><code>1e-3</code> a <code>1e-2</code> — amacia decisão "
+            "(log-LRs menos extremos). Pode mascarar problemas reais do "
+            "pipeline.</li>"
+            "<li><code>&gt; 1e-1</code> — evite. A identidade domina a "
+            "covariância real.</li></ul>"
+            "<b>Antes de subir:</b> verifique duplicatas exatas no dataset, "
+            "passos de pipeline excessivos, dimensões coerentes com nº de "
+            "classes (LDA com 30 classes não deve sair em 256D).</html>"
         )}
     )
 
