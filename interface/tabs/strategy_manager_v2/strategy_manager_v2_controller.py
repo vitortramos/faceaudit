@@ -150,6 +150,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_casework_visualization_requested.connect(
             self._on_view_casework_visualization
         )
+        self._strategy_editor.view_hubness_report_requested.connect(
+            self._on_view_hubness_report
+        )
         self._strategy_editor.resource_edit_requested.connect(
             self._on_resource_edit_requested
         )
@@ -1715,6 +1718,76 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._view,
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o visualizador de caso:\n{exc}",
+            )
+
+    def _on_view_hubness_report(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o HubnessReportViewerDialog (5 abas curadas + galeria de
+        16 plots) a partir do HubnessReport produzido pela instrução.
+        Padrão idêntico aos demais view_*: tenta contexto vivo primeiro,
+        depois hidrata do disco via loader.
+        """
+        from faceaudit.models.instructions.hubness_analysis_instruction import (
+            HubnessAnalysisInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, HubnessAnalysisInstruction):
+            return
+
+        result_id = instruction.output_report_resource_id
+        if not result_id:
+            return
+
+        report = None
+
+        # 1. Tentar do contexto vivo.
+        if (
+            self._execution_context is not None
+            and self._execution_context.has_resource(result_id)
+        ):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                report = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if report is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    report = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            report = existing.payload
+
+        if report is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Relatório indisponível",
+                "Não foi encontrado um HubnessReport salvo para esta "
+                "instrução. Execute HUBNESS_ANALYSIS primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_report_viewer_dialog import (
+                HubnessReportViewerDialog,
+            )
+            dlg = HubnessReportViewerDialog(report, parent=self._view)
+            self._hubness_viewer = dlg  # mantém referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o relatório de hubness:\n{exc}",
             )
 
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
