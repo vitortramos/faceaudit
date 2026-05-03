@@ -405,17 +405,23 @@ class OutputRowWidget(QtWidgets.QFrame):
         lbl.setStyleSheet("font-size: 11px; color: #2e7d32; font-weight: bold;")
         layout.addWidget(lbl, 0, 1)
 
-        self._name_field = QtWidgets.QLineEdit(resource_id or "")
-        self._name_field.setPlaceholderText("nome do recurso de saída")
         if self._read_only:
-            self._name_field.setReadOnly(True)
+            # Display puro — QLabel, sem borda nem fundo. Visualmente
+            # sintoniza com o resto da coluna de resultados (status +
+            # summary + plot), que é toda informacional.
+            self._name_field = QtWidgets.QLabel(resource_id or "")
             self._name_field.setStyleSheet(
-                "font-size: 11px; background-color: #f0f0f0; color: #555;"
+                "font-size: 11px; color: #222; font-weight: 500;"
+            )
+            self._name_field.setTextInteractionFlags(
+                QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
             )
             self._name_field.setToolTip(
                 "Edite o nome do recurso na coluna de configuração (2ª coluna)."
             )
         else:
+            self._name_field = QtWidgets.QLineEdit(resource_id or "")
+            self._name_field.setPlaceholderText("nome do recurso de saída")
             self._name_field.setStyleSheet("font-size: 11px;")
             # Emite name_changed em CADA edição (textChanged) e também ao sair do
             # campo (editingFinished) — garante que o DTO fique em sincronia mesmo
@@ -545,9 +551,12 @@ class OutputRowWidget(QtWidgets.QFrame):
 
     def set_resource_name(self, name: str) -> None:
         """Atualiza o texto exibido sem reemitir name_changed (para sincronia
-        entre painéis read-only e editável)."""
+        entre painéis read-only e editável). Funciona com QLineEdit (modo
+        editável) e QLabel (modo read-only)."""
         if self._name_field.text() == name:
             return
+        # blockSignals só faz sentido em widgets que emitem signals em setText
+        # (QLineEdit). Em QLabel (read_only) é no-op mas inofensivo.
         was_blocked = self._name_field.blockSignals(True)
         try:
             self._name_field.setText(name or "")
