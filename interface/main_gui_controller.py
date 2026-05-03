@@ -113,15 +113,22 @@ class MainGuiController:
         from faceaudit.storage.global_library_storage import GlobalLibraryStorage
         from pathlib import Path
 
-        # Tenta construir GlobalLibraryStorage a partir do config
+        # Tenta construir GlobalLibraryStorage:
+        # 1. preferência: config.json → paths.library
+        # 2. fallback: ~/.faceaudit/library (criada automaticamente se não existir)
+        # Sem o storage, o botão "Salvar como Template" e a importação da
+        # biblioteca ficam indisponíveis silenciosamente.
         global_storage = None
         try:
             library_root = getattr(self.app_config.paths, "library", None)
-            if library_root:
-                global_storage = GlobalLibraryStorage(library_root=Path(library_root))
-                global_storage.create_library_structure()
+            if not library_root:
+                library_root = str(Path.home() / ".faceaudit" / "library")
+            global_storage = GlobalLibraryStorage(library_root=Path(library_root))
+            global_storage.create_library_structure()
         except Exception:
-            pass  # Biblioteca opcional — a aba funciona sem ela
+            # Biblioteca opcional — a aba funciona sem ela; save_as_template
+            # exibirá uma mensagem clara ao usuário.
+            global_storage = None
 
         self.strategy_manager_v2 = StrategyManagerV2Controller(
             parent=self.view,

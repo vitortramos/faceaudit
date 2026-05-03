@@ -465,13 +465,50 @@ class StrategyManagerV2Controller(QtCore.QObject):
         thread.start()
 
     def save_as_template(self) -> None:
-        if not self._current_definition or not self._global_storage:
+        """
+        Salva a estratégia atualmente aberta como template na biblioteca global.
+
+        Comportamento:
+        - Sem estratégia selecionada → aviso explícito.
+        - Sem biblioteca configurada → aviso explícito apontando o caminho do
+          fallback (`~/.faceaudit/library`) e o config.json como overrides.
+        - O template é uma cópia LEVE da definição: instruções e metadados são
+          preservados, mas `payload` e `artifact_ref` de cada recurso são
+          descartados (templates não carregam dados — só a estrutura). Isso
+          também evita problemas de `copy.deepcopy` com objetos runtime
+          não-copiáveis (ex: tensores torch carregados pelo SpeechBrain PLDA).
+        """
+        if not self._current_definition:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Nenhuma estratégia selecionada",
+                "Selecione uma estratégia na lista à esquerda para salvá-la "
+                "como template.",
+            )
             return
 
-        template = copy.deepcopy(self._current_definition)
-        template.strategy_id = str(uuid.uuid4())
-        for resource in template.resources:
-            resource.artifact_ref = None
+        if not self._global_storage:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Biblioteca global indisponível",
+                "Não foi possível acessar a biblioteca global de templates.\n\n"
+                "Possíveis causas:\n"
+                "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
+                "verifique permissões.\n"
+                "• Você definiu paths.library no config.json com um caminho "
+                "inválido — corrija ou remova essa entrada para usar o padrão.",
+            )
+            return
+
+        try:
+            template = self._build_template_from_current_definition()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao preparar template",
+                f"Falha ao gerar a cópia leve da estratégia:\n{exc}",
+            )
+            return
 
         try:
             self._global_storage.save_artifact(
@@ -479,15 +516,52 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 template,
                 template_id=template.strategy_id,
             )
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Template salvo",
-                f"Estratégia '{template.name}' salva como template na biblioteca global.",
-            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
-                self._view, "Erro", f"Não foi possível salvar o template:\n{exc}"
+                self._view,
+                "Erro ao salvar template",
+                f"Não foi possível salvar o template em disco:\n{exc}",
             )
+            return
+
+        library_root = getattr(self._global_storage, "library_root", None)
+        location = (
+            f"\n\nLocal: {library_root}/strategy_templates/{template.strategy_id}.json"
+            if library_root else ""
+        )
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Template salvo",
+            f"Estratégia '{template.name}' salva como template na biblioteca "
+            f"global.{location}",
+        )
+
+    def _build_template_from_current_definition(self):
+        """
+        Cria uma cópia leve da definição atual sem `payload` e sem
+        `artifact_ref` nos recursos — templates devem ser portáveis entre
+        projetos. Usa `to_dict()` + `from_dict()` em vez de `deepcopy`
+        para evitar copiar objetos runtime pesados (ex: ndarray, tensores)
+        que não fazem sentido em um template.
+        """
+        from faceaudit.models.strategy.lr_strategy_definition import (
+            LRStrategyDefinition,
+        )
+
+        snapshot = self._current_definition.to_dict()
+        template = LRStrategyDefinition.from_dict(snapshot)
+
+        if template is None:
+            raise RuntimeError(
+                "from_dict retornou None ao reconstruir a definição."
+            )
+
+        template.strategy_id = str(uuid.uuid4())
+        for resource in template.resources:
+            resource.artifact_ref = None
+            resource.payload = None
+
+        return template
 
     # ── Internal slots ────────────────────────────────────────────────────────
 
