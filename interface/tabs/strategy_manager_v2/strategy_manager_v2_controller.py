@@ -119,6 +119,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.mining_requested.connect(self._on_mining)
         self._project_toolbar.split_requested.connect(self._on_split)
         self._project_toolbar.manage_library_requested.connect(self._on_manage_library)
+        self._project_toolbar.toggle_left_panel_requested.connect(self.view.toggle_left_panel)
         # Left panel — estratégias
         self._left_panel.strategy_selected.connect(self._on_strategy_opened)
         self._left_panel.strategy_opened.connect(self._on_strategy_opened)

@@ -3,6 +3,10 @@
 from PyQt6 import QtWidgets, QtCore
 
 
+_LEFT_PANEL_LABEL_EXPANDED = "◀ Recolher painel"
+_LEFT_PANEL_LABEL_COLLAPSED = "▶ Mostrar painel"
+
+
 class ProjectToolbar(QtWidgets.QToolBar):
     """
     Toolbar unificada: ações de projeto + biblioteca global em uma única linha.
@@ -26,6 +30,7 @@ class ProjectToolbar(QtWidgets.QToolBar):
     mining_requested = QtCore.pyqtSignal()
     split_requested = QtCore.pyqtSignal()
     manage_library_requested = QtCore.pyqtSignal()
+    toggle_left_panel_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__("Projeto", parent)
@@ -80,6 +85,27 @@ class ProjectToolbar(QtWidgets.QToolBar):
         self.btn_manage = self._make_button("Gerenciar Biblioteca", "Visualizar e remover recursos da biblioteca global")
         self.btn_manage.clicked.connect(self.manage_library_requested)
         self.addWidget(self.btn_manage)
+
+        # Stretch espacial empurra o botão de toggle pra direita.
+        spacer = QtWidgets.QWidget()
+        spacer.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
+        )
+        self.addWidget(spacer)
+
+        self.btn_toggle_left_panel = self._make_button(
+            _LEFT_PANEL_LABEL_EXPANDED,
+            "Mostrar/esconder o painel lateral (Cmd+B)",
+        )
+        self.btn_toggle_left_panel.clicked.connect(self.toggle_left_panel_requested)
+        self.addWidget(self.btn_toggle_left_panel)
+
+    def set_left_panel_collapsed(self, collapsed: bool) -> None:
+        """Atualiza o label do botão para refletir o estado atual do painel."""
+        self.btn_toggle_left_panel.setText(
+            _LEFT_PANEL_LABEL_COLLAPSED if collapsed else _LEFT_PANEL_LABEL_EXPANDED
+        )
 
     def set_project_open(self, is_open: bool) -> None:
         """Habilita/desabilita botões que dependem de um projeto aberto."""
