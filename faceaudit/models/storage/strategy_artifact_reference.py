@@ -39,6 +39,11 @@ class StrategyArtifactReference(JSONSerializableMixin):
     def from_dict(cls: Type[T], data: dict[str, Any]) -> Optional[T]:
         """
         Reconstrói o DTO, convertendo corretamente o enum de tipo de artefato.
+
+        Normaliza o separador de caminho: paths gravados no Windows usam '\\'
+        e são interpretados como nome de arquivo único pelo pathlib em
+        macOS/Linux. Convertemos para '/' (aceito por todos os SO) para que
+        projetos sejam portáveis entre plataformas.
         """
         if not data:
             return None
@@ -49,5 +54,8 @@ class StrategyArtifactReference(JSONSerializableMixin):
             processed_data["artifact_type"] = StrategyArtifactType.from_str(
                 processed_data["artifact_type"]
             )
+
+        if "path" in processed_data and isinstance(processed_data["path"], str):
+            processed_data["path"] = processed_data["path"].replace("\\", "/")
 
         return cls(**processed_data)
