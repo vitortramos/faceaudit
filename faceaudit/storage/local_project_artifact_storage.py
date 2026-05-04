@@ -152,7 +152,7 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return StrategyArtifactReference(
             artifact_type=artifact_type,
-            path=str(relative_path),
+            path=relative_path.as_posix(),
             hash=file_hash,
         )
 
@@ -194,7 +194,7 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return StrategyArtifactReference(
             artifact_type=artifact_type,
-            path=str(relative_path),
+            path=relative_path.as_posix(),
             hash=file_hash,
         )
 
@@ -261,7 +261,7 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
                     found.append(
                         StrategyArtifactReference(
                             artifact_type=a_type,
-                            path=str(relative),
+                            path=relative.as_posix(),
                             hash=None,
                         )
                     )

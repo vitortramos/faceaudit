@@ -2405,11 +2405,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._current_definition.add_resource(resource)
 
             # Limpa arquivo órfão quando o path mudou.
+            # Normaliza '\' para '/' antes de comparar — projetos abertos do
+            # disco têm path normalizado para POSIX em from_dict; já o
+            # save_artifact agora também emite POSIX, mas mantemos o guard
+            # para tolerar refs herdadas de versões anteriores.
             if (
                 resource.artifact_ref is not None
                 and old_ref is not None
                 and old_ref.path
-                and old_ref.path != resource.artifact_ref.path
+                and old_ref.path.replace("\\", "/")
+                    != resource.artifact_ref.path.replace("\\", "/")
             ):
                 try:
                     old_abs = self._project.storage.project_root / old_ref.path
@@ -2451,12 +2456,15 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._current_definition.add_resource(resource)
 
             # Limpa arquivo órfão quando o path mudou (ex: tipo do recurso
-            # mudou e a extensão/pasta de destino também).
+            # mudou e a extensão/pasta de destino também). Normaliza '\' → '/'
+            # nos dois lados — old_ref pode vir de from_dict (POSIX) e o novo
+            # ref também é POSIX, mas mantemos o guard contra refs antigas.
             if (
                 artifact_ref is not None
                 and old_ref is not None
                 and old_ref.path
-                and old_ref.path != artifact_ref.path
+                and old_ref.path.replace("\\", "/")
+                    != artifact_ref.path.replace("\\", "/")
             ):
                 try:
                     old_abs = self._project.storage.project_root / old_ref.path
@@ -2503,11 +2511,15 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
                     # Limpa arquivo antigo órfão quando o caminho mudou
                     # (tipicamente porque a extensão/pasta mudou junto com
-                    # o resource_type).
+                    # o resource_type). Normaliza '\' → '/' nos dois lados
+                    # antes de comparar — old_ref vem de from_dict (POSIX)
+                    # e o novo ref também é POSIX, mas o guard tolera refs
+                    # antigas que ainda tenham '\' Windows.
                     if (
                         old_ref is not None
                         and old_ref.path
-                        and old_ref.path != artifact_ref.path
+                        and old_ref.path.replace("\\", "/")
+                            != artifact_ref.path.replace("\\", "/")
                     ):
                         try:
                             old_abs = self._project.storage.project_root / old_ref.path
