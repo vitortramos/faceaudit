@@ -115,6 +115,16 @@ class StrategyFileType(Enum):
         ProjectFolder.ARTIFACTS,
         "{strategy_id}_{resource_id}",
     )
+    HUBNESS_REPORT = (
+        ".pkl",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
+    )
+    HUBNESS_ABLATION_RESULT = (
+        ".pkl",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}",
+    )
     GRAPHIC = (
         ".png",
         ProjectFolder.GRAPHICS,
@@ -255,6 +265,8 @@ class StrategyFileType(Enum):
             StrategyArtifactType.CALIBRATED_SCORES:         cls.CALIBRATED_SCORES,
             StrategyArtifactType.VALIDATION_RESULT:         cls.VALIDATION_RESULT,
             StrategyArtifactType.CASEWORK_VISUALIZATION:    cls.CASEWORK_VISUALIZATION,
+            StrategyArtifactType.HUBNESS_REPORT:            cls.HUBNESS_REPORT,
+            StrategyArtifactType.HUBNESS_ABLATION_RESULT:   cls.HUBNESS_ABLATION_RESULT,
             StrategyArtifactType.GRAPHIC:                   cls.GRAPHIC,
             StrategyArtifactType.CHECKPOINT:                cls.CHECKPOINT,
             # Tipos de biblioteca global → destino dentro do projeto

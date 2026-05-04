@@ -1,6 +1,6 @@
 # interface/tabs/strategy_manager_v2/strategy_manager_v2_view.py
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 
 class StrategyManagerV2View(QtWidgets.QWidget):
@@ -22,7 +22,18 @@ class StrategyManagerV2View(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Estado de collapse do left panel.
+        self._left_panel_collapsed = False
+        # Tamanhos a restaurar quando o usuário expande o painel de novo.
+        # Atualizados dinamicamente pelo splitter quando o usuário arrasta.
+        self._saved_splitter_sizes = [280, 700]
         self._init_layout()
+        self._init_shortcuts()
+
+    def _init_shortcuts(self) -> None:
+        # Cmd+B no macOS / Ctrl+B em Linux/Windows. Qt traduz automático.
+        toggle_shortcut = QtGui.QShortcut(QtGui.QKeySequence("Ctrl+B"), self)
+        toggle_shortcut.activated.connect(self.toggle_left_panel)
 
     def _init_layout(self):
         root = QtWidgets.QVBoxLayout(self)
@@ -148,6 +159,34 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         self._workspace_splitter.replaceWidget(0, widget)
         self.left_panel_placeholder.hide()
         self.left_panel_placeholder = widget
+
+    def toggle_left_panel(self) -> None:
+        """
+        Alterna entre painel lateral visível e recolhido. Quando recolhido,
+        o splitter dá toda a largura para a área principal — útil em telas
+        pequenas (ex: MacBook 14&quot;) durante edição intensa de instruções.
+        """
+        if self._workspace_splitter is None:
+            return
+        if self._left_panel_collapsed:
+            self._workspace_splitter.setSizes(self._saved_splitter_sizes)
+            self._left_panel_collapsed = False
+        else:
+            current = self._workspace_splitter.sizes()
+            if current and current[0] > 0:
+                self._saved_splitter_sizes = list(current)
+            # Truque: setChildrenCollapsible está False, então não conseguimos
+            # ir a 0. Usamos minimumWidth do left panel como tamanho recolhido
+            # mais próximo de 0; mas pra de fato &quot;sumir&quot;, ocultamos o widget.
+            self.left_panel_placeholder.hide()
+            self._left_panel_collapsed = True
+        # Atualiza label do botão na toolbar, se existir.
+        toolbar = getattr(self, "project_toolbar", None)
+        if toolbar is not None and hasattr(toolbar, "set_left_panel_collapsed"):
+            toolbar.set_left_panel_collapsed(self._left_panel_collapsed)
+        # Mostra de volta após restaurar tamanhos (ordem importa pra evitar flicker).
+        if not self._left_panel_collapsed:
+            self.left_panel_placeholder.show()
 
     def set_strategy_editor(self, widget: QtWidgets.QWidget) -> None:
         """Substitui o placeholder do editor de estratégia pelo widget real."""

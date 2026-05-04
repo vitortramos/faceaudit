@@ -2,28 +2,51 @@ from __future__ import annotations
 from enum import Enum
 from typing import Callable, Any, Optional, Tuple
 
+import numpy as np
+
+
+def _embedding_norm_from_face(f: Any) -> Optional[float]:
+    """
+    Extrai a norma L2 do embedding primário (sepaelv2) de um FaceInfo.
+    Retorna None quando o embedding não está disponível.
+    """
+    try:
+        emb = f.ff_info.embedding_sepaelv2 if f.ff_info else None
+        if emb is None:
+            return None
+        return float(np.linalg.norm(emb))
+    except Exception:
+        return None
+
+
 class QualityScoreType(Enum):
     """
     Define as métricas de qualidade suportadas e suas estratégias de extração.
     Atua como um Smart Enum que sabe como recuperar valores de objetos FaceInfo.
     """
-    
+
     FIQA = (
-        "ForensicFace (FIQA)", 
+        "ForensicFace (FIQA)",
         (0.0, 1.0),
         lambda f: f.ff_info.fiqa_score if f.ff_info else None
     )
-    
+
     OFIQ = (
-        "ISO/OFIQ (Unificado)", 
+        "ISO/OFIQ (Unificado)",
         (0.0, 100.0),
         lambda f: f.ofiq_info.unified_quality_score_scalar if f.ofiq_info else None
     )
-    
+
     SERFIQ = (
         "SER-FIQ (Estocástico)",
         (0.0, 100.0),
         lambda f: f.serfiq_info.score if f.serfiq_info else None
+    )
+
+    EMBEDDING_NORM = (
+        "Norma do Embedding (AdaFace)",
+        (0.0, float("inf")),
+        _embedding_norm_from_face
     )
 
     def __init__(self, display_name: str, value_range: Tuple[float, float], extractor: Callable[[Any], Any]):

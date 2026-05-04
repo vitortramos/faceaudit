@@ -119,6 +119,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.mining_requested.connect(self._on_mining)
         self._project_toolbar.split_requested.connect(self._on_split)
         self._project_toolbar.manage_library_requested.connect(self._on_manage_library)
+        self._project_toolbar.toggle_left_panel_requested.connect(self.view.toggle_left_panel)
         # Left panel — estratégias
         self._left_panel.strategy_selected.connect(self._on_strategy_opened)
         self._left_panel.strategy_opened.connect(self._on_strategy_opened)
@@ -150,11 +151,20 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_casework_visualization_requested.connect(
             self._on_view_casework_visualization
         )
+        self._strategy_editor.view_hubness_report_requested.connect(
+            self._on_view_hubness_report
+        )
+        self._strategy_editor.view_hubness_ablation_requested.connect(
+            self._on_view_hubness_ablation
+        )
         self._strategy_editor.resource_edit_requested.connect(
             self._on_resource_edit_requested
         )
         self._strategy_editor.instruction_applied.connect(
             self._on_instruction_applied
+        )
+        self._strategy_editor.hydrate_resource_requested.connect(
+            self._on_hydrate_resource_requested
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -411,8 +421,18 @@ class StrategyManagerV2Controller(QtCore.QObject):
             dialog.finish(success=False)
             return
 
+        # Recolhe recursos do projeto (DATASET / PIPELINE_CONFIG /
+        # MINING_CONFIG do disco) — eles não estão em definition.resources
+        # mas as instruções os referenciam por id. Sem isso, validators e
+        # ensure_payload disparam &quot;Recurso X não encontrado no contexto&quot;.
+        project_resources = self._collect_project_resources()
+
         thread = QtCore.QThread()
-        worker = StrategyExecutionWorker(executor, self._current_definition)
+        worker = StrategyExecutionWorker(
+            executor,
+            self._current_definition,
+            additional_resources=project_resources,
+        )
         worker.moveToThread(thread)
 
         # Mantém referência Python ao worker para evitar GC prematuro.
@@ -465,13 +485,50 @@ class StrategyManagerV2Controller(QtCore.QObject):
         thread.start()
 
     def save_as_template(self) -> None:
-        if not self._current_definition or not self._global_storage:
+        """
+        Salva a estratégia atualmente aberta como template na biblioteca global.
+
+        Comportamento:
+        - Sem estratégia selecionada → aviso explícito.
+        - Sem biblioteca configurada → aviso explícito apontando o caminho do
+          fallback (`~/.faceaudit/library`) e o config.json como overrides.
+        - O template é uma cópia LEVE da definição: instruções e metadados são
+          preservados, mas `payload` e `artifact_ref` de cada recurso são
+          descartados (templates não carregam dados — só a estrutura). Isso
+          também evita problemas de `copy.deepcopy` com objetos runtime
+          não-copiáveis (ex: tensores torch carregados pelo SpeechBrain PLDA).
+        """
+        if not self._current_definition:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Nenhuma estratégia selecionada",
+                "Selecione uma estratégia na lista à esquerda para salvá-la "
+                "como template.",
+            )
             return
 
-        template = copy.deepcopy(self._current_definition)
-        template.strategy_id = str(uuid.uuid4())
-        for resource in template.resources:
-            resource.artifact_ref = None
+        if not self._global_storage:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Biblioteca global indisponível",
+                "Não foi possível acessar a biblioteca global de templates.\n\n"
+                "Possíveis causas:\n"
+                "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
+                "verifique permissões.\n"
+                "• Você definiu paths.library no config.json com um caminho "
+                "inválido — corrija ou remova essa entrada para usar o padrão.",
+            )
+            return
+
+        try:
+            template = self._build_template_from_current_definition()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao preparar template",
+                f"Falha ao gerar a cópia leve da estratégia:\n{exc}",
+            )
+            return
 
         try:
             self._global_storage.save_artifact(
@@ -479,15 +536,52 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 template,
                 template_id=template.strategy_id,
             )
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Template salvo",
-                f"Estratégia '{template.name}' salva como template na biblioteca global.",
-            )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
-                self._view, "Erro", f"Não foi possível salvar o template:\n{exc}"
+                self._view,
+                "Erro ao salvar template",
+                f"Não foi possível salvar o template em disco:\n{exc}",
             )
+            return
+
+        library_root = getattr(self._global_storage, "library_root", None)
+        location = (
+            f"\n\nLocal: {library_root}/strategy_templates/{template.strategy_id}.json"
+            if library_root else ""
+        )
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Template salvo",
+            f"Estratégia '{template.name}' salva como template na biblioteca "
+            f"global.{location}",
+        )
+
+    def _build_template_from_current_definition(self):
+        """
+        Cria uma cópia leve da definição atual sem `payload` e sem
+        `artifact_ref` nos recursos — templates devem ser portáveis entre
+        projetos. Usa `to_dict()` + `from_dict()` em vez de `deepcopy`
+        para evitar copiar objetos runtime pesados (ex: ndarray, tensores)
+        que não fazem sentido em um template.
+        """
+        from faceaudit.models.strategy.lr_strategy_definition import (
+            LRStrategyDefinition,
+        )
+
+        snapshot = self._current_definition.to_dict()
+        template = LRStrategyDefinition.from_dict(snapshot)
+
+        if template is None:
+            raise RuntimeError(
+                "from_dict retornou None ao reconstruir a definição."
+            )
+
+        template.strategy_id = str(uuid.uuid4())
+        for resource in template.resources:
+            resource.artifact_ref = None
+            resource.payload = None
+
+        return template
 
     # ── Internal slots ────────────────────────────────────────────────────────
 
@@ -885,6 +979,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._executor = StrategyExecutorFactory.build(
                     artifact_storage=self._project.storage,
                 )
+                # Propaga o resource_loader do executor para o editor (e
+                # daí para a results panel + cards). Sem isso, o
+                # InstructionResultsPanel não consegue extrair project_root
+                # e o ResourceInfoWidget(compact=True) embedado nos
+                # outputs renderiza com paths/hashes/stats vazios.
+                loader = getattr(self._executor, "_resource_loader", None)
+                if loader is not None and hasattr(self._strategy_editor, "set_resource_loader"):
+                    self._strategy_editor.set_resource_loader(loader)
             except Exception as exc:
                 if not silent:
                     QtWidgets.QMessageBox.critical(
@@ -1032,6 +1134,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
           1. Contexto de execução (em memória).
           2. Definição da estratégia (com hidratação se vier do disco).
         """
+        import traceback
         from faceaudit.models.instructions.pipeline_application_instruction import (
             PipelineApplicationInstruction,
         )
@@ -1061,13 +1164,25 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if existing is not None:
                 if existing.has_payload:
                     trajectory_data = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
+                elif existing.has_artifact:
+                    loader = getattr(self._executor, "_resource_loader", None) if self._executor else None
+                    if loader is None:
+                        # Garante executor pra obter loader. Caso típico: usuário
+                        # acabou de abrir o projeto e clica direto no botão sem
+                        # ter rodado nada nesta sessão.
+                        if self._ensure_executor_and_context(silent=True):
+                            loader = getattr(self._executor, "_resource_loader", None)
                     if loader is not None:
                         try:
                             loader.hydrate(existing)
-                        except Exception:
-                            pass
+                        except Exception as hydrate_exc:
+                            traceback.print_exc()
+                            QtWidgets.QMessageBox.critical(
+                                self._view,
+                                "Erro ao carregar trajetória",
+                                f"Falha ao carregar a trajetória do disco:\n{hydrate_exc}",
+                            )
+                            return
                         if existing.has_payload:
                             trajectory_data = existing.payload
 
@@ -1075,7 +1190,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             QtWidgets.QMessageBox.information(
                 self._view,
                 "Trajetória indisponível",
-                "Não foi encontrada uma trajetória 3D salva para esta instrução. "
+                f"Não foi encontrada uma trajetória 3D para '{trajectory_id}'. "
                 "Execute o pipeline com 'Salvar dados de trajetória' ativo.",
             )
             return
@@ -1087,13 +1202,90 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._trajectory_viewer = TransformationTrajectoryViewerController(
                 trajectory_data, parent=self._view
             )
-            self._trajectory_viewer.show()
+            # Em macOS, dialogs criados em runtime podem nascer atrás da janela
+            # principal. raise_() + activateWindow() força foco antes do exec().
+            view = self._trajectory_viewer.view
+            view.show()
+            view.raise_()
+            view.activateWindow()
         except Exception as exc:
+            traceback.print_exc()
             QtWidgets.QMessageBox.critical(
                 self._view,
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o visualizador de trajetória:\n{exc}",
             )
+
+    def _on_hydrate_resource_requested(
+        self,
+        instruction: StrategyInstructionDefinition,
+        resource_id: str,
+    ) -> None:
+        """
+        Carrega o payload do recurso a partir do disco e refresca o painel
+        de resultados para que o gráfico seja desenhado.
+
+        Acionado pelo botão &quot;Carregar e visualizar&quot; na 3ª coluna do editor,
+        que aparece quando o recurso está em disco mas não em memória (caso
+        típico após reabrir um projeto sem ter executado nada nessa sessão).
+        """
+        if not self._project or not self._current_definition:
+            return
+
+        if not self._ensure_executor_and_context(silent=True):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Carregamento indisponível",
+                "Não foi possível inicializar o executor para hidratar o recurso.",
+            )
+            return
+
+        existing = self._current_definition.get_resource_by_id(resource_id)
+        if existing is None:
+            # Pode estar só no contexto (ex: produzido em sessão anterior).
+            if self._execution_context is not None and self._execution_context.has_resource(resource_id):
+                existing = self._execution_context.get_resource(resource_id)
+
+        if existing is None:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Recurso não encontrado",
+                f"Recurso '{resource_id}' não está registrado nesta estratégia.",
+            )
+            return
+
+        if not existing.has_payload and existing.has_artifact:
+            loader = getattr(self._executor, "_resource_loader", None)
+            if loader is not None:
+                try:
+                    loader.hydrate(existing)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.critical(
+                        self._view,
+                        "Erro ao carregar",
+                        f"Falha ao carregar '{resource_id}' do disco:\n{exc}",
+                    )
+                    return
+
+        if not existing.has_payload:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Nada a carregar",
+                f"O recurso '{resource_id}' não tem payload em memória nem em disco.",
+            )
+            return
+
+        # Garante que o contexto vivo também enxergue o payload hidratado —
+        # o card consulta o contexto antes de cair na definition.
+        if self._execution_context is not None:
+            self._execution_context.set_resource(existing)
+
+        # Invalida o card cacheado e refresca para o card ser reconstruído
+        # com o payload agora populado, disparando a renderização do plot.
+        self._strategy_editor.invalidate_results_for_instruction(
+            instruction.instruction_id
+        )
+        self._refresh_produced_resources()
 
     def _on_view_score_distribution(self, instruction: StrategyInstructionDefinition) -> None:
         """
@@ -1643,6 +1835,144 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 f"Não foi possível abrir o visualizador de caso:\n{exc}",
             )
 
+    def _on_view_hubness_report(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o HubnessReportViewerDialog (5 abas curadas + galeria de
+        16 plots) a partir do HubnessReport produzido pela instrução.
+        Padrão idêntico aos demais view_*: tenta contexto vivo primeiro,
+        depois hidrata do disco via loader.
+        """
+        from faceaudit.models.instructions.hubness_analysis_instruction import (
+            HubnessAnalysisInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, HubnessAnalysisInstruction):
+            return
+
+        result_id = instruction.output_report_resource_id
+        if not result_id:
+            return
+
+        report = None
+
+        # 1. Tentar do contexto vivo.
+        if (
+            self._execution_context is not None
+            and self._execution_context.has_resource(result_id)
+        ):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                report = ctx_resource.payload
+
+        # 2. Tentar da definição (hidrata do disco se necessário).
+        if report is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    report = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            report = existing.payload
+
+        if report is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Relatório indisponível",
+                "Não foi encontrado um HubnessReport salvo para esta "
+                "instrução. Execute HUBNESS_ANALYSIS primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_report_viewer_dialog import (
+                HubnessReportViewerDialog,
+            )
+            dlg = HubnessReportViewerDialog(report, parent=self._view)
+            self._hubness_viewer = dlg  # mantém referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o relatório de hubness:\n{exc}",
+            )
+
+    def _on_view_hubness_ablation(self, instruction: StrategyInstructionDefinition) -> None:
+        """
+        Abre o HubnessAblationViewerDialog (single-plot full-screen) a
+        partir do AblationStudyInfo produzido pela instrução. Mesmo
+        padrão do _on_view_hubness_report — tenta contexto vivo, depois
+        hidrata do disco.
+        """
+        from faceaudit.models.instructions.hubness_ablation_instruction import (
+            HubnessAblationInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, HubnessAblationInstruction):
+            return
+
+        result_id = instruction.output_ablation_resource_id
+        if not result_id:
+            return
+
+        study = None
+
+        if (
+            self._execution_context is not None
+            and self._execution_context.has_resource(result_id)
+        ):
+            ctx_resource = self._execution_context.get_resource(result_id)
+            if ctx_resource and ctx_resource.has_payload:
+                study = ctx_resource.payload
+
+        if study is None:
+            existing = self._current_definition.get_resource_by_id(result_id)
+            if existing is not None:
+                if existing.has_payload:
+                    study = existing.payload
+                elif existing.has_artifact and self._executor is not None:
+                    loader = getattr(self._executor, "_resource_loader", None)
+                    if loader is not None:
+                        try:
+                            loader.hydrate(existing)
+                        except Exception:
+                            pass
+                        if existing.has_payload:
+                            study = existing.payload
+
+        if study is None:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Ablação indisponível",
+                "Não foi encontrado um AblationStudyInfo salvo para esta "
+                "instrução. Execute HUBNESS_ABLATION primeiro.",
+            )
+            return
+
+        try:
+            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_ablation_viewer_dialog import (
+                HubnessAblationViewerDialog,
+            )
+            dlg = HubnessAblationViewerDialog(study, parent=self._view)
+            self._hubness_ablation_viewer = dlg  # referência forte
+            dlg.show()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao abrir visualizador",
+                f"Não foi possível abrir o estudo de ablação:\n{exc}",
+            )
+
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         if not self._project or not self._current_definition:
             return
@@ -1736,57 +2066,124 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_pipeline(self) -> None:
         ctrl = PipelineCreatorController(parent=self._view)
         config = ctrl.run()
-        if config and self._global_storage:
-            try:
-                self._global_storage.save_artifact(
-                    StrategyArtifactType.PIPELINE_CONFIG,
-                    config,
-                    config_id=str(uuid.uuid4())[:8],
-                )
-                QtWidgets.QMessageBox.information(
-                    self._view, "Pipeline salvo", "Configuração de pipeline salva na biblioteca global."
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível salvar o pipeline:\n{exc}"
-                )
+        self._save_config_to_global_library(
+            config=config,
+            artifact_type=StrategyArtifactType.PIPELINE_CONFIG,
+            label="pipeline",
+        )
 
     def _on_mining(self) -> None:
         ctrl = NewMiningConfigDialogController(parent=self._view)
-        if ctrl.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            config = ctrl.get_config()
-            if config and self._global_storage:
-                try:
-                    self._global_storage.save_artifact(
-                        StrategyArtifactType.MINING_CONFIG,
-                        config,
-                        config_id=str(uuid.uuid4())[:8],
-                    )
-                    QtWidgets.QMessageBox.information(
-                        self._view, "Mining salvo", "Configuração de mining salva na biblioteca global."
-                    )
-                except Exception as exc:
-                    QtWidgets.QMessageBox.critical(
-                        self._view, "Erro", f"Não foi possível salvar a config de mining:\n{exc}"
-                    )
+        if ctrl.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return  # usuário cancelou — sem feedback (esperado)
+        self._save_config_to_global_library(
+            config=ctrl.get_config(),
+            artifact_type=StrategyArtifactType.MINING_CONFIG,
+            label="mining",
+        )
 
     def _on_split(self) -> None:
         ctrl = NewSplitConfigDialogController(parent=self._view)
-        result = ctrl.exec()
-        if result and self._global_storage:
-            try:
-                self._global_storage.save_artifact(
-                    StrategyArtifactType.SPLIT_CONFIG,
-                    result,
-                    config_id=str(uuid.uuid4())[:8],
-                )
-                QtWidgets.QMessageBox.information(
-                    self._view, "Split salvo", "Configuração de split salva na biblioteca global."
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view, "Erro", f"Não foi possível salvar a config de split:\n{exc}"
-                )
+        config = ctrl.exec()  # retorna SplitConfig em sucesso, None se cancelou
+        self._save_config_to_global_library(
+            config=config,
+            artifact_type=StrategyArtifactType.SPLIT_CONFIG,
+            label="split",
+        )
+
+    def _save_config_to_global_library(
+        self,
+        config,
+        artifact_type: StrategyArtifactType,
+        label: str,
+    ) -> None:
+        """
+        Helper compartilhado pelos 3 botões da GlobalResourcesToolbar
+        (Pipeline / Mining / Split).
+
+        Comportamento:
+        - `config is None` → usuário cancelou o dialog. Sai silencioso (UX
+          esperada: sem mensagens incomodando).
+        - `_global_storage is None` → biblioteca não disponível. Mostra warning
+          claro com instruções (mesmo padrão do save_as_template).
+        - `config_id` derivado de `config.name` (sanitizado para filename) —
+          em vez do UUID aleatório truncado que tornava os arquivos
+          impossíveis de identificar na pasta global. Fallback para UUID
+          curto somente se o config não tem name ou está vazio.
+        - Erro de IO → critical message com a exceção real.
+        - Sucesso → information message com o path completo do arquivo.
+        """
+        if config is None:
+            # Cancelado pelo usuário — não atrapalha com mensagens.
+            return
+
+        if not self._global_storage:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Biblioteca global indisponível",
+                "Não foi possível acessar a biblioteca global para salvar a "
+                f"configuração de {label}.\n\nPossíveis causas:\n"
+                "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
+                "verifique permissões.\n"
+                "• Você definiu paths.library no config.json com um caminho "
+                "inválido — corrija ou remova essa entrada para usar o padrão.\n\n"
+                "A configuração que você acabou de criar NÃO foi persistida.",
+            )
+            return
+
+        config_id = self._derive_config_id(config)
+
+        try:
+            ref = self._global_storage.save_artifact(
+                artifact_type,
+                config,
+                config_id=config_id,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao salvar configuração",
+                f"Falha ao salvar a configuração de {label} na biblioteca global:\n{exc}",
+            )
+            return
+
+        library_root = getattr(self._global_storage, "library_root", None)
+        location = (
+            f"\n\nLocal: {library_root}/{ref.path}"
+            if library_root else ""
+        )
+        QtWidgets.QMessageBox.information(
+            self._view,
+            f"Configuração de {label} salva",
+            f"'{config_id}' salvo na biblioteca global.{location}",
+        )
+
+        # Atualiza dropdowns/árvore esquerda — a nova config deve aparecer
+        # imediatamente nos dropdowns das instruções.
+        self._refresh_left_panel()
+
+    @staticmethod
+    def _derive_config_id(config) -> str:
+        """
+        Deriva um config_id legível a partir do `name` do config (sanitizado
+        como filename), com fallback para UUID curto se inviável.
+
+        Sanitização: troca caracteres inválidos por `_`, colapsa repetições
+        e remove `_` nas pontas. Limite de 64 chars para evitar paths longos.
+        """
+        import re
+
+        raw_name = (getattr(config, "name", None) or "").strip()
+        if not raw_name:
+            return str(uuid.uuid4())[:8]
+
+        # Sanitiza: mantém alfanuméricos, _ , - e espaços viram _.
+        sanitized = re.sub(r"[^A-Za-z0-9._\- ]+", "_", raw_name)
+        sanitized = re.sub(r"\s+", "_", sanitized)
+        sanitized = re.sub(r"_+", "_", sanitized).strip("_.- ")
+        sanitized = sanitized[:64]
+
+        return sanitized or str(uuid.uuid4())[:8]
 
     def _on_manage_library(self) -> None:
         ctrl = ManageLibraryController(parent=self._view, global_storage=self._global_storage)

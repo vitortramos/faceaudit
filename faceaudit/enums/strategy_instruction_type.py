@@ -89,6 +89,34 @@ class StrategyInstructionType(Enum):
         "tracejadas com valor numérico anotado quando há menos.",
     )
 
+    DATASET_BALANCING = (
+        "DATASET_BALANCING",
+        "Dataset Balancing",
+        "Balanceia o número de amostras por identidade (cap, floor+cap ou "
+        "auto-min) selecionando descartes por sorteio aleatório ou por "
+        "métrica de qualidade (FIQA, OFIQ, SERFIQ, norma do embedding).",
+    )
+
+    HUBNESS_ANALYSIS = (
+        "HUBNESS_ANALYSIS",
+        "Hubness Analysis",
+        "Diagnóstico de viés topológico (hubness) em alta dimensionalidade — "
+        "quantifica quais faces atraem vizinhos errados via Nk score, "
+        "similaridade impostora e correlações com pose/norma. Produz um "
+        "HubnessReport compósito com 5 estudos (analysis base, "
+        "stratification, paired study, quality diagnostics, "
+        "optimization study).",
+    )
+
+    HUBNESS_ABLATION = (
+        "HUBNESS_ABLATION",
+        "Hubness Ablation",
+        "Estudo de ablação topológica — recorta progressivamente o dataset "
+        "(por quantidade de fotos por ID ou priorizando frontalidade) e "
+        "mede como o hubness evolui em cada cenário. Custoso: refaz "
+        "O(N²) em N subsets.",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label

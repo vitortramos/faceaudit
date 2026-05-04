@@ -86,10 +86,14 @@ class DatasetStatsService:
                 embedding_dim = len(emb)
 
         origin_counts: Dict[str, int] = {}
+        samples_per_identity: Dict[str, int] = {}
         for item in dataset.items:
             origin = item.origin or item.source
             if origin:
                 origin_counts[origin] = origin_counts.get(origin, 0) + 1
+            if item.identity is not None:
+                key = str(item.identity)
+                samples_per_identity[key] = samples_per_identity.get(key, 0) + 1
 
         return DatasetStats(
             n_imgs=len(dataset.items),
@@ -97,6 +101,7 @@ class DatasetStatsService:
             embedding_dim=embedding_dim,
             identity_set=identity_set,
             origin_counts=origin_counts,
+            samples_per_identity=samples_per_identity,
         )
 
     def compute_from_dataset(self, dataset: FaceDataset) -> DatasetStats:
@@ -106,7 +111,7 @@ class DatasetStatsService:
 
         df = dataset.to_pandas()
         n_imgs = len(dataset)
-        
+
         identities = set()
         if 'identity' in df.columns:
             series = df['identity'].dropna().astype(str)
@@ -122,12 +127,14 @@ class DatasetStatsService:
 
         gender_counts = self._get_counts(df, 'gender')
         ethnicity_counts = self._get_counts(df, 'ethnicity')
-        
+
         origin_counts = {}
         if 'origin' in df.columns:
             origin_counts = self._get_counts(df, 'origin')
         elif 'source' in df.columns:
             origin_counts = self._get_counts(df, 'source')
+
+        samples_per_identity = self._get_counts(df, 'identity')
 
         return DatasetStats(
             n_imgs=n_imgs,
@@ -137,7 +144,8 @@ class DatasetStatsService:
             embedding_columns=emb_cols,
             gender_counts=gender_counts,
             ethnicity_counts=ethnicity_counts,
-            origin_counts=origin_counts
+            origin_counts=origin_counts,
+            samples_per_identity=samples_per_identity,
         )
 
     def _read_parquet_stats(self, file_path: Path) -> DatasetStats:
@@ -175,7 +183,8 @@ class DatasetStatsService:
             embedding_columns=emb_cols,
             gender_counts=self._get_counts(df, 'gender'),
             ethnicity_counts=self._get_counts(df, 'ethnicity'),
-            origin_counts=self._get_counts(df, 'origin') if 'origin' in df.columns else self._get_counts(df, 'source')
+            origin_counts=self._get_counts(df, 'origin') if 'origin' in df.columns else self._get_counts(df, 'source'),
+            samples_per_identity=self._get_counts(df, 'identity'),
         )
 
     def _read_pickle_stats(self, file_path: Path) -> DatasetStats:
@@ -204,7 +213,8 @@ class DatasetStatsService:
             embedding_columns=emb_cols,
             gender_counts=self._get_counts(df, 'gender'),
             ethnicity_counts=self._get_counts(df, 'ethnicity'),
-            origin_counts=self._get_counts(df, 'origin') if 'origin' in df.columns else self._get_counts(df, 'source')
+            origin_counts=self._get_counts(df, 'origin') if 'origin' in df.columns else self._get_counts(df, 'source'),
+            samples_per_identity=self._get_counts(df, 'identity'),
         )
 
     def _get_counts(self, df: pd.DataFrame, col_name: str) -> Dict[str, int]:

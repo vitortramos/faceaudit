@@ -291,12 +291,38 @@ class EmbeddingDataset:
                 elif isinstance(val, np.ndarray):
                     face_img_array = val
 
-            q_scores = {}
+            q_scores: Dict[str, float] = {}
             if 'quality_scores_json' in row_dict and row_dict['quality_scores_json']:
                 try:
                     q_scores = json.loads(row_dict['quality_scores_json'])
                 except Exception:
                     q_scores = {}
+
+            # Fallback para schema legado: colunas separadas fiqa_score /
+            # ofiq_score / serfiq_score (formato gerado pelos scripts de
+            # extração antigos). Só preenchemos quando o JSON está
+            # ausente/vazio para não sobrescrever valores explícitos.
+            if not q_scores:
+                _legacy_map = {
+                    'fiqa_score': 'fiqa',
+                    'ofiq_score': 'ofiq',
+                    'serfiq_score': 'serfiq',
+                }
+                for col_name, key in _legacy_map.items():
+                    if col_name in row_dict:
+                        val = row_dict[col_name]
+                        if val is not None and not (isinstance(val, float) and np.isnan(val)):
+                            try:
+                                q_scores[key] = float(val)
+                            except (TypeError, ValueError):
+                                pass
+
+            # Pose também pode vir em colunas separadas (yaw/pitch) no
+            # schema legado — preserva pra HUBNESS_ABLATION BY_POSE.
+            yaw_val = row_dict.get('yaw')
+            pitch_val = row_dict.get('pitch')
+            yaw_f = float(yaw_val) if (yaw_val is not None and not (isinstance(yaw_val, float) and np.isnan(yaw_val))) else 0.0
+            pitch_f = float(pitch_val) if (pitch_val is not None and not (isinstance(pitch_val, float) and np.isnan(pitch_val))) else 0.0
 
             info = EmbeddingInfo(
                 embedding=emb_array,
@@ -307,7 +333,9 @@ class EmbeddingDataset:
                 source=row_dict.get('source'),
                 origin=row_dict.get('origin'),
                 face_image=face_img_array,
-                quality_scores=q_scores
+                yaw=yaw_f,
+                pitch=pitch_f,
+                quality_scores=q_scores,
             )
             items.append(info)
 

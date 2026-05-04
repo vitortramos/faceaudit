@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore
@@ -94,9 +95,25 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     # responsável por hidratar o payload, abrir o dialog de edição apropriado
     # ao tipo, atualizar o payload e re-persistir o artefato.
     resource_edit_requested = QtCore.pyqtSignal(str)
+    # Emitido quando o usuário edita o nome de um recurso de saída no
+    # campo "Saídas". Permite que outros painéis (ex: results panel na 3ª
+    # coluna) sincronizem o nome exibido em tempo real.
+    output_name_changed = QtCore.pyqtSignal(str, str)  # (field_name, new_value)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, outputs_in_results_panel: bool = False):
+        """
+        Args:
+            parent: pai Qt opcional.
+            outputs_in_results_panel: quando True, a seção "Saídas" e os
+                botões de visualização (📊 Trajetória, 📊 Distribuição,
+                📊 Validação, 📊 Caso) ficam ocultos — usado quando o
+                editor delega esses elementos ao `InstructionResultsPanel`
+                (3ª coluna). Default False preserva o layout antigo
+                (instâncias usadas isoladamente em outros contextos).
+        """
         super().__init__(parent)
+        self._outputs_in_results_panel = bool(outputs_in_results_panel)
+
         self._instruction: Optional[StrategyInstructionDefinition] = None
         self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
@@ -199,6 +216,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         scroll_layout.addWidget(wrapper_cfg)
 
         # ─── Seção 3: Saídas ──────────────────────────────────────────────
+        # A seção fica SEMPRE no painel de configuração (2ª coluna): o nome
+        # do recurso de saída é decisão de configuração. O painel de
+        # resultados (3ª coluna) renderiza a mesma OutputRowWidget em modo
+        # read-only com foco em estado de runtime + summary + plot.
         scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
         self._outputs_layout = QtWidgets.QVBoxLayout()
         self._outputs_layout.setContentsMargins(8, 6, 8, 8)
@@ -217,6 +238,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.setContentsMargins(0, 6, 0, 0)
 
+        # Quando o painel de resultados (3ª coluna) está ativo, os 4 botões
+        # de visualização migram pra lá — neste painel só ficam Validar/Aplicar.
+        # Os botões ainda são instanciados (e mantidos como atributos) mas
+        # invisíveis, preservando referências internas que outros métodos
+        # consultam.
+        _vis_buttons_visible = not self._outputs_in_results_panel
+
         # Botão de visualização da trajetória — visível apenas em
         # PipelineApplicationInstruction; habilitado quando há trajetória
         # disponível em memória ou em disco.
@@ -233,7 +261,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_trajectory.setVisible(False)
         self.btn_view_trajectory.setEnabled(False)
         self.btn_view_trajectory.clicked.connect(self._on_view_trajectory)
-        btn_row.addWidget(self.btn_view_trajectory)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_trajectory)
 
         # Botão de visualização da distribuição de scores — visível apenas em
         # SimilarityScoringInstruction; habilitado quando há scores disponíveis.
@@ -252,7 +281,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_distribution.setVisible(False)
         self.btn_view_distribution.setEnabled(False)
         self.btn_view_distribution.clicked.connect(self._on_view_distribution)
-        btn_row.addWidget(self.btn_view_distribution)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_distribution)
 
         # Botão de visualização do resultado de validação — visível apenas
         # em StrategyEvaluationInstruction; habilitado quando o recurso de
@@ -272,7 +302,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_validation_result.setVisible(False)
         self.btn_view_validation_result.setEnabled(False)
         self.btn_view_validation_result.clicked.connect(self._on_view_validation_result)
-        btn_row.addWidget(self.btn_view_validation_result)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_validation_result)
 
         # Botão de visualização forense de caso — visível apenas em
         # CaseworkVisualizationInstruction; habilitado quando o recurso de
@@ -294,7 +325,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self.btn_view_casework_visualization.clicked.connect(
             self._on_view_casework_visualization
         )
-        btn_row.addWidget(self.btn_view_casework_visualization)
+        if _vis_buttons_visible:
+            btn_row.addWidget(self.btn_view_casework_visualization)
 
         btn_row.addStretch(1)
 
@@ -564,29 +596,26 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # ─── Seção Saídas ────────────────────────────────────────────────
         self._build_outputs_section(instr)
 
-        # Visibilidade do botão "Visualizar Trajetória 3D" — apenas em PIPELINE_APPLICATION.
-        self.btn_view_trajectory.setVisible(
-            isinstance(instr, PipelineApplicationInstruction)
-        )
-
-        # Visibilidade do botão "Visualizar Distribuição de Scores" —
-        # SIMILARITY_SCORING (raw_score) e SCORE_CALIBRATION (log_lr calibrado).
-        self.btn_view_distribution.setVisible(
-            isinstance(instr, (SimilarityScoringInstruction, ScoreCalibrationInstruction))
-        )
-
-        # Visibilidade do botão "Visualizar Resultado de Validação" —
-        # apenas em STRATEGY_EVALUATION.
-        self.btn_view_validation_result.setVisible(
-            isinstance(instr, StrategyEvaluationInstruction)
-        )
-
-        # Visibilidade do botão "Visualizar Caso" — apenas em
-        # CASEWORK_VISUALIZATION.
-        self.btn_view_casework_visualization.setVisible(
-            isinstance(instr, CaseworkVisualizationInstruction)
-        )
-        self._refresh_view_casework_visualization_button_state()
+        # Visibilidade dos botões de visualização — só faz sentido aplicar
+        # quando os botões foram realmente adicionados ao layout deste painel.
+        # Quando outputs_in_results_panel=True, os botões são instanciados
+        # mas NÃO são parentados a nenhum layout (ficam invisíveis no init);
+        # chamar setVisible(True) num widget sem parent faz ele virar uma
+        # top-level window flutuante (a "janelinha pequena" no macOS).
+        if not self._outputs_in_results_panel:
+            self.btn_view_trajectory.setVisible(
+                isinstance(instr, PipelineApplicationInstruction)
+            )
+            self.btn_view_distribution.setVisible(
+                isinstance(instr, (SimilarityScoringInstruction, ScoreCalibrationInstruction))
+            )
+            self.btn_view_validation_result.setVisible(
+                isinstance(instr, StrategyEvaluationInstruction)
+            )
+            self.btn_view_casework_visualization.setVisible(
+                isinstance(instr, CaseworkVisualizationInstruction)
+            )
+            self._refresh_view_casework_visualization_button_state()
 
         # Aplica estado de runtime se houver
         if self._latest_definition is not None:
@@ -632,7 +661,21 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         choice_specs = instr.get_choice_field_specs()
         for cspec in choice_specs:
             combo = QtWidgets.QComboBox()
-            combo.addItems(cspec.choices)
+
+            # `dynamic_choices` permite que o DTO filtre as opções a cada
+            # rebuild, com base no estado atual de outras seleções e nos
+            # recursos disponíveis (ex: DATASET_BALANCING filtra
+            # quality_metric pelas métricas presentes no dataset).
+            effective_choices = cspec.choices
+            if cspec.dynamic_choices is not None:
+                try:
+                    filtered = cspec.dynamic_choices(self._available_resources)
+                except Exception:
+                    filtered = None
+                if filtered:
+                    effective_choices = filtered
+
+            combo.addItems(effective_choices)
 
             raw_val = getattr(instr, cspec.field_name, None)
             if raw_val is not None:
@@ -642,13 +685,16 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     current_str = str(raw_val)
                     current_str = current_str.split(".")[-1] if "." in current_str else current_str
 
-                choices_upper = {c.upper(): c for c in cspec.choices}
+                choices_upper = {c.upper(): c for c in effective_choices}
                 match = choices_upper.get(current_str.upper())
                 if match:
                     combo.setCurrentText(match)
 
             self._choice_field_widgets[cspec.field_name] = combo
             self._choice_specs[cspec.field_name] = cspec
+            tooltip = self._get_field_tooltip(instr, cspec.field_name)
+            if tooltip:
+                combo.setToolTip(tooltip)
             self._form_cfg.addRow(f"{cspec.label}:", combo)
             combo.currentTextChanged.connect(
                 lambda _text, fn=cspec.field_name: self._on_choice_changed(fn)
@@ -775,6 +821,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 continue
             self._value_field_widgets[vspec.field_name] = widget
             self._value_specs[vspec.field_name] = vspec
+            tooltip = self._get_field_tooltip(instr, vspec.field_name)
+            if tooltip:
+                widget.setToolTip(tooltip)
             self._form_cfg.addRow(f"{vspec.label}:", widget)
 
             # Conexão de rebuild para campos cujo valor altera o conjunto de
@@ -952,6 +1001,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             cv.addWidget(row_widget)
 
             self._resource_field_widgets[spec.field_name] = combo
+
+            # Quando o spec marcou triggers_rebuild=True, mudanças no
+            # dropdown disparam um rebuild completo do form. Útil pra
+            # specs cujos `dynamic_choices` dependem do recurso escolhido
+            # (ex: DATASET_BALANCING.quality_metric filtra pelo dataset).
+            if getattr(spec, "triggers_rebuild", False):
+                combo.currentIndexChanged.connect(
+                    lambda _idx, fn=spec.field_name:
+                        self._on_resource_triggers_rebuild(fn)
+                )
+
             h.addWidget(col, 1)
 
         # Adiciona como um row sem label (ocupa toda a largura)
@@ -1071,6 +1131,25 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             row.name_changed.connect(self._on_output_name_changed)
             self._output_widgets[spec.field_name] = row
             self._outputs_layout.addWidget(row)
+
+    @staticmethod
+    def _get_field_tooltip(instr: StrategyInstructionDefinition, field_name: str) -> Optional[str]:
+        """
+        Lê o `metadata['help']` do dataclass field para uso como tooltip.
+
+        Strings que começam com '<html>' são renderizadas como rich text
+        pelo Qt automaticamente — listas, negrito, código e quebras de
+        linha funcionam direto.
+        """
+        try:
+            for f in dataclasses.fields(instr):
+                if f.name == field_name and f.metadata:
+                    help_text = f.metadata.get("help")
+                    if help_text:
+                        return str(help_text)
+            return None
+        except (TypeError, AttributeError):
+            return None
 
     # ── Apply / Validate ──────────────────────────────────────────────────────
 
@@ -1224,6 +1303,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         setattr(self._instruction, field_name, new_value or None)
         if hasattr(self._instruction, "_sync_declared_io"):
             self._instruction._sync_declared_io()
+        self.output_name_changed.emit(field_name, new_value or "")
 
     def _on_choice_changed(self, field_name: str) -> None:
         """Aplica o valor do campo de escolha e agenda reconstrução do formulário."""
@@ -1253,6 +1333,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         if widget is None or spec is None:
             return
         new_val = self._read_value_widget(widget, spec)
+        setattr(self._instruction, field_name, new_val)
+        if hasattr(self._instruction, "_sync_declared_io"):
+            self._instruction._sync_declared_io()
+        QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
+
+    def _on_resource_triggers_rebuild(self, field_name: str) -> None:
+        """
+        Aplica o resource_id atualmente selecionado ao DTO e dispara
+        rebuild. Usado por ResourceFieldSpec com triggers_rebuild=True
+        (ex: DATASET_BALANCING.dataset_resource_id, cujo valor afeta as
+        opções do dropdown quality_metric via dynamic_choices).
+        """
+        if not self._instruction:
+            return
+        combo = self._resource_field_widgets.get(field_name)
+        if combo is None:
+            return
+        new_val = combo.currentData()  # resource_id ou None
         setattr(self._instruction, field_name, new_val)
         if hasattr(self._instruction, "_sync_declared_io"):
             self._instruction._sync_declared_io()

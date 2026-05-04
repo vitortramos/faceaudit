@@ -40,6 +40,15 @@ from faceaudit.executors.instructions.strategy_evaluation_instruction_executor i
 from faceaudit.executors.instructions.casework_visualization_instruction_executor import (
     CaseworkVisualizationInstructionExecutor,
 )
+from faceaudit.executors.instructions.dataset_balancing_instruction_executor import (
+    DatasetBalancingInstructionExecutor,
+)
+from faceaudit.executors.instructions.hubness_analysis_instruction_executor import (
+    HubnessAnalysisInstructionExecutor,
+)
+from faceaudit.executors.instructions.hubness_ablation_instruction_executor import (
+    HubnessAblationInstructionExecutor,
+)
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
 )
@@ -62,9 +71,17 @@ class StrategyExecutorFactory:
     """
 
     @staticmethod
-    def build_instruction_executor_registry() -> InstructionExecutorRegistry:
+    def build_instruction_executor_registry(
+        comparison_service=None,
+    ) -> InstructionExecutorRegistry:
         """
         Monta e retorna o registry padrão da nova strategy engine.
+
+        Args:
+            comparison_service: instância opcional de ComparisonService a ser
+                injetada nos executores que dela dependem (HUBNESS_ANALYSIS,
+                HUBNESS_ABLATION). Se None, esses executores instanciam um
+                ComparisonService default on-demand.
         """
         registry = InstructionExecutorRegistry()
 
@@ -128,12 +145,28 @@ class StrategyExecutorFactory:
             CaseworkVisualizationInstructionExecutor(),
         )
 
+        registry.register(
+            StrategyInstructionType.DATASET_BALANCING,
+            DatasetBalancingInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.HUBNESS_ANALYSIS,
+            HubnessAnalysisInstructionExecutor(comparison_service=comparison_service),
+        )
+
+        registry.register(
+            StrategyInstructionType.HUBNESS_ABLATION,
+            HubnessAblationInstructionExecutor(comparison_service=comparison_service),
+        )
+
         return registry
 
     @staticmethod
     def build(
         validation_rules: Optional[Dict[str, ValidationRuleProtocol]] = None,
         artifact_storage: Optional[ArtifactStorageProtocol] = None,
+        comparison_service=None,
     ) -> StrategyExecutor:
         """
         Monta e retorna um StrategyExecutor pronto para uso.
@@ -146,8 +179,15 @@ class StrategyExecutorFactory:
                               mas payload=None são hidratados automaticamente antes
                               da execução (carregamento de parquet, JSON, etc.).
                               Obrigatório quando a estratégia é carregada de JSON.
+            comparison_service: Instância opcional de ComparisonService a ser
+                              injetada nos executores que dela dependem
+                              (HUBNESS_ANALYSIS, HUBNESS_ABLATION). Quando None,
+                              esses executores instanciam um ComparisonService
+                              default on-demand.
         """
-        registry = StrategyExecutorFactory.build_instruction_executor_registry()
+        registry = StrategyExecutorFactory.build_instruction_executor_registry(
+            comparison_service=comparison_service,
+        )
 
         return StrategyExecutor(
             context_factory=StrategyExecutionContext,

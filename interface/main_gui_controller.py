@@ -66,18 +66,22 @@ class MainGuiController:
         """
         Inicializa a aba de gerenciamento de datasets.
         """
-        pipeline_extracao = self.container.feature_extraction_pipeline()
-        
-        self.manager_view = DatasetManagerView()
-        
-        self.manager_controller = DatasetManagerController(
-            view=self.manager_view, 
-            pipeline=pipeline_extracao,
-            config=self.app_config,
-            container=self.container # <--- PASSAMOS O CONTAINER AQUI
-        )
-        
-        self.view.add_tab(0, self.manager_view, "Gerenciador de Datasets")
+        try:
+            pipeline_extracao = self.container.feature_extraction_pipeline()
+
+            self.manager_view = DatasetManagerView()
+
+            self.manager_controller = DatasetManagerController(
+                view=self.manager_view,
+                pipeline=pipeline_extracao,
+                config=self.app_config,
+                container=self.container # <--- PASSAMOS O CONTAINER AQUI
+            )
+
+            self.view.add_tab(0, self.manager_view, "Gerenciador de Datasets")
+        except Exception as e:
+            print(f"⚠ Aba 'Gerenciador de Datasets' desativada (FFService falhou): {e}")
+            self.manager_controller = None
 
     # No método _init_strategy_manager()
 
@@ -85,22 +89,26 @@ class MainGuiController:
         """
         Inicializa a aba de gerenciamento de estratégias.
         """
-        self.strategy_view = StrategyManagerView(parent=self.view)
-        
-        # 1. Recupera os Singletons do Container
-        strategies_manager_backend = self.container.strategies_manager()
-        project_manager_backend = self.container.project_manager()
-        validation_manager_backend = self.container.validation_manager() # <--- NOVO
+        try:
+            self.strategy_view = StrategyManagerView(parent=self.view)
 
-        # 2. Injeta no Controller
-        self.strategy_controller = StrategyManagerController(
-            view=self.strategy_view,
-            config_service=self.config_service,
-            strategies_manager=strategies_manager_backend,
-            project_manager=project_manager_backend,
-            validation_manager=validation_manager_backend # <--- PASSANDO ADIANTE
-        )
-        self.view.add_tab(1, self.strategy_view, "Gerenciador de Estratégias")
+            # 1. Recupera os Singletons do Container
+            strategies_manager_backend = self.container.strategies_manager()
+            project_manager_backend = self.container.project_manager()
+            validation_manager_backend = self.container.validation_manager() # <--- NOVO
+
+            # 2. Injeta no Controller
+            self.strategy_controller = StrategyManagerController(
+                view=self.strategy_view,
+                config_service=self.config_service,
+                strategies_manager=strategies_manager_backend,
+                project_manager=project_manager_backend,
+                validation_manager=validation_manager_backend # <--- PASSANDO ADIANTE
+            )
+            self.view.add_tab(1, self.strategy_view, "Gerenciador de Estratégias")
+        except Exception as e:
+            print(f"⚠ Aba 'Gerenciador de Estratégias' (legada) desativada: {e}")
+            self.strategy_controller = None
 
     def _init_strategy_manager_v2(self):
         """
@@ -113,15 +121,22 @@ class MainGuiController:
         from faceaudit.storage.global_library_storage import GlobalLibraryStorage
         from pathlib import Path
 
-        # Tenta construir GlobalLibraryStorage a partir do config
+        # Tenta construir GlobalLibraryStorage:
+        # 1. preferência: config.json → paths.library
+        # 2. fallback: ~/.faceaudit/library (criada automaticamente se não existir)
+        # Sem o storage, o botão "Salvar como Template" e a importação da
+        # biblioteca ficam indisponíveis silenciosamente.
         global_storage = None
         try:
             library_root = getattr(self.app_config.paths, "library", None)
-            if library_root:
-                global_storage = GlobalLibraryStorage(library_root=Path(library_root))
-                global_storage.create_library_structure()
+            if not library_root:
+                library_root = str(Path.home() / ".faceaudit" / "library")
+            global_storage = GlobalLibraryStorage(library_root=Path(library_root))
+            global_storage.create_library_structure()
         except Exception:
-            pass  # Biblioteca opcional — a aba funciona sem ela
+            # Biblioteca opcional — a aba funciona sem ela; save_as_template
+            # exibirá uma mensagem clara ao usuário.
+            global_storage = None
 
         self.strategy_manager_v2 = StrategyManagerV2Controller(
             parent=self.view,
@@ -134,7 +149,7 @@ class MainGuiController:
         """Estabelece a comunicação via sinais."""
         self.view.config_requested.connect(self.abrir_dialogo_configuracoes)
         
-        if hasattr(self.manager_controller, 'request_new_dataset'):
+        if self.manager_controller is not None and hasattr(self.manager_controller, 'request_new_dataset'):
             self.manager_controller.request_new_dataset.connect(
                 self.manager_controller.abrir_dialog_novo_dataset
             )
@@ -154,12 +169,12 @@ class MainGuiController:
 
     def _propagate_config_change(self):
         """Notifica sub-controladores sobre alterações."""
-        if hasattr(self, 'manager_controller'):
+        if getattr(self, 'manager_controller', None) is not None:
             self.manager_controller.config = self.app_config
             if hasattr(self.manager_controller.pipeline, 'storage_path'):
                 self.manager_controller.pipeline.storage_path = Path(self.app_config.paths.datasets)
-        
-        if hasattr(self.strategy_controller, 'on_config_changed'):
+
+        if getattr(self, 'strategy_controller', None) is not None and hasattr(self.strategy_controller, 'on_config_changed'):
             self.strategy_controller.on_config_changed()
     
     def handle_app_close(self, event):
@@ -168,14 +183,14 @@ class MainGuiController:
         Pergunta a cada aba se elas podem ser fechadas.
         """
         # 1. Pergunta para a Aba 1 (Dataset)
-        if hasattr(self, 'manager_controller'):
+        if getattr(self, 'manager_controller', None) is not None:
             pode_fechar_dataset = self.manager_controller.request_close()
             if not pode_fechar_dataset:
                 event.ignore()
                 return
 
         # 2. Pergunta para a Aba 2 (Estratégias / Projeto) — arch antiga
-        if hasattr(self, 'strategy_controller'):
+        if getattr(self, 'strategy_controller', None) is not None:
             pode_fechar_projeto = self.strategy_controller.request_close()
             if not pode_fechar_projeto:
                 event.ignore()

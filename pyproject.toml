@@ -6,11 +6,39 @@ build-backend = "setuptools.build_meta"
 name = "faceaudit"
 version = "0.1.0"
 description = "Biblioteca de auditoria forense facial"
+requires-python = ">=3.11"
 dependencies = [
+    # Core data + math
     "numpy",
     "pandas",
+    "scipy",
+    "scikit-learn",
+    "pyarrow",
+    "tqdm",
+    # Image / face
     "opencv-python",
-    "tqdm"
+    # Plotting (used by validation, casework, hubness widgets and
+    # by generate_arch_doc.py PDF generation)
+    "matplotlib",
+    "seaborn",
+    "statsmodels",  # required for plot_norm_vs_nk_lowess (LOWESS curve)
+    # PLDA backend
+    "speechbrain",
+    # UI (Strategy Manager V2 + all viewer dialogs)
+    "PyQt6>=6.5",
+    # Architecture wiring
+    "dependency-injector",
+    "loguru",
+]
+
+[project.optional-dependencies]
+# Documentation generation (PDF of architecture). Optional so the
+# main install stays lighter.
+docs = ["reportlab"]
+# Development / testing.
+dev = [
+    "pytest",
+    "pytest-qt",
 ]
 
 [tool.setuptools.packages.find]

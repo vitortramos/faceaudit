@@ -25,9 +25,19 @@ class ResourceInfoWidget(QtWidgets.QWidget):
     - Utilização: em quais estratégias/instruções o recurso aparece
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
+        """
+        Args:
+            compact: quando True, oculta a aba "Utilização", a barra de
+                abas e a seção de metadados básicos (ID/Tipo/Path/Hash/
+                Tamanho), deixando apenas as seções ricas
+                (Stats / Pipeline / Sim Model / Calib Model / Scores).
+                Útil pra embedar em outros painéis (ex: 3ª coluna do
+                editor de instruções) sem duplicar info que já está visível.
+        """
         super().__init__(parent)
         self._hash_service = HashService()
+        self._compact = bool(compact)
         self._init_ui()
         self.clear()
 
@@ -103,7 +113,17 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             lbl.setStyleSheet(_lbl_style)
             form.addRow(lbl, value_lbl)
 
-        props_layout.addLayout(form)
+        # Encapsula o form em um widget próprio para que possa ser ocultado
+        # em modo compact (a 3ª coluna do editor já mostra ID/Tipo na linha
+        # do nome do recurso e Path/Hash/Tamanho são pouco úteis lá).
+        self._basic_info_section = QtWidgets.QWidget()
+        basic_layout = QtWidgets.QVBoxLayout(self._basic_info_section)
+        basic_layout.setContentsMargins(0, 0, 0, 0)
+        basic_layout.setSpacing(0)
+        basic_layout.addLayout(form)
+        props_layout.addWidget(self._basic_info_section)
+        if self._compact:
+            self._basic_info_section.setVisible(False)
 
         # Estatísticas do dataset (visível apenas para DATASET)
         self._stats_section = QtWidgets.QWidget()
@@ -127,16 +147,25 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_n_imgs = QtWidgets.QLabel("—")
         self.lbl_n_ids = QtWidgets.QLabel("—")
         self.lbl_emb_cols = QtWidgets.QLabel("—")
+        self.lbl_balance = QtWidgets.QLabel("—")
+        self.lbl_samples_per_id = QtWidgets.QLabel("—")
 
-        for lbl in (self.lbl_n_imgs, self.lbl_n_ids, self.lbl_emb_cols):
+        for lbl in (
+            self.lbl_n_imgs, self.lbl_n_ids, self.lbl_emb_cols,
+            self.lbl_balance, self.lbl_samples_per_id,
+        ):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
 
         self.lbl_emb_cols.setWordWrap(True)
+        self.lbl_balance.setWordWrap(True)
+        self.lbl_samples_per_id.setWordWrap(True)
 
         for text, value_lbl in [
             ("Amostras:", self.lbl_n_imgs),
             ("Identidades:", self.lbl_n_ids),
             ("Embeddings:", self.lbl_emb_cols),
+            ("Balanceamento:", self.lbl_balance),
+            ("Amostras/ID:", self.lbl_samples_per_id),
         ]:
             lbl = QtWidgets.QLabel(text)
             lbl.setStyleSheet(_lbl_style)
@@ -316,12 +345,134 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         scores_layout.addLayout(scores_form)
         props_layout.addWidget(self._scores_section)
 
+        # Detalhes de Pipeline TREINADO (visível para TRAINED_PIPELINE)
+        self._pipeline_trained_section = QtWidgets.QWidget()
+        pt_layout = QtWidgets.QVBoxLayout(self._pipeline_trained_section)
+        pt_layout.setContentsMargins(0, 4, 0, 0)
+        pt_layout.setSpacing(4)
+
+        pt_sep = QtWidgets.QFrame()
+        pt_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        pt_sep.setStyleSheet("color: #ddd;")
+        pt_layout.addWidget(pt_sep)
+
+        pt_header = QtWidgets.QLabel("Detalhes do Pipeline Treinado")
+        pt_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        pt_layout.addWidget(pt_header)
+
+        pt_form = QtWidgets.QFormLayout()
+        pt_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        pt_form.setSpacing(4)
+
+        self.lbl_pt_mode = QtWidgets.QLabel("—")
+        self.lbl_pt_n_steps = QtWidgets.QLabel("—")
+        self.lbl_pt_steps = QtWidgets.QLabel("—")
+        self.lbl_pt_fitted = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_pt_mode, self.lbl_pt_n_steps, self.lbl_pt_steps, self.lbl_pt_fitted):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_pt_steps.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Modo:", self.lbl_pt_mode),
+            ("Nº de steps:", self.lbl_pt_n_steps),
+            ("Cadeia:", self.lbl_pt_steps),
+            ("Estado:", self.lbl_pt_fitted),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            pt_form.addRow(lbl, value_lbl)
+
+        pt_layout.addLayout(pt_form)
+        props_layout.addWidget(self._pipeline_trained_section)
+
+        # Detalhes de Hubness Report (visível para HUBNESS_REPORT)
+        self._hubness_report_section = QtWidgets.QWidget()
+        hr_layout = QtWidgets.QVBoxLayout(self._hubness_report_section)
+        hr_layout.setContentsMargins(0, 4, 0, 0)
+        hr_layout.setSpacing(4)
+
+        hr_sep = QtWidgets.QFrame()
+        hr_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        hr_sep.setStyleSheet("color: #ddd;")
+        hr_layout.addWidget(hr_sep)
+
+        hr_header = QtWidgets.QLabel("Detalhes do Relatório de Hubness")
+        hr_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        hr_layout.addWidget(hr_header)
+
+        hr_form = QtWidgets.QFormLayout()
+        hr_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        hr_form.setSpacing(4)
+
+        self.lbl_hr_dataset = QtWidgets.QLabel("—")
+        self.lbl_hr_n_samples = QtWidgets.QLabel("—")
+        self.lbl_hr_k = QtWidgets.QLabel("—")
+        self.lbl_hr_extras = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_hr_dataset, self.lbl_hr_n_samples, self.lbl_hr_k, self.lbl_hr_extras):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_hr_extras.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Dataset:", self.lbl_hr_dataset),
+            ("Amostras:", self.lbl_hr_n_samples),
+            ("K (vizinhos):", self.lbl_hr_k),
+            ("Estudos auxiliares:", self.lbl_hr_extras),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            hr_form.addRow(lbl, value_lbl)
+
+        hr_layout.addLayout(hr_form)
+        props_layout.addWidget(self._hubness_report_section)
+
+        # Detalhes de Hubness Ablation (visível para HUBNESS_ABLATION_RESULT)
+        self._hubness_ablation_section = QtWidgets.QWidget()
+        ha_layout = QtWidgets.QVBoxLayout(self._hubness_ablation_section)
+        ha_layout.setContentsMargins(0, 4, 0, 0)
+        ha_layout.setSpacing(4)
+
+        ha_sep = QtWidgets.QFrame()
+        ha_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        ha_sep.setStyleSheet("color: #ddd;")
+        ha_layout.addWidget(ha_sep)
+
+        ha_header = QtWidgets.QLabel("Detalhes da Ablação")
+        ha_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        ha_layout.addWidget(ha_header)
+
+        ha_form = QtWidgets.QFormLayout()
+        ha_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        ha_form.setSpacing(4)
+
+        self.lbl_ha_n_scenarios = QtWidgets.QLabel("—")
+        self.lbl_ha_k = QtWidgets.QLabel("—")
+        self.lbl_ha_scenarios = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_ha_n_scenarios, self.lbl_ha_k, self.lbl_ha_scenarios):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_ha_scenarios.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Nº de cenários:", self.lbl_ha_n_scenarios),
+            ("K (vizinhos):", self.lbl_ha_k),
+            ("Cenários:", self.lbl_ha_scenarios),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            ha_form.addRow(lbl, value_lbl)
+
+        ha_layout.addLayout(ha_form)
+        props_layout.addWidget(self._hubness_ablation_section)
+
         props_layout.addStretch()
 
         props_scroll.setWidget(props_container)
         self.tabs.addTab(props_scroll, "Propriedades")
 
         # ── Tab 2: Utilização ────────────────────────────────────────
+        # Em modo compact, a aba "Utilização" não é adicionada — quem
+        # embeda esse widget na 3ª coluna do editor não precisa dessa
+        # informação (e ela exigiria as definitions do projeto, que o
+        # caller compact não passa).
         usage_container = QtWidgets.QWidget()
         usage_layout = QtWidgets.QVBoxLayout(usage_container)
         usage_layout.setContentsMargins(8, 8, 8, 8)
@@ -334,7 +485,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.usage_list.setAlternatingRowColors(True)
         usage_layout.addWidget(self.usage_list)
 
-        self.tabs.addTab(usage_container, "Utilização")
+        if not self._compact:
+            self.tabs.addTab(usage_container, "Utilização")
+        else:
+            # Esconde a barra de abas (sobra só o conteúdo da aba 0).
+            self.tabs.tabBar().setVisible(False)
 
         layout.addWidget(self.tabs)
 
@@ -427,30 +582,56 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_scores()
 
-        # Uso nas estratégias
-        self.usage_list.clear()
-        if definitions:
-            for defn in definitions:
-                for instr in defn.instructions:
-                    role = None
-                    if resource.resource_id in getattr(instr, "input_resource_ids", []):
-                        role = "input"
-                    if resource.resource_id in getattr(instr, "output_resource_ids", []):
-                        role = "output" if role is None else "input/output"
-                    if role:
-                        self.usage_list.addItem(
-                            f"{defn.name}  ›  {instr.instruction_type.value}  [{role}]"
-                        )
-
-        if self.usage_list.count() == 0:
-            self.usage_list.addItem("(não utilizado em nenhuma instrução)")
-
-        # Atualiza badge de contagem na aba Utilização
-        usage_count = self.usage_list.count()
-        if usage_count == 1 and self.usage_list.item(0).text().startswith("(não"):
-            self.tabs.setTabText(1, "Utilização")
+        # Detalhes do pipeline TREINADO (TRAINED_PIPELINE)
+        is_pipeline_trained = resource.resource_type == StrategyResourceType.TRAINED_PIPELINE
+        self._pipeline_trained_section.setVisible(is_pipeline_trained)
+        if is_pipeline_trained:
+            self._load_pipeline_trained_details(resource, abs_path)
         else:
-            self.tabs.setTabText(1, f"Utilização ({usage_count})")
+            self._clear_pipeline_trained()
+
+        # Detalhes do relatório de hubness (HUBNESS_REPORT)
+        is_hubness_report = resource.resource_type == StrategyResourceType.HUBNESS_REPORT
+        self._hubness_report_section.setVisible(is_hubness_report)
+        if is_hubness_report:
+            self._load_hubness_report_details(resource, abs_path)
+        else:
+            self._clear_hubness_report()
+
+        # Detalhes da ablação (HUBNESS_ABLATION_RESULT)
+        is_hubness_ablation = resource.resource_type == StrategyResourceType.HUBNESS_ABLATION_RESULT
+        self._hubness_ablation_section.setVisible(is_hubness_ablation)
+        if is_hubness_ablation:
+            self._load_hubness_ablation_details(resource, abs_path)
+        else:
+            self._clear_hubness_ablation()
+
+        # Uso nas estratégias — só aplicável quando a aba Utilização existe
+        # (modo não-compact, embedado no left panel principal).
+        if not self._compact:
+            self.usage_list.clear()
+            if definitions:
+                for defn in definitions:
+                    for instr in defn.instructions:
+                        role = None
+                        if resource.resource_id in getattr(instr, "input_resource_ids", []):
+                            role = "input"
+                        if resource.resource_id in getattr(instr, "output_resource_ids", []):
+                            role = "output" if role is None else "input/output"
+                        if role:
+                            self.usage_list.addItem(
+                                f"{defn.name}  ›  {instr.instruction_type.value}  [{role}]"
+                            )
+
+            if self.usage_list.count() == 0:
+                self.usage_list.addItem("(não utilizado em nenhuma instrução)")
+
+            # Atualiza badge de contagem na aba Utilização
+            usage_count = self.usage_list.count()
+            if usage_count == 1 and self.usage_list.item(0).text().startswith("(não"):
+                self.tabs.setTabText(1, "Utilização")
+            else:
+                self.tabs.setTabText(1, f"Utilização ({usage_count})")
 
     def clear(self) -> None:
         for lbl in (self.lbl_id, self.lbl_type, self.lbl_path, self.lbl_hash, self.lbl_size):
@@ -465,8 +646,17 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._sim_model_section.setVisible(False)
         self._calib_model_section.setVisible(False)
         self._scores_section.setVisible(False)
-        self.usage_list.clear()
-        self.tabs.setTabText(1, "Utilização")
+        self._pipeline_trained_section.setVisible(False)
+        self._hubness_report_section.setVisible(False)
+        self._hubness_ablation_section.setVisible(False)
+        self._clear_pipeline_trained()
+        self._clear_hubness_report()
+        self._clear_hubness_ablation()
+        # Em modo compact a aba "Utilização" não foi adicionada, então o
+        # usage_list é um widget órfão e pode já ter sido GC'd pelo Qt.
+        if not self._compact:
+            self.usage_list.clear()
+            self.tabs.setTabText(1, "Utilização")
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -489,7 +679,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        if not stats_path.exists() or is_stale:
+        # Cache antigo sem balance_metrics → força recomputação (mesmo padrão
+        # usado em _load_scores_details para n_identities).
+        needs_recompute = not stats_path.exists() or is_stale
+        if not needs_recompute:
+            try:
+                _peek = json.loads(stats_path.read_text(encoding="utf-8"))
+                if "balance_metrics" not in _peek:
+                    needs_recompute = True
+            except Exception:
+                needs_recompute = True
+
+        if needs_recompute:
             self._compute_and_cache_stats(dataset_abs_path, stats_path)
 
         if stats_path.exists():
@@ -506,6 +707,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                     self.lbl_emb_cols.setText("\n".join(lines))
                 else:
                     self.lbl_emb_cols.setText("—")
+                self._render_balance(data.get("balance_metrics"))
                 return
             except Exception:
                 pass
@@ -554,6 +756,28 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 "n_ids": stats.n_ids,
                 "embedding_columns": embedding_columns,
             }
+
+            # Métricas de balanceamento (None quando inaplicável: 0 ou 1
+            # identidade). Persistido como dict simples — JSON-friendly.
+            bm = stats.balance_metrics
+            if bm is not None:
+                payload["balance_metrics"] = {
+                    "n_identities": bm.n_identities,
+                    "min_samples": bm.min_samples,
+                    "max_samples": bm.max_samples,
+                    "mean_samples": bm.mean_samples,
+                    "median_samples": bm.median_samples,
+                    "std_samples": bm.std_samples,
+                    "cv": bm.cv,
+                    "imbalance_ratio": (
+                        bm.imbalance_ratio
+                        if bm.imbalance_ratio != float("inf") else None
+                    ),
+                    "verdict": bm.verdict,
+                }
+            else:
+                payload["balance_metrics"] = None
+
             stats_path.write_text(
                 json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
             )
@@ -564,6 +788,37 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_n_imgs.setText("—")
         self.lbl_n_ids.setText("—")
         self.lbl_emb_cols.setText("—")
+        self.lbl_balance.setText("—")
+        self.lbl_samples_per_id.setText("—")
+
+    def _render_balance(self, bm: Optional[dict]) -> None:
+        """
+        Pinta as duas linhas de balanceamento a partir do dict serializado
+        no sidecar (ou None quando inaplicável: 0 ou 1 identidade).
+        """
+        if not bm:
+            self.lbl_balance.setText("n/a (≤ 1 identidade)")
+            self.lbl_samples_per_id.setText("—")
+            return
+
+        verdict = bm.get("verdict") or "—"
+        cv = bm.get("cv")
+        ratio = bm.get("imbalance_ratio")
+
+        ratio_txt = f"{ratio:.1f}:1" if isinstance(ratio, (int, float)) else "—"
+        cv_txt = f"{cv:.3f}" if isinstance(cv, (int, float)) else "—"
+        self.lbl_balance.setText(f"{verdict}  (CV={cv_txt}, max/min={ratio_txt})")
+
+        mn = bm.get("min_samples")
+        mx = bm.get("max_samples")
+        mean = bm.get("mean_samples")
+        median = bm.get("median_samples")
+        if mn is not None and mx is not None and mean is not None and median is not None:
+            self.lbl_samples_per_id.setText(
+                f"{int(mn)}–{int(mx)}  (média {float(mean):.1f}, mediana {float(median):.1f})"
+            )
+        else:
+            self.lbl_samples_per_id.setText("—")
 
     def _load_pipeline_details(
         self, pipeline_abs_path: Path, embedding_dimensions: Optional[int]
@@ -1102,6 +1357,150 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_scores_impostor.setText("—")
         self.lbl_scores_identities.setText("—")
         self.lbl_scores_calibrated.setText("—")
+
+    # ── TRAINED_PIPELINE ────────────────────────────────────────────────────
+
+    def _load_pipeline_trained_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_pipeline_trained()
+            return
+
+        mode = getattr(payload, "mode", None)
+        steps = getattr(payload, "steps", []) or []
+        fitted = getattr(payload, "_fitted", None)
+
+        mode_str = mode.to_str() if (mode is not None and hasattr(mode, "to_str")) else (
+            str(mode) if mode is not None else "—"
+        )
+        self.lbl_pt_mode.setText(mode_str)
+        self.lbl_pt_n_steps.setText(str(len(steps)))
+
+        names = []
+        for step in steps:
+            name = getattr(step, "name", None) or type(step).__name__
+            names.append(str(name))
+        self.lbl_pt_steps.setText(" → ".join(names) if names else "(sem steps)")
+
+        if fitted is True:
+            self.lbl_pt_fitted.setText("✅ treinado")
+        elif fitted is False:
+            self.lbl_pt_fitted.setText("⚠ não treinado")
+        else:
+            self.lbl_pt_fitted.setText("—")
+
+    def _clear_pipeline_trained(self) -> None:
+        self.lbl_pt_mode.setText("—")
+        self.lbl_pt_n_steps.setText("—")
+        self.lbl_pt_steps.setText("—")
+        self.lbl_pt_fitted.setText("—")
+
+    # ── HUBNESS_REPORT ─────────────────────────────────────────────────────
+
+    def _load_hubness_report_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_hubness_report()
+            return
+
+        self.lbl_hr_dataset.setText(str(getattr(payload, "dataset_name", "") or "—"))
+        self.lbl_hr_n_samples.setText(str(getattr(payload, "n_samples", 0) or "—"))
+        self.lbl_hr_k.setText(str(getattr(payload, "k_neighbors", 0) or "—"))
+
+        extras = []
+        if getattr(payload, "stratification", None):
+            extras.append(f"{len(payload.stratification)} faixas yaw")
+        if getattr(payload, "paired_study", None) is not None:
+            extras.append("estudo pareado")
+        if getattr(payload, "quality_diagnostics", None) is not None:
+            extras.append("diagnóstico de qualidade")
+        if getattr(payload, "optimization_study", None) is not None:
+            extras.append("sweet spot")
+        self.lbl_hr_extras.setText(", ".join(extras) if extras else "(somente análise base)")
+
+    def _clear_hubness_report(self) -> None:
+        self.lbl_hr_dataset.setText("—")
+        self.lbl_hr_n_samples.setText("—")
+        self.lbl_hr_k.setText("—")
+        self.lbl_hr_extras.setText("—")
+
+    # ── HUBNESS_ABLATION_RESULT ────────────────────────────────────────────
+
+    def _load_hubness_ablation_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_hubness_ablation()
+            return
+
+        scenarios = getattr(payload, "scenarios", []) or []
+        self.lbl_ha_n_scenarios.setText(str(len(scenarios)))
+        self.lbl_ha_k.setText(str(getattr(payload, "k_neighbors", 0) or "—"))
+
+        names = []
+        for s in scenarios:
+            sn = getattr(s, "scenario_name", None)
+            mx = getattr(s, "max_nk", None)
+            if sn is not None and mx is not None:
+                names.append(f"{sn} (max Nk={mx})")
+            elif sn is not None:
+                names.append(str(sn))
+        self.lbl_ha_scenarios.setText("; ".join(names) if names else "(sem cenários)")
+
+    def _clear_hubness_ablation(self) -> None:
+        self.lbl_ha_n_scenarios.setText("—")
+        self.lbl_ha_k.setText("—")
+        self.lbl_ha_scenarios.setText("—")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:

@@ -326,7 +326,7 @@ def build_toc(story, S):
         ("  5.3", "StrategyResource — A Unidade de Troca (categorias e placeholders)"),
         ("  5.4", "StrategyExecutor — O Orquestrador"),
         ("  5.5", "Executores de Instrução"),
-        ("6.", "Os 8 Tipos de Instrução"),
+        ("6.", "Os 12 Tipos de Instrução"),
         ("7.", "Sistema de Dois Níveis: Biblioteca Global + Projeto"),
         ("  7.1", "Biblioteca Global"),
         ("  7.2", "Projeto Autocontido (Pendrive Paradigm)"),
@@ -1168,7 +1168,7 @@ def build_s5(story, S):
 # ---------------------------------------------------------------------------
 
 def build_s6(story, S):
-    section_banner(story, S, "6. Os 8 Tipos de Instrução")
+    section_banner(story, S, "6. Os 14 Tipos de Instrução")
 
     story.append(Paragraph(
         "Cada instrução é um <code>@dataclass</code> que herda de "
@@ -1197,7 +1197,14 @@ def build_s6(story, S):
          "O modo LINEAR usa apenas o dataset de referência. O modo DUAL "
          "permite que etapas como CORAL e Whitening usem também o dataset alvo "
          "durante o treino (controlado por PipelineTrainingPolicy). "
-         "Produz: recurso TRAINED_PIPELINE."),
+         "Flag opcional <code>apply_to_training_datasets</code> (default False): "
+         "quando ativa, o pipeline recém-treinado é aplicado IMEDIATAMENTE ao "
+         "(s) dataset(s) de treino e os datasets transformados são registrados "
+         "como outputs adicionais — evita encadear um PIPELINE_APPLICATION "
+         "redundante. Os specs de output condicionais aparecem só quando a "
+         "flag está ATIVA (declarada com <code>triggers_rebuild=True</code> para "
+         "re-renderizar a UI no toggle). "
+         "Produz: TRAINED_PIPELINE + (opcional) INTERMEDIATE_DATASET(s)."),
         ("PIPELINE_APPLICATION", "PipelineApplicationInstructionExecutor",
          "Aplica um pipeline treinado a um ou mais datasets. "
          "Cada dataset de entrada gera um dataset transformado de saída. "
@@ -1235,20 +1242,39 @@ def build_s6(story, S):
          "entradas por índice. "
          "Produz: recurso INTERMEDIATE_DATASET."),
         ("PAIR_MINING", "PairMiningInstructionExecutor",
-         "Curadoria estatística de pares de treino. Recebe um "
-         "EmbeddingComparisonDataset (pares com scores pré-calculados) e aplica "
-         "ComparisonMiningConfig. Estratégias: HARD, EASY, TYPICAL, RANDOM, MIXED. "
-         "Modos de seleção: ROUND_ROBIN_BY_PIVOT (balanceado por identidade) e "
-         "GLOBAL_ORDER (fatiamento direto). "
-         "Produz: recursos impostores minerados + genuínos minerados."),
+         "Curadoria estatística de pares para treino de calibração. Recebe um "
+         "SimilarityScoreDataset (output de SIMILARITY_SCORING) + um recurso "
+         "MINING_CONFIG (referência a ComparisonMiningConfig — editável via "
+         "botão ✎ no painel). Regras independentes para genuínos e impostores: "
+         "HARD/EASY/TYPICAL/RANDOM/MIXED com proporções; foco em PARES ou "
+         "IDENTIDADES; round-robin por pivô ou fatiamento por ordem global. "
+         "Semântica de HARD/EASY é class-aware: HARD sempre significa 'difícil "
+         "de classificar' (top-score para impostores, bottom-score para "
+         "genuínos). Output é um único SimilarityScoreDataset concatenado "
+         "(impostores primeiro, genuínos depois) — separação por classe via "
+         "<code>same_person</code>/<code>label</code>. Produz: SIMILARITY_SCORES "
+         "curado."),
         ("SIMILARITY_MODEL_TRAINING", "SimilarityModelTrainingInstructionExecutor",
          "Treina ou prepara um modelo de similaridade: CosineSimilarityModel "
-         "(stateless, sem dataset de treino) ou PLDASimilarityModel (PLDA via "
-         "SpeechBrain). Hyperparâmetros do PLDA são embutidos diretamente na "
-         "instrução via campo similarity_model_config (PLDASimilarityModelConfig) — "
-         "não há mais dependência de recurso externo *_config_resource_id. "
-         "Cosine não exige config nem dataset. O modelo treinado produz scores "
-         "brutos — não LRs. Produz: recurso TRAINED_SIMILARITY_MODEL."),
+         "(stateless, sem dataset de treino) ou PLDASimilarityModel. "
+         "Hyperparâmetros do PLDA são embutidos diretamente na instrução via "
+         "campo <code>similarity_model_config</code> (PLDASimilarityModelConfig). "
+         "<b>PLDA tem DUAS variantes</b>, controladas por "
+         "<code>plda_variant: PLDAVariant</code>: SIMPLE (default, retrocompat) "
+         "usa o backend SpeechBrain (formulação Ioffe simplificada com subspace "
+         "F entre-classes — usa em_iterations, plda_mode, latent_dim); "
+         "TWO_COVARIANCE usa implementação numpy pura "
+         "(faceaudit/services/two_covariance_plda_service.py) — formulação "
+         "Brümmer &amp; de Villiers 2010, padrão na literatura forense via FoCal "
+         "toolkit. Covariâncias B (entre-classes) e W (intra-classe) completas "
+         "D×D, treino em forma fechada (sem EM iterativo), scoring por log-LR "
+         "vetorizado com kernels Q/P/const cacheados. <code>regularization: "
+         "float ≥ 0</code> soma ε·I antes da inversão para estabilidade em alta "
+         "dimensionalidade; em_iterations/plda_mode/latent_dim são IGNORADOS em "
+         "TWO_COVARIANCE. <code>MODEL_VERSION=2</code> no pickle; payloads v1 "
+         "(apenas <code>plda</code> SpeechBrain) carregam como SIMPLE "
+         "automaticamente. O modelo treinado produz scores brutos — não LRs. "
+         "Produz: recurso TRAINED_SIMILARITY_MODEL."),
         ("SIMILARITY_SCORING", "SimilarityScoringInstructionExecutor",
          "Gera scores de similaridade usando um modelo treinado. "
          "Pode operar em modo self-comparison (um dataset contra si mesmo) ou "
@@ -1294,6 +1320,82 @@ def build_s6(story, S):
          "'📊 Visualizar Resultado de Validação' que abre um dialog com 4 "
          "abas: Distribuição de LRs, Tippett, Curva DET (escala normit) e "
          "Calibração ECE. Produz: recurso VALIDATION_RESULT."),
+        ("CASEWORK_VISUALIZATION", "CaseworkVisualizationInstructionExecutor",
+         "Instrução exclusiva da fase Análise de Caso "
+         "(em <code>_CASEWORK_ONLY_TYPES</code>, nunca aparece fora dessa fase). "
+         "Compara a distribuição de scores do caso forense contra uma população de "
+         "referência (gen + imp da validação). Choice <code>score_type</code> "
+         "(CALIBRATED/RAW) filtra os dropdowns: CALIBRATED aceita CALIBRATED_SCORES "
+         "em ambos (referência e caso); RAW aceita SIMILARITY_SCORES. Validador exige: "
+         "referência NÃO pode ser <code>is_casework=True</code>; caso DEVE ser "
+         "<code>is_casework=True</code>; CALIBRATED requer <code>log_lr</code> "
+         "preenchido. Em RAW, computa o threshold de EER on-the-fly (FNR=FPR via "
+         "varredura linear de 1000 thresholds — &lt;10ms para 100k pares). Output é "
+         "um <code>CaseworkVisualizationResult</code> (ndarrays gen/imp/case + "
+         "metadata + case_summary) registrado como CASEWORK_VISUALIZATION e "
+         "persistido em .pkl. UI: botão '📊 Visualizar Caso' abre dialog que "
+         "sobrepõe à distribuição de referência (KDE+histograma) o caso: KDE azul "
+         "quando n_case ≥ 30, ou linhas verticais tracejadas anotadas com valor "
+         "numérico quando n_case &lt; 30. Linha de referência em log-LR=0 "
+         "(CALIBRATED) ou no EER threshold (RAW). Produz: recurso "
+         "CASEWORK_VISUALIZATION."),
+        ("DATASET_BALANCING", "DatasetBalancingInstructionExecutor",
+         "Balanceia o número de amostras por identidade — produz um novo "
+         "INTERMEDIATE_DATASET preservando o input. <b>Duas dimensões "
+         "ortogonais.</b> "
+         "<code>balancing_mode: DatasetBalancingMode</code>: <b>CAP_ONLY</b> "
+         "(limita a target_n por ID; IDs com menos amostras permanecem inalteradas), "
+         "<b>FLOOR_AND_CAP</b> (cap + descarta IDs inteiras com &lt; target_n "
+         "amostras), <b>AUTO_MIN_BALANCE</b> (N = min observado em runtime — "
+         "todas as IDs ficam com a mesma contagem; potencialmente lossy). "
+         "<code>selection_criterion: DatasetBalancingSelection</code>: "
+         "<b>RANDOM</b> (sorteio reprodutível via random_seed) ou "
+         "<b>BY_QUALITY</b> (top-N por métrica, tie-breaker determinístico via "
+         "SHA1 de face_hash/file_name). <code>quality_metric: QualityScoreType</code> "
+         "aparece só quando BY_QUALITY — opções FIQA, OFIQ, SERFIQ ou "
+         "EMBEDDING_NORM (nova; calculada on-the-fly via np.linalg.norm do "
+         "embedding sepaelv2/AdaFace, não requer coluna no parquet). Direção "
+         "consistente: maior = melhor para todas as métricas. Executor agnóstico "
+         "ao tipo do payload (FaceDataset ou EmbeddingDataset). target_n é "
+         "ocultado da UI quando AUTO_MIN_BALANCE está selecionado. Logs "
+         "registram N efetivo, IDs descartadas no floor e contagem de fallbacks "
+         "(samples sem métrica). Produz: recurso INTERMEDIATE_DATASET."),
+        ("HUBNESS_ANALYSIS", "HubnessAnalysisInstructionExecutor",
+         "Diagnóstico de viés topológico (hubness) em alta dimensionalidade — "
+         "quantifica quais faces atraem vizinhos errados via Nk score, similaridade "
+         "impostora e correlações com pose/norma. Recebe um <code>EmbeddingDataset</code>, "
+         "instancia <code>HubnessAnalysisService</code> (com <code>ComparisonService</code> "
+         "injetado pela <code>StrategyExecutorFactory</code>), executa "
+         "<code>compute_analysis</code> (custoso: O(N²) com batching B×C, soma por "
+         "exclusão e top-K contínuo) + os 4 estudos derivados (stratification, "
+         "paired_study, quality_diagnostics, optimization_study) e empacota tudo "
+         "em um <code>HubnessReport</code> compósito persistido como pickle "
+         "(preserva ndarrays). Hyperparâmetros: <code>k_neighbors</code>, "
+         "<code>batch_size</code>, <code>chunk_size</code>, "
+         "<code>paired_study_threshold_nf</code>. O service aceita "
+         "<code>logger_callback</code> opcional que substitui prints+tqdm por "
+         "progresso periódico (a cada 10%) — o executor passa "
+         "<code>lambda msg: context.log(msg)</code>. Validador exige "
+         "EmbeddingDataset, k_neighbors &lt; n_samples e avisa quando há &lt; 5 "
+         "identidades. UI: 3ª coluna do editor (InstructionResultsPanel) instancia "
+         "<code>HubnessReportWidget</code> com 5 abas inline (Diagnóstico Topológico, "
+         "Estratificação por Pose, Estudo Pareado, Qualidade × Norma, Densidade); "
+         "botão 🔍 Expandir abre <code>HubnessReportViewerDialog</code> com 5 abas "
+         "curadas + galeria scrollável de 16 plots. Produz: recurso HUBNESS_REPORT."),
+        ("HUBNESS_ABLATION", "HubnessAblationInstructionExecutor",
+         "Estudo de ablação topológica — recorta progressivamente o dataset (1, 2, 3 "
+         "fotos por ID + total) seguindo critério escolhido via "
+         "<code>ablation_mode: HubnessAblationMode</code>: <b>BY_QUANTITY</b> "
+         "prioriza melhores fotos por FIQA; <b>BY_POSE</b> prioriza mais frontais "
+         "(menor abs(yaw)+abs(pitch)). Mede o hubness em cada cenário. "
+         "<b>Custoso:</b> refaz O(N²) em N subsets — use HUBNESS_ANALYSIS para "
+         "diagnóstico geral barato e use ABLATION apenas para o estudo formal de "
+         "evolução do Nk. Validador avisa quando BY_QUANTITY é usado em dataset "
+         "sem quality_score. Produz: AblationStudyInfo registrado como recurso "
+         "HUBNESS_ABLATION_RESULT (pickle). UI: 3ª coluna do editor instancia "
+         "<code>HubnessAblationWidget</code> (single-plot inline com KDEs "
+         "sobrepostas dos cenários); botão 🔍 Expandir abre "
+         "<code>HubnessAblationViewerDialog</code>."),
     ]
 
     for i, (itype, executor, desc) in enumerate(instructions):
@@ -2424,27 +2526,28 @@ def build_s15(story, S):
     story.append(Paragraph("15.1 Visão geral do layout", S["h2"]))
 
     code_block(story, S, [
-        "┌─────────────────────────────────────────────────────────────┐",
-        "│  Biblioteca Global:  [Pipeline] [Mining] [Split] [Gerenciar]│",
-        "│  Projeto:  [Novo] [Abrir] [Salvar] [Fechar]  │  [▶ Exec]  │",
-        "├──────────────┬──────────────────────────────────────────────┤",
-        "│  Left Panel  │  Main Area (QTabWidget)                      │",
-        "│  ┌──────────┐│  ┌─────────────────────────────────────────┐ │",
-        "│  │Estratégias││  │ Estratégia: LDA+PLDA  │  Embedding: ▼  │ │",
-        "│  │ • LDA+PLDA││  ├──────────┬──────────┬──────────────────┤ │",
-        "│  │ • Cosine  ││  │Preparação│Validação │ Análise de Caso  │ │",
-        "│  ├──────────┤│  ├──────────┴──────────┴──────────────────┤ │",
-        "│  │ Recursos  ││  │  Lista de       │  Painel de config   │ │",
-        "│  │ 📁Dataset ││  │  instruções     │  (dropdowns tipados)│ │",
-        "│  │ 📁Pipeline││  │  [▶ Run]        │                     │ │",
-        "│  │ 📁Config  ││  │  🔒 / ✅ / ⚙  │  Pipeline Config: ▼ │ │",
-        "│  ├──────────┤│  │ ─────────────── │  Dataset:         ▼ │ │",
-        "│  │ Info      ││  │  Recursos       │  Output:    [____]  │ │",
-        "│  │ recurso   ││  │  Produzidos     │ [Aplicar] [Validar] │ │",
-        "│  │ (pipeline)││  │  🟢 pipe_trnD  │                     │ │",
-        "│  └──────────┘│  │  ⬜ transf_ds   │                     │ │",
-        "│              │  └──────────────────┴─────────────────────┘ │",
-        "└──────────────┴──────────────────────────────────────────────┘",
+        "┌─────────────────────────────────────────────────────────────────────┐",
+        "│  Biblioteca Global:  [Pipeline] [Mining] [Split] [Gerenciar]        │",
+        "│  Projeto:  [Novo] [Abrir] [Salvar] [Fechar]  │  [▶ Exec]            │",
+        "├──────────────┬──────────────────────────────────────────────────────┤",
+        "│  Left Panel  │  Main Area (QTabWidget)                              │",
+        "│  ┌──────────┐│  ┌────────────────────────────────────────────────┐  │",
+        "│  │Estratégias││  │ Estratégia: LDA+PLDA   │   Embedding: ▼      │  │",
+        "│  │ • LDA+PLDA││  ├──────────┬─────────────┬─────────────────────┤  │",
+        "│  │ • Cosine  ││  │Preparação│ Validação   │ Análise de Caso     │  │",
+        "│  ├──────────┤│  ├──────────┴─────────────┴─────────────────────┤  │",
+        "│  │ Recursos  ││  │ Lista       │ Configuração  │ Resultados    │  │",
+        "│  │ 📁Dataset ││  │ instruções  │ (dropdowns    │ (3ª coluna)   │  │",
+        "│  │ 📁Pipeline││  │ [▶ Run]    │  tipados)     │ ─────────────  │  │",
+        "│  │ 📁Config  ││  │ 🔒 / ✅    │ Pipeline ▼    │ Saídas:        │  │",
+        "│  │ 📁Outputs ││  │ ⚙ Score    │ Dataset:  ▼   │ 🟡 raw_scores  │  │",
+        "│  ├──────────┤│  │             │ Output: [___] │ ────────────── │  │",
+        "│  │ Info      ││  │             │ [Aplicar]    │ Visualização:  │  │",
+        "│  │ recurso   ││  │             │ [Validar]    │ [📊 inline]    │  │",
+        "│  │ (pipeline)││  │             │               │ [🔍 Expandir]  │  │",
+        "│  └──────────┘│  │ ~200px      │ ~400px        │ ~600px         │  │",
+        "│              │  └─────────────┴───────────────┴────────────────┘  │",
+        "└──────────────┴──────────────────────────────────────────────────────┘",
     ])
 
     story.append(Paragraph(
@@ -2531,42 +2634,67 @@ def build_s15(story, S):
     )
 
     story.append(Paragraph(
-        "Cada aba contém um <b>splitter horizontal</b> com dois painéis. O painel "
-        "esquerdo é um container vertical com a lista de instruções e o widget de "
-        "recursos produzidos:",
+        "Cada aba contém um <b>splitter horizontal com TRÊS colunas</b> — "
+        "lista de instruções (esquerda, ~200px), painel de configuração (meio, "
+        "~400px) e painel de resultados (direita, ~600px, mais largo porque "
+        "acomoda gráficos inline). Tamanhos via QSplitter, redimensionáveis pelo "
+        "usuário. O antigo <code>ProducedResourcesWidget</code> por aba foi "
+        "removido — recursos produzidos pela estratégia aparecem globalmente no "
+        "<code>LeftPanelWidget</code> (junto com os recursos de projeto), e o "
+        "estado runtime de cada output aparece dentro do "
+        "<code>InstructionResultsPanel</code> via <code>OutputRowWidget</code>.",
         S["body"]
     ))
 
     code_block(story, S, [
         "QSplitter (horizontal)",
-        "├── QWidget container (240px)",
-        "│   ├── InstructionListWidget (stretch=1)",
-        "│   └── ProducedResourcesWidget (fixo, ~90px)",
-        "└── InstructionConfigPanel (460px)",
+        "├── InstructionListWidget       (~200px)",
+        "├── InstructionConfigPanel      (~400px) — outputs_in_results_panel=True",
+        "└── InstructionResultsPanel     (~600px) — saídas + gráficos inline + 🔍",
     ])
 
     two_col_table(story, S,
         ["Painel", "Funcionalidade"],
         [
-            ["InstructionListWidget (esquerda, topo)",
+            ["InstructionListWidget (esquerda)",
              "Lista reordenável (drag-and-drop) de instruções da fase. "
-             "Botões: ➕ Adicionar (menu com os 8 tipos), 🗑 Remover, ▶ Run (instrução individual). "
-             "Estados visuais por instrução: 🔒 bloqueada (cinza, dependências faltantes), "
-             "ícone normal (executável), ✅ já executada (verde)."],
-            ["ProducedResourcesWidget (esquerda, baixo)",
-             "Lista compacta dos recursos produzidos pelas instruções da fase. "
-             "Três estados visuais: ⬜ placeholder (declarado mas não executado), "
-             "🟡 em memória (executado, payload presente no contexto), "
-             "🟢 salvo em disco (artifact_ref preenchido). "
-             "Atualizado automaticamente após cada execução de instrução e ao abrir a estratégia."],
-            ["InstructionConfigPanel (direita)",
-             "Formulário dinâmico por tipo de instrução. Os campos de recurso são renderizados "
-             "a partir de get_resource_field_specs(): inputs como dropdowns filtrados por "
-             "StrategyResourceType, outputs como campos de texto livre. "
-             "Botão 'Aplicar' grava alterações no DTO e chama _sync_declared_io(). "
-             "Botão 'Validar' aplica o formulário e executa a validação completa da instrução "
-             "(regras dinâmicas via build_validation_rules() + validações internas do executor), "
-             "exibindo erros e avisos em um QMessageBox."],
+             "Botões: ➕ Adicionar (menu filtrado pelos tipos válidos da fase), "
+             "🗑 Remover, ▶ Run (instrução individual). Estados visuais por "
+             "instrução: 🔒 bloqueada (cinza, dependências faltantes), ícone "
+             "normal (executável), ✅ já executada (verde)."],
+            ["InstructionConfigPanel (meio)",
+             "Formulário dinâmico por tipo de instrução. Os campos de recurso "
+             "são renderizados a partir de <code>get_resource_field_specs()</code>: "
+             "inputs como dropdowns filtrados por StrategyResourceType. Botão "
+             "'Aplicar' grava alterações no DTO e chama <code>_sync_declared_io()</code>. "
+             "Botão 'Validar' aplica o formulário e executa a validação completa "
+             "(regras dinâmicas via <code>build_validation_rules()</code> + "
+             "validações internas do executor). Quando instanciado pelo "
+             "StrategyEditorWidget com flag <code>outputs_in_results_panel=True</code>, "
+             "a seção 'Saídas' e os 4 botões de visualização (📊) ficam ocultos "
+             "— migram para o painel de resultados (3ª coluna)."],
+            ["InstructionResultsPanel (direita)",
+             "Para a instrução SELECIONADA: lista de outputs (OutputRowWidget) "
+             "com estado runtime (⬜ placeholder / 🟡 em memória / 🟢 salvo) + "
+             "gráfico inline quando aplicável + botão 🔍 Expandir que abre o "
+             "gráfico em dialog tela cheia. Mapeamento de plot por tipo: "
+             "SIMILARITY_SCORING / PAIR_MINING / SCORE_CALIBRATION → "
+             "ScoreDistributionWidget; STRATEGY_EVALUATION → "
+             "ValidationResultWidget (4 abas lazy: distribuição de LRs, Tippett, "
+             "DET, ECE); CASEWORK_VISUALIZATION → CaseworkVisualizationWidget; "
+             "PIPELINE_TRAINING / PIPELINE_APPLICATION → BOTÃO de trajetória 3D "
+             "(não inline — abre <code>GraphViewerDialog</code> por exigir espaço "
+             "para rotação/zoom). Demais instruções (DATASET_SPLIT, _MERGE, "
+             "_BALANCING, PAIRED_DATASET_SPLIT, SIMILARITY_MODEL_TRAINING, "
+             "CALIBRATION_MODEL_TRAINING) exibem só os outputs. Mantém um cache "
+             "<code>_cards: Dict[instruction_id, _ResultsCard]</code> via "
+             "QStackedWidget interno — trocar de instrução é swap do card "
+             "ativo (gráficos cacheados). Re-execução de uma instrução invalida "
+             "o card daquela instrução (drop + redraw na próxima exibição). Para "
+             "datasets grandes (SIMILARITY_SCORES / CALIBRATED_SCORES) ainda no "
+             "disco após reabrir um projeto, o card mostra um botão "
+             "'📊 Carregar e visualizar' em vez de hidratar automaticamente — "
+             "evita travar a main thread com leituras de parquets de 5M+ pares."],
         ],
     )
 
@@ -2575,6 +2703,18 @@ def build_s15(story, S):
         "'Pipeline Config' de um PIPELINE_TRAINING mostra apenas recursos do tipo "
         "PIPELINE_CONFIG, enquanto o campo 'Dataset' mostra apenas DATASET e "
         "INTERMEDIATE_DATASET. Isso evita erros de configuração.",
+        bg=BRAND_LIGHT, border=BRAND_MED,
+    )
+
+    callout_box(story, S,
+        "<b>Widgets de plot reutilizáveis</b> (em <code>strategy_editor/result_widgets/</code>): "
+        "ScoreDistributionWidget, ValidationResultWidget e CaseworkVisualizationWidget "
+        "foram extraídos dos dialogs originais. Cada um aceita flags "
+        "<code>show_header</code> / <code>show_toolbar</code> / <code>show_help</code> "
+        "para alternar entre modo dialog (full, com toolbar matplotlib + texto de "
+        "ajuda) e modo inline (compacto, sem toolbar). Os dialogs antigos "
+        "(ValidationResultViewerDialog, CaseworkVisualizationViewerDialog) viraram "
+        "wrappers finos que embutem o widget — usados pelo botão 🔍 Expandir.",
         bg=BRAND_LIGHT, border=BRAND_MED,
     )
 
@@ -2590,7 +2730,8 @@ def build_s15(story, S):
 
     steps = [
         ("1.", "Perito abre uma estratégia → estado de execução vazio; todas as instruções mostram 🔒. "
-               "Recursos já persistidos em execuções anteriores aparecem como 🟢 no ProducedResourcesWidget."),
+               "Recursos já persistidos em execuções anteriores aparecem como 🟢 nos OutputRowWidget "
+               "do InstructionResultsPanel (3ª coluna) ao selecionar a instrução correspondente."),
         ("2.", "Perito clica ▶ Run na primeira instrução → _ensure_executor_and_context() "
                "cria o executor e prepara o contexto (hidrata recursos iniciais)."),
         ("3.", "_refresh_instruction_states() calcula quais instruções são executáveis "
@@ -2602,8 +2743,10 @@ def build_s15(story, S):
         ("5.", "Recursos produzidos são persistidos em disco automaticamente via "
                "_persist_produced_resources(): para cada produced_resource_id do resultado, "
                "chama StrategyExecutor.persist_produced_resource(), obtém StrategyArtifactReference "
-               "e atualiza a LRStrategyDefinition em disco. ProducedResourcesWidget muda de "
-               "⬜ placeholder para 🟢 salvo em disco."),
+               "e atualiza a LRStrategyDefinition em disco. Cada OutputRowWidget no "
+               "InstructionResultsPanel muda de ⬜ placeholder para 🟢 salvo em disco; "
+               "se a instrução tem visualização inline (scoring/calibration/evaluation/casework), "
+               "o gráfico é renderizado automaticamente na 3ª coluna após a execução."),
         ("6.", "Perito edita, reordena ou remove qualquer instrução → todo o estado de "
                "execução é descartado (_reset_execution_state()). Instruções voltam a 🔒. "
                "Recursos já persistidos (artifact_ref) permanecem salvos."),
@@ -2685,6 +2828,34 @@ def build_s15(story, S):
             "em disco e a definição da estratégia é atualizada com o artifact_ref. "
             "Isso garante que os recursos produzidos sobrevivam ao fechamento do app.",
         ),
+        (
+            "Layout de 3 colunas com cache de gráficos por instrução",
+            "Cada aba do editor é um QSplitter horizontal com 3 colunas "
+            "(lista ~200px / config ~400px / resultados ~600px — a direita é "
+            "mais larga porque acomoda gráficos). O InstructionResultsPanel mantém "
+            "um cache <code>_cards: Dict[instruction_id, _ResultsCard]</code> via "
+            "QStackedWidget interno: trocar de instrução é só um swap de página, sem "
+            "redraw do gráfico. Para STRATEGY_EVALUATION (4 abas matplotlib), as "
+            "abas são lazy-rendered — só desenham na primeira ativação, e o "
+            "ValidationResultWidget mantém um cache interno por aba. Re-execução "
+            "de uma instrução invalida o card via "
+            "<code>StrategyEditorWidget.invalidate_results_for_instruction()</code> "
+            "(drop + redraw). Trajetória 3D de pipeline NÃO renderiza inline — "
+            "abre apenas via botão em GraphViewerDialog (3D precisa de espaço "
+            "para rotação/zoom).",
+        ),
+        (
+            "Lazy hydrate de score datasets grandes em disco",
+            "Quando o usuário seleciona uma instrução cujo output é "
+            "SIMILARITY_SCORES ou CALIBRATED_SCORES e o payload está apenas em "
+            "disco (pós-reabertura de projeto), o InstructionResultsPanel mostra "
+            "um botão <b>'📊 Carregar e visualizar'</b> em vez de hidratar "
+            "automaticamente — evita travar a main thread com leituras de "
+            "parquets de 5M+ pares. O clique emite "
+            "<code>hydrate_requested(instruction, resource_id)</code>; o controller "
+            "deve tratar (via worker se quiser não bloquear). Validation e casework "
+            "results são pequenos (.pkl) — hidratam direto.",
+        ),
     ]
 
     for title, body in decisions:
@@ -2728,6 +2899,22 @@ def build_s16(story, S):
              "StrategyInferenceService — inferência forense: pipeline + score_matrix + calibração"],
             ["faceaudit/services/pipeline_trajectory_service.py", "Nova arch",
              "PipelineTrajectoryService — visualização 3D da trajetória de transformação do pipeline"],
+            ["faceaudit/services/two_covariance_plda_service.py", "Nova arch",
+             "Implementação numpy pura do PLDA de duas covariâncias "
+             "(Brümmer &amp; de Villiers 2010): fit_two_covariance em forma fechada, "
+             "score_two_covariance_pair/_matrix por log-LR vetorizado. "
+             "Usado pelo PLDASimilarityModel quando plda_variant=TWO_COVARIANCE."],
+            ["faceaudit/services/hubness_analysis_service.py", "Nova arch",
+             "HubnessAnalysisService — diagnóstico de viés topológico em alta "
+             "dimensionalidade. compute_analysis (KNN exaustivo O(N²) com "
+             "batching B×C, soma por exclusão, label encoding e top-K contínuo) "
+             "+ 4 estudos derivados + 2 ablações. Aceita logger_callback "
+             "opcional pra integração com o LogProgressDialog da UI."],
+            ["faceaudit/services/hubness_plot_service.py", "Nova arch",
+             "HubnessPlotService — 20 métodos matplotlib/seaborn para visualizar "
+             "os DTOs do HubnessAnalysisService. Reutilizados pelo "
+             "HubnessReportWidget via monkey-patch local de plt.show + captura de "
+             "plt.gcf() + transplante via PNG buffer (evita refatorar 20 métodos)."],
             ["faceaudit/models/calibration/", "Nova arch",
              "Configs e implementações de modelos de calibração"],
             ["faceaudit/models/instructions/", "Nova arch",
@@ -2764,8 +2951,22 @@ def build_s16(story, S):
             ["faceaudit/strategies/", "Arch antiga",
              "KDEStrategy, PLDAStrategy, PLDASnormStrategy"],
             ["interface/tabs/strategy_manager_v2/", "Nova arch",
-             "Frontend V2 — editor com 3 abas (Preparação/Validação/Caso), "
-             "execução individual + workers em thread separada"],
+             "Frontend V2 — editor com 3 abas (Preparação/Validação/Caso) e 3 "
+             "colunas (lista/config/resultados), execução individual + workers "
+             "em thread separada"],
+            ["interface/tabs/strategy_manager_v2/strategy_editor/result_widgets/",
+             "Nova arch",
+             "Widgets de plot reutilizáveis (inline na coluna de resultados ou "
+             "em dialog full-screen): ScoreDistributionWidget, "
+             "ValidationResultWidget (4 tabs lazy), CaseworkVisualizationWidget, "
+             "HubnessReportWidget (5 tabs lazy: topology/stratification/paired/"
+             "quality/density), HubnessAblationWidget (single-plot KDE overlay). "
+             "Cada um aceita flags show_header/show_toolbar/show_help."],
+            ["interface/tabs/strategy_manager_v2/strategy_editor/instruction_results_panel.py",
+             "Nova arch",
+             "InstructionResultsPanel — 3ª coluna do editor: outputs com estado "
+             "runtime + gráficos inline + botão 🔍 Expandir. Cache de _ResultsCard "
+             "por instrução, lazy hydrate de payloads grandes em disco."],
             ["interface/ (demais)", "Arch antiga",
              "Frontend — ainda não migrado para nova arch"],
         ],
@@ -2778,7 +2979,7 @@ def build_s16(story, S):
     story.append(Spacer(1, 8))
     story.append(Paragraph(
         "Documento gerado automaticamente a partir do código-fonte do FaceAudit · "
-        "Versão 1.5 · Abril 2026",
+        "Versão 1.9 · Maio 2026",
         S["caption"]
     ))
 
