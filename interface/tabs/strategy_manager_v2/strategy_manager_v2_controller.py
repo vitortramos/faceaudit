@@ -976,6 +976,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._executor = StrategyExecutorFactory.build(
                     artifact_storage=self._project.storage,
                 )
+                # Propaga o resource_loader do executor para o editor (e
+                # daí para a results panel + cards). Sem isso, o
+                # InstructionResultsPanel não consegue extrair project_root
+                # e o ResourceInfoWidget(compact=True) embedado nos
+                # outputs renderiza com paths/hashes/stats vazios.
+                loader = getattr(self._executor, "_resource_loader", None)
+                if loader is not None and hasattr(self._strategy_editor, "set_resource_loader"):
+                    self._strategy_editor.set_resource_loader(loader)
             except Exception as exc:
                 if not silent:
                     QtWidgets.QMessageBox.critical(
