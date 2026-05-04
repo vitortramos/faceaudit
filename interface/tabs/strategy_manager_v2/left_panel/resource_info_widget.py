@@ -464,30 +464,32 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_scores()
 
-        # Uso nas estratégias
-        self.usage_list.clear()
-        if definitions:
-            for defn in definitions:
-                for instr in defn.instructions:
-                    role = None
-                    if resource.resource_id in getattr(instr, "input_resource_ids", []):
-                        role = "input"
-                    if resource.resource_id in getattr(instr, "output_resource_ids", []):
-                        role = "output" if role is None else "input/output"
-                    if role:
-                        self.usage_list.addItem(
-                            f"{defn.name}  ›  {instr.instruction_type.value}  [{role}]"
-                        )
+        # Uso nas estratégias — só aplicável quando a aba Utilização existe
+        # (modo não-compact, embedado no left panel principal).
+        if not self._compact:
+            self.usage_list.clear()
+            if definitions:
+                for defn in definitions:
+                    for instr in defn.instructions:
+                        role = None
+                        if resource.resource_id in getattr(instr, "input_resource_ids", []):
+                            role = "input"
+                        if resource.resource_id in getattr(instr, "output_resource_ids", []):
+                            role = "output" if role is None else "input/output"
+                        if role:
+                            self.usage_list.addItem(
+                                f"{defn.name}  ›  {instr.instruction_type.value}  [{role}]"
+                            )
 
-        if self.usage_list.count() == 0:
-            self.usage_list.addItem("(não utilizado em nenhuma instrução)")
+            if self.usage_list.count() == 0:
+                self.usage_list.addItem("(não utilizado em nenhuma instrução)")
 
-        # Atualiza badge de contagem na aba Utilização
-        usage_count = self.usage_list.count()
-        if usage_count == 1 and self.usage_list.item(0).text().startswith("(não"):
-            self.tabs.setTabText(1, "Utilização")
-        else:
-            self.tabs.setTabText(1, f"Utilização ({usage_count})")
+            # Atualiza badge de contagem na aba Utilização
+            usage_count = self.usage_list.count()
+            if usage_count == 1 and self.usage_list.item(0).text().startswith("(não"):
+                self.tabs.setTabText(1, "Utilização")
+            else:
+                self.tabs.setTabText(1, f"Utilização ({usage_count})")
 
     def clear(self) -> None:
         for lbl in (self.lbl_id, self.lbl_type, self.lbl_path, self.lbl_hash, self.lbl_size):
@@ -502,8 +504,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._sim_model_section.setVisible(False)
         self._calib_model_section.setVisible(False)
         self._scores_section.setVisible(False)
-        self.usage_list.clear()
-        self.tabs.setTabText(1, "Utilização")
+        # Em modo compact a aba "Utilização" não foi adicionada, então o
+        # usage_list é um widget órfão e pode já ter sido GC'd pelo Qt.
+        if not self._compact:
+            self.usage_list.clear()
+            self.tabs.setTabText(1, "Utilização")
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
