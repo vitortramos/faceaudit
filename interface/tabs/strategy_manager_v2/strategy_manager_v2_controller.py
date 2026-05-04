@@ -163,6 +163,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.instruction_applied.connect(
             self._on_instruction_applied
         )
+        self._strategy_editor.hydrate_resource_requested.connect(
+            self._on_hydrate_resource_requested
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -1212,6 +1215,77 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o visualizador de trajetória:\n{exc}",
             )
+
+    def _on_hydrate_resource_requested(
+        self,
+        instruction: StrategyInstructionDefinition,
+        resource_id: str,
+    ) -> None:
+        """
+        Carrega o payload do recurso a partir do disco e refresca o painel
+        de resultados para que o gráfico seja desenhado.
+
+        Acionado pelo botão &quot;Carregar e visualizar&quot; na 3ª coluna do editor,
+        que aparece quando o recurso está em disco mas não em memória (caso
+        típico após reabrir um projeto sem ter executado nada nessa sessão).
+        """
+        if not self._project or not self._current_definition:
+            return
+
+        if not self._ensure_executor_and_context(silent=True):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Carregamento indisponível",
+                "Não foi possível inicializar o executor para hidratar o recurso.",
+            )
+            return
+
+        existing = self._current_definition.get_resource_by_id(resource_id)
+        if existing is None:
+            # Pode estar só no contexto (ex: produzido em sessão anterior).
+            if self._execution_context is not None and self._execution_context.has_resource(resource_id):
+                existing = self._execution_context.get_resource(resource_id)
+
+        if existing is None:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Recurso não encontrado",
+                f"Recurso '{resource_id}' não está registrado nesta estratégia.",
+            )
+            return
+
+        if not existing.has_payload and existing.has_artifact:
+            loader = getattr(self._executor, "_resource_loader", None)
+            if loader is not None:
+                try:
+                    loader.hydrate(existing)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.critical(
+                        self._view,
+                        "Erro ao carregar",
+                        f"Falha ao carregar '{resource_id}' do disco:\n{exc}",
+                    )
+                    return
+
+        if not existing.has_payload:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Nada a carregar",
+                f"O recurso '{resource_id}' não tem payload em memória nem em disco.",
+            )
+            return
+
+        # Garante que o contexto vivo também enxergue o payload hidratado —
+        # o card consulta o contexto antes de cair na definition.
+        if self._execution_context is not None:
+            self._execution_context.set_resource(existing)
+
+        # Invalida o card cacheado e refresca para o card ser reconstruído
+        # com o payload agora populado, disparando a renderização do plot.
+        self._strategy_editor.invalidate_results_for_instruction(
+            instruction.instruction_id
+        )
+        self._refresh_produced_resources()
 
     def _on_view_score_distribution(self, instruction: StrategyInstructionDefinition) -> None:
         """

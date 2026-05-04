@@ -345,6 +345,124 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         scores_layout.addLayout(scores_form)
         props_layout.addWidget(self._scores_section)
 
+        # Detalhes de Pipeline TREINADO (visível para TRAINED_PIPELINE)
+        self._pipeline_trained_section = QtWidgets.QWidget()
+        pt_layout = QtWidgets.QVBoxLayout(self._pipeline_trained_section)
+        pt_layout.setContentsMargins(0, 4, 0, 0)
+        pt_layout.setSpacing(4)
+
+        pt_sep = QtWidgets.QFrame()
+        pt_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        pt_sep.setStyleSheet("color: #ddd;")
+        pt_layout.addWidget(pt_sep)
+
+        pt_header = QtWidgets.QLabel("Detalhes do Pipeline Treinado")
+        pt_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        pt_layout.addWidget(pt_header)
+
+        pt_form = QtWidgets.QFormLayout()
+        pt_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        pt_form.setSpacing(4)
+
+        self.lbl_pt_mode = QtWidgets.QLabel("—")
+        self.lbl_pt_n_steps = QtWidgets.QLabel("—")
+        self.lbl_pt_steps = QtWidgets.QLabel("—")
+        self.lbl_pt_fitted = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_pt_mode, self.lbl_pt_n_steps, self.lbl_pt_steps, self.lbl_pt_fitted):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_pt_steps.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Modo:", self.lbl_pt_mode),
+            ("Nº de steps:", self.lbl_pt_n_steps),
+            ("Cadeia:", self.lbl_pt_steps),
+            ("Estado:", self.lbl_pt_fitted),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            pt_form.addRow(lbl, value_lbl)
+
+        pt_layout.addLayout(pt_form)
+        props_layout.addWidget(self._pipeline_trained_section)
+
+        # Detalhes de Hubness Report (visível para HUBNESS_REPORT)
+        self._hubness_report_section = QtWidgets.QWidget()
+        hr_layout = QtWidgets.QVBoxLayout(self._hubness_report_section)
+        hr_layout.setContentsMargins(0, 4, 0, 0)
+        hr_layout.setSpacing(4)
+
+        hr_sep = QtWidgets.QFrame()
+        hr_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        hr_sep.setStyleSheet("color: #ddd;")
+        hr_layout.addWidget(hr_sep)
+
+        hr_header = QtWidgets.QLabel("Detalhes do Relatório de Hubness")
+        hr_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        hr_layout.addWidget(hr_header)
+
+        hr_form = QtWidgets.QFormLayout()
+        hr_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        hr_form.setSpacing(4)
+
+        self.lbl_hr_dataset = QtWidgets.QLabel("—")
+        self.lbl_hr_n_samples = QtWidgets.QLabel("—")
+        self.lbl_hr_k = QtWidgets.QLabel("—")
+        self.lbl_hr_extras = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_hr_dataset, self.lbl_hr_n_samples, self.lbl_hr_k, self.lbl_hr_extras):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_hr_extras.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Dataset:", self.lbl_hr_dataset),
+            ("Amostras:", self.lbl_hr_n_samples),
+            ("K (vizinhos):", self.lbl_hr_k),
+            ("Estudos auxiliares:", self.lbl_hr_extras),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            hr_form.addRow(lbl, value_lbl)
+
+        hr_layout.addLayout(hr_form)
+        props_layout.addWidget(self._hubness_report_section)
+
+        # Detalhes de Hubness Ablation (visível para HUBNESS_ABLATION_RESULT)
+        self._hubness_ablation_section = QtWidgets.QWidget()
+        ha_layout = QtWidgets.QVBoxLayout(self._hubness_ablation_section)
+        ha_layout.setContentsMargins(0, 4, 0, 0)
+        ha_layout.setSpacing(4)
+
+        ha_sep = QtWidgets.QFrame()
+        ha_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        ha_sep.setStyleSheet("color: #ddd;")
+        ha_layout.addWidget(ha_sep)
+
+        ha_header = QtWidgets.QLabel("Detalhes da Ablação")
+        ha_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
+        ha_layout.addWidget(ha_header)
+
+        ha_form = QtWidgets.QFormLayout()
+        ha_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        ha_form.setSpacing(4)
+
+        self.lbl_ha_n_scenarios = QtWidgets.QLabel("—")
+        self.lbl_ha_k = QtWidgets.QLabel("—")
+        self.lbl_ha_scenarios = QtWidgets.QLabel("—")
+        for lbl in (self.lbl_ha_n_scenarios, self.lbl_ha_k, self.lbl_ha_scenarios):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_ha_scenarios.setWordWrap(True)
+
+        for text, value_lbl in [
+            ("Nº de cenários:", self.lbl_ha_n_scenarios),
+            ("K (vizinhos):", self.lbl_ha_k),
+            ("Cenários:", self.lbl_ha_scenarios),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            ha_form.addRow(lbl, value_lbl)
+
+        ha_layout.addLayout(ha_form)
+        props_layout.addWidget(self._hubness_ablation_section)
+
         props_layout.addStretch()
 
         props_scroll.setWidget(props_container)
@@ -464,6 +582,30 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_scores()
 
+        # Detalhes do pipeline TREINADO (TRAINED_PIPELINE)
+        is_pipeline_trained = resource.resource_type == StrategyResourceType.TRAINED_PIPELINE
+        self._pipeline_trained_section.setVisible(is_pipeline_trained)
+        if is_pipeline_trained:
+            self._load_pipeline_trained_details(resource, abs_path)
+        else:
+            self._clear_pipeline_trained()
+
+        # Detalhes do relatório de hubness (HUBNESS_REPORT)
+        is_hubness_report = resource.resource_type == StrategyResourceType.HUBNESS_REPORT
+        self._hubness_report_section.setVisible(is_hubness_report)
+        if is_hubness_report:
+            self._load_hubness_report_details(resource, abs_path)
+        else:
+            self._clear_hubness_report()
+
+        # Detalhes da ablação (HUBNESS_ABLATION_RESULT)
+        is_hubness_ablation = resource.resource_type == StrategyResourceType.HUBNESS_ABLATION_RESULT
+        self._hubness_ablation_section.setVisible(is_hubness_ablation)
+        if is_hubness_ablation:
+            self._load_hubness_ablation_details(resource, abs_path)
+        else:
+            self._clear_hubness_ablation()
+
         # Uso nas estratégias — só aplicável quando a aba Utilização existe
         # (modo não-compact, embedado no left panel principal).
         if not self._compact:
@@ -504,6 +646,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._sim_model_section.setVisible(False)
         self._calib_model_section.setVisible(False)
         self._scores_section.setVisible(False)
+        self._pipeline_trained_section.setVisible(False)
+        self._hubness_report_section.setVisible(False)
+        self._hubness_ablation_section.setVisible(False)
+        self._clear_pipeline_trained()
+        self._clear_hubness_report()
+        self._clear_hubness_ablation()
         # Em modo compact a aba "Utilização" não foi adicionada, então o
         # usage_list é um widget órfão e pode já ter sido GC'd pelo Qt.
         if not self._compact:
@@ -1209,6 +1357,150 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_scores_impostor.setText("—")
         self.lbl_scores_identities.setText("—")
         self.lbl_scores_calibrated.setText("—")
+
+    # ── TRAINED_PIPELINE ────────────────────────────────────────────────────
+
+    def _load_pipeline_trained_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_pipeline_trained()
+            return
+
+        mode = getattr(payload, "mode", None)
+        steps = getattr(payload, "steps", []) or []
+        fitted = getattr(payload, "_fitted", None)
+
+        mode_str = mode.to_str() if (mode is not None and hasattr(mode, "to_str")) else (
+            str(mode) if mode is not None else "—"
+        )
+        self.lbl_pt_mode.setText(mode_str)
+        self.lbl_pt_n_steps.setText(str(len(steps)))
+
+        names = []
+        for step in steps:
+            name = getattr(step, "name", None) or type(step).__name__
+            names.append(str(name))
+        self.lbl_pt_steps.setText(" → ".join(names) if names else "(sem steps)")
+
+        if fitted is True:
+            self.lbl_pt_fitted.setText("✅ treinado")
+        elif fitted is False:
+            self.lbl_pt_fitted.setText("⚠ não treinado")
+        else:
+            self.lbl_pt_fitted.setText("—")
+
+    def _clear_pipeline_trained(self) -> None:
+        self.lbl_pt_mode.setText("—")
+        self.lbl_pt_n_steps.setText("—")
+        self.lbl_pt_steps.setText("—")
+        self.lbl_pt_fitted.setText("—")
+
+    # ── HUBNESS_REPORT ─────────────────────────────────────────────────────
+
+    def _load_hubness_report_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_hubness_report()
+            return
+
+        self.lbl_hr_dataset.setText(str(getattr(payload, "dataset_name", "") or "—"))
+        self.lbl_hr_n_samples.setText(str(getattr(payload, "n_samples", 0) or "—"))
+        self.lbl_hr_k.setText(str(getattr(payload, "k_neighbors", 0) or "—"))
+
+        extras = []
+        if getattr(payload, "stratification", None):
+            extras.append(f"{len(payload.stratification)} faixas yaw")
+        if getattr(payload, "paired_study", None) is not None:
+            extras.append("estudo pareado")
+        if getattr(payload, "quality_diagnostics", None) is not None:
+            extras.append("diagnóstico de qualidade")
+        if getattr(payload, "optimization_study", None) is not None:
+            extras.append("sweet spot")
+        self.lbl_hr_extras.setText(", ".join(extras) if extras else "(somente análise base)")
+
+    def _clear_hubness_report(self) -> None:
+        self.lbl_hr_dataset.setText("—")
+        self.lbl_hr_n_samples.setText("—")
+        self.lbl_hr_k.setText("—")
+        self.lbl_hr_extras.setText("—")
+
+    # ── HUBNESS_ABLATION_RESULT ────────────────────────────────────────────
+
+    def _load_hubness_ablation_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_hubness_ablation()
+            return
+
+        scenarios = getattr(payload, "scenarios", []) or []
+        self.lbl_ha_n_scenarios.setText(str(len(scenarios)))
+        self.lbl_ha_k.setText(str(getattr(payload, "k_neighbors", 0) or "—"))
+
+        names = []
+        for s in scenarios:
+            sn = getattr(s, "scenario_name", None)
+            mx = getattr(s, "max_nk", None)
+            if sn is not None and mx is not None:
+                names.append(f"{sn} (max Nk={mx})")
+            elif sn is not None:
+                names.append(str(sn))
+        self.lbl_ha_scenarios.setText("; ".join(names) if names else "(sem cenários)")
+
+    def _clear_hubness_ablation(self) -> None:
+        self.lbl_ha_n_scenarios.setText("—")
+        self.lbl_ha_k.setText("—")
+        self.lbl_ha_scenarios.setText("—")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
