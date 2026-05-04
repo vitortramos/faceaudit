@@ -350,9 +350,25 @@ class _ResultsCard(QtWidgets.QWidget):
         """
         executed = self._instruction.instruction_id in (executed_ids or set())
 
+        # Extrai project_root do storage agregado pelo resource_loader. Usado
+        # pelas OutputRowWidgets para popular ResourceInfoWidget(compact=True)
+        # com path/hash/tamanho do artifact em disco.
+        project_root = None
+        try:
+            storage = getattr(resource_loader, "_storage", None) if resource_loader else None
+            if storage is not None:
+                project_root = getattr(storage, "project_root", None)
+        except Exception:
+            project_root = None
+
         for row in self._output_widgets.values():
-            row.update_state(definition, self._instruction.instruction_id,
-                             executed, context)
+            row.update_state(
+                definition,
+                self._instruction.instruction_id,
+                executed,
+                context,
+                project_root=project_root,
+            )
 
         if self._plot_widget is None:
             return  # sem plot inline; nada a fazer

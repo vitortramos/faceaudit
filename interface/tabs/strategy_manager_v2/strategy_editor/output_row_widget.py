@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6 import QtWidgets, QtCore
@@ -379,6 +380,12 @@ class OutputRowWidget(QtWidgets.QFrame):
         self._resource_type = resource_type
         self._read_only = bool(read_only)
 
+        # Estado para a seção de Detalhes (lazy, criada no primeiro expand).
+        self._info_widget: Optional[QtWidgets.QWidget] = None
+        self._info_expanded = False
+        self._last_resource_for_details: Optional[StrategyResource] = None
+        self._last_project_root: Optional[Path] = None
+
         self.setStyleSheet(
             "OutputRowWidget {"
             "  background-color: #fafdf6;"
@@ -442,6 +449,35 @@ class OutputRowWidget(QtWidgets.QFrame):
         self._summary_layout = sum_layout
         layout.addWidget(self._summary_container, 1, 0, 1, 4)
 
+        # Linha 3 (apenas read_only): botão expansível "▾ Detalhes" que
+        # mostra ResourceInfoWidget(compact=True) abaixo. Criado lazy no
+        # primeiro clique para evitar instanciar widgets pesados (5 seções
+        # de form) por output, mesmo quando o usuário não vai consultar.
+        if self._read_only:
+            self._details_btn = QtWidgets.QToolButton()
+            self._details_btn.setText("▸ Detalhes")
+            self._details_btn.setStyleSheet(
+                "QToolButton { border: none; background: transparent;"
+                " color: #555; font-size: 10px; padding: 2px 4px; }"
+                "QToolButton:hover { color: #1565c0; }"
+            )
+            self._details_btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+            self._details_btn.clicked.connect(self._on_toggle_details)
+            self._details_btn.setVisible(False)  # só aparece quando há recurso
+            layout.addWidget(self._details_btn, 2, 0, 1, 4)
+
+            self._details_container = QtWidgets.QWidget()
+            details_layout = QtWidgets.QVBoxLayout(self._details_container)
+            details_layout.setContentsMargins(28, 4, 4, 4)
+            details_layout.setSpacing(0)
+            self._details_layout = details_layout
+            self._details_container.setVisible(False)
+            layout.addWidget(self._details_container, 3, 0, 1, 4)
+        else:
+            self._details_btn = None
+            self._details_container = None
+            self._details_layout = None
+
         layout.setColumnStretch(2, 1)
 
     def update_state(
@@ -450,6 +486,7 @@ class OutputRowWidget(QtWidgets.QFrame):
         instruction_id: str,
         executed: bool,
         context: Optional[StrategyExecutionContextProtocol],
+        project_root: Optional[Path] = None,
     ) -> None:
         """Atualiza ícone de status e bloco de resumo conforme estado do recurso."""
         # Limpa resumo anterior
@@ -462,6 +499,7 @@ class OutputRowWidget(QtWidgets.QFrame):
         resource_id = self._name_field.text().strip()
         if not resource_id:
             self._set_status("⬜", "(sem nome)")
+            self._update_details_visibility(None, project_root)
             return
 
         existing = definition.get_resource_by_id(resource_id) if definition else None
@@ -473,14 +511,71 @@ class OutputRowWidget(QtWidgets.QFrame):
         if existing and existing.has_artifact:
             self._set_status("\U0001f7e2", "salvo em disco")
             self._render_summary_for(existing.payload or (ctx_resource.payload if ctx_resource else None))
+            self._update_details_visibility(existing, project_root)
         elif ctx_resource and ctx_resource.has_payload:
             self._set_status("\U0001f7e1", "em memória")
             self._render_summary_for(ctx_resource.payload)
-        elif executed:
-            # Foi executada mas sem payload visível — comportamento defensivo
-            self._set_status("\U0001f7e1", "em memória")
+            self._update_details_visibility(ctx_resource, project_root)
+        elif existing is not None:
+            # Recurso conhecido mas sem payload nem artifact — placeholder.
+            if executed:
+                self._set_status("\U0001f7e1", "em memória")
+            else:
+                self._set_status("⬜", "placeholder")
+            self._update_details_visibility(existing, project_root)
         else:
             self._set_status("⬜", "placeholder")
+            self._update_details_visibility(None, project_root)
+
+    def _update_details_visibility(
+        self,
+        resource: Optional[StrategyResource],
+        project_root: Optional[Path],
+    ) -> None:
+        """Mostra o toggle só quando há um recurso real (em mem ou disco)."""
+        if self._details_btn is None:
+            return
+        has_data = resource is not None and (
+            getattr(resource, "has_payload", False)
+            or getattr(resource, "has_artifact", False)
+        )
+        self._details_btn.setVisible(has_data)
+        self._last_resource_for_details = resource if has_data else None
+        self._last_project_root = project_root
+        # Re-renderiza se a seção já estava expandida.
+        if self._info_expanded and self._info_widget is not None and resource is not None:
+            self._refresh_info_widget()
+
+    def _on_toggle_details(self) -> None:
+        if self._details_btn is None or self._details_container is None:
+            return
+        self._info_expanded = not self._info_expanded
+        if self._info_expanded:
+            self._details_btn.setText("▾ Detalhes")
+            if self._info_widget is None:
+                # Lazy init na primeira expansão.
+                from interface.tabs.strategy_manager_v2.left_panel.resource_info_widget import (
+                    ResourceInfoWidget,
+                )
+                self._info_widget = ResourceInfoWidget(compact=True)
+                self._details_layout.addWidget(self._info_widget)
+            self._refresh_info_widget()
+            self._details_container.setVisible(True)
+        else:
+            self._details_btn.setText("▸ Detalhes")
+            self._details_container.setVisible(False)
+
+    def _refresh_info_widget(self) -> None:
+        if self._info_widget is None or self._last_resource_for_details is None:
+            return
+        try:
+            self._info_widget.show_resource(
+                resource=self._last_resource_for_details,
+                project_root=self._last_project_root,
+                definitions=None,
+            )
+        except Exception:
+            pass
 
     def _set_status(self, icon: str, status_text: str) -> None:
         self._status_lbl.setText(icon)

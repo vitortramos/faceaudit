@@ -25,9 +25,19 @@ class ResourceInfoWidget(QtWidgets.QWidget):
     - Utilização: em quais estratégias/instruções o recurso aparece
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
+        """
+        Args:
+            compact: quando True, oculta a aba "Utilização", a barra de
+                abas e a seção de metadados básicos (ID/Tipo/Path/Hash/
+                Tamanho), deixando apenas as seções ricas
+                (Stats / Pipeline / Sim Model / Calib Model / Scores).
+                Útil pra embedar em outros painéis (ex: 3ª coluna do
+                editor de instruções) sem duplicar info que já está visível.
+        """
         super().__init__(parent)
         self._hash_service = HashService()
+        self._compact = bool(compact)
         self._init_ui()
         self.clear()
 
@@ -103,7 +113,17 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             lbl.setStyleSheet(_lbl_style)
             form.addRow(lbl, value_lbl)
 
-        props_layout.addLayout(form)
+        # Encapsula o form em um widget próprio para que possa ser ocultado
+        # em modo compact (a 3ª coluna do editor já mostra ID/Tipo na linha
+        # do nome do recurso e Path/Hash/Tamanho são pouco úteis lá).
+        self._basic_info_section = QtWidgets.QWidget()
+        basic_layout = QtWidgets.QVBoxLayout(self._basic_info_section)
+        basic_layout.setContentsMargins(0, 0, 0, 0)
+        basic_layout.setSpacing(0)
+        basic_layout.addLayout(form)
+        props_layout.addWidget(self._basic_info_section)
+        if self._compact:
+            self._basic_info_section.setVisible(False)
 
         # Estatísticas do dataset (visível apenas para DATASET)
         self._stats_section = QtWidgets.QWidget()
@@ -331,6 +351,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.tabs.addTab(props_scroll, "Propriedades")
 
         # ── Tab 2: Utilização ────────────────────────────────────────
+        # Em modo compact, a aba "Utilização" não é adicionada — quem
+        # embeda esse widget na 3ª coluna do editor não precisa dessa
+        # informação (e ela exigiria as definitions do projeto, que o
+        # caller compact não passa).
         usage_container = QtWidgets.QWidget()
         usage_layout = QtWidgets.QVBoxLayout(usage_container)
         usage_layout.setContentsMargins(8, 8, 8, 8)
@@ -343,7 +367,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.usage_list.setAlternatingRowColors(True)
         usage_layout.addWidget(self.usage_list)
 
-        self.tabs.addTab(usage_container, "Utilização")
+        if not self._compact:
+            self.tabs.addTab(usage_container, "Utilização")
+        else:
+            # Esconde a barra de abas (sobra só o conteúdo da aba 0).
+            self.tabs.tabBar().setVisible(False)
 
         layout.addWidget(self.tabs)
 
