@@ -56,36 +56,90 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
 
     balancing_mode: DatasetBalancingMode = field(
         default=DatasetBalancingMode.CAP_ONLY,
-        metadata={"help": "Modo de balanceamento (cap, floor+cap ou auto-min)."}
+        metadata={"help": (
+            "<html><b>Modo de balanceamento</b> — define quantas amostras "
+            "cada identidade vai ter no dataset de saída.<br/><br/>"
+            "<b>Exemplo:</b> dataset com IDs A=25, B=12, C=8, D=3 fotos e "
+            "<code>target_n=10</code>:<br/><br/>"
+            "<b>CAP_ONLY</b> — só corta o que excede target_n; quem tem "
+            "menos fica intocado.<br/>"
+            "&nbsp;&nbsp;A:25→10, B:12→10, C:8→8, D:3→3 — total 31, "
+            "ainda desbalanceado.<br/>"
+            "&nbsp;&nbsp;<i>Use quando:</i> quer evitar dominância de IDs "
+            "populosos sem perder identidades.<br/><br/>"
+            "<b>FLOOR_AND_CAP</b> — corta excesso E descarta IDs inteiras "
+            "com menos de target_n.<br/>"
+            "&nbsp;&nbsp;A:25→10, B:12→10, C:8→✘, D:3→✘ — total 20, "
+            "perfeitamente balanceado.<br/>"
+            "&nbsp;&nbsp;<i>Use quando:</i> precisa de balanceamento "
+            "estrito (PLDA, validação) e aceita perder IDs.<br/><br/>"
+            "<b>AUTO_MIN_BALANCE</b> — ignora target_n; usa o mínimo "
+            "observado em runtime.<br/>"
+            "&nbsp;&nbsp;min=3 (D) → todas viram 3: A:25→3, B:12→3, C:8→3, "
+            "D:3→3 — total 12.<br/>"
+            "&nbsp;&nbsp;<i>Use quando:</i> precisa balanceamento sem "
+            "descartar IDs e o mínimo já está aceitável. Em datasets "
+            "heterogêneos costuma ser ruim — uma ID com poucas amostras "
+            "força todo mundo a perder dados.</html>"
+        )}
     )
 
     target_n: int = field(
         default=10,
         metadata={"help": (
-            "Número alvo de amostras por identidade. Usado em CAP_ONLY e "
-            "FLOOR_AND_CAP. Ignorado em AUTO_MIN_BALANCE (que computa N "
-            "como o mínimo observado em runtime)."
+            "<html><b>Número alvo de amostras por identidade.</b><br/><br/>"
+            "Em <b>CAP_ONLY</b>: limite máximo — IDs com menos amostras "
+            "ficam como estão.<br/>"
+            "Em <b>FLOOR_AND_CAP</b>: piso E cap — IDs com menos que "
+            "isso são descartadas inteiras.<br/>"
+            "Em <b>AUTO_MIN_BALANCE</b>: ignorado (o N é computado como "
+            "min(samples_per_identity) em runtime).</html>"
         )}
     )
 
     selection_criterion: DatasetBalancingSelection = field(
         default=DatasetBalancingSelection.RANDOM,
-        metadata={"help": "Critério para escolher quais amostras descartar."}
+        metadata={"help": (
+            "<html><b>Critério de seleção</b> — quando uma ID precisa "
+            "ser cortada (ex: 25 fotos → 10), como decidir quais 10 "
+            "ficam?<br/><br/>"
+            "<b>RANDOM</b> — sorteio uniforme controlado por "
+            "<code>random_seed</code>. Reprodutível: mesma seed → mesma "
+            "escolha. Útil quando você não tem métrica de qualidade "
+            "confiável ou quer evitar viés.<br/><br/>"
+            "<b>BY_QUALITY</b> — mantém as N <i>melhores</i> de cada "
+            "ID por uma métrica (FIQA/OFIQ/SERFIQ/EMBEDDING_NORM). "
+            "Direção: maior = melhor sempre. Empates são quebrados "
+            "deterministicamente via SHA1 de <code>face_hash</code>/"
+            "<code>file_name</code> — mesma escolha entre máquinas.</html>"
+        )}
     )
 
     quality_metric: QualityScoreType = field(
         default=QualityScoreType.OFIQ,
         metadata={"help": (
-            "Métrica de qualidade usada quando selection_criterion=BY_QUALITY. "
-            "Direção: maior = melhor para todas as métricas suportadas."
+            "<html><b>Métrica de qualidade</b> usada quando "
+            "<code>selection_criterion=BY_QUALITY</code>. "
+            "Direção: <b>maior = melhor</b> para todas.<br/><br/>"
+            "<b>FIQA</b> — score do ForensicFace/sepaelv2 (0.0–1.0).<br/>"
+            "<b>OFIQ</b> — score unificado ISO/OFIQ (0.0–100.0).<br/>"
+            "<b>SERFIQ</b> — Stochastic Embedding Robustness FIQ.<br/>"
+            "<b>EMBEDDING_NORM</b> — norma L2 do embedding "
+            "(<code>np.linalg.norm</code>), calculada on-the-fly. "
+            "Sempre disponível, não precisa estar no parquet.<br/><br/>"
+            "<i>O dropdown filtra automaticamente as métricas com "
+            "cobertura ≥ 50% no dataset selecionado.</i></html>"
         )}
     )
 
     random_seed: int = field(
         default=42,
         metadata={"help": (
-            "Semente aleatória para RANDOM. Em BY_QUALITY é usada apenas "
-            "para tie-breaking determinístico em empates."
+            "<html><b>Semente aleatória.</b><br/><br/>"
+            "Em <b>RANDOM</b>: controla totalmente o sorteio — "
+            "mesma seed → mesmo conjunto escolhido.<br/>"
+            "Em <b>BY_QUALITY</b>: usado apenas como tie-breaker "
+            "determinístico em empates de score.</html>"
         )}
     )
 
@@ -108,18 +162,19 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
                 enum_type=DatasetBalancingMode,
                 descriptions={
                     "CAP_ONLY":
-                        "Limita a `target_n` amostras por identidade. "
-                        "Identidades com MENOS amostras permanecem inalteradas. "
-                        "Mais conservador — preserva o máximo de dados.",
+                        "Corta o que excede target_n; IDs com menos amostras "
+                        "ficam intocadas. Ex: A=25→10, B=8→8 (target_n=10). "
+                        "Preserva diversidade, mas resultado segue desbalanceado.",
                     "FLOOR_AND_CAP":
-                        "Aplica `target_n` como piso E cap. Identidades com "
-                        "menos de `target_n` amostras são DESCARTADAS por "
-                        "completo. Garante uniformidade do mínimo de cobertura.",
+                        "Cap em target_n + DESCARTA IDs inteiras com menos "
+                        "amostras que isso. Ex: A=25→10, B=8→removida "
+                        "(target_n=10). Balanceamento perfeito ao custo de "
+                        "perder identidades.",
                     "AUTO_MIN_BALANCE":
-                        "Computa N = min(samples_per_identity) em runtime e "
-                        "aplica como cap. Resultado é perfeitamente balanceado "
-                        "(todas as IDs com mesma quantidade), mas pode descartar "
-                        "muitos dados se houver IDs com muito poucas amostras.",
+                        "Ignora target_n e usa o mínimo observado em runtime. "
+                        "Ex: min=3 → todas as IDs viram 3. Balanceado sem "
+                        "descartar IDs, mas pode perder muitos dados se uma "
+                        "ID tem poucas amostras.",
                 },
             ),
             ChoiceFieldSpec(
@@ -129,12 +184,14 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
                 enum_type=DatasetBalancingSelection,
                 descriptions={
                     "RANDOM":
-                        "Sorteio uniforme controlado por `random_seed` — "
-                        "reprodutível.",
+                        "Sorteio uniforme controlado por random_seed — "
+                        "reprodutível, sem viés. Use quando não há métrica "
+                        "de qualidade confiável no dataset.",
                     "BY_QUALITY":
-                        "Mantém as N melhores amostras de cada identidade "
-                        "ordenadas por uma métrica de qualidade. Empates "
-                        "são quebrados deterministicamente.",
+                        "Mantém as N melhores fotos de cada ID por uma "
+                        "métrica (FIQA/OFIQ/SERFIQ/EMBEDDING_NORM). Maior = "
+                        "melhor. Empates resolvidos por SHA1 de face_hash "
+                        "(determinístico entre máquinas).",
                 },
             ),
         ]

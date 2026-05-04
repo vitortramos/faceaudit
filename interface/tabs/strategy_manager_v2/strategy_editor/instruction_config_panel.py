@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore
@@ -691,6 +692,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
             self._choice_field_widgets[cspec.field_name] = combo
             self._choice_specs[cspec.field_name] = cspec
+            tooltip = self._get_field_tooltip(instr, cspec.field_name)
+            if tooltip:
+                combo.setToolTip(tooltip)
             self._form_cfg.addRow(f"{cspec.label}:", combo)
             combo.currentTextChanged.connect(
                 lambda _text, fn=cspec.field_name: self._on_choice_changed(fn)
@@ -817,6 +821,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 continue
             self._value_field_widgets[vspec.field_name] = widget
             self._value_specs[vspec.field_name] = vspec
+            tooltip = self._get_field_tooltip(instr, vspec.field_name)
+            if tooltip:
+                widget.setToolTip(tooltip)
             self._form_cfg.addRow(f"{vspec.label}:", widget)
 
             # Conexão de rebuild para campos cujo valor altera o conjunto de
@@ -1124,6 +1131,25 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             row.name_changed.connect(self._on_output_name_changed)
             self._output_widgets[spec.field_name] = row
             self._outputs_layout.addWidget(row)
+
+    @staticmethod
+    def _get_field_tooltip(instr: StrategyInstructionDefinition, field_name: str) -> Optional[str]:
+        """
+        Lê o `metadata['help']` do dataclass field para uso como tooltip.
+
+        Strings que começam com '<html>' são renderizadas como rich text
+        pelo Qt automaticamente — listas, negrito, código e quebras de
+        linha funcionam direto.
+        """
+        try:
+            for f in dataclasses.fields(instr):
+                if f.name == field_name and f.metadata:
+                    help_text = f.metadata.get("help")
+                    if help_text:
+                        return str(help_text)
+            return None
+        except (TypeError, AttributeError):
+            return None
 
     # ── Apply / Validate ──────────────────────────────────────────────────────
 
