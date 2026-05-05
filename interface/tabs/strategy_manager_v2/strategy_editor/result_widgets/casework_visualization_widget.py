@@ -52,10 +52,14 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
         show_header: bool = True,
         show_toolbar: bool = True,
         show_help: bool = True,
+        show_title: bool = True,
     ):
         super().__init__(parent)
         self._result = result
         self._show_help = bool(show_help)
+        # show_title=False suprime ax.set_title() — útil quando o widget é
+        # embedado num cell que já tem header próprio (ex: comparação).
+        self._show_title = bool(show_title)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -211,7 +215,7 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
             return
 
         try:
-            self._draw(self.figure, self._result)
+            self._draw(self.figure, self._result, show_title=self._show_title)
         except Exception as exc:
             self.figure.clear()
             ax = self.figure.add_subplot(111)
@@ -225,7 +229,7 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
         self.canvas.draw_idle()
 
     @staticmethod
-    def _draw(figure: Figure, r: Any) -> None:
+    def _draw(figure: Figure, r: Any, show_title: bool = True) -> None:
         from scipy.stats import gaussian_kde
 
         ax = figure.add_subplot(111)
@@ -329,9 +333,10 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
         ax.set_xlabel(x_label)
         ax.set_ylabel("Densidade")
         ax.set_xlim(x_min, x_max)
-        ax.set_title(
-            "Distribuição forense — Caso sobreposto à referência"
-        )
+        if show_title:
+            ax.set_title(
+                "Distribuição forense — Caso sobreposto à referência"
+            )
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(loc="best", fontsize=9)
 

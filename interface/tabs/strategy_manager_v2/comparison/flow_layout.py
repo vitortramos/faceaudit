@@ -35,6 +35,15 @@ from PyQt6 import QtCore, QtWidgets
 CELL_WIDTH = 540
 CELL_HEIGHT = 420
 
+# Paleta de cores estável compartilhada pelas 3 views da ComparisonWindow
+# (validation, calibração, casework). O índice na paleta corresponde à
+# linha da tabela de métricas e à borda esquerda colorida do cell — o que
+# permite cross-reference visual rápido entre tabela e plots.
+STRATEGY_COLOR_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
+    "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#1a4f8a", "#7a4f00",
+]
+
 
 class FlowLayout(QtWidgets.QLayout):
     """

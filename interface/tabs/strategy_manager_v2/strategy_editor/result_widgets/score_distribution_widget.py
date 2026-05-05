@@ -49,10 +49,15 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         score_dataset: Any = None,
         use_log_lr: bool = False,
         show_toolbar: bool = True,
+        show_title: bool = True,
     ):
         super().__init__(parent)
         self._dataset = score_dataset
         self._use_log_lr = bool(use_log_lr)
+        # show_title=False suprime o ax.set_title() — útil quando o widget
+        # é embedado num cell que já tem header próprio (ex: comparação),
+        # evitando título redundante e ganhando área pro plot.
+        self._show_title = bool(show_title)
         # Sidecar pré-computado (gravado por SimilarityScoreDataset.to_parquet).
         # Quando presente, o render usa diretamente sem iterar samples nem
         # rodar gaussian_kde — orders of magnitude mais rápido pra datasets
@@ -119,7 +124,9 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         # Caminho rápido: sidecar pré-computado.
         if self._dist_summary is not None:
             try:
-                self._draw_from_summary(self.figure, self._dist_summary)
+                self._draw_from_summary(
+                    self.figure, self._dist_summary, show_title=self._show_title,
+                )
             except Exception as exc:
                 self.figure.clear()
                 ax = self.figure.add_subplot(111)
@@ -144,7 +151,10 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             return
 
         try:
-            self._draw(self.figure, self._dataset, self._use_log_lr)
+            self._draw(
+                self.figure, self._dataset, self._use_log_lr,
+                show_title=self._show_title,
+            )
         except Exception as exc:
             self.figure.clear()
             ax = self.figure.add_subplot(111)
@@ -158,7 +168,10 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         self.canvas.draw_idle()
 
     @staticmethod
-    def _draw(figure: Figure, score_dataset: Any, use_log_lr: bool) -> None:
+    def _draw(
+        figure: Figure, score_dataset: Any, use_log_lr: bool,
+        show_title: bool = True,
+    ) -> None:
         """
         Desenha histograma + KDE no `figure`. Robusto a casos onde só uma
         das classes está presente.
@@ -233,18 +246,19 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
-        title_prefix = (
-            "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
-        )
-        title_suffix = ""
-        ds_name = getattr(score_dataset, "name", None)
-        if ds_name:
-            title_suffix = f" — {ds_name}"
-        ax.set_title(
-            f"{title_prefix}{title_suffix}\n"
-            f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
-            fontsize=11,
-        )
+        if show_title:
+            title_prefix = (
+                "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
+            )
+            title_suffix = ""
+            ds_name = getattr(score_dataset, "name", None)
+            if ds_name:
+                title_suffix = f" — {ds_name}"
+            ax.set_title(
+                f"{title_prefix}{title_suffix}\n"
+                f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+                fontsize=11,
+            )
         ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
         ax.set_ylabel("Densidade")
         if use_log_lr:
@@ -257,7 +271,9 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         figure.tight_layout()
 
     @staticmethod
-    def _draw_from_summary(figure: Figure, summary: dict) -> None:
+    def _draw_from_summary(
+        figure: Figure, summary: dict, show_title: bool = True,
+    ) -> None:
         """
         Desenha o mesmo plot a partir do sidecar pré-computado pelo
         `SimilarityScoreDataset._write_distribution_summary_sidecar`.
@@ -318,16 +334,17 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                     color="#0d3a10", linewidth=1.4, alpha=0.9,
                 )
 
-        title_prefix = (
-            "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
-        )
-        ds_name = summary.get("name") or ""
-        title_suffix = f" — {ds_name}" if ds_name else ""
-        ax.set_title(
-            f"{title_prefix}{title_suffix}\n"
-            f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
-            fontsize=11,
-        )
+        if show_title:
+            title_prefix = (
+                "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
+            )
+            ds_name = summary.get("name") or ""
+            title_suffix = f" — {ds_name}" if ds_name else ""
+            ax.set_title(
+                f"{title_prefix}{title_suffix}\n"
+                f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+                fontsize=11,
+            )
         ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
         ax.set_ylabel("Densidade")
         if use_log_lr:

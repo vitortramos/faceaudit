@@ -36,14 +36,12 @@ from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 
 from ..availability_resolver import ComparisonItem
-from ..flow_layout import CELL_HEIGHT, CELL_WIDTH, FlowLayout
-
-
-# Paleta de cores estável para até 12 estratégias (matplotlib tab colors).
-_PALETTE = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b",
-    "#e377c2", "#7f7f7f", "#bcbd22", "#17becf", "#1a4f8a", "#7a4f00",
-]
+from ..flow_layout import (
+    CELL_HEIGHT,
+    CELL_WIDTH,
+    FlowLayout,
+    STRATEGY_COLOR_PALETTE as _PALETTE,
+)
 
 
 class ValidationResultsView(QtWidgets.QWidget):
