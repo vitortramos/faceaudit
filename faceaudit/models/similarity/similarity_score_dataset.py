@@ -277,6 +277,152 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             if gc_was_enabled:
                 gc.enable()
 
+        # Sidecar de distribuição pré-computada — evita iterar 5M+ samples
+        # toda vez que o ScoreDistributionWidget vai desenhar o gráfico.
+        # Tamanho típico: 30-80 KB. Falha silenciosa não impede a escrita
+        # do parquet em si.
+        try:
+            self._write_distribution_summary_sidecar(path_obj)
+        except Exception as exc:
+            _emit(f"  ⚠ falha ao gravar sidecar de distribuição: {exc}")
+
+    def _write_distribution_summary_sidecar(self, parquet_path: Path) -> None:
+        """
+        Grava um JSON pequeno ao lado do parquet com histograma + KDE pré-
+        computados (genuínos vs impostores). O ScoreDistributionWidget lê
+        esse sidecar quando existe e desenha sem precisar carregar o
+        parquet inteiro nem rodar gaussian_kde de novo.
+
+        Detecta automaticamente o tipo de score relevante:
+        - se há `metadata["log_lr"]` em pelo menos um sample → modo "log_lr"
+          (output de SCORE_CALIBRATION)
+        - caso contrário → modo "raw" (output de SIMILARITY_SCORING / PAIR_MINING)
+        """
+        import json
+
+        if not self.items:
+            return
+
+        # Decide o eixo X com base na presença de log_lr.
+        has_log_lr = any(
+            isinstance(getattr(s, "metadata", None), dict)
+            and s.metadata.get("log_lr") is not None
+            for s in self.items
+        )
+        score_type = "log_lr" if has_log_lr else "raw"
+
+        gen_vals: list = []
+        imp_vals: list = []
+        for s in self.items:
+            sp = s.same_person
+            if sp is True:
+                arr = gen_vals
+            elif sp is False:
+                arr = imp_vals
+            else:
+                continue
+            if has_log_lr:
+                md = getattr(s, "metadata", None)
+                v = md.get("log_lr") if isinstance(md, dict) else None
+                if v is None:
+                    continue
+                arr.append(float(v))
+            else:
+                arr.append(float(s.raw_score))
+
+        gen_arr = np.asarray(gen_vals, dtype=np.float64)
+        imp_arr = np.asarray(imp_vals, dtype=np.float64)
+        n_gen = int(gen_arr.size)
+        n_imp = int(imp_arr.size)
+        if n_gen == 0 and n_imp == 0:
+            return
+
+        all_vals = (
+            np.concatenate([gen_arr, imp_arr])
+            if n_gen and n_imp
+            else (gen_arr if n_gen else imp_arr)
+        )
+        x_min = float(np.min(all_vals))
+        x_max = float(np.max(all_vals))
+        if x_min == x_max:
+            x_min -= 0.5
+            x_max += 0.5
+
+        # Histograma — 60 bins, density=True (mesmo formato que o widget).
+        bins = np.linspace(x_min, x_max, 60)
+        gen_hist, _ = (
+            np.histogram(gen_arr, bins=bins, density=True)
+            if n_gen
+            else (np.zeros(bins.size - 1), bins)
+        )
+        imp_hist, _ = (
+            np.histogram(imp_arr, bins=bins, density=True)
+            if n_imp
+            else (np.zeros(bins.size - 1), bins)
+        )
+
+        # KDE — 400 pontos no eixo X.
+        kde_x = np.linspace(x_min, x_max, 400)
+        kde_gen_y = None
+        kde_imp_y = None
+        try:
+            from scipy.stats import gaussian_kde
+            if n_gen > 1:
+                kde_gen_y = gaussian_kde(gen_arr)(kde_x).tolist()
+            if n_imp > 1:
+                kde_imp_y = gaussian_kde(imp_arr)(kde_x).tolist()
+        except Exception:
+            pass
+
+        sidecar = {
+            "schema_version": 1,
+            "score_type": score_type,
+            "name": self.name,
+            "n_gen": n_gen,
+            "n_imp": n_imp,
+            "x_min": x_min,
+            "x_max": x_max,
+            "bins": bins.tolist(),
+            "gen_hist_density": gen_hist.tolist(),
+            "imp_hist_density": imp_hist.tolist(),
+            "kde_x": kde_x.tolist(),
+            "kde_gen_y": kde_gen_y,
+            "kde_imp_y": kde_imp_y,
+        }
+
+        sidecar_path = parquet_path.with_name(parquet_path.stem + "_dist.json")
+        sidecar_path.write_text(
+            json.dumps(sidecar, ensure_ascii=False), encoding="utf-8"
+        )
+
+    @staticmethod
+    def try_load_distribution_summary(parquet_path: Union[str, Path]) -> Optional[dict]:
+        """
+        Tenta ler o sidecar `<stem>_dist.json` ao lado do parquet.
+
+        Retorna o dict pronto pra plotar (compatível com o que o
+        ScoreDistributionWidget espera) ou None se ausente / inválido /
+        mais antigo que o parquet (stale).
+        """
+        import json
+
+        p = Path(parquet_path)
+        sidecar_path = p.with_name(p.stem + "_dist.json")
+        if not sidecar_path.exists():
+            return None
+        try:
+            # Stale check: se o parquet foi reescrito após o sidecar,
+            # ignora (igual ao padrão usado em ResourceInfoWidget para
+            # outros sidecars).
+            if p.exists() and p.stat().st_mtime > sidecar_path.stat().st_mtime + 1.0:
+                return None
+            data = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            if data.get("schema_version") != 1:
+                return None
+            return data
+        except Exception:
+            return None
+
     def get_lowest_score_genuines(self, top_n: int = 10) -> pd.DataFrame:
         """
         Retorna os pares genuínos com os menores scores brutos.

@@ -463,7 +463,13 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         ha_layout.addLayout(ha_form)
         props_layout.addWidget(self._hubness_ablation_section)
 
-        props_layout.addStretch()
+        # `addStretch()` empurra o conteúdo pro topo do scroll. No modo
+        # padrão (painel lateral) o scroll é alto e isso fica natural; em
+        # modo compact (embedded num OutputRowWidget) ele cria uma faixa
+        # de espaço vazio embaixo do conteúdo, que o usuário percebe como
+        # "espaço sobrando" no card.
+        if not self._compact:
+            props_layout.addStretch()
 
         props_scroll.setWidget(props_container)
         self.tabs.addTab(props_scroll, "Propriedades")
@@ -490,6 +496,20 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             # Esconde a barra de abas (sobra só o conteúdo da aba 0).
             self.tabs.tabBar().setVisible(False)
+            # Em compact, o widget é embedado em um OutputRowWidget pequeno.
+            # Limita o crescimento vertical do scroll/tabs ao conteúdo real.
+            props_scroll.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Maximum,
+            )
+            self.tabs.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Maximum,
+            )
+            self.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Preferred,
+                QtWidgets.QSizePolicy.Policy.Maximum,
+            )
 
         layout.addWidget(self.tabs)
 

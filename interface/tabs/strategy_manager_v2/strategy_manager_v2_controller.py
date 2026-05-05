@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
@@ -22,7 +22,7 @@ from faceaudit.services.dataset_stats_service import DatasetStatsService
 from faceaudit.services.project_service import FaceAuditProject, FaceAuditProjectService
 from faceaudit.storage.global_library_storage import GlobalLibraryStorage
 
-from .comparison_tab.comparison_tab_widget import ComparisonTabWidget
+from .comparison.comparison_window import ComparisonWindow
 from .dialogs.manage_library.manage_library_controller import ManageLibraryController
 from .dialogs.new_project_v2.new_project_v2_controller import NewProjectV2Controller
 from .dialogs.new_strategy.new_strategy_controller import NewStrategyController
@@ -104,10 +104,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor = StrategyEditorWidget()
         self.view.set_strategy_editor(self._strategy_editor)
 
-        # Comparison tab
-        self._comparison_widget = ComparisonTabWidget()
-        self.view.main_tabs.removeTab(1)
-        self.view.main_tabs.addTab(self._comparison_widget, "Comparação")
+        # Janela de comparação top-level — criada lazy no primeiro clique do
+        # botão "Comparar" do left_panel. Mantida como atributo pra preservar
+        # referência forte enquanto visível (evita GC do dialog).
+        self._comparison_window: Optional[ComparisonWindow] = None
 
     def _connect_signals(self) -> None:
         # Toolbar unificada
@@ -129,6 +129,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._left_panel.remove_requested.connect(self._on_remove_strategy)
         self._left_panel.run_strategy_requested.connect(self.run_strategy)
         self._left_panel.save_as_template_requested.connect(self.save_as_template)
+        self._left_panel.comparison_requested.connect(self._on_open_comparison)
 
         # Left panel — importação/remoção de recursos
         self._left_panel.add_dataset_requested.connect(self._add_dataset)
@@ -484,6 +485,44 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._active_thread = thread
         thread.start()
 
+    def _on_open_comparison(self) -> None:
+        """
+        Abre a janela de comparação entre estratégias treinadas. Reutiliza a
+        instância existente quando já está aberta — só traz pra frente em vez
+        de criar uma duplicata.
+
+        Injeta definitions atuais + project_root + loader pra que a janela
+        possa: (1) listar items disponíveis por kind via availability_resolver,
+        (2) hidratar SimilarityScoreDataset via sidecar quando precisar render
+        a distribuição de calibração, (3) ler VALIDATION_RESULT/CASEWORK
+        pickles direto do disco resolvido relativo ao project_root.
+        """
+        if self._comparison_window is not None and self._comparison_window.isVisible():
+            self._comparison_window.raise_()
+            self._comparison_window.activateWindow()
+            return
+        if not self._project:
+            return
+        # Garante que o resource_loader esteja construído. Útil quando o
+        # usuário abre Comparar antes de tocar em qualquer instrução do editor.
+        self._ensure_executor_and_context(silent=True)
+        loader = (
+            getattr(self._executor, "_resource_loader", None)
+            if self._executor is not None
+            else None
+        )
+        self._comparison_window = ComparisonWindow(
+            definitions=self._definitions,
+            project_root=self._project.storage.project_root,
+            resource_loader=loader,
+            parent=self.view,
+        )
+        # Abre maximizada — alinha com o comportamento da janela principal
+        # do app. O usuário ainda pode des-maximizar pelo botão da decoração.
+        self._comparison_window.showMaximized()
+        self._comparison_window.raise_()
+        self._comparison_window.activateWindow()
+
     def save_as_template(self) -> None:
         """
         Salva a estratégia atualmente aberta como template na biblioteca global.
@@ -609,7 +648,17 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # produzidos pela própria estratégia.
         all_resources = self._collect_project_resources()
         resource_to_strategy = self._build_resource_to_strategy_map()
-        self._left_panel.populate_strategies(self._definitions)
+        # Preserva o highlight visual da estratégia aberta — populate
+        # limpa+reconstrói a lista, então sem informar selected_strategy_id
+        # ela perde a seleção depois de toda execução / edição / refresh.
+        selected_id = (
+            self._current_definition.strategy_id
+            if self._current_definition is not None
+            else None
+        )
+        self._left_panel.populate_strategies(
+            self._definitions, selected_strategy_id=selected_id
+        )
         self._left_panel.populate_resources(all_resources, resource_to_strategy=resource_to_strategy)
 
         editor_resources = self._collect_editor_resources(self._current_definition)
@@ -737,21 +786,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
         return resources
 
     def _on_strategy_opened(self, definition: LRStrategyDefinition) -> None:
-        self._current_definition = definition
-        self._left_panel.set_strategy_actions_enabled(True)
-        # Editor recebe apenas recursos acessíveis à estratégia atual:
-        # globais + produzidos pela própria estratégia. Produzidos por
-        # outras estratégias não aparecem nos dropdowns.
-        editor_resources = self._collect_editor_resources(definition)
-        self._strategy_editor.load_strategy(definition, available_resources=editor_resources)
-        self._reset_execution_state()
-        self._refresh_produced_resources()
+        # Cursor de espera durante o carregamento da estratégia — popular
+        # 3 abas com instruções, configurar dropdowns de recursos e calcular
+        # estados de execução pode travar a UI por segundos em estratégias
+        # grandes. Sem isso o usuário clica e parece que nada acontece.
+        with self._wait_cursor():
+            self._current_definition = definition
+            # Garante highlight visual no painel lateral mesmo quando a
+            # abertura veio por outra via que não o itemClicked (ex: após
+            # criar nova estratégia, depois de duplicar, etc.).
+            self._left_panel.select_strategy_by_id(definition.strategy_id)
+            self._left_panel.set_strategy_actions_enabled(True)
+            # Editor recebe apenas recursos acessíveis à estratégia atual:
+            # globais + produzidos pela própria estratégia. Produzidos por
+            # outras estratégias não aparecem nos dropdowns.
+            editor_resources = self._collect_editor_resources(definition)
+            self._strategy_editor.load_strategy(definition, available_resources=editor_resources)
+            self._reset_execution_state()
+            self._refresh_produced_resources()
 
-        # Informa ao left panel as dimensões do embedding da estratégia selecionada
-        emb_dims = None
-        if definition.embedding_type is not None:
-            emb_dims = definition.embedding_type.dimensions
-        self._left_panel.set_embedding_dimensions(emb_dims)
+            # Informa ao left panel as dimensões do embedding da estratégia selecionada
+            emb_dims = None
+            if definition.embedding_type is not None:
+                emb_dims = definition.embedding_type.dimensions
+            self._left_panel.set_embedding_dimensions(emb_dims)
 
     def _on_new_strategy(self) -> None:
         ctrl = NewStrategyController(
@@ -967,6 +1025,29 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 executed.add(instr.instruction_id)
         return executed
 
+    def _wait_cursor(self):
+        """
+        Context manager para mostrar cursor de espera durante operações
+        bloqueantes (hidratar payloads grandes, abrir dialogs que renderizam
+        gráficos). Usar como `with self._wait_cursor(): ...`. Garante
+        restoreOverrideCursor mesmo em caso de exceção e força repaint
+        antes de bloquear via processEvents().
+        """
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            QtWidgets.QApplication.setOverrideCursor(
+                QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
+            )
+            try:
+                QtWidgets.QApplication.processEvents()
+                yield
+            finally:
+                QtWidgets.QApplication.restoreOverrideCursor()
+
+        return _cm()
+
     def _ensure_executor_and_context(self, silent: bool = False) -> bool:
         """Cria executor e contexto se ainda não existem. Retorna False em caso de erro.
 
@@ -1151,40 +1232,42 @@ class StrategyManagerV2Controller(QtCore.QObject):
         )
 
         trajectory_data = None
+        hydrate_error = None
 
-        # 1. Tentar do contexto vivo.
-        if self._execution_context is not None and self._execution_context.has_resource(trajectory_id):
-            ctx_resource = self._execution_context.get_resource(trajectory_id)
-            if ctx_resource and ctx_resource.has_payload:
-                trajectory_data = ctx_resource.payload
+        with self._wait_cursor():
+            # 1. Tentar do contexto vivo.
+            if self._execution_context is not None and self._execution_context.has_resource(trajectory_id):
+                ctx_resource = self._execution_context.get_resource(trajectory_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    trajectory_data = ctx_resource.payload
 
-        # 2. Tentar da definição (hidrata do disco se necessário).
-        if trajectory_data is None:
-            existing = self._current_definition.get_resource_by_id(trajectory_id)
-            if existing is not None:
-                if existing.has_payload:
-                    trajectory_data = existing.payload
-                elif existing.has_artifact:
-                    loader = getattr(self._executor, "_resource_loader", None) if self._executor else None
-                    if loader is None:
-                        # Garante executor pra obter loader. Caso típico: usuário
-                        # acabou de abrir o projeto e clica direto no botão sem
-                        # ter rodado nada nesta sessão.
-                        if self._ensure_executor_and_context(silent=True):
-                            loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception as hydrate_exc:
-                            traceback.print_exc()
-                            QtWidgets.QMessageBox.critical(
-                                self._view,
-                                "Erro ao carregar trajetória",
-                                f"Falha ao carregar a trajetória do disco:\n{hydrate_exc}",
-                            )
-                            return
-                        if existing.has_payload:
-                            trajectory_data = existing.payload
+            # 2. Tentar da definição (hidrata do disco se necessário).
+            if trajectory_data is None:
+                existing = self._current_definition.get_resource_by_id(trajectory_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        trajectory_data = existing.payload
+                    elif existing.has_artifact:
+                        loader = getattr(self._executor, "_resource_loader", None) if self._executor else None
+                        if loader is None:
+                            if self._ensure_executor_and_context(silent=True):
+                                loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                                if existing.has_payload:
+                                    trajectory_data = existing.payload
+                            except Exception as hydrate_exc:
+                                traceback.print_exc()
+                                hydrate_error = str(hydrate_exc)
+
+        if hydrate_error is not None:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao carregar trajetória",
+                f"Falha ao carregar a trajetória do disco:\n{hydrate_error}",
+            )
+            return
 
         if trajectory_data is None:
             QtWidgets.QMessageBox.information(
@@ -1195,25 +1278,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
             )
             return
 
-        try:
-            from interface.tabs.strategy_manager.panels.preparation.cards.transformation_trajectory_viewer.transformation_trajectory_viewer_controller import (
-                TransformationTrajectoryViewerController,
-            )
-            self._trajectory_viewer = TransformationTrajectoryViewerController(
-                trajectory_data, parent=self._view
-            )
-            # Em macOS, dialogs criados em runtime podem nascer atrás da janela
-            # principal. raise_() + activateWindow() força foco antes do exec().
-            view = self._trajectory_viewer.view
-            view.show()
-            view.raise_()
-            view.activateWindow()
-        except Exception as exc:
-            traceback.print_exc()
+        open_error = None
+        with self._wait_cursor():
+            try:
+                from interface.tabs.strategy_manager.panels.preparation.cards.transformation_trajectory_viewer.transformation_trajectory_viewer_controller import (
+                    TransformationTrajectoryViewerController,
+                )
+                self._trajectory_viewer = TransformationTrajectoryViewerController(
+                    trajectory_data, parent=self._view
+                )
+                # Em macOS, dialogs criados em runtime podem nascer atrás da janela
+                # principal. raise_() + activateWindow() força foco antes do exec().
+                view = self._trajectory_viewer.view
+                view.show()
+                view.raise_()
+                view.activateWindow()
+            except Exception as exc:
+                traceback.print_exc()
+                open_error = str(exc)
+
+        if open_error is not None:
             QtWidgets.QMessageBox.critical(
                 self._view,
                 "Erro ao abrir visualizador",
-                f"Não foi possível abrir o visualizador de trajetória:\n{exc}",
+                f"Não foi possível abrir o visualizador de trajetória:\n{open_error}",
             )
 
     def _on_hydrate_resource_requested(
@@ -1228,6 +1316,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Acionado pelo botão &quot;Carregar e visualizar&quot; na 3ª coluna do editor,
         que aparece quando o recurso está em disco mas não em memória (caso
         típico após reabrir um projeto sem ter executado nada nessa sessão).
+
+        Cursor de espera (WaitCursor) é setado durante toda a operação —
+        carregar parquets de milhões de pares trava a main thread por
+        segundos e o usuário precisa de feedback visual imediato.
         """
         if not self._project or not self._current_definition:
             return
@@ -1254,38 +1346,51 @@ class StrategyManagerV2Controller(QtCore.QObject):
             )
             return
 
-        if not existing.has_payload and existing.has_artifact:
-            loader = getattr(self._executor, "_resource_loader", None)
-            if loader is not None:
-                try:
-                    loader.hydrate(existing)
-                except Exception as exc:
-                    QtWidgets.QMessageBox.critical(
-                        self._view,
-                        "Erro ao carregar",
-                        f"Falha ao carregar '{resource_id}' do disco:\n{exc}",
-                    )
-                    return
-
-        if not existing.has_payload:
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Nada a carregar",
-                f"O recurso '{resource_id}' não tem payload em memória nem em disco.",
-            )
-            return
-
-        # Garante que o contexto vivo também enxergue o payload hidratado —
-        # o card consulta o contexto antes de cair na definition.
-        if self._execution_context is not None:
-            self._execution_context.set_resource(existing)
-
-        # Invalida o card cacheado e refresca para o card ser reconstruído
-        # com o payload agora populado, disparando a renderização do plot.
-        self._strategy_editor.invalidate_results_for_instruction(
-            instruction.instruction_id
+        QtWidgets.QApplication.setOverrideCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
         )
-        self._refresh_produced_resources()
+        try:
+            # Repinta a UI antes de bloquear na hidratação — sem isso o
+            # cursor só atualiza depois do load terminar (event loop fica
+            # parado durante leitura do parquet).
+            QtWidgets.QApplication.processEvents()
+
+            if not existing.has_payload and existing.has_artifact:
+                loader = getattr(self._executor, "_resource_loader", None)
+                if loader is not None:
+                    try:
+                        loader.hydrate(existing)
+                    except Exception as exc:
+                        QtWidgets.QApplication.restoreOverrideCursor()
+                        QtWidgets.QMessageBox.critical(
+                            self._view,
+                            "Erro ao carregar",
+                            f"Falha ao carregar '{resource_id}' do disco:\n{exc}",
+                        )
+                        return
+
+            if not existing.has_payload:
+                QtWidgets.QApplication.restoreOverrideCursor()
+                QtWidgets.QMessageBox.information(
+                    self._view,
+                    "Nada a carregar",
+                    f"O recurso '{resource_id}' não tem payload em memória nem em disco.",
+                )
+                return
+
+            # Garante que o contexto vivo também enxergue o payload hidratado —
+            # o card consulta o contexto antes de cair na definition.
+            if self._execution_context is not None:
+                self._execution_context.set_resource(existing)
+
+            # Invalida o card cacheado e refresca para o card ser reconstruído
+            # com o payload agora populado, disparando a renderização do plot.
+            self._strategy_editor.invalidate_results_for_instruction(
+                instruction.instruction_id
+            )
+            self._refresh_produced_resources()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def _on_view_score_distribution(self, instruction: StrategyInstructionDefinition) -> None:
         """
@@ -1318,62 +1423,63 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not scores_id:
             return
 
-        score_dataset = None
+        with self._wait_cursor():
+            score_dataset = None
+            missing_msg = None
+            error_msg = None
 
-        # 1. Tentar do contexto vivo.
-        if self._execution_context is not None and self._execution_context.has_resource(scores_id):
-            ctx_resource = self._execution_context.get_resource(scores_id)
-            if ctx_resource and ctx_resource.has_payload:
-                score_dataset = ctx_resource.payload
+            # 1. Tentar do contexto vivo.
+            if self._execution_context is not None and self._execution_context.has_resource(scores_id):
+                ctx_resource = self._execution_context.get_resource(scores_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    score_dataset = ctx_resource.payload
 
-        # 2. Tentar da definição (hidrata do disco se necessário).
-        if score_dataset is None:
-            existing = self._current_definition.get_resource_by_id(scores_id)
-            if existing is not None:
-                if existing.has_payload:
-                    score_dataset = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception:
-                            pass
-                        if existing.has_payload:
-                            score_dataset = existing.payload
+            # 2. Tentar da definição (hidrata do disco se necessário).
+            if score_dataset is None:
+                existing = self._current_definition.get_resource_by_id(scores_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        score_dataset = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                score_dataset = existing.payload
 
-        if score_dataset is None:
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Scores indisponíveis",
-                "Não foram encontrados scores salvos para esta instrução. "
-                "Execute a instrução de scoring primeiro.",
-            )
-            return
+            if score_dataset is None:
+                missing_msg = (
+                    "Não foram encontrados scores salvos para esta instrução. "
+                    "Execute a instrução de scoring primeiro."
+                )
+            else:
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.graph_viewer_dialog import (
+                        GraphViewerDialog,
+                    )
+                    title = (
+                        f"Distribuição de log-LR: {instruction.name}"
+                        if use_log_lr
+                        else f"Distribuição de Scores: {instruction.name}"
+                    )
+                    dlg = GraphViewerDialog.from_draw_fn(
+                        title=title,
+                        draw_fn=lambda fig, ds=score_dataset, ull=use_log_lr:
+                            self._draw_score_distribution(fig, ds, use_log_lr=ull),
+                        parent=self._view,
+                    )
+                    self._distribution_viewer = dlg
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o visualizador de distribuição:\n{exc}"
 
-        try:
-            from interface.tabs.strategy_manager_v2.strategy_editor.graph_viewer_dialog import (
-                GraphViewerDialog,
-            )
-            title = (
-                f"Distribuição de log-LR: {instruction.name}"
-                if use_log_lr
-                else f"Distribuição de Scores: {instruction.name}"
-            )
-            dlg = GraphViewerDialog.from_draw_fn(
-                title=title,
-                draw_fn=lambda fig, ds=score_dataset, ull=use_log_lr:
-                    self._draw_score_distribution(fig, ds, use_log_lr=ull),
-                parent=self._view,
-            )
-            self._distribution_viewer = dlg
-            dlg.show()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao abrir visualizador",
-                f"Não foi possível abrir o visualizador de distribuição:\n{exc}",
-            )
+        if missing_msg:
+            QtWidgets.QMessageBox.information(self._view, "Scores indisponíveis", missing_msg)
+        elif error_msg:
+            QtWidgets.QMessageBox.critical(self._view, "Erro ao abrir visualizador", error_msg)
 
     def _draw_score_distribution(self, figure, score_dataset, use_log_lr: bool = False) -> None:
         """
@@ -1721,51 +1827,59 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not result_id:
             return
 
-        validation_result = None
+        with self._wait_cursor():
+            validation_result = None
 
-        # 1. Tentar do contexto vivo.
-        if self._execution_context is not None and self._execution_context.has_resource(result_id):
-            ctx_resource = self._execution_context.get_resource(result_id)
-            if ctx_resource and ctx_resource.has_payload:
-                validation_result = ctx_resource.payload
+            # 1. Tentar do contexto vivo.
+            if self._execution_context is not None and self._execution_context.has_resource(result_id):
+                ctx_resource = self._execution_context.get_resource(result_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    validation_result = ctx_resource.payload
 
-        # 2. Tentar da definição (hidrata do disco se necessário).
-        if validation_result is None:
-            existing = self._current_definition.get_resource_by_id(result_id)
-            if existing is not None:
-                if existing.has_payload:
-                    validation_result = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception:
-                            pass
-                        if existing.has_payload:
-                            validation_result = existing.payload
+            # 2. Tentar da definição (hidrata do disco se necessário).
+            if validation_result is None:
+                existing = self._current_definition.get_resource_by_id(result_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        validation_result = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                validation_result = existing.payload
 
-        if validation_result is None:
+            if validation_result is None:
+                missing_msg = (
+                    "Não foi encontrado um resultado de validação salvo para esta "
+                    "instrução. Execute STRATEGY_EVALUATION primeiro."
+                )
+                error_msg = None
+            else:
+                missing_msg = None
+                error_msg = None
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.validation_result_viewer_dialog import (
+                        ValidationResultViewerDialog,
+                    )
+                    dlg = ValidationResultViewerDialog(validation_result, parent=self._view)
+                    self._validation_viewer = dlg  # mantém referência forte
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o visualizador de validação:\n{exc}"
+
+        # Mensagens disparadas FORA do with — cursor já voltou ao normal
+        # quando o usuário interage com a caixa de diálogo.
+        if missing_msg:
             QtWidgets.QMessageBox.information(
-                self._view,
-                "Resultado indisponível",
-                "Não foi encontrado um resultado de validação salvo para esta "
-                "instrução. Execute STRATEGY_EVALUATION primeiro.",
+                self._view, "Resultado indisponível", missing_msg
             )
-            return
-
-        try:
-            from interface.tabs.strategy_manager_v2.strategy_editor.validation_result_viewer_dialog import (
-                ValidationResultViewerDialog,
-            )
-            dlg = ValidationResultViewerDialog(validation_result, parent=self._view)
-            self._validation_viewer = dlg  # mantém referência forte
-            dlg.show()
-        except Exception as exc:
+        elif error_msg:
             QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao abrir visualizador",
-                f"Não foi possível abrir o visualizador de validação:\n{exc}",
+                self._view, "Erro ao abrir visualizador", error_msg
             )
 
     def _on_view_casework_visualization(self, instruction: StrategyInstructionDefinition) -> None:
@@ -1788,52 +1902,53 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not result_id:
             return
 
-        casework_result = None
+        with self._wait_cursor():
+            casework_result = None
+            missing_msg = None
+            error_msg = None
 
-        # 1. Tentar do contexto vivo.
-        if self._execution_context is not None and self._execution_context.has_resource(result_id):
-            ctx_resource = self._execution_context.get_resource(result_id)
-            if ctx_resource and ctx_resource.has_payload:
-                casework_result = ctx_resource.payload
+            # 1. Tentar do contexto vivo.
+            if self._execution_context is not None and self._execution_context.has_resource(result_id):
+                ctx_resource = self._execution_context.get_resource(result_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    casework_result = ctx_resource.payload
 
-        # 2. Tentar da definição (hidrata do disco se necessário).
-        if casework_result is None:
-            existing = self._current_definition.get_resource_by_id(result_id)
-            if existing is not None:
-                if existing.has_payload:
-                    casework_result = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception:
-                            pass
-                        if existing.has_payload:
-                            casework_result = existing.payload
+            # 2. Tentar da definição (hidrata do disco se necessário).
+            if casework_result is None:
+                existing = self._current_definition.get_resource_by_id(result_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        casework_result = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                casework_result = existing.payload
 
-        if casework_result is None:
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Visualização indisponível",
-                "Não foi encontrada uma visualização salva para esta "
-                "instrução. Execute CASEWORK_VISUALIZATION primeiro.",
-            )
-            return
+            if casework_result is None:
+                missing_msg = (
+                    "Não foi encontrada uma visualização salva para esta "
+                    "instrução. Execute CASEWORK_VISUALIZATION primeiro."
+                )
+            else:
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.casework_visualization_viewer_dialog import (
+                        CaseworkVisualizationViewerDialog,
+                    )
+                    dlg = CaseworkVisualizationViewerDialog(casework_result, parent=self._view)
+                    self._casework_viewer = dlg
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o visualizador de caso:\n{exc}"
 
-        try:
-            from interface.tabs.strategy_manager_v2.strategy_editor.casework_visualization_viewer_dialog import (
-                CaseworkVisualizationViewerDialog,
-            )
-            dlg = CaseworkVisualizationViewerDialog(casework_result, parent=self._view)
-            self._casework_viewer = dlg  # mantém referência forte
-            dlg.show()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao abrir visualizador",
-                f"Não foi possível abrir o visualizador de caso:\n{exc}",
-            )
+        if missing_msg:
+            QtWidgets.QMessageBox.information(self._view, "Visualização indisponível", missing_msg)
+        elif error_msg:
+            QtWidgets.QMessageBox.critical(self._view, "Erro ao abrir visualizador", error_msg)
 
     def _on_view_hubness_report(self, instruction: StrategyInstructionDefinition) -> None:
         """
@@ -1855,55 +1970,56 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not result_id:
             return
 
-        report = None
+        with self._wait_cursor():
+            report = None
+            missing_msg = None
+            error_msg = None
 
-        # 1. Tentar do contexto vivo.
-        if (
-            self._execution_context is not None
-            and self._execution_context.has_resource(result_id)
-        ):
-            ctx_resource = self._execution_context.get_resource(result_id)
-            if ctx_resource and ctx_resource.has_payload:
-                report = ctx_resource.payload
+            # 1. Tentar do contexto vivo.
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(result_id)
+            ):
+                ctx_resource = self._execution_context.get_resource(result_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    report = ctx_resource.payload
 
-        # 2. Tentar da definição (hidrata do disco se necessário).
-        if report is None:
-            existing = self._current_definition.get_resource_by_id(result_id)
-            if existing is not None:
-                if existing.has_payload:
-                    report = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception:
-                            pass
-                        if existing.has_payload:
-                            report = existing.payload
+            # 2. Tentar da definição (hidrata do disco se necessário).
+            if report is None:
+                existing = self._current_definition.get_resource_by_id(result_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        report = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                report = existing.payload
 
-        if report is None:
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Relatório indisponível",
-                "Não foi encontrado um HubnessReport salvo para esta "
-                "instrução. Execute HUBNESS_ANALYSIS primeiro.",
-            )
-            return
+            if report is None:
+                missing_msg = (
+                    "Não foi encontrado um HubnessReport salvo para esta "
+                    "instrução. Execute HUBNESS_ANALYSIS primeiro."
+                )
+            else:
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.hubness_report_viewer_dialog import (
+                        HubnessReportViewerDialog,
+                    )
+                    dlg = HubnessReportViewerDialog(report, parent=self._view)
+                    self._hubness_viewer = dlg
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o relatório de hubness:\n{exc}"
 
-        try:
-            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_report_viewer_dialog import (
-                HubnessReportViewerDialog,
-            )
-            dlg = HubnessReportViewerDialog(report, parent=self._view)
-            self._hubness_viewer = dlg  # mantém referência forte
-            dlg.show()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao abrir visualizador",
-                f"Não foi possível abrir o relatório de hubness:\n{exc}",
-            )
+        if missing_msg:
+            QtWidgets.QMessageBox.information(self._view, "Relatório indisponível", missing_msg)
+        elif error_msg:
+            QtWidgets.QMessageBox.critical(self._view, "Erro ao abrir visualizador", error_msg)
 
     def _on_view_hubness_ablation(self, instruction: StrategyInstructionDefinition) -> None:
         """
@@ -1925,53 +2041,54 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not result_id:
             return
 
-        study = None
+        with self._wait_cursor():
+            study = None
+            missing_msg = None
+            error_msg = None
 
-        if (
-            self._execution_context is not None
-            and self._execution_context.has_resource(result_id)
-        ):
-            ctx_resource = self._execution_context.get_resource(result_id)
-            if ctx_resource and ctx_resource.has_payload:
-                study = ctx_resource.payload
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(result_id)
+            ):
+                ctx_resource = self._execution_context.get_resource(result_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    study = ctx_resource.payload
 
-        if study is None:
-            existing = self._current_definition.get_resource_by_id(result_id)
-            if existing is not None:
-                if existing.has_payload:
-                    study = existing.payload
-                elif existing.has_artifact and self._executor is not None:
-                    loader = getattr(self._executor, "_resource_loader", None)
-                    if loader is not None:
-                        try:
-                            loader.hydrate(existing)
-                        except Exception:
-                            pass
-                        if existing.has_payload:
-                            study = existing.payload
+            if study is None:
+                existing = self._current_definition.get_resource_by_id(result_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        study = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                study = existing.payload
 
-        if study is None:
-            QtWidgets.QMessageBox.information(
-                self._view,
-                "Ablação indisponível",
-                "Não foi encontrado um AblationStudyInfo salvo para esta "
-                "instrução. Execute HUBNESS_ABLATION primeiro.",
-            )
-            return
+            if study is None:
+                missing_msg = (
+                    "Não foi encontrado um AblationStudyInfo salvo para esta "
+                    "instrução. Execute HUBNESS_ABLATION primeiro."
+                )
+            else:
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.hubness_ablation_viewer_dialog import (
+                        HubnessAblationViewerDialog,
+                    )
+                    dlg = HubnessAblationViewerDialog(study, parent=self._view)
+                    self._hubness_ablation_viewer = dlg
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o estudo de ablação:\n{exc}"
 
-        try:
-            from interface.tabs.strategy_manager_v2.strategy_editor.hubness_ablation_viewer_dialog import (
-                HubnessAblationViewerDialog,
-            )
-            dlg = HubnessAblationViewerDialog(study, parent=self._view)
-            self._hubness_ablation_viewer = dlg  # referência forte
-            dlg.show()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao abrir visualizador",
-                f"Não foi possível abrir o estudo de ablação:\n{exc}",
-            )
+        if missing_msg:
+            QtWidgets.QMessageBox.information(self._view, "Ablação indisponível", missing_msg)
+        elif error_msg:
+            QtWidgets.QMessageBox.critical(self._view, "Erro ao abrir visualizador", error_msg)
 
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         if not self._project or not self._current_definition:

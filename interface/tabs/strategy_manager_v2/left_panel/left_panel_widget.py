@@ -35,6 +35,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
     remove_requested = QtCore.pyqtSignal(object)
     run_strategy_requested = QtCore.pyqtSignal()
     save_as_template_requested = QtCore.pyqtSignal()
+    comparison_requested = QtCore.pyqtSignal()
     resource_selected = QtCore.pyqtSignal(object)       # StrategyResource
 
     # Sinais de importação/remoção de recurso (repassados do ResourceTreeWidget)
@@ -136,6 +137,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self.strategy_list.remove_requested.connect(self.remove_requested)
         self.strategy_list.run_strategy_requested.connect(self.run_strategy_requested)
         self.strategy_list.save_as_template_requested.connect(self.save_as_template_requested)
+        self.strategy_list.comparison_requested.connect(self.comparison_requested)
 
         self.resource_tree.resource_selected.connect(self._on_resource_selected)
         self.resource_tree.resource_deselected.connect(self.resource_info.clear)
@@ -147,9 +149,19 @@ class LeftPanelWidget(QtWidgets.QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def populate_strategies(self, definitions: List[LRStrategyDefinition]) -> None:
+    def populate_strategies(
+        self,
+        definitions: List[LRStrategyDefinition],
+        selected_strategy_id: Optional[str] = None,
+    ) -> None:
         self._definitions = list(definitions)
-        self.strategy_list.populate(definitions)
+        self.strategy_list.populate(
+            definitions, selected_strategy_id=selected_strategy_id
+        )
+
+    def select_strategy_by_id(self, strategy_id: Optional[str]) -> None:
+        """Marca visualmente a estratégia indicada como selecionada."""
+        self.strategy_list.select_strategy_by_id(strategy_id)
 
     def populate_resources(
         self,

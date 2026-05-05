@@ -82,11 +82,26 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(["Recursos do Projeto"])
         self.tree.setAlternatingRowColors(True)
+        # Padrão de seleção idêntico ao usado em StrategyListWidget e
+        # InstructionListWidget: fundo azul claro #cfe7fa + texto preservado
+        # (color: inherit). Mantém o highlight quando a janela perde foco
+        # via :!active. Garantimos consistência visual em toda a UI.
         self.tree.setStyleSheet("""
             QTreeWidget {
                 font-size: 11px;
                 border: none;
                 background: white;
+            }
+            QTreeWidget::item:selected {
+                background: #cfe7fa;
+                color: inherit;
+            }
+            QTreeWidget::item:selected:!active {
+                background: #cfe7fa;
+                color: inherit;
+            }
+            QTreeWidget::item:hover:!selected {
+                background: #f0f4f8;
             }
             QHeaderView::section {
                 font-weight: bold;

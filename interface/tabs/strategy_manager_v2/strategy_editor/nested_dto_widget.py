@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt6 import QtWidgets, QtCore
 
+from .widget_helpers import make_combo_shrinkable, make_lineedit_shrinkable
+
 
 _BTN_STYLE = (
     "QPushButton { border: 1px solid #ccc; border-radius: 3px;"
@@ -148,6 +150,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 # Enum field — render as combo. Usa label rico se disponível
                 # (atributo .label do enum), senão o nome.
                 widget = QtWidgets.QComboBox()
+                make_combo_shrinkable(widget)
                 enum_cls = type(value)
                 member_desc: Dict[str, str] = {}
                 for member in enum_cls:
@@ -212,6 +215,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 )
             elif isinstance(value, str):
                 widget = QtWidgets.QLineEdit(value)
+                make_lineedit_shrinkable(widget)
                 widget.editingFinished.connect(
                     lambda fn=f.name, w=widget:
                     self._on_field_changed(fn, w.text().strip())
@@ -225,6 +229,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 is_all_int = all(isinstance(v, int) for v in value)
                 text = ", ".join(str(v) for v in value)
                 widget = QtWidgets.QLineEdit(text)
+                make_lineedit_shrinkable(widget)
                 widget.setPlaceholderText("ex: 0.01, 0.1, 1.0, 10")
 
                 def _on_list_edit(fn=f.name, w=widget, force_int=is_all_int):
@@ -249,6 +254,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 # Lista vazia — não conhecemos o tipo dos elementos. Tratar
                 # como lista de strings (caso degenerado raro).
                 widget = QtWidgets.QLineEdit("")
+                make_lineedit_shrinkable(widget)
                 widget.setPlaceholderText("itens separados por vírgula")
                 widget.editingFinished.connect(
                     lambda fn=f.name, w=widget: self._on_field_changed(

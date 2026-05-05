@@ -47,7 +47,7 @@ from .nested_dto_widget import (
     summarize_mining_config,
 )
 from .output_row_widget import OutputRowWidget
-from .section_header import SectionHeader
+from .section_header import SectionHeader, ColumnHeader
 
 
 _PAIR_SUFFIXES = ("_source", "_target")
@@ -62,6 +62,13 @@ _HEADER_TOOLTIPS: Dict[str, str] = {
         "Controla artefatos opcionais persistidos durante a aplicação do "
         "pipeline (checkpoints, dataset transformado, dados de trajetória).",
 }
+
+
+from .widget_helpers import (
+    MIN_FIELD_WIDTH_PX as _MIN_FIELD_WIDTH_PX,
+    make_combo_shrinkable as _make_combo_shrinkable,
+    make_lineedit_shrinkable as _make_lineedit_shrinkable,
+)
 
 
 class InstructionConfigPanel(QtWidgets.QWidget):
@@ -148,8 +155,18 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
     def _init_ui(self) -> None:
         self._root_layout = QtWidgets.QVBoxLayout(self)
-        self._root_layout.setContentsMargins(8, 8, 8, 8)
-        self._root_layout.setSpacing(6)
+        # Margens 4px iguais às colunas 1 (InstructionListWidget) e 3
+        # (InstructionResultsPanel) — sem isso o ColumnHeader desta coluna
+        # ficava ~4px mais embaixo que os outros, dando impressão de
+        # desalinhamento no topo.
+        self._root_layout.setContentsMargins(4, 4, 4, 4)
+        self._root_layout.setSpacing(4)
+
+        # Cabeçalho principal da coluna — padrão unificado com Instruções
+        # e Saídas. Fica FORA do stack pra que apareça mesmo quando nenhuma
+        # instrução está selecionada (página vazia). Tipo + id da instrução
+        # aparecem como campos dentro da seção Identificação.
+        self._root_layout.addWidget(ColumnHeader("Configurações"))
 
         self.stack = QtWidgets.QStackedWidget()
         self._root_layout.addWidget(self.stack, 1)
@@ -169,14 +186,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         form_root = QtWidgets.QVBoxLayout(self.form_page)
         form_root.setContentsMargins(0, 0, 0, 0)
         form_root.setSpacing(4)
-
-        # Header bar (tipo + id)
-        self._header_lbl = QtWidgets.QLabel()
-        self._header_lbl.setStyleSheet(
-            "padding: 4px 8px; background: #2c3e50; color: white;"
-            " font-size: 11px; font-weight: bold; border-radius: 3px;"
-        )
-        form_root.addWidget(self._header_lbl)
 
         # Scroll area para o conteúdo das seções
         scroll = QtWidgets.QScrollArea()
@@ -215,12 +224,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         wrapper_cfg.setLayout(self._form_cfg)
         scroll_layout.addWidget(wrapper_cfg)
 
-        # ─── Seção 3: Saídas ──────────────────────────────────────────────
+        # ─── Seção 3: Configurações de saída ──────────────────────────────
         # A seção fica SEMPRE no painel de configuração (2ª coluna): o nome
         # do recurso de saída é decisão de configuração. O painel de
         # resultados (3ª coluna) renderiza a mesma OutputRowWidget em modo
         # read-only com foco em estado de runtime + summary + plot.
-        scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
+        scroll_layout.addWidget(SectionHeader("Configurações de saída", "outputs"))
         self._outputs_layout = QtWidgets.QVBoxLayout()
         self._outputs_layout.setContentsMargins(8, 6, 8, 8)
         self._outputs_layout.setSpacing(6)
@@ -577,17 +586,36 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._clear_outputs_layout()
 
         # ─── Header bar ──────────────────────────────────────────────────
-        self._header_lbl.setText(
-            f"  {instr.instruction_type.value}    "
-            f"<span style='color:#aac7e0; font-weight:normal;'>id: {instr.instruction_id}</span>"
-        )
-
         # ─── Seção Identificação ────────────────────────────────────────
+        # Tipo + ID exibidos como campos read-only dentro da Identificação,
+        # em vez de num header competindo com o título da coluna.
+        type_lbl = QtWidgets.QLabel(str(instr.instruction_type.value))
+        type_lbl.setStyleSheet(
+            "color: #1A2942; font-size: 11px; font-weight: bold;"
+            " padding: 2px 0px;"
+        )
+        type_lbl.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._form_id.addRow("Tipo:", type_lbl)
+
+        id_lbl = QtWidgets.QLabel(str(instr.instruction_id))
+        id_lbl.setStyleSheet(
+            "color: #555E6D; font-size: 10px; font-family: monospace;"
+            " padding: 2px 0px;"
+        )
+        id_lbl.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self._form_id.addRow("ID:", id_lbl)
+
         self._field_name = QtWidgets.QLineEdit(instr.name or "")
+        _make_lineedit_shrinkable(self._field_name)
         self._form_id.addRow("Nome:", self._field_name)
 
         self._field_desc = QtWidgets.QPlainTextEdit(instr.description or "")
         self._field_desc.setMaximumHeight(54)
+        self._field_desc.setMinimumWidth(_MIN_FIELD_WIDTH_PX)
         self._form_id.addRow("Descrição:", self._field_desc)
 
         # ─── Seção Configuração ─────────────────────────────────────────
@@ -661,6 +689,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         choice_specs = instr.get_choice_field_specs()
         for cspec in choice_specs:
             combo = QtWidgets.QComboBox()
+            _make_combo_shrinkable(combo)
 
             # `dynamic_choices` permite que o DTO filtre as opções a cada
             # rebuild, com base no estado atual de outras seleções e nos
@@ -861,6 +890,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 widget.setValue(float(val))
             else:
                 widget = QtWidgets.QLineEdit(str(val) if val is not None else "")
+                _make_lineedit_shrinkable(widget)
             self._param_fields[key] = widget
             self._form_cfg.addRow(f"{key}:", widget)
 
@@ -906,6 +936,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             w = QtWidgets.QLineEdit(str(current) if current else "")
             if spec.placeholder:
                 w.setPlaceholderText(spec.placeholder)
+            _make_lineedit_shrinkable(w)
             return w
 
         if vt in ("list_str", "list_int"):
@@ -914,6 +945,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 text = ", ".join(str(x) for x in current)
             w = QtWidgets.QLineEdit(text)
             w.setPlaceholderText(spec.placeholder or "valores separados por vírgula")
+            _make_lineedit_shrinkable(w)
             return w
 
         return None
@@ -1021,6 +1053,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self, instr: StrategyInstructionDefinition, spec: ResourceFieldSpec
     ) -> QtWidgets.QComboBox:
         combo = QtWidgets.QComboBox()
+        _make_combo_shrinkable(combo)
         combo.addItem("(nenhum)", userData=None)
         for res in self._available_resources:
             if res.resource_type in spec.accepted_types:

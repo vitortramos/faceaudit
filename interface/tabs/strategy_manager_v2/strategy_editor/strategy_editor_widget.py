@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Dict, List, Optional, Set, Tuple
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtWidgets, QtCore, QtGui
 
 from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
@@ -80,7 +80,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
         # Página 0 — vazia
         empty_page = QtWidgets.QWidget()
-        lbl = QtWidgets.QLabel("Abra ou crie uma estratégia para começar a editar.")
+        lbl = QtWidgets.QLabel("Selecione ou crie uma estratégia para começar a editar.")
         lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         lbl.setStyleSheet("color: #888; font-size: 14px;")
         QtWidgets.QVBoxLayout(empty_page).addWidget(lbl)
@@ -148,12 +148,14 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             self._tabs.addTab(splitter, phase_label)
             self._phase_widgets[phase_key] = (instr_list, config_panel, results_panel)
 
-            # Conexões — default args capturam valores corretamente
+            # Conexões — default args capturam valores corretamente.
+            # Cursor de espera durante a troca de instrução: o config_panel
+            # reconstrói o form (DTOs aninhados, dropdowns filtrados por
+            # tipo de recurso) e o results_panel hidrata/redesenha o card —
+            # ambos podem travar a UI por segundos em instruções pesadas.
             instr_list.instruction_selected.connect(
-                lambda instr, cp=config_panel, rp=results_panel: (
-                    cp.load_instruction(instr),
-                    rp.load_instruction(instr),
-                )
+                lambda instr, cp=config_panel, rp=results_panel:
+                    self._load_instruction_with_wait_cursor(instr, cp, rp)
             )
             instr_list.add_instruction_requested.connect(
                 lambda itype, pk=phase_key: self._on_add_instruction(itype, pk)
@@ -368,3 +370,27 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             return
         self._definition.embedding_type = self.combo_embedding_type.itemData(index)
         self.strategy_modified.emit(self._definition)
+
+    def _load_instruction_with_wait_cursor(
+        self,
+        instr: StrategyInstructionDefinition,
+        config_panel: InstructionConfigPanel,
+        results_panel: InstructionResultsPanel,
+    ) -> None:
+        """
+        Carrega a instrução nos painéis de configuração e resultados com
+        cursor de espera ativo. Reconstruir o form (specs dinâmicos, DTOs
+        aninhados, dropdowns filtrados) e popular o card de resultados
+        (hidratar payload, desenhar gráfico) podem travar a UI por
+        segundos em instruções pesadas (SIMILARITY_SCORING com 5M+ pares,
+        STRATEGY_EVALUATION com 4 abas matplotlib).
+        """
+        QtWidgets.QApplication.setOverrideCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
+        )
+        try:
+            QtWidgets.QApplication.processEvents()
+            config_panel.load_instruction(instr)
+            results_panel.load_instruction(instr)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()

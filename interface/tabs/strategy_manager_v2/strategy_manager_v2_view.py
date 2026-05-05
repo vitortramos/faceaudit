@@ -12,11 +12,11 @@ class StrategyManagerV2View(QtWidgets.QWidget):
     │  Global Resources Toolbar (Pipeline/Mining/Split/…) │
     │  Project Toolbar (Novo/Abrir/Salvar/Fechar/…)       │
     ├──────────────┬──────────────────────────────────────┤
-    │  Left Panel  │  Main Area (QTabWidget)               │
-    │  (QSplitter) │  ┌─────────────┬──────────────────┐  │
-    │  - Estratégs │  │  Estratégia │  Comparação      │  │
-    │  - Recursos  │  │  (editor)   │  (futura)        │  │
-    │  - Info      │  └─────────────┴──────────────────┘  │
+    │  Left Panel  │  Strategy Editor                     │
+    │  (QSplitter) │  (sem aba — editor direto)           │
+    │  - Estratégs │                                       │
+    │  - Recursos  │  Botão "Comparar" no left panel abre │
+    │  - Info      │  uma janela top-level dedicada.      │
     └──────────────┴──────────────────────────────────────┘
     """
 
@@ -129,24 +129,14 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         self.left_panel_placeholder.setMinimumWidth(200)
         self.left_panel_placeholder.setMaximumWidth(500)
 
-        # Main area: QTabWidget
-        self.main_tabs = QtWidgets.QTabWidget()
-        self.main_tabs.setDocumentMode(True)
-
-        # Tab 0: Estratégia (editor placeholder — substituído pelo controller)
+        # Editor de estratégia — placeholder substituído pelo controller via
+        # set_strategy_editor(). Vai direto no splitter, sem QTabWidget
+        # intermediário (o conteúdo "Comparação" antigo virou janela top-level
+        # acessada via botão "Comparar" no left_panel).
         self.strategy_editor_placeholder = QtWidgets.QWidget()
-        self.main_tabs.addTab(self.strategy_editor_placeholder, "Estratégia")
-
-        # Tab 1: Comparação (futura implementação)
-        self.comparison_placeholder = QtWidgets.QWidget()
-        _lbl = QtWidgets.QLabel("Comparação entre estratégias — disponível em breve.")
-        _lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        _lbl.setStyleSheet("color: #888; font-size: 14px;")
-        QtWidgets.QVBoxLayout(self.comparison_placeholder).addWidget(_lbl)
-        self.main_tabs.addTab(self.comparison_placeholder, "Comparação")
 
         self._workspace_splitter.addWidget(self.left_panel_placeholder)
-        self._workspace_splitter.addWidget(self.main_tabs)
+        self._workspace_splitter.addWidget(self.strategy_editor_placeholder)
         self._workspace_splitter.setSizes([280, 700])
 
         layout.addWidget(self._workspace_splitter)
@@ -190,9 +180,9 @@ class StrategyManagerV2View(QtWidgets.QWidget):
 
     def set_strategy_editor(self, widget: QtWidgets.QWidget) -> None:
         """Substitui o placeholder do editor de estratégia pelo widget real."""
-        self.main_tabs.removeTab(0)
-        self.main_tabs.insertTab(0, widget, "Estratégia")
-        self.main_tabs.setCurrentIndex(0)
+        # Editor é o segundo widget do splitter (índice 1) — left panel é o 0.
+        self._workspace_splitter.replaceWidget(1, widget)
+        self.strategy_editor_placeholder.hide()
         self.strategy_editor_placeholder = widget
 
     # ── Navigation ────────────────────────────────────────────────────────────

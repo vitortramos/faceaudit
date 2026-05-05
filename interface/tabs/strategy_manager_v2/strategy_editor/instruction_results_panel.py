@@ -29,7 +29,31 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
+
+
+def _with_wait_cursor():
+    """
+    Context manager local que ativa o cursor de espera durante operações
+    bloqueantes do painel de resultados (renderização de gráficos custosos:
+    KDE de 5M+ pares, ValidationResultWidget com 4 abas matplotlib, etc.).
+    Garante restoreOverrideCursor mesmo em caso de exceção e força repaint
+    via processEvents() antes de bloquear.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _cm():
+        QtWidgets.QApplication.setOverrideCursor(
+            QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
+        )
+        try:
+            QtWidgets.QApplication.processEvents()
+            yield
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+    return _cm()
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
@@ -43,7 +67,7 @@ from faceaudit.protocols.strategy_execution_context_protocol import (
 )
 
 from .output_row_widget import OutputRowWidget
-from .section_header import SectionHeader
+from .section_header import SectionHeader, ColumnHeader
 from .result_widgets import (
     CaseworkVisualizationWidget,
     ScoreDistributionWidget,
@@ -125,6 +149,16 @@ class _ResultsCard(QtWidgets.QWidget):
         self._plot_kind = _instruction_plot_kind(instruction)
         self._plot_widget: Optional[QtWidgets.QWidget] = None
         self._output_widgets: Dict[str, OutputRowWidget] = {}
+        # Cache do último payload renderizado — evita redesenhar gráficos
+        # caros (KDE em 5M+ pares, etc.) quando update_state é chamado
+        # repetidamente com o mesmo payload.
+        self._last_rendered_payload_id: Optional[int] = None
+        self._last_render_args: Optional[tuple] = None
+        # True quando o plot já foi desenhado pelo menos uma vez. Usado
+        # pra evitar voltar pra placeholder quando o payload some
+        # transitoriamente do contexto/definition (ex: contexto resetado
+        # após edição) — o canvas matplotlib já tem a figura em memória.
+        self._plot_rendered_once: bool = False
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -139,8 +173,9 @@ class _ResultsCard(QtWidgets.QWidget):
         self._scroll_layout.setContentsMargins(8, 8, 8, 8)
         self._scroll_layout.setSpacing(6)
 
-        # ── Seção: Saídas ──────────────────────────────────────────────────
-        self._scroll_layout.addWidget(SectionHeader("Saídas", "outputs"))
+        # NOTA: o sub-header "Saídas" foi removido — o cabeçalho principal
+        # da coluna (ColumnHeader "Saídas" no InstructionResultsPanel) já
+        # cumpre esse papel; ter os dois ao mesmo tempo era redundante.
 
         self._outputs_layout = QtWidgets.QVBoxLayout()
         self._outputs_layout.setContentsMargins(8, 6, 8, 4)
@@ -382,13 +417,105 @@ class _ResultsCard(QtWidgets.QWidget):
             self._render_plot(payload)
             return
 
-        # Sem payload em memória. Verifica se está no disco — então oferece
-        # botão de carregamento. Caso contrário, fica em placeholder vazio.
+        # Caminho rápido pra ScoreDistributionWidget: tenta usar sidecar
+        # `<stem>_dist.json` pré-computado em vez de hidratar o parquet
+        # de 5M+ pares. Funciona sem o usuário clicar "Carregar e
+        # visualizar" — gráfico aparece imediatamente.
+        if (
+            self._plot_kind == _PLOT_KIND_SCORE_DISTRIBUTION
+            and resource_id is not None
+            and isinstance(self._plot_widget, ScoreDistributionWidget)
+        ):
+            summary = self._try_load_dist_summary(definition, resource_id, resource_loader)
+            if summary is not None:
+                self._render_plot_from_summary(summary)
+                return
+
+        # Payload sumiu transitoriamente do contexto/definition (ex:
+        # contexto resetado por uma edição em outra parte da UI). Se o
+        # gráfico já foi desenhado anteriormente nesta sessão, mantém
+        # ele visível — o canvas matplotlib preserva a figura em memória
+        # e voltar pra placeholder/hydrate forçaria o usuário a clicar
+        # "Carregar e visualizar" de novo apesar do gráfico existir.
+        if self._plot_rendered_once and hasattr(self, "_plot_stack"):
+            self._plot_stack.setCurrentIndex(1)
+            self._btn_hydrate.setVisible(False)
+            return
+
+        # Primeira exibição sem payload em memória. Verifica se está no
+        # disco — então oferece botão de carregamento. Caso contrário,
+        # fica em placeholder vazio.
         has_artifact = self._has_artifact_for_plot(definition)
         if has_artifact and resource_id:
             self._show_hydrate_button(resource_id)
         else:
             self._show_placeholder()
+
+    def _try_load_dist_summary(
+        self,
+        definition: LRStrategyDefinition,
+        resource_id: str,
+        resource_loader: Any,
+    ) -> Optional[dict]:
+        """
+        Tenta carregar o sidecar de distribuição pré-computado pro
+        `resource_id`. Retorna o dict pronto pra plotar, ou None se
+        ausente / inválido / sem caminho resolvível.
+        """
+        if definition is None or resource_loader is None:
+            return None
+        existing = definition.get_resource_by_id(resource_id)
+        if existing is None or not existing.has_artifact:
+            return None
+        try:
+            storage = getattr(resource_loader, "_storage", None)
+            project_root = getattr(storage, "project_root", None) if storage else None
+            if project_root is None:
+                return None
+            from pathlib import Path
+            from faceaudit.models.similarity.similarity_score_dataset import (
+                SimilarityScoreDataset,
+            )
+            parquet_abs = Path(project_root) / existing.artifact_ref.path
+            if not parquet_abs.exists():
+                return None
+            return SimilarityScoreDataset.try_load_distribution_summary(parquet_abs)
+        except Exception:
+            return None
+
+    def _render_plot_from_summary(self, summary: dict) -> None:
+        """
+        Versão do `_render_plot` que usa um sidecar de distribuição em
+        vez do payload em memória. Mesmo cache de identidade — `id()`
+        do dict serve como chave de fingerprint.
+        """
+        if not isinstance(self._plot_widget, ScoreDistributionWidget):
+            return
+        summary_id = id(summary)
+        # Args derivados — pra distinguir de uma render anterior baseada
+        # em payload (use_log_lr) e evitar cache hit indevido.
+        extra_args = ("summary", summary.get("score_type", "raw"))
+        if (
+            self._last_rendered_payload_id == summary_id
+            and self._last_render_args == extra_args
+            and self._plot_rendered_once
+        ):
+            if hasattr(self, "_plot_stack"):
+                self._btn_hydrate.setVisible(False)
+                self._plot_stack.setCurrentIndex(1)
+            return
+        with _with_wait_cursor():
+            try:
+                self._plot_widget.set_distribution_summary(summary)
+            except Exception:
+                self._show_placeholder()
+                return
+            self._last_rendered_payload_id = summary_id
+            self._last_render_args = extra_args
+            self._plot_rendered_once = True
+            if hasattr(self, "_plot_stack"):
+                self._btn_hydrate.setVisible(False)
+                self._plot_stack.setCurrentIndex(1)
 
     def invalidate(self) -> None:
         """
@@ -414,6 +541,12 @@ class _ResultsCard(QtWidgets.QWidget):
                 self._plot_widget.set_result(None)
         except Exception:
             pass
+        # Limpa cache pra que próxima render aconteça mesmo se o id() do
+        # payload bater (re-execução pode produzir um objeto novo com mesmo
+        # conteúdo mas id diferente — defensivo).
+        self._last_rendered_payload_id = None
+        self._last_render_args = None
+        self._plot_rendered_once = False
         self._show_placeholder()
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -454,30 +587,66 @@ class _ResultsCard(QtWidgets.QWidget):
             self.view_hubness_ablation_requested.emit(self._instruction)
 
     def _render_plot(self, payload: Any) -> None:
-        """Atualiza o widget de plot com o payload recebido."""
+        """Atualiza o widget de plot com o payload recebido.
+
+        Cache de identidade: se o último payload desenhado foi o mesmo
+        objeto (mesmo `id()`) e os parâmetros derivados não mudaram,
+        pula o redraw. Resolve lentidão crescente — `update_state` é
+        chamado em vários lugares (load_instruction, refresh do panel,
+        etc.) e antes redesenhava o KDE de 5M+ pares toda vez.
+        """
         if self._plot_widget is None:
             return
         from .result_widgets import HubnessReportWidget, HubnessAblationWidget
-        try:
-            if isinstance(self._plot_widget, ScoreDistributionWidget):
-                use_log_lr = self._is_calibrated_scores_output()
-                self._plot_widget.set_dataset(
-                    payload, use_log_lr=use_log_lr
-                )
-            elif isinstance(self._plot_widget, ValidationResultWidget):
-                self._plot_widget.set_result(payload)
-            elif isinstance(self._plot_widget, CaseworkVisualizationWidget):
-                self._plot_widget.set_result(payload)
-            elif isinstance(self._plot_widget, HubnessReportWidget):
-                self._plot_widget.set_result(payload)
-            elif isinstance(self._plot_widget, HubnessAblationWidget):
-                self._plot_widget.set_result(payload)
-        except Exception:
-            self._show_placeholder()
+
+        # Argumentos derivados que afetam o plot (além do payload).
+        if isinstance(self._plot_widget, ScoreDistributionWidget):
+            extra_args = (self._is_calibrated_scores_output(),)
+        else:
+            extra_args = ()
+
+        # Skip redraw se mesmo payload + mesmos args.
+        payload_id = id(payload)
+        if (
+            self._last_rendered_payload_id == payload_id
+            and self._last_render_args == extra_args
+            and self._plot_rendered_once
+        ):
+            # Garante apenas que a página correta está visível.
+            if hasattr(self, "_plot_stack"):
+                self._btn_hydrate.setVisible(False)
+                self._plot_stack.setCurrentIndex(1)
             return
-        if hasattr(self, "_plot_stack"):
-            self._btn_hydrate.setVisible(False)
-            self._plot_stack.setCurrentIndex(1)
+
+        # Cursor de espera durante o render — desenhar histograma+KDE de
+        # milhões de pares ou popular as 4 abas do ValidationResultWidget
+        # bloqueia a main thread por segundos. Sem isso o usuário vê a UI
+        # "travada" sem feedback nenhum após clicar.
+        with _with_wait_cursor():
+            try:
+                if isinstance(self._plot_widget, ScoreDistributionWidget):
+                    use_log_lr = extra_args[0]
+                    self._plot_widget.set_dataset(
+                        payload, use_log_lr=use_log_lr
+                    )
+                elif isinstance(self._plot_widget, ValidationResultWidget):
+                    self._plot_widget.set_result(payload)
+                elif isinstance(self._plot_widget, CaseworkVisualizationWidget):
+                    self._plot_widget.set_result(payload)
+                elif isinstance(self._plot_widget, HubnessReportWidget):
+                    self._plot_widget.set_result(payload)
+                elif isinstance(self._plot_widget, HubnessAblationWidget):
+                    self._plot_widget.set_result(payload)
+            except Exception:
+                self._show_placeholder()
+                return
+            # Marca como renderizado e cacheia identidade do payload.
+            self._last_rendered_payload_id = payload_id
+            self._last_render_args = extra_args
+            self._plot_rendered_once = True
+            if hasattr(self, "_plot_stack"):
+                self._btn_hydrate.setVisible(False)
+                self._plot_stack.setCurrentIndex(1)
 
     def _is_calibrated_scores_output(self) -> bool:
         """True se o output relevante é CALIBRATED_SCORES (usa log_lr)."""
@@ -620,22 +789,28 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         self._resource_loader: Any = None
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+
+        # Cabeçalho principal da coluna — padrão unificado com Instruções
+        # e Configurações.
+        layout.addWidget(ColumnHeader("Saídas"))
 
         self._stack = QtWidgets.QStackedWidget()
         layout.addWidget(self._stack, 1)
 
         # ── Index 0: empty state ──────────────────────────────────────────────
+        # Centralizado vertical e horizontalmente — alinha com o comportamento
+        # do empty state da coluna 2 (InstructionConfigPanel) que usa
+        # AlignCenter no layout.
         empty_page = QtWidgets.QWidget()
         empty_layout = QtWidgets.QVBoxLayout(empty_page)
-        empty_layout.addStretch(1)
-        empty_lbl = QtWidgets.QLabel("Selecione uma instrução para ver os resultados")
+        empty_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        empty_lbl = QtWidgets.QLabel("Selecione uma instrução para ver os resultados.")
         empty_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        empty_lbl.setStyleSheet("color: #888; font-style: italic; font-size: 12px;")
+        empty_lbl.setStyleSheet("color: #888; font-style: italic; font-size: 13px;")
         empty_lbl.setWordWrap(True)
         empty_layout.addWidget(empty_lbl)
-        empty_layout.addStretch(2)
         self._stack.addWidget(empty_page)  # index 0
 
     # ── Public API ────────────────────────────────────────────────────────────

@@ -9,6 +9,8 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
 
+from .section_header import ColumnHeader
+
 
 _INSTRUCTION_ICONS = {
     StrategyInstructionType.PIPELINE_TRAINING: "🔧",
@@ -162,9 +164,9 @@ class InstructionListWidget(QtWidgets.QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        header = QtWidgets.QLabel("Instruções")
-        header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        layout.addWidget(header)
+        # Cabeçalho principal da coluna — padrão unificado com as colunas
+        # de Configurações e Saídas (mesmo widget ColumnHeader).
+        layout.addWidget(ColumnHeader("Instruções"))
 
         self.list_widget = QtWidgets.QListWidget()
         self.list_widget.setDragDropMode(QtWidgets.QAbstractItemView.DragDropMode.InternalMove)
@@ -174,6 +176,23 @@ class InstructionListWidget(QtWidgets.QWidget):
         self.list_widget.setMinimumWidth(220)
         # Espaçamento confortável para itens com sub-linha.
         self.list_widget.setSpacing(1)
+        # Cor de seleção clara — o texto do item pode ser verde (executado),
+        # cinza (locked) ou preto (runnable). O fundo azul escuro padrão do
+        # Qt deixa o texto verde ilegível; trocamos por um azul bem suave
+        # com borda lateral marcadora para indicar seleção sem reduzir
+        # contraste com qualquer cor de texto.
+        self.list_widget.setStyleSheet(
+            "QListWidget::item:selected {"
+            " background: #cfe7fa; color: inherit;"
+            " border-left: 3px solid #1565c0;"
+            "}"
+            "QListWidget::item:selected:!active {"
+            " background: #cfe7fa; color: inherit;"
+            "}"
+            "QListWidget::item:hover:!selected {"
+            " background: #f0f4f8;"
+            "}"
+        )
         layout.addWidget(self.list_widget, 1)
 
         # Botões

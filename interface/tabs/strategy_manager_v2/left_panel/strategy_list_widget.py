@@ -29,6 +29,7 @@ class StrategyListWidget(QtWidgets.QWidget):
     remove_requested = QtCore.pyqtSignal(object)
     run_strategy_requested = QtCore.pyqtSignal()
     save_as_template_requested = QtCore.pyqtSignal()
+    comparison_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,9 +54,26 @@ class StrategyListWidget(QtWidgets.QWidget):
 
         # Lista
         self.list_widget = QtWidgets.QListWidget()
-        self.list_widget.setAlternatingRowColors(True)
+        # AlternatingRowColors desativado: o tom cinza alternado dava a
+        # impressão visual de que o item cinza estava selecionado. Como
+        # o highlight de seleção é o azul-claro dedicado, a alternância
+        # confunde ao invés de ajudar.
+        self.list_widget.setAlternatingRowColors(False)
+        # Seleção: fundo azul claro + barra lateral azul vibrante. Mantém
+        # o highlight visível mesmo quando a janela perde foco (:!active),
+        # crítico pra deixar claro qual estratégia está aberta no editor.
         self.list_widget.setStyleSheet("""
             QListWidget { font-size: 11px; border: none; background: white; }
+            QListWidget::item:selected {
+                background: #cfe7fa; color: inherit;
+                border-left: 3px solid #1565c0;
+            }
+            QListWidget::item:selected:!active {
+                background: #cfe7fa; color: inherit;
+            }
+            QListWidget::item:hover:!selected {
+                background: #f0f4f8;
+            }
         """)
         self.list_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -126,18 +144,80 @@ class StrategyListWidget(QtWidgets.QWidget):
         self.btn_template.clicked.connect(self.save_as_template_requested)
         action_row.addWidget(self.btn_template)
 
+        # Botão "Comparar" — abre janela top-level dedicada à comparação
+        # entre estratégias treinadas. Habilitado apenas quando há ≥2
+        # estratégias no projeto (lógica em populate/_update_buttons).
+        self.btn_compare = QtWidgets.QPushButton("Comparar")
+        self.btn_compare.setToolTip(
+            "Abrir janela de comparação entre estratégias treinadas"
+        )
+        self.btn_compare.setEnabled(False)
+        self.btn_compare.setStyleSheet("""
+            QPushButton { border: 1px solid #ccc; border-radius: 3px;
+                          background: white; padding: 2px 6px; font-size: 11px; }
+            QPushButton:hover { background: #e8f0fe; }
+            QPushButton:disabled { color: #aaa; }
+        """)
+        self.btn_compare.clicked.connect(self.comparison_requested)
+        action_row.addWidget(self.btn_compare)
+
         layout.addLayout(action_row)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def populate(self, definitions: List[LRStrategyDefinition]) -> None:
-        """Repopula a lista com as definições fornecidas."""
+    def populate(
+        self,
+        definitions: List[LRStrategyDefinition],
+        selected_strategy_id: Optional[str] = None,
+    ) -> None:
+        """
+        Repopula a lista com as definições fornecidas.
+
+        Quando `selected_strategy_id` é informado e bate com alguma das
+        definições, esse item fica selecionado visualmente — preserva o
+        feedback de "qual estratégia está aberta no editor" através de
+        refreshes da lista (após edição, execução, rename etc.).
+        """
         self._definitions = list(definitions)
-        self.list_widget.clear()
-        for defn in self._definitions:
-            item = QtWidgets.QListWidgetItem(defn.name)
-            item.setData(QtCore.Qt.ItemDataRole.UserRole, defn)
-            self.list_widget.addItem(item)
+        # blockSignals evita reemitir strategy_selected durante o setCurrentRow
+        # programático — só queremos o highlight visual, não um novo evento de
+        # abertura que dispararia _on_strategy_opened de novo.
+        self.list_widget.blockSignals(True)
+        try:
+            self.list_widget.clear()
+            target_index = -1
+            for idx, defn in enumerate(self._definitions):
+                item = QtWidgets.QListWidgetItem(defn.name)
+                item.setData(QtCore.Qt.ItemDataRole.UserRole, defn)
+                self.list_widget.addItem(item)
+                if (
+                    selected_strategy_id is not None
+                    and defn.strategy_id == selected_strategy_id
+                ):
+                    target_index = idx
+            if target_index >= 0:
+                self.list_widget.setCurrentRow(target_index)
+        finally:
+            self.list_widget.blockSignals(False)
+        self._update_buttons()
+
+    def select_strategy_by_id(self, strategy_id: Optional[str]) -> None:
+        """
+        Restaura a seleção visual da estratégia com o id informado.
+        No-op se id é None ou não está na lista. Não dispara signals.
+        """
+        if not strategy_id:
+            return
+        self.list_widget.blockSignals(True)
+        try:
+            for idx in range(self.list_widget.count()):
+                item = self.list_widget.item(idx)
+                defn = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if defn is not None and defn.strategy_id == strategy_id:
+                    self.list_widget.setCurrentRow(idx)
+                    break
+        finally:
+            self.list_widget.blockSignals(False)
         self._update_buttons()
 
     def clear(self) -> None:
@@ -181,6 +261,11 @@ class StrategyListWidget(QtWidgets.QWidget):
         has_selection = self.selected_definition() is not None
         self.btn_dup.setEnabled(has_selection)
         self.btn_del.setEnabled(has_selection)
+        # Comparar exige pelo menos 1 estratégia. Mesmo com uma só vale
+        # abrir a janela: uma estratégia pode ter múltiplos resultados
+        # (ex: 2 STRATEGY_EVALUATION com VALIDATION_RESULTs distintos —
+        # tuning de calibrador vs validação final) que valem comparar.
+        self.btn_compare.setEnabled(self.list_widget.count() >= 1)
 
     def _show_context_menu(self, pos: QtCore.QPoint) -> None:
         item = self.list_widget.itemAt(pos)

@@ -45,3 +45,47 @@ class SectionHeader(QtWidgets.QFrame):
 
     def setTitle(self, title: str) -> None:
         self._label.setText(title.upper())
+
+
+class ColumnHeader(QtWidgets.QFrame):
+    """
+    Cabeçalho principal de uma das três colunas do editor de estratégias
+    (Instruções / Configurações / Saídas).
+
+    Visualmente mais proeminente que `SectionHeader` (que rotula sub-seções
+    internas a uma coluna): fundo cinza-azulado mais marcado, fonte maior
+    e altura fixa um pouco maior pra criar hierarquia clara entre o título
+    da coluna e os títulos das subseções.
+
+    Padrão único reutilizado nas 3 colunas para garantir consistência visual.
+    """
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+
+        bg = "#2C3E50"
+        fg = "#FFFFFF"
+
+        self.setFixedHeight(30)
+        self.setStyleSheet(
+            f"QFrame {{"
+            f"  background-color: {bg};"
+            f"  border-radius: 3px;"
+            f"}}"
+        )
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(12, 4, 12, 4)
+        layout.setSpacing(0)
+
+        self._label = QtWidgets.QLabel(title.upper())
+        self._label.setStyleSheet(
+            f"background: transparent; border: none;"
+            f" color: {fg}; font-size: 13px; font-weight: bold;"
+            f" letter-spacing: 1px;"
+        )
+        layout.addWidget(self._label)
+        layout.addStretch(1)
+
+    def setTitle(self, title: str) -> None:
+        self._label.setText(title.upper())

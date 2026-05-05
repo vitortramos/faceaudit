@@ -394,6 +394,15 @@ class OutputRowWidget(QtWidgets.QFrame):
             "}"
         )
 
+        # Vertical Maximum: o widget cresce até o sizeHint do conteúdo e
+        # NÃO além — sem isso o ResourceInfoWidget embedado (que tem
+        # QTabWidget+QScrollArea com policy Expanding) puxa o row inteiro
+        # pra cima/baixo, deixando uma faixa vazia abaixo do conteúdo.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred,
+            QtWidgets.QSizePolicy.Policy.Maximum,
+        )
+
         self._init_ui(label, resource_id)
 
     def _init_ui(self, label: str, resource_id: Optional[str]) -> None:
@@ -558,6 +567,15 @@ class OutputRowWidget(QtWidgets.QFrame):
                     ResourceInfoWidget,
                 )
                 self._info_widget = ResourceInfoWidget(compact=True)
+                # Em modo compact, o ResourceInfoWidget contém QTabWidget +
+                # QScrollArea (ambos com policy Expanding por default), o
+                # que faz ele puxar o row inteiro para crescer e gerar
+                # faixa de espaço vazio embaixo. Maximum vertical limita o
+                # widget ao seu sizeHint real.
+                self._info_widget.setSizePolicy(
+                    QtWidgets.QSizePolicy.Policy.Preferred,
+                    QtWidgets.QSizePolicy.Policy.Maximum,
+                )
                 self._details_layout.addWidget(self._info_widget)
             self._refresh_info_widget()
             self._details_container.setVisible(True)

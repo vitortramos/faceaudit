@@ -53,6 +53,11 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._dataset = score_dataset
         self._use_log_lr = bool(use_log_lr)
+        # Sidecar pré-computado (gravado por SimilarityScoreDataset.to_parquet).
+        # Quando presente, o render usa diretamente sem iterar samples nem
+        # rodar gaussian_kde — orders of magnitude mais rápido pra datasets
+        # com milhões de pares.
+        self._dist_summary: Optional[dict] = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -84,13 +89,50 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         self._dataset = score_dataset
         if use_log_lr is not None:
             self._use_log_lr = bool(use_log_lr)
+        # Trocar pra um dataset em memória anula o sidecar previamente
+        # carregado — preferir o dataset (mais fresco, ground truth).
+        self._dist_summary = None
+        self._render()
+
+    def set_distribution_summary(self, summary: Optional[dict]) -> None:
+        """
+        Plota a partir do sidecar pré-computado, sem precisar do dataset
+        em memória. Usado pelo painel de resultados quando o parquet está
+        no disco mas o sidecar `<stem>_dist.json` está disponível —
+        evita o custo de carregar 5M+ samples só para desenhar.
+
+        Quando `summary is None`, limpa o estado e mostra placeholder.
+        """
+        self._dist_summary = summary
+        # Ao usar sidecar, descarta dataset previamente setado para evitar
+        # ambiguidade no _render.
+        if summary is not None:
+            self._dataset = None
         self._render()
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _render(self) -> None:
-        """Desenha o gráfico — placeholder se sem dataset."""
+        """Desenha o gráfico — placeholder se sem dataset/sidecar."""
         self.figure.clear()
+
+        # Caminho rápido: sidecar pré-computado.
+        if self._dist_summary is not None:
+            try:
+                self._draw_from_summary(self.figure, self._dist_summary)
+            except Exception as exc:
+                self.figure.clear()
+                ax = self.figure.add_subplot(111)
+                ax.text(
+                    0.5, 0.5,
+                    f"Erro ao gerar plot:\n{exc}",
+                    ha="center", va="center", transform=ax.transAxes,
+                    color="#a33", fontsize=10,
+                )
+                ax.axis("off")
+            self.canvas.draw_idle()
+            return
+
         if self._dataset is None:
             ax = self.figure.add_subplot(111)
             ax.text(
@@ -211,5 +253,89 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         ax.grid(True, linestyle="--", alpha=0.4)
         if n_gen > 0 or n_imp > 0:
             ax.legend(loc="best", fontsize=9)
+
+        figure.tight_layout()
+
+    @staticmethod
+    def _draw_from_summary(figure: Figure, summary: dict) -> None:
+        """
+        Desenha o mesmo plot a partir do sidecar pré-computado pelo
+        `SimilarityScoreDataset._write_distribution_summary_sidecar`.
+
+        Espera dict com:
+            score_type ('raw' | 'log_lr'), name, n_gen, n_imp,
+            x_min, x_max, bins, gen_hist_density, imp_hist_density,
+            kde_x, kde_gen_y, kde_imp_y.
+        """
+        figure.clear()
+        ax = figure.add_subplot(111)
+
+        score_type = summary.get("score_type", "raw")
+        use_log_lr = score_type == "log_lr"
+        n_gen = int(summary.get("n_gen", 0))
+        n_imp = int(summary.get("n_imp", 0))
+
+        if n_gen == 0 and n_imp == 0:
+            ax.text(
+                0.5, 0.5, "(sem scores)", transform=ax.transAxes,
+                ha="center", va="center", fontsize=12, color="#888",
+            )
+            return
+
+        bins = np.asarray(summary["bins"], dtype=np.float64)
+        # Histograma plotado via bar() usando densidades pré-computadas.
+        widths = np.diff(bins)
+        centers = bins[:-1] + widths / 2.0
+
+        if n_imp > 0:
+            ax.bar(
+                centers, summary["imp_hist_density"],
+                width=widths, alpha=0.45,
+                color="#c62828", edgecolor="#7a0000", linewidth=0.5,
+                label=f"Impostores  (n={n_imp:,})".replace(",", "."),
+            )
+        if n_gen > 0:
+            ax.bar(
+                centers, summary["gen_hist_density"],
+                width=widths, alpha=0.45,
+                color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
+                label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
+            )
+
+        kde_x = summary.get("kde_x")
+        kde_gen_y = summary.get("kde_gen_y")
+        kde_imp_y = summary.get("kde_imp_y")
+        if kde_x is not None:
+            kde_x_arr = np.asarray(kde_x, dtype=np.float64)
+            if kde_imp_y is not None:
+                ax.plot(
+                    kde_x_arr, np.asarray(kde_imp_y, dtype=np.float64),
+                    color="#7a0000", linewidth=1.4, alpha=0.9,
+                )
+            if kde_gen_y is not None:
+                ax.plot(
+                    kde_x_arr, np.asarray(kde_gen_y, dtype=np.float64),
+                    color="#0d3a10", linewidth=1.4, alpha=0.9,
+                )
+
+        title_prefix = (
+            "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
+        )
+        ds_name = summary.get("name") or ""
+        title_suffix = f" — {ds_name}" if ds_name else ""
+        ax.set_title(
+            f"{title_prefix}{title_suffix}\n"
+            f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+            fontsize=11,
+        )
+        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
+        ax.set_ylabel("Densidade")
+        if use_log_lr:
+            ax.axvline(
+                0.0, color="#444", linestyle=":", linewidth=1.0,
+                alpha=0.6, label="log-LR = 0",
+            )
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend(loc="best", fontsize=9)
 
         figure.tight_layout()

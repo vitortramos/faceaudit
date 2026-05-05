@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from matplotlib.backends.backend_qtagg import (
     FigureCanvasQTAgg as FigureCanvas,
@@ -217,7 +217,12 @@ class ValidationResultWidget(QtWidgets.QWidget):
         }
 
     def _on_tab_changed(self, index: int) -> None:
-        """Lazy: desenha a aba só na primeira ativação para o resultado atual."""
+        """Lazy: desenha a aba só na primeira ativação para o resultado atual.
+
+        Cursor de espera durante a render — abas como Tippett e DET fazem
+        sort/cumsum em milhões de pontos e podem travar a UI por segundos
+        sem feedback visual nenhum.
+        """
         state = self._tab_state.get(index)
         if state is None:
             return
@@ -229,29 +234,43 @@ class ValidationResultWidget(QtWidgets.QWidget):
         canvas: FigureCanvas = state["canvas"]
         draw_fn: Callable[[Figure], None] = state["draw_fn"]
 
-        figure.clear()
-        if self._result is None:
-            ax = figure.add_subplot(111)
-            ax.text(
-                0.5, 0.5, "(aguardando resultado)", transform=ax.transAxes,
-                ha="center", va="center", fontsize=11, color="#888",
+        # Wait cursor só quando há resultado pra renderizar — placeholder
+        # vazio é instantâneo e não precisa.
+        cursor_pushed = False
+        if self._result is not None:
+            QtWidgets.QApplication.setOverrideCursor(
+                QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
             )
-            ax.axis("off")
-        else:
-            try:
-                draw_fn(figure)
-            except Exception as exc:
-                figure.clear()
+            QtWidgets.QApplication.processEvents()
+            cursor_pushed = True
+
+        try:
+            figure.clear()
+            if self._result is None:
                 ax = figure.add_subplot(111)
                 ax.text(
-                    0.5, 0.5,
-                    f"Erro ao gerar plot:\n{exc}",
-                    ha="center", va="center", transform=ax.transAxes,
-                    color="#a33", fontsize=10,
+                    0.5, 0.5, "(aguardando resultado)", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=11, color="#888",
                 )
                 ax.axis("off")
-        canvas.draw_idle()
-        state["drawn_token"] = self._result_token
+            else:
+                try:
+                    draw_fn(figure)
+                except Exception as exc:
+                    figure.clear()
+                    ax = figure.add_subplot(111)
+                    ax.text(
+                        0.5, 0.5,
+                        f"Erro ao gerar plot:\n{exc}",
+                        ha="center", va="center", transform=ax.transAxes,
+                        color="#a33", fontsize=10,
+                    )
+                    ax.axis("off")
+            canvas.draw_idle()
+            state["drawn_token"] = self._result_token
+        finally:
+            if cursor_pushed:
+                QtWidgets.QApplication.restoreOverrideCursor()
 
     # ── Plot functions (extraídas do dialog antigo) ───────────────────────────
 
