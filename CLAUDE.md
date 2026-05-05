@@ -307,13 +307,13 @@ The tab is registered in `interface/main_gui_controller._init_strategy_manager_v
 ```
 interface/tabs/strategy_manager_v2/
 ├── strategy_manager_v2_controller.py   ← Central controller (QObject); owns project + execution state
-├── strategy_manager_v2_view.py         ← QStackedWidget: welcome screen (0) + workspace (1)
+├── strategy_manager_v2_view.py         ← QStackedWidget: welcome screen (0) + workspace (1). Workspace é splitter horizontal `[LeftPanel | StrategyEditor]` direto — sem QTabWidget intermediário (a antiga aba "Comparação" virou janela top-level acessada pelo botão "Comparar" no left panel)
 ├── toolbar/
 │   ├── global_resources_toolbar.py     ← Pipeline / Mining / Split / Manage Library buttons
 │   └── project_toolbar.py             ← New / Open / Save / Close / Run / Save as Template
 ├── left_panel/
 │   ├── left_panel_widget.py            ← QSplitter vertical with 3 sections; forwards signals
-│   ├── strategy_list_widget.py         ← QListWidget of LRStrategyDefinition; New/Duplicate/Remove
+│   ├── strategy_list_widget.py         ← QListWidget of LRStrategyDefinition; New/Duplicate/Remove; action row Executar/Salvar como Template/**Comparar** (Comparar abre ComparisonWindow, habilitado com ≥1 estratégia)
 │   ├── resource_tree_widget.py         ← QTreeWidget grouped by StrategyResourceType; "Adicionar Recurso" dropdown
 │   └── resource_info_widget.py         ← Metadata + usage + pipeline details + dataset stats of selected resource
 ├── strategy_editor/
@@ -334,8 +334,16 @@ interface/tabs/strategy_manager_v2/
 │   ├── graph_viewer_dialog.py          ← Generic Figure dialog (used for trajectory 3D + score distribution from 🔍 Expandir)
 │   ├── output_row_widget.py            ← Per-output row used by InstructionResultsPanel showing runtime state (⬜ placeholder / 🟡 in memory / 🟢 saved) and lazy summary of payload
 │   └── nested_dto_widget.py            ← Inline editor for nested config DTOs (PLDA / LogReg / KDE / pipeline policies)
-├── comparison_tab/
-│   └── comparison_tab_widget.py        ← Placeholder for future strategy comparison
+├── comparison/                         ← Top-level Strategy Comparison window
+│   ├── comparison_window.py            ← QDialog non-modal, opened by "Comparar" button on left panel
+│   ├── comparison_kind.py              ← Enum: CALIBRATION_DATASET_DISTRIBUTION / VALIDATION_RESULTS / CASEWORK_RESULTS
+│   ├── availability_resolver.py        ← list_available_items(kind, definitions, project_root) → List[ComparisonItem]
+│   ├── comparison_left_panel.py        ← Vertical splitter: kind selector (top) + items tree by strategy (bottom)
+│   ├── flow_layout.py                  ← Canonical Qt FlowLayout port + STRATEGY_COLOR_PALETTE + CELL_WIDTH/HEIGHT
+│   └── views/
+│       ├── calibration_distribution_view.py  ← Table (color/strategy/resource/n_gen/n_imp) + FlowLayout of cells
+│       ├── validation_results_view.py        ← Table (11 cols incl. color swatch) + 3 overlay plots + per-strategy LR cells
+│       └── casework_results_view.py          ← Table (color/type/n_gen/n_imp/n_case/EER thr) + FlowLayout of cells
 ├── dialogs/
 │   ├── new_project_v2/                 ← Name + description + destination folder
 │   ├── new_strategy/                   ← From scratch or from GlobalLibraryStorage template
@@ -371,6 +379,34 @@ interface/tabs/strategy_manager_v2/
 **Botões de visualização (Trajetória/Distribuição/Validação/Caso) são instanciados sem parent quando `outputs_in_results_panel=True` — `setVisible(True)` cria janela flutuante.** Os 4 botões (`btn_view_trajectory`, `btn_view_distribution`, `btn_view_validation_result`, `btn_view_casework_visualization`) eram criados com `QPushButton(...)` sem parent, e a chamada `addWidget(btn_row)` ficava dentro de um `if _vis_buttons_visible:` que não rodava no modo novo. Em Qt, widget sem parent + `setVisible(True)` = top-level window flutuante. O `_render_instruction` então criava janelinhas órfãs no macOS sempre que o usuário trocava para uma instrução SIMILARITY_SCORING/PIPELINE_APPLICATION/STRATEGY_EVALUATION/CASEWORK_VISUALIZATION. **Fix**: o bloco `setVisible(...)` em `_render_instruction` é guardado por `if not self._outputs_in_results_panel:` — no modo novo os botões reais ficam no `InstructionResultsPanel`, não tem nada a mostrar no config panel.
 
 **Painel lateral colapsável (`Cmd+B` / `Ctrl+B`).** `StrategyManagerV2View.toggle_left_panel()` esconde/mostra o left panel inteiro via `widget.hide()/show()` — necessário porque `setChildrenCollapsible(False)` impede o splitter de chegar a tamanho 0. Tamanhos do splitter são memorizados antes do collapse e restaurados na expansão. Botão `◀ Recolher painel` / `▶ Mostrar painel` no canto direito da `ProjectToolbar` (sinal `toggle_left_panel_requested`); atalho de teclado `Ctrl+B` (Qt traduz para Cmd+B no macOS) via `QShortcut` no view. Útil em telas pequenas (MacBook 14") durante edição intensa de instruções.
+
+**Janela de Comparação de Estratégias (`ComparisonWindow`).** Janela top-level **não-modal** (`QDialog` com `WindowMinimizeButtonHint | WindowMaximizeButtonHint | WindowCloseButtonHint`) aberta pelo botão "Comparar" no `StrategyListWidget`. Substitui completamente a antiga aba "Comparação" do workspace (o `QTabWidget` foi removido). Aberta via `showMaximized()` pra alinhar com o comportamento da janela principal do app. Mantida em `self._comparison_window` no controller V2 pra preservar referência forte enquanto visível; clicar Comparar com janela já aberta apenas faz `raise_() + activateWindow()` em vez de duplicar.
+
+**Estrutura da `ComparisonWindow`** (em `interface/tabs/strategy_manager_v2/comparison/`):
+- **Toolbar topo**: botão `🔄 Atualizar` que dropa cache + re-resolve availability + re-renderiza (pra refletir resultados gerados depois que a janela abriu).
+- **Splitter horizontal** `[ComparisonLeftPanel | área de conteúdo]`:
+  - **Left panel** com splitter vertical: lista de tipos de comparação (topo, single-select de 3 itens) + `QTreeWidget` de itens disponíveis (baixo, 2 níveis: estratégia → recursos checkable).
+  - **Área de conteúdo** é um `QStackedWidget`: index 0 mostra estado vazio; quando o usuário escolhe um kind + marca itens, a view correspondente é construída e injetada.
+- **Cursor de espera** (`_wait_cursor` context manager) cobre cada operação bloqueante: troca de kind, seleção de itens, clique em Atualizar.
+
+**Três tipos de comparação suportados** (`ComparisonKind`):
+- **`CALIBRATION_DATASET_DISTRIBUTION`** — para cada `CALIBRATION_MODEL_TRAINING.input_resource_id` com sidecar `<stem>_dist.json` ou parquet em disco, mostra a distribuição de scores genuínos × impostores que alimentou o calibrador. Usa o sidecar quando disponível (render em ms) com fallback pra hidratar parquet completo via `resource_loader`.
+- **`VALIDATION_RESULTS`** — para cada `STRATEGY_EVALUATION.output_validation_result_resource_id` com `VALIDATION_RESULT` persistido. Tabela com 11 colunas (Cor / Estratégia / Resultado / Dim. sim. / EER / Threshold EER / AUC / Cllr / Cllr_min / cal_loss / n_gen / n_imp) + 3 plots overlay (DET, Tippett, ECE — uma curva por estratégia, mesma cor da swatch da tabela) + grid de cells de distribuição log-LR (1 por estratégia, com borda esquerda colorida).
+- **`CASEWORK_RESULTS`** — para cada `CASEWORK_VISUALIZATION.output_visualization_resource_id` com `CASEWORK_VISUALIZATION` persistido. Tabela com 9 colunas (Cor / Estratégia / Resultado / Tipo / n_gen (ref) / n_imp (ref) / n_caso / Média caso / EER thr) + grid de plots forenses, cada um com borda esquerda na cor da estratégia.
+
+**Filtragem por disponibilidade.** `availability_resolver.list_available_items(kind, definitions, project_root)` retorna `List[ComparisonItem]` (frozen dataclass com `strategy_id, strategy_name, resource_id, resource_name, artifact_path` resolvido). Itens com `artifact_path is None` (recurso ainda não gerado) são filtrados fora — só aparecem na tree os que efetivamente têm dado em disco. Cada estratégia pode contribuir com múltiplos itens do mesmo kind (ex: duas instruções `STRATEGY_EVALUATION` produzem dois `VALIDATION_RESULT`s comparáveis lado a lado — caso típico: validação de tuning de calibrador vs validação holdout final).
+
+**Seleção mínima = 1 item.** Comparação de 1 item só também faz sentido (visualizar isolado em formato de comparação, exportar PNG via toolbar matplotlib). Por isso o botão Comparar habilita com `≥1` estratégia no projeto, não 2.
+
+**`FlowLayout` canônico Qt para reflow responsivo.** Em `comparison/flow_layout.py` — porta direta de [`flowlayout.cpp` do qtbase](https://code.qt.io/cgit/qt/qtbase.git/plain/examples/widgets/layouts/flowlayout/flowlayout.cpp?h=6.11). Usa `hasHeightForWidth() + heightForWidth(width)` que o Qt invoca em cada resize — não há cálculo manual de colunas no Python. Cells têm `setFixedSize(CELL_WIDTH, CELL_HEIGHT)` (640×480 padrão), todos visualmente idênticos. Quando a largura disponível não comporta mais um cell, o FlowLayout quebra pra próxima linha automaticamente. **Não reimplementar isso manualmente** — a tentativa anterior (`ResponsiveGrid` com cálculo manual de colunas + coluna fantasma) tinha vários bugs sutis de sizing que o FlowLayout canônico não tem.
+
+**Paleta `STRATEGY_COLOR_PALETTE` compartilhada.** Definida em `flow_layout.py` (12 cores estáveis, baseadas nas matplotlib tab colors). Usada por todas as 3 views: na coluna **Cor** da tabela (swatch via `setBackground(QBrush)`), nas **legendas dos plots overlay** (cor por curva), e na **borda esquerda 4 px de cada cell** de distribuição. O índice na paleta é o mesmo em todos os pontos — permite cross-reference visual instantâneo entre linha da tabela, curva no DET/Tippett/ECE, e cell de distribuição.
+
+**Plots usam `figure.set_layout_engine("constrained")`.** Substitui o `tight_layout(rect=[...])` que era frágil em cells estreitos com legenda inline grande (cortava o ylabel "Densidade" no casework, ou o ylabel nem aparecia na calibração). O constrained layout do matplotlib reserva espaço pra ylabel/xlabel/legenda **antes** de dimensionar o axes, garantindo que tudo caiba mesmo em cells de 640×480 com legenda multi-linha. Aplicado em `ScoreDistributionWidget._render` e `CaseworkVisualizationWidget._render` — beneficia também os viewers full-screen (constrained_layout é estritamente melhor que tight_layout). Os widgets compartilhados (`ScoreDistributionWidget`, `CaseworkVisualizationWidget`) ganham flag `show_title: bool = True` (default preserva uso standalone) — passada como `False` pelas views de comparação porque cada cell já tem header próprio `[Estratégia] Resultado`, evitando título redundante e ganhando área pro plot.
+
+**Tabela compacta com altura limitada.** Cada tabela das 3 views tem `setMaximumHeight(min(natural_h, 160))` calculado via `header_h + row_h * len(rows) + 6`. Em janelas com poucas estratégias selecionadas, a tabela ocupa só o espaço que precisa (~80px com 2 linhas). Para quantidades maiores, scroll interno ativa em 160px. Wrapper externo da tabela tem `sizePolicy(Preferred, Maximum)` pra que o `QFrame` ao redor também não infle além da altura natural — sem isso, restava faixa vazia entre o título "Tabela de Métricas" e a tabela quando o `content_layout` do scroll distribuía stretch.
+
+**Injeção de dependências via controller.** `_on_open_comparison` no controller V2 instancia `ComparisonWindow(definitions=self._definitions, project_root=self._project.storage.project_root, resource_loader=loader, parent=self.view)`. O `loader` é obtido via `_ensure_executor_and_context(silent=True)` antes da criação — necessário para hidratar `SimilarityScoreDataset` quando o sidecar de calibração não existe (parquets antigos).
 
 **`InstructionConfigPanel._get_field_tooltip()` lê `metadata.help` do dataclass field e aplica como tooltip.** Helper estático novo na panel: dado o `instruction` e o `field_name`, faz `dataclasses.fields(instruction)` lookup, retorna `field.metadata.get("help")`. É chamado após criar cada combo (ChoiceFieldSpec) e cada widget primitivo (ValueFieldSpec). Strings começando com `<html>` são renderizadas como rich text pelo Qt automaticamente. **Genérico**: qualquer DTO de instrução com `metadata={"help": "<html>..."}` ganha tooltip automático sem mudança no widget code. Já enriquecido com HTML rico (worked examples + listas) para `DATASET_BALANCING` (5 campos) e `PLDASimilarityModelConfig` (`plda_variant`, `regularization`).
 
