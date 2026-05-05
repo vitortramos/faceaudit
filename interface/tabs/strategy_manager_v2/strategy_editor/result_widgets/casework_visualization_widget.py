@@ -204,6 +204,10 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
 
     def _render(self) -> None:
         self.figure.clear()
+        # Constrained layout reserva espaço pra ylabel/xlabel/legenda
+        # automaticamente — substitui o tight_layout() que não dava conta
+        # do ylabel "Densidade" em cells embedados estreitos.
+        self.figure.set_layout_engine("constrained")
         if self._result is None:
             ax = self.figure.add_subplot(111)
             ax.text(
@@ -339,5 +343,5 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
             )
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(loc="best", fontsize=9)
-
-        figure.tight_layout()
+        # tight_layout removido — _render seta constrained_layout antes,
+        # que reserva espaço pro ylabel/legenda sem cortar.

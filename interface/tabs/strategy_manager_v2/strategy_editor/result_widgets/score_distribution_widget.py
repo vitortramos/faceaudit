@@ -120,6 +120,10 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
     def _render(self) -> None:
         """Desenha o gráfico — placeholder se sem dataset/sidecar."""
         self.figure.clear()
+        # Constrained layout reserva espaço pra ylabel/xlabel/legenda
+        # automaticamente — substitui o frágil tight_layout() que cortava
+        # o ylabel "Densidade" em cells estreitos.
+        self.figure.set_layout_engine("constrained")
 
         # Caminho rápido: sidecar pré-computado.
         if self._dist_summary is not None:
@@ -268,7 +272,8 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         if n_gen > 0 or n_imp > 0:
             ax.legend(loc="best", fontsize=9)
 
-        figure.tight_layout()
+        # tight_layout removido — _render seta constrained_layout antes,
+        # que faz o mesmo trabalho sem cortar o ylabel em cells estreitos.
 
     @staticmethod
     def _draw_from_summary(
@@ -354,5 +359,4 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             )
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(loc="best", fontsize=9)
-
-        figure.tight_layout()
+        # tight_layout removido — constrained_layout já está ativo em _render.

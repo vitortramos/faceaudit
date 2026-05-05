@@ -32,8 +32,10 @@ from PyQt6 import QtCore, QtWidgets
 
 # Tamanho fixo dos cells — todos os grids da ComparisonWindow usam esse
 # tamanho. Mantém visual consistente entre tipos de comparação.
-CELL_WIDTH = 540
-CELL_HEIGHT = 420
+# 640×480 dá folga pro ylabel "Densidade" não ser cortado, e legenda
+# inline do casework não comprime mais o eixo Y.
+CELL_WIDTH = 640
+CELL_HEIGHT = 480
 
 # Paleta de cores estável compartilhada pelas 3 views da ComparisonWindow
 # (validation, calibração, casework). O índice na paleta corresponde à
