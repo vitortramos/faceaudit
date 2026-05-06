@@ -145,15 +145,18 @@ class ManagerTableController(QtCore.QObject):
                 lambda _checked=False, n=clicked_view.key: self._on_open_properties(n)
             )
 
-            # Remover só pra custom
-            is_custom = (
-                getattr(getattr(spec, "role", None), "value", None) == "custom"
-                if spec else False
-            )
+            # Remover: aceita CUSTOM e canônicas (FF/OFIQ/SERFIQ/embeddings).
+            # IDENTITY e IMAGE_PATH ficam protegidas porque sem elas o
+            # parquet não carrega como FaceDataset.
+            can_remove = self.model.can_remove_column(clicked_view.key)
             act_remove = menu.addAction("🗑️  Remover Coluna")
-            act_remove.setEnabled(is_custom)
-            if not is_custom:
-                act_remove.setToolTip("Apenas colunas customizadas podem ser removidas.")
+            act_remove.setEnabled(can_remove)
+            if not can_remove:
+                act_remove.setToolTip(
+                    "Colunas essenciais (Identidade, Caminho da Imagem) não "
+                    "podem ser removidas — sem elas o dataset não pode ser "
+                    "carregado."
+                )
             act_remove.triggered.connect(
                 lambda _checked=False, n=clicked_view.key: self._on_remove_column(n)
             )
@@ -205,22 +208,41 @@ class ManagerTableController(QtCore.QObject):
             self.schema_changed.emit()
 
     def _on_remove_column(self, name: str):
-        """Confirma e remove uma coluna custom."""
+        """Confirma e remove uma coluna do dataset.
+
+        Confirmação simples para CUSTOM, reforçada para canônicas
+        (FF/OFIQ/SERFIQ/embedding) que podem ser referenciadas por
+        estratégias.
+        """
         from PyQt6.QtWidgets import QMessageBox
         spec = self.model.column_specs.get(name)
         label = getattr(spec, "label", name) if spec else name
 
+        if self.model.is_canonical_column(name):
+            text = (
+                f"Remover a coluna '{label}'?\n\n"
+                "⚠ Esta é uma coluna canônica (vinda de ForensicFace/OFIQ/"
+                "SER-FIQ ou embedding). Estratégias que dependam dela vão "
+                "sinalizar erro de validação até serem reconfiguradas para "
+                "outra coluna ou o dataset ser re-enriquecido.\n\n"
+                "Os dados serão perdidos. Esta ação só persiste ao salvar "
+                "o dataset."
+            )
+        else:
+            text = (
+                f"Remover a coluna '{label}'?\n\n"
+                "Os dados desta coluna serão perdidos. Esta ação só será "
+                "persistida ao salvar o dataset."
+            )
+
         confirm = QMessageBox.question(
-            self.view, "Remover Coluna",
-            f"Remover a coluna '{label}'?\n\n"
-            "Os dados desta coluna serão perdidos. Esta ação só será "
-            "persistida ao salvar o dataset.",
+            self.view, "Remover Coluna", text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             defaultButton=QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        if self.model.remove_custom_column(name):
+        if self.model.remove_column(name):
             install_vocabulary_delegates(self.view, self.model)
             self.view.resizeColumnsToContents()
             self.schema_changed.emit()

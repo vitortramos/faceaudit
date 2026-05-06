@@ -195,7 +195,9 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                 if v is None:
                     continue
                 raw.append(float(v))
-                raw_labels.append(int(s.label))
+                # label aqui é Optional[int]; sentinela -1 = casework (sem GT)
+                lbl = s.label
+                raw_labels.append(int(lbl) if lbl is not None else -1)
             scores = np.asarray(raw, dtype=np.float64)
             labels = np.asarray(raw_labels, dtype=np.int32)
         else:
@@ -211,10 +213,17 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
 
         gen_mask = labels == 1
         imp_mask = labels == 0
+        # Sentinela -1 marca pares casework (sem ground truth) — `dataset.labels`
+        # mapeia `same_person=None` → -1. SIMILARITY_SCORING em modo casework
+        # produz datasets puramente casework; sem essa branch o gráfico ficava
+        # vazio mostrando "Total: 0 pares" mesmo com pares no recurso.
+        case_mask = labels == -1
         gen_scores = scores[gen_mask]
         imp_scores = scores[imp_mask]
+        case_scores = scores[case_mask]
         n_gen = int(gen_scores.size)
         n_imp = int(imp_scores.size)
+        n_case = int(case_scores.size)
 
         x_min = float(np.min(scores))
         x_max = float(np.max(scores))
@@ -235,6 +244,26 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                 color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
                 label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
             )
+        # Pares casework: poucos pontos é o caso típico (1–N pares forenses),
+        # plot como hist+linhas verticais — KDE só faz sentido com n>=30.
+        if n_case > 0:
+            if n_case >= 30:
+                ax.hist(
+                    case_scores, bins=bins, density=True, alpha=0.45,
+                    color="#1565c0", edgecolor="#0d3a6c", linewidth=0.5,
+                    label=f"Caso  (n={n_case:,})".replace(",", "."),
+                )
+            else:
+                # n<30 — desenha cada par como linha vertical, primeiro
+                # com label e demais sem (evita poluir a legenda).
+                for i, val in enumerate(case_scores):
+                    ax.axvline(
+                        float(val), color="#1565c0", linestyle="--",
+                        linewidth=1.4, alpha=0.85,
+                        label=(
+                            f"Caso  (n={n_case})" if i == 0 else None
+                        ),
+                    )
 
         # KDE leve via gaussian_kde — falha silenciosa se scipy não
         # disponível (histograma ainda funciona).
@@ -247,6 +276,9 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             if n_gen > 1:
                 kde_g = gaussian_kde(gen_scores)
                 ax.plot(xs, kde_g(xs), color="#0d3a10", linewidth=1.4, alpha=0.9)
+            if n_case > 30:
+                kde_c = gaussian_kde(case_scores)
+                ax.plot(xs, kde_c(xs), color="#0d3a6c", linewidth=1.4, alpha=0.9)
         except Exception:
             pass
 
@@ -260,7 +292,7 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                 title_suffix = f" — {ds_name}"
             ax.set_title(
                 f"{title_prefix}{title_suffix}\n"
-                f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+                f"Total: {n_gen + n_imp + n_case:,} pares".replace(",", "."),
                 fontsize=11,
             )
         ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
@@ -269,7 +301,7 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
                        alpha=0.6, label="log-LR = 0")
         ax.grid(True, linestyle="--", alpha=0.4)
-        if n_gen > 0 or n_imp > 0:
+        if n_gen > 0 or n_imp > 0 or n_case > 0:
             ax.legend(loc="best", fontsize=9)
 
         # tight_layout removido — _render seta constrained_layout antes,
@@ -295,8 +327,12 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
         use_log_lr = score_type == "log_lr"
         n_gen = int(summary.get("n_gen", 0))
         n_imp = int(summary.get("n_imp", 0))
+        n_case = int(summary.get("n_case", 0))
+        # Para n<30, o sidecar grava as posições brutas em case_values em vez
+        # de um histograma — permite desenhar como linhas verticais.
+        case_values = summary.get("case_values") or []
 
-        if n_gen == 0 and n_imp == 0:
+        if n_gen == 0 and n_imp == 0 and n_case == 0:
             ax.text(
                 0.5, 0.5, "(sem scores)", transform=ax.transAxes,
                 ha="center", va="center", fontsize=12, color="#888",
@@ -322,10 +358,28 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                 color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
                 label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
             )
+        if n_case > 0:
+            case_hist = summary.get("case_hist_density")
+            if case_hist is not None and len(case_hist) == centers.size:
+                ax.bar(
+                    centers, case_hist, width=widths, alpha=0.45,
+                    color="#1565c0", edgecolor="#0d3a6c", linewidth=0.5,
+                    label=f"Caso  (n={n_case:,})".replace(",", "."),
+                )
+            elif case_values:
+                for i, val in enumerate(case_values):
+                    ax.axvline(
+                        float(val), color="#1565c0", linestyle="--",
+                        linewidth=1.4, alpha=0.85,
+                        label=(
+                            f"Caso  (n={n_case})" if i == 0 else None
+                        ),
+                    )
 
         kde_x = summary.get("kde_x")
         kde_gen_y = summary.get("kde_gen_y")
         kde_imp_y = summary.get("kde_imp_y")
+        kde_case_y = summary.get("kde_case_y")
         if kde_x is not None:
             kde_x_arr = np.asarray(kde_x, dtype=np.float64)
             if kde_imp_y is not None:
@@ -338,6 +392,11 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                     kde_x_arr, np.asarray(kde_gen_y, dtype=np.float64),
                     color="#0d3a10", linewidth=1.4, alpha=0.9,
                 )
+            if kde_case_y is not None:
+                ax.plot(
+                    kde_x_arr, np.asarray(kde_case_y, dtype=np.float64),
+                    color="#0d3a6c", linewidth=1.4, alpha=0.9,
+                )
 
         if show_title:
             title_prefix = (
@@ -347,7 +406,7 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             title_suffix = f" — {ds_name}" if ds_name else ""
             ax.set_title(
                 f"{title_prefix}{title_suffix}\n"
-                f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
+                f"Total: {n_gen + n_imp + n_case:,} pares".replace(",", "."),
                 fontsize=11,
             )
         ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")

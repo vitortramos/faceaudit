@@ -55,6 +55,9 @@ from faceaudit.executors.instructions.similarity_scoring_instruction_executor im
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
+from faceaudit.validation_rules.strategy_embedding_consistency_rule import (
+    StrategyEmbeddingConsistencyRule,
+)
 
 
 class StrategyExecutorFactory:
@@ -163,6 +166,25 @@ class StrategyExecutorFactory:
         return registry
 
     @staticmethod
+    def build_default_validation_rules() -> Dict[str, ValidationRuleProtocol]:
+        """
+        Retorna o conjunto default de regras "globais" que devem estar
+        sempre disponíveis no contexto, independente da estratégia.
+
+        Atualmente:
+        - StrategyEmbeddingConsistencyRule: garante que todos os datasets
+          da estratégia usam a mesma fonte de embedding (mesmo
+          `model_name` no column_specs).
+
+        Regras por instrução (Fisher, MinCalibrationPairs, etc.) NÃO
+        entram aqui — elas são instanciadas pelo próprio DTO em
+        `build_validation_rules()` ou referenciadas via
+        `validation_rule_ids` na estratégia.
+        """
+        rule = StrategyEmbeddingConsistencyRule()
+        return {rule.rule_id: rule}
+
+    @staticmethod
     def build(
         validation_rules: Optional[Dict[str, ValidationRuleProtocol]] = None,
         artifact_storage: Optional[ArtifactStorageProtocol] = None,
@@ -189,9 +211,21 @@ class StrategyExecutorFactory:
             comparison_service=comparison_service,
         )
 
+        # Mescla as regras default (sempre disponíveis) com as eventualmente
+        # passadas pelo caller. As do caller têm prioridade em caso de
+        # conflito de rule_id (permite override). As default ficam marcadas
+        # como always-on (rodam mesmo se não declaradas pela estratégia).
+        default_rules = StrategyExecutorFactory.build_default_validation_rules()
+        always_on_ids = list(default_rules.keys())
+
+        merged_rules: Dict[str, ValidationRuleProtocol] = dict(default_rules)
+        if validation_rules:
+            merged_rules.update(validation_rules)
+
         return StrategyExecutor(
             context_factory=StrategyExecutionContext,
             instruction_executor_registry=registry,
-            validation_rules=validation_rules or {},
+            validation_rules=merged_rules,
             artifact_storage=artifact_storage,
+            always_on_rule_ids=always_on_ids,
         )

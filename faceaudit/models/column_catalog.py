@@ -123,6 +123,12 @@ class ColumnSpec:
     persisted: bool = True
     category: Optional[str] = None
     description: Optional[str] = None
+    # Nomes legados aceitos como sinônimos do `name` canônico ao ler
+    # parquets/dicts antigos. Útil em casos de renomeação como
+    # `face_hash` → `hash` (nome canônico no catálogo) em que parquets
+    # já em disco continuam tendo a coluna `face_hash`. NÃO usado na
+    # escrita — apenas pra resolução tolerante na leitura.
+    aliases: Optional[Tuple[str, ...]] = None
 
     # --- role=embedding ---
     dim: Optional[int] = None
@@ -346,6 +352,12 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         editable=False, visible_default=False, persisted=False,
         category=CATEGORY_MANUAL,
         description="Recomputado no load (verificação de integridade).",
+        # Parquets antigos (pré-refatoração schema-by-role) gravavam essa
+        # coluna como `face_hash`. EmbeddingInfo (atributo Python) também
+        # ainda se chama `face_hash` por compatibilidade — renomear o
+        # atributo afetaria ~40 arquivos. O alias permite que o loader
+        # encontre a coluna por qualquer um dos nomes.
+        aliases=("face_hash",),
     )
     specs["identity"] = ColumnSpec(
         name="identity", label="Identidade",
@@ -568,6 +580,37 @@ def build_role_index(specs: Dict[str, ColumnSpec]) -> Dict[ColumnRole, List[str]
     for name, spec in specs.items():
         index.setdefault(spec.role, []).append(name)
     return index
+
+
+def resolve_column_name(
+    available_columns,
+    spec: ColumnSpec,
+) -> Optional[str]:
+    """Encontra o nome real da coluna em `available_columns` que corresponde
+    ao `spec`, considerando o nome canônico E os aliases legados.
+
+    Args:
+        available_columns: Iterável (set, list, dict.keys()) com os nomes
+            das colunas presentes no parquet/DataFrame que está sendo lido.
+        spec: ColumnSpec a procurar.
+
+    Returns:
+        Nome da coluna em `available_columns` (canônico se disponível;
+        senão o primeiro alias encontrado). None se não há match nenhum.
+
+    Exemplo:
+        spec = specs["hash"]  # canônico "hash", aliases=("face_hash",)
+        col = resolve_column_name({"face_hash", "identity"}, spec)
+        # col == "face_hash"  (canônico não está, alias está)
+    """
+    cols = set(available_columns)
+    if spec.name in cols:
+        return spec.name
+    if spec.aliases:
+        for alias in spec.aliases:
+            if alias in cols:
+                return alias
+    return None
 
 
 def validate_required_roles(

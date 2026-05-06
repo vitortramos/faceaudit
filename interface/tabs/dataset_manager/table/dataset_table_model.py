@@ -138,21 +138,45 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         self.endResetModel()
         return True
 
-    def remove_custom_column(self, name: str) -> bool:
-        """Remove uma coluna custom do dataset (spec + DataFrame).
+    # Roles cujo valor não pode sumir do parquet sem quebrar a leitura
+    # como FaceDataset/EmbeddingDataset (ColumnRole.IDENTITY/IMAGE_PATH são
+    # marcadas como "singleton, obrigatória" no column_catalog).
+    _ESSENTIAL_ROLES = frozenset({"identity", "image_path"})
 
-        Apenas para colunas com role=CUSTOM. Tentar remover canônica
-        retorna False — colunas vindas de FF/OFIQ/SERFIQ têm semântica
-        de código que não pode ser violada.
+    def can_remove_column(self, name: str) -> bool:
+        """Indica se a coluna é removível pela UI.
+
+        - Essenciais (identity, image_path) → False, nunca removíveis.
+        - Demais (CUSTOM, EMBEDDING, QUALITY, POSE, DEMOGRAPHIC, etc.) → True.
+          A consequência semântica de remover (ex: estratégias quebrarem
+          por falta da embedding_column) é capturada pelas regras de
+          validação na execução, não pelo bloqueio de UI.
         """
         if not self._column_specs or name not in self._column_specs:
             return False
         spec = self._column_specs[name]
         role = getattr(spec, "role", None)
-        if getattr(role, "value", None) != "custom":
-            return False  # canônicas não podem ser removidas
+        return getattr(role, "value", None) not in self._ESSENTIAL_ROLES
 
-        # Remove do schema + dataframe
+    def is_canonical_column(self, name: str) -> bool:
+        """Retorna True se a coluna não é CUSTOM — usada pela UI pra
+        mostrar confirmação reforçada antes de apagar."""
+        spec = self._column_specs.get(name) if self._column_specs else None
+        role = getattr(spec, "role", None) if spec else None
+        role_value = getattr(role, "value", None)
+        return bool(role_value) and role_value != "custom"
+
+    def remove_column(self, name: str) -> bool:
+        """Remove uma coluna do dataset (spec + DataFrame).
+
+        Bloqueia colunas essenciais (IDENTITY, IMAGE_PATH). Aceita
+        CUSTOM e canônicas (FF/OFIQ/SERFIQ/embeddings) — a checagem
+        semântica de impacto em estratégias é feita pela
+        StrategyEmbeddingConsistencyRule e amigas em tempo de execução.
+        """
+        if not self.can_remove_column(name):
+            return False
+
         self._column_specs.pop(name, None)
         if name in self._df.columns:
             self._df = self._df.drop(columns=[name])
@@ -161,6 +185,17 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         self.visible_columns = _columns_from_specs(self._column_specs)
         self.endResetModel()
         return True
+
+    # Retrocompat — antigos callers que chamavam apenas pra colunas custom
+    # continuam tendo o mesmo comportamento (rejeita canônicas).
+    def remove_custom_column(self, name: str) -> bool:
+        if not self._column_specs or name not in self._column_specs:
+            return False
+        spec = self._column_specs[name]
+        role = getattr(spec, "role", None)
+        if getattr(role, "value", None) != "custom":
+            return False
+        return self.remove_column(name)
 
     def add_custom_column(
         self,

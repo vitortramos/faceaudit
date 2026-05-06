@@ -585,32 +585,10 @@ class FaceDataset:
             print(f"❌ Erro ao salvar parquet: {e}")
             raise
 
-
-# ───────────────── helpers de metadata pyarrow ─────────────────
-
-def _decode_schema_metadata(raw_meta: Optional[Dict[bytes, bytes]]) -> Dict[str, str]:
-    """Decodifica `schema.metadata` (Dict[bytes, bytes]) para Dict[str, str]."""
-    if not raw_meta:
-        return {}
-    decoded: Dict[str, str] = {}
-    for k, v in raw_meta.items():
-        try:
-            key = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
-            val = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
-            decoded[key] = val
-        except Exception:
-            continue
-    return decoded
-
-
-def _build_metadata_bytes(payload: Dict[str, str]) -> Dict[bytes, bytes]:
-    """Encoda Dict[str, str] para o formato do `replace_schema_metadata`."""
-    return {k.encode("utf-8"): v.encode("utf-8") for k, v in payload.items()}
-    
     # =========================================================================
     # CONVERSÃO PARA EMBEDDING DATASET
     # =========================================================================
-    
+
     def to_embedding_dataset(self, embedding_type: Optional['EmbeddingType'] = None) -> EmbeddingDataset:
         """
         Converte o dataset rico (FaceDataset) em dataset leve (EmbeddingDataset).
@@ -750,3 +728,25 @@ def _build_metadata_bytes(payload: Dict[str, str]) -> Dict[bytes, bytes]:
         df.to_csv(path_obj, index=False, encoding="utf-8-sig")
 
         print(f"✅ CSV exportado com sucesso em: {path_obj} ({len(df)} registros)")
+
+
+# ───────────────── helpers de metadata pyarrow ─────────────────
+
+def _decode_schema_metadata(raw_meta: Optional[Dict[bytes, bytes]]) -> Dict[str, str]:
+    """Decodifica `schema.metadata` (Dict[bytes, bytes]) para Dict[str, str]."""
+    if not raw_meta:
+        return {}
+    decoded: Dict[str, str] = {}
+    for k, v in raw_meta.items():
+        try:
+            key = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+            val = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+            decoded[key] = val
+        except Exception:
+            continue
+    return decoded
+
+
+def _build_metadata_bytes(payload: Dict[str, str]) -> Dict[bytes, bytes]:
+    """Encoda Dict[str, str] para o formato do `replace_schema_metadata`."""
+    return {k.encode("utf-8"): v.encode("utf-8") for k, v in payload.items()}

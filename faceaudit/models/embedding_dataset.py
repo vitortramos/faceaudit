@@ -271,12 +271,43 @@ class EmbeddingDataset:
 
         items: List[EmbeddingInfo] = []
 
-        # Resolve coluna de embedding: usa a configurada ou cai para 'embedding'
-        _emb_col = (
-            embedding_column
-            if (embedding_column and embedding_column in df.columns)
-            else 'embedding'
-        )
+        # Resolve coluna de embedding em 3 etapas:
+        # 1. Override explícito do caller (estratégia com embedding_type setado).
+        # 2. Auto-detect via metadata do parquet — procura ColumnSpec com
+        #    role=EMBEDDING. Cobre parquets migrados (embedding_v2/embedding_v4
+        #    sem alias 'embedding' redundante).
+        # 3. Nomes canônicos em ordem (embedding_v2, embedding_v4, embedding) —
+        #    fallback pra parquets sem metadata estruturada (legado pré-migração
+        #    ou gerados por scripts externos).
+        _emb_col: Optional[str] = None
+        if embedding_column and embedding_column in df.columns:
+            _emb_col = embedding_column
+
+        if _emb_col is None and decoded_meta.get('faceaudit:column_specs'):
+            try:
+                specs = json.loads(decoded_meta['faceaudit:column_specs'])
+                for col_name, spec in specs.items():
+                    if (
+                        col_name in df.columns
+                        and isinstance(spec, dict)
+                        and str(spec.get('role', '')).lower() == 'embedding'
+                    ):
+                        _emb_col = col_name
+                        break
+            except (json.JSONDecodeError, AttributeError, TypeError):
+                pass
+
+        if _emb_col is None:
+            for _cand in ('embedding_v2', 'embedding_v4', 'embedding'):
+                if _cand in df.columns:
+                    _emb_col = _cand
+                    break
+
+        if _emb_col is None:
+            raise KeyError(
+                f"Nenhuma coluna de embedding encontrada em '{p.name}'. "
+                f"Colunas disponíveis: {list(df.columns)}"
+            )
 
         for row in df.itertuples(index=False):
             row_dict = row._asdict()
@@ -324,9 +355,18 @@ class EmbeddingDataset:
             yaw_f = float(yaw_val) if (yaw_val is not None and not (isinstance(yaw_val, float) and np.isnan(yaw_val))) else 0.0
             pitch_f = float(pitch_val) if (pitch_val is not None and not (isinstance(pitch_val, float) and np.isnan(pitch_val))) else 0.0
 
+            # `hash` é o nome canônico no novo column_catalog; `face_hash`
+            # é o alias legado (parquets antigos + atributo Python interno
+            # de EmbeddingInfo). Aceita ambos pra portabilidade entre
+            # versões — preferindo o canônico quando ambos existem.
+            hash_value = (
+                row_dict.get('hash')
+                if row_dict.get('hash') is not None
+                else row_dict.get('face_hash', '')
+            )
             info = EmbeddingInfo(
                 embedding=emb_array,
-                face_hash=row_dict.get('face_hash', ''),
+                face_hash=hash_value or '',
                 image_path=row_dict.get('image_path', ''),
                 identity=row_dict.get('identity'),
                 file_name=row_dict.get('file_name', ''),

@@ -7,7 +7,6 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
-from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
@@ -92,7 +91,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         editor_layout.setContentsMargins(0, 0, 0, 0)
         editor_layout.setSpacing(0)
 
-        # Header: nome da estratégia + combobox de EmbeddingType
+        # Header: nome da estratégia + combobox da coluna de embedding
         header_row = QtWidgets.QHBoxLayout()
         header_row.setSpacing(12)
 
@@ -106,18 +105,26 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         lbl_emb.setStyleSheet("font-size: 11px; color: #555; padding-right: 2px;")
         header_row.addWidget(lbl_emb)
 
-        self.combo_embedding_type = QtWidgets.QComboBox()
-        self.combo_embedding_type.setStyleSheet("font-size: 11px;")
-        self.combo_embedding_type.setMinimumWidth(180)
-        self.combo_embedding_type.addItem("(auto-detect)", userData=None)
-        for emb in EmbeddingType:
-            self.combo_embedding_type.addItem(
-                f"{emb.display_name}  ({emb.dimensions}d)", userData=emb
-            )
-        self.combo_embedding_type.currentIndexChanged.connect(
-            self._on_embedding_type_changed
+        # Combo dinâmico — populado via `set_available_embedding_columns()`
+        # com a interseção das colunas role=EMBEDDING entre os datasets do
+        # projeto. Sem datasets, mostra só "(auto-detect)".
+        self.combo_embedding_column = QtWidgets.QComboBox()
+        self.combo_embedding_column.setStyleSheet("font-size: 11px;")
+        self.combo_embedding_column.setMinimumWidth(180)
+        self.combo_embedding_column.setToolTip(
+            "Coluna de embedding usada por toda a estratégia. As opções são "
+            "as colunas com role=EMBEDDING presentes em TODOS os datasets "
+            "do projeto (interseção)."
         )
-        header_row.addWidget(self.combo_embedding_type)
+        self.combo_embedding_column.addItem("(auto-detect)", userData=None)
+        self.combo_embedding_column.currentIndexChanged.connect(
+            self._on_embedding_column_changed
+        )
+        # Cache pra evitar repopulações redundantes do combo a cada
+        # refresh do controller (`update_available_resources` é chamado
+        # com frequência).
+        self._available_embedding_columns: List[str] = []
+        header_row.addWidget(self.combo_embedding_column)
 
         editor_layout.addLayout(header_row)
 
@@ -226,16 +233,28 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             # instruções com IDs que colidiriam (raro mas possível).
             results_panel.invalidate_all()
 
-        # Selecionar embedding_type correto
-        self.combo_embedding_type.blockSignals(True)
+        # Seleciona a embedding_column gravada na estratégia. Se a coluna
+        # não estiver entre as opções disponíveis (porque o usuário ainda
+        # não importou os datasets, ou a coluna foi removida), adicionamos
+        # como item especial marcado pra ficar visível mas alertando que
+        # falta consistência — a regra de validação vai capturar.
+        target_col = getattr(definition, "embedding_column", None)
+        self.combo_embedding_column.blockSignals(True)
         idx = 0
-        if definition.embedding_type:
-            for i in range(self.combo_embedding_type.count()):
-                if self.combo_embedding_type.itemData(i) == definition.embedding_type:
+        if target_col:
+            for i in range(self.combo_embedding_column.count()):
+                if self.combo_embedding_column.itemData(i) == target_col:
                     idx = i
                     break
-        self.combo_embedding_type.setCurrentIndex(idx)
-        self.combo_embedding_type.blockSignals(False)
+            else:
+                # Não encontrou nas opções atuais — injeta como item órfão.
+                self.combo_embedding_column.addItem(
+                    f"{target_col}  (não disponível em todos os datasets)",
+                    userData=target_col,
+                )
+                idx = self.combo_embedding_column.count() - 1
+        self.combo_embedding_column.setCurrentIndex(idx)
+        self.combo_embedding_column.blockSignals(False)
 
         self.stack.setCurrentIndex(1)
 
@@ -252,10 +271,46 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             instr_list.clear()
             config_panel.show_empty()
             results_panel.invalidate_all()
-        self.combo_embedding_type.blockSignals(True)
-        self.combo_embedding_type.setCurrentIndex(0)
-        self.combo_embedding_type.blockSignals(False)
+        self.combo_embedding_column.blockSignals(True)
+        self.combo_embedding_column.setCurrentIndex(0)
+        self.combo_embedding_column.blockSignals(False)
         self.stack.setCurrentIndex(0)
+
+    def set_available_embedding_columns(self, columns: List[str]) -> None:
+        """
+        Atualiza as opções do combo de embedding com as colunas role=EMBEDDING
+        comuns a todos os datasets do projeto (a interseção é calculada pelo
+        controller). Preserva a seleção atual se ainda for válida.
+        """
+        normalized = sorted(set(columns or []))
+        if normalized == self._available_embedding_columns:
+            return  # Sem mudança — evita rebuild redundante.
+        self._available_embedding_columns = normalized
+
+        previous = self.combo_embedding_column.currentData()
+        self.combo_embedding_column.blockSignals(True)
+        self.combo_embedding_column.clear()
+        self.combo_embedding_column.addItem("(auto-detect)", userData=None)
+        for col in normalized:
+            self.combo_embedding_column.addItem(col, userData=col)
+
+        # Restaura seleção: se a anterior ainda está nas opções, escolhe-a;
+        # senão, cai pra (auto-detect) e marca como órfã se a estratégia
+        # tinha gravado um valor.
+        idx = 0
+        if previous is not None:
+            for i in range(self.combo_embedding_column.count()):
+                if self.combo_embedding_column.itemData(i) == previous:
+                    idx = i
+                    break
+            else:
+                self.combo_embedding_column.addItem(
+                    f"{previous}  (não disponível em todos os datasets)",
+                    userData=previous,
+                )
+                idx = self.combo_embedding_column.count() - 1
+        self.combo_embedding_column.setCurrentIndex(idx)
+        self.combo_embedding_column.blockSignals(False)
 
     def update_instruction_states(
         self,
@@ -365,10 +420,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     def _on_instruction_applied(self, instr: StrategyInstructionDefinition) -> None:
         self.instruction_applied.emit(instr)
 
-    def _on_embedding_type_changed(self, index: int) -> None:
+    def _on_embedding_column_changed(self, index: int) -> None:
         if not self._definition:
             return
-        self._definition.embedding_type = self.combo_embedding_type.itemData(index)
+        self._definition.embedding_column = self.combo_embedding_column.itemData(index)
         self.strategy_modified.emit(self._definition)
 
     def _load_instruction_with_wait_cursor(

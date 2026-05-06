@@ -56,9 +56,15 @@ class StrategyExecutor:
         ],
         validation_rules: Optional[Dict[str, ValidationRuleProtocol]] = None,
         artifact_storage: Optional[ArtifactStorageProtocol] = None,
+        always_on_rule_ids: Optional[List[str]] = None,
     ):
         self.context_factory = context_factory
         self.validation_rules = validation_rules or {}
+        # Regras "sempre rodam" no _validate_strategy independente de
+        # constarem em LRStrategyDefinition.validation_rule_ids. Usado pra
+        # invariantes globais (ex: consistência de embedding) que devem
+        # valer pra TODA estratégia sem precisar migrar JSONs antigos.
+        self._always_on_rule_ids: List[str] = list(always_on_rule_ids or [])
         self._artifact_storage = artifact_storage
         self._resource_loader = (
             StrategyResourceLoaderService(artifact_storage)
@@ -136,10 +142,9 @@ class StrategyExecutor:
         # Injeta capability de hidratação preguiçosa no contexto. Atributos
         # runtime-only (não persistidos no JSON).
         context.resource_loader = self._resource_loader
-        if getattr(strategy_definition, "embedding_type", None) is not None:
-            context.embedding_column = (
-                strategy_definition.embedding_type.parquet_column
-            )
+        embedding_column = getattr(strategy_definition, "embedding_column", None)
+        if embedding_column:
+            context.embedding_column = embedding_column
 
         self._register_initial_resources(strategy_definition, context)
         if additional_resources:
@@ -148,12 +153,15 @@ class StrategyExecutor:
                     context.set_resource(resource)
         self._register_validation_rules(context)
 
-        # Armazena dimensões do embedding para regras de validação
-        if getattr(strategy_definition, "embedding_type", None) is not None:
-            context.set_metadata(
-                "embedding_dimensions",
-                strategy_definition.embedding_type.dimensions,
-            )
+        # Armazena dimensões do embedding (lidas do `column_specs` do
+        # primeiro DATASET com a coluna escolhida — substitui o lookup
+        # antigo via enum EmbeddingType.dimensions). Se a coluna não
+        # estiver setada ou nenhum dataset oferecer specs, simplesmente
+        # não popula o metadata — regras que dependem disso (ex:
+        # FisherRule) já têm fallback pra `embedding_dim` da DatasetStats.
+        emb_dims = self._infer_embedding_dimensions(strategy_definition, embedding_column)
+        if emb_dims is not None:
+            context.set_metadata("embedding_dimensions", emb_dims)
 
         # Expõe identificação da estratégia para executores que precisam
         # rotular seus outputs (ex: STRATEGY_EVALUATION → StrategyValidationResult).
@@ -264,6 +272,40 @@ class StrategyExecutor:
     # ETAPAS INTERNAS
     # =========================================================================
 
+    def _infer_embedding_dimensions(
+        self,
+        strategy_definition: LRStrategyDefinition,
+        embedding_column: Optional[str],
+    ) -> Optional[int]:
+        """
+        Deriva a dimensionalidade do embedding lendo o `column_specs` do
+        primeiro DATASET da estratégia que tenha a coluna escolhida.
+
+        Substitui o lookup antigo via `EmbeddingType.dimensions` — agora
+        funciona pra qualquer coluna com role=EMBEDDING (incluindo as
+        que vierem de DeepFace/ArcFace no futuro) sem hardcoding de enum.
+        """
+        if not embedding_column:
+            return None
+
+        from faceaudit.enums.strategy_resource_type import StrategyResourceType
+
+        for resource in strategy_definition.resources:
+            if resource.resource_type not in (
+                StrategyResourceType.DATASET,
+                StrategyResourceType.INTERMEDIATE_DATASET,
+            ):
+                continue
+            payload = getattr(resource, "payload", None)
+            specs = getattr(payload, "column_specs", None) if payload else None
+            if not specs:
+                continue
+            spec = specs.get(embedding_column)
+            dim = getattr(spec, "dimensions", None) if spec else None
+            if isinstance(dim, int) and dim > 0:
+                return dim
+        return None
+
     def _register_initial_resources(
         self,
         strategy_definition: LRStrategyDefinition,
@@ -298,10 +340,22 @@ class StrategyExecutor:
     ) -> None:
         self._log(context, "🔎 Validando estratégia...")
 
-        for rule_id in strategy_definition.validation_rule_ids:
+        # Junta regras "sempre rodam" com as declaradas pela estratégia,
+        # preservando ordem e descartando duplicatas.
+        rule_ids: List[str] = []
+        for rid in list(self._always_on_rule_ids) + list(strategy_definition.validation_rule_ids):
+            if rid not in rule_ids:
+                rule_ids.append(rid)
+
+        for rule_id in rule_ids:
             rule = self.validation_rules.get(rule_id)
 
             if rule is None:
+                # Regras "sempre rodam" não falham se não estiverem
+                # registradas (testes podem montar o executor sem elas);
+                # já as declaradas pela estratégia continuam exigidas.
+                if rule_id in self._always_on_rule_ids:
+                    continue
                 raise ValueError(f"Regra de validação não encontrada: '{rule_id}'")
 
             result = rule.validate(target=strategy_definition, context=context)

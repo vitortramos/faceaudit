@@ -726,6 +726,110 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     mapping[res.resource_id] = defn.name
         return mapping
 
+    def _infer_embedding_dimensions(self, definition) -> Optional[int]:
+        """
+        Lê a dimensionalidade da `embedding_column` da estratégia a partir
+        do `column_specs` do primeiro DATASET que ofereça aquela coluna.
+
+        Substitui o lookup antigo via `EmbeddingType.dimensions` —
+        funciona pra qualquer coluna com role=EMBEDDING (incluindo
+        DeepFace/ArcFace no futuro).
+        """
+        col = getattr(definition, "embedding_column", None)
+        if not col:
+            return None
+
+        for resource in (definition.resources or []):
+            if resource.resource_type not in (
+                StrategyResourceType.DATASET,
+                StrategyResourceType.INTERMEDIATE_DATASET,
+            ):
+                continue
+            payload = getattr(resource, "payload", None)
+            specs = getattr(payload, "column_specs", None) if payload else None
+            if not specs:
+                continue
+            spec = specs.get(col)
+            dim = getattr(spec, "dimensions", None) if spec else None
+            if isinstance(dim, int) and dim > 0:
+                return dim
+        return None
+
+    def _collect_common_embedding_columns(self) -> List[str]:
+        """
+        Calcula a interseção das colunas com role=EMBEDDING entre todos
+        os datasets do projeto (declarados em estratégias + scan de disco).
+        Sem datasets, retorna lista vazia.
+        """
+        dataset_specs_per_resource: List[dict] = []
+
+        for resource in self._collect_project_resources():
+            if resource.resource_type not in (
+                StrategyResourceType.DATASET,
+                StrategyResourceType.INTERMEDIATE_DATASET,
+            ):
+                continue
+
+            payload = getattr(resource, "payload", None)
+            # Lazy-load só do schema do parquet pra ler column_specs sem
+            # hidratar o dataset inteiro (cuidando do custo). Quando o
+            # payload já está em memória, usa direto.
+            specs = getattr(payload, "column_specs", None) if payload else None
+            if not specs:
+                specs = self._read_column_specs_from_parquet(resource)
+            if not specs:
+                continue
+
+            embedding_cols = {
+                name for name, spec in specs.items()
+                if str(getattr(spec, "role", "")).lower().endswith("embedding")
+            }
+            if embedding_cols:
+                dataset_specs_per_resource.append(embedding_cols)
+
+        if not dataset_specs_per_resource:
+            return []
+
+        # Interseção sucessiva.
+        common = dataset_specs_per_resource[0]
+        for s in dataset_specs_per_resource[1:]:
+            common = common & s
+        return sorted(common)
+
+    def _read_column_specs_from_parquet(self, resource) -> Optional[dict]:
+        """
+        Lê só o `faceaudit:column_specs` da metadata do parquet, sem
+        hidratar o dataset. Evita pagar o custo de carregar parquets
+        gigantes só pra popular o combo de embedding.
+        """
+        ref = getattr(resource, "artifact_ref", None)
+        if not ref or not self._project:
+            return None
+
+        try:
+            import json as _json
+            import pyarrow.parquet as _pq
+
+            from faceaudit.models.column_catalog import ColumnSpec
+
+            abs_path = self._project.storage.resolve_artifact(ref)
+            meta = _pq.read_metadata(abs_path).metadata or {}
+            specs_raw = meta.get(b"faceaudit:column_specs")
+            if not specs_raw:
+                return None
+
+            specs_dict = _json.loads(specs_raw.decode("utf-8"))
+            # Reconstrói objetos lightweight só pro consumidor checar
+            # `.role` e `.dimensions` (não precisamos de ColumnSpec
+            # completo aqui — um SimpleNamespace basta).
+            from types import SimpleNamespace
+            return {
+                name: SimpleNamespace(**spec) if isinstance(spec, dict) else spec
+                for name, spec in specs_dict.items()
+            }
+        except Exception:
+            return None
+
     def _collect_project_resources(self) -> List[StrategyResource]:
         """
         Coleta recursos para exibição na árvore:
@@ -805,11 +909,18 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._reset_execution_state()
             self._refresh_produced_resources()
 
-            # Informa ao left panel as dimensões do embedding da estratégia selecionada
-            emb_dims = None
-            if definition.embedding_type is not None:
-                emb_dims = definition.embedding_type.dimensions
+            # Informa ao left panel as dimensões do embedding da estratégia
+            # selecionada. Lê do `column_specs` do primeiro dataset que
+            # ofereça a coluna escolhida — substitui o lookup antigo via
+            # enum EmbeddingType.dimensions.
+            emb_dims = self._infer_embedding_dimensions(definition)
             self._left_panel.set_embedding_dimensions(emb_dims)
+
+            # Atualiza opções do combo de embedding com a interseção das
+            # colunas role=EMBEDDING entre os datasets do projeto.
+            self._strategy_editor.set_available_embedding_columns(
+                self._collect_common_embedding_columns()
+            )
 
     def _on_new_strategy(self) -> None:
         ctrl = NewStrategyController(
@@ -1089,14 +1200,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
                 # Armazena as dimensões do embedding da estratégia no contexto
                 # para que regras de validação possam usar como fallback.
-                if (
-                    self._current_definition
-                    and getattr(self._current_definition, "embedding_type", None) is not None
-                ):
-                    self._execution_context.set_metadata(
-                        "embedding_dimensions",
-                        self._current_definition.embedding_type.dimensions,
-                    )
+                # Lê do column_specs do primeiro dataset com a coluna
+                # escolhida (substitui o lookup antigo via enum).
+                if self._current_definition:
+                    emb_dims = self._infer_embedding_dimensions(self._current_definition)
+                    if emb_dims is not None:
+                        self._execution_context.set_metadata(
+                            "embedding_dimensions", emb_dims
+                        )
             except Exception as exc:
                 if not silent:
                     QtWidgets.QMessageBox.critical(
@@ -1281,7 +1392,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         open_error = None
         with self._wait_cursor():
             try:
-                from interface.tabs.strategy_manager.panels.preparation.cards.transformation_trajectory_viewer.transformation_trajectory_viewer_controller import (
+                from interface.tabs.strategy_manager.transformation_trajectory_viewer.transformation_trajectory_viewer_controller import (
                     TransformationTrajectoryViewerController,
                 )
                 self._trajectory_viewer = TransformationTrajectoryViewerController(

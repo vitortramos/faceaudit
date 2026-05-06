@@ -1,10 +1,8 @@
 # interface/tabs/strategy_manager_v2/dialogs/new_strategy/new_strategy_view.py
 
-from typing import List, Optional
+from typing import List
 
 from PyQt6 import QtWidgets, QtCore
-
-from faceaudit.enums.embedding_type import EmbeddingType
 
 
 class NewStrategyView(QtWidgets.QDialog):
@@ -36,13 +34,10 @@ class NewStrategyView(QtWidgets.QDialog):
         self.field_desc.setMaximumHeight(60)
         form.addRow("Descrição:", self.field_desc)
 
-        self.combo_embedding = QtWidgets.QComboBox()
-        self.combo_embedding.addItem("(auto-detect)", userData=None)
-        for emb in EmbeddingType:
-            self.combo_embedding.addItem(
-                f"{emb.display_name}  ({emb.dimensions}d)", userData=emb
-            )
-        form.addRow("Embedding:", self.combo_embedding)
+        # A escolha da coluna de embedding foi movida pro editor da
+        # estratégia, onde o combo lista a interseção das colunas
+        # role=EMBEDDING entre os datasets do projeto. Aqui na criação
+        # ainda não há datasets — o campo seria especulativo.
 
         layout.addLayout(form)
 
@@ -85,6 +80,3 @@ class NewStrategyView(QtWidgets.QDialog):
 
     def selected_template_name(self) -> str:
         return self.combo_template.currentText()
-
-    def get_embedding_type(self) -> Optional[EmbeddingType]:
-        return self.combo_embedding.currentData()

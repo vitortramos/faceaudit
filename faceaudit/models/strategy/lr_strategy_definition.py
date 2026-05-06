@@ -64,9 +64,17 @@ class LRStrategyDefinition(JSONSerializableMixin):
         metadata={"help": "Lista de regras de validação registradas na estratégia."}
     )
 
-    embedding_type: Optional[EmbeddingType] = field(
+    embedding_column: Optional[str] = field(
         default=None,
-        metadata={"help": "Tipo de embedding a usar nos datasets. None = auto-detect."}
+        metadata={
+            "help": (
+                "Nome da coluna de embedding (no parquet) que esta estratégia usa. "
+                "Todos os datasets envolvidos precisam ter essa coluna com o mesmo "
+                "model_name (consistência cross-dataset garantida pela validação). "
+                "None = auto-detect quando os datasets têm uma única coluna de "
+                "embedding em comum."
+            )
+        }
     )
 
     version: str = field(
@@ -282,11 +290,7 @@ class LRStrategyDefinition(JSONSerializableMixin):
             "validation_instructions": [_child_dict(i) for i in self.validation_instructions],
             "casework_instructions": [_child_dict(i) for i in self.casework_instructions],
             "validation_rule_ids": list(self.validation_rule_ids),
-            "embedding_type": (
-                self.embedding_type.to_str()
-                if self.embedding_type is not None
-                else None
-            ),
+            "embedding_column": self.embedding_column,
             "version": self.version,
         }
 
@@ -318,9 +322,20 @@ class LRStrategyDefinition(JSONSerializableMixin):
                     for item in processed_data[key]
                 ]
 
-        if "embedding_type" in processed_data and processed_data["embedding_type"]:
-            processed_data["embedding_type"] = EmbeddingType.from_str(
-                processed_data["embedding_type"]
-            )
+        # Migração: estratégias antigas gravam `embedding_type` (enum
+        # SEPAEL_V2/V4). Mapeamos pro nome da coluna parquet correspondente
+        # e descartamos o campo legado para que `cls(**...)` não receba
+        # kwarg desconhecido.
+        if "embedding_type" in processed_data:
+            legacy = processed_data.pop("embedding_type")
+            if legacy and not processed_data.get("embedding_column"):
+                try:
+                    enum_val = (
+                        legacy if isinstance(legacy, EmbeddingType)
+                        else EmbeddingType.from_str(legacy)
+                    )
+                    processed_data["embedding_column"] = enum_val.parquet_column
+                except (KeyError, ValueError, AttributeError):
+                    pass
 
         return cls(**processed_data)

@@ -58,8 +58,6 @@ class NewStrategyController:
 
             description = view.get_description() or None
 
-            embedding_type = view.get_embedding_type()
-
             if view.use_template():
                 template_name = view.selected_template_name()
                 base = self._templates.get(template_name)
@@ -68,15 +66,19 @@ class NewStrategyController:
                         view, "Template inválido", f"Template '{template_name}' não encontrado."
                     )
                     continue
+                # Template preserva o embedding_column gravado no JSON do
+                # template (se houver). O usuário pode ajustar depois no
+                # editor, onde o combo lista a interseção real.
                 definition = self._clone_from_template(base, name, description)
-                definition.embedding_type = embedding_type
             else:
+                # Estratégia do zero: embedding_column = None (auto-detect).
+                # O combo do editor seleciona a única opção comum quando
+                # houver, ou o usuário escolhe explicitamente.
                 definition = LRStrategyDefinition(
                     strategy_id=str(uuid.uuid4()),
                     name=name,
                     description=description,
                     resources=[],
-                    embedding_type=embedding_type,
                 )
 
             return definition

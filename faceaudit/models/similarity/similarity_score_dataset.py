@@ -313,6 +313,10 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
         gen_vals: list = []
         imp_vals: list = []
+        # case_vals = pares casework (sem ground truth — `same_person is None`).
+        # SIMILARITY_SCORING em modo casework produz dataset puramente case;
+        # sem incluí-los aqui, o widget renderizava "Total: 0 pares".
+        case_vals: list = []
         for s in self.items:
             sp = s.same_person
             if sp is True:
@@ -320,7 +324,7 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             elif sp is False:
                 arr = imp_vals
             else:
-                continue
+                arr = case_vals
             if has_log_lr:
                 md = getattr(s, "metadata", None)
                 v = md.get("log_lr") if isinstance(md, dict) else None
@@ -332,16 +336,16 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
         gen_arr = np.asarray(gen_vals, dtype=np.float64)
         imp_arr = np.asarray(imp_vals, dtype=np.float64)
+        case_arr = np.asarray(case_vals, dtype=np.float64)
         n_gen = int(gen_arr.size)
         n_imp = int(imp_arr.size)
-        if n_gen == 0 and n_imp == 0:
+        n_case = int(case_arr.size)
+        if n_gen == 0 and n_imp == 0 and n_case == 0:
             return
 
-        all_vals = (
-            np.concatenate([gen_arr, imp_arr])
-            if n_gen and n_imp
-            else (gen_arr if n_gen else imp_arr)
-        )
+        # Eixo X cobre todas as 3 séries (gen, imp, case).
+        non_empty = [a for a in (gen_arr, imp_arr, case_arr) if a.size > 0]
+        all_vals = np.concatenate(non_empty) if non_empty else np.zeros(0)
         x_min = float(np.min(all_vals))
         x_max = float(np.max(all_vals))
         if x_min == x_max:
@@ -360,34 +364,51 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             if n_imp
             else (np.zeros(bins.size - 1), bins)
         )
+        # Caso: histograma só faz sentido com n>=30 (pelo menos uma dezena de
+        # bins razoavelmente populados). Pra n<30 grava `case_values` cru pro
+        # widget desenhar como linhas verticais anotadas.
+        case_hist_payload = None
+        case_values_payload: Optional[list] = None
+        if n_case >= 30:
+            case_hist, _ = np.histogram(case_arr, bins=bins, density=True)
+            case_hist_payload = case_hist.tolist()
+        elif n_case > 0:
+            case_values_payload = case_arr.tolist()
 
         # KDE — 400 pontos no eixo X.
         kde_x = np.linspace(x_min, x_max, 400)
         kde_gen_y = None
         kde_imp_y = None
+        kde_case_y = None
         try:
             from scipy.stats import gaussian_kde
             if n_gen > 1:
                 kde_gen_y = gaussian_kde(gen_arr)(kde_x).tolist()
             if n_imp > 1:
                 kde_imp_y = gaussian_kde(imp_arr)(kde_x).tolist()
+            if n_case > 30:
+                kde_case_y = gaussian_kde(case_arr)(kde_x).tolist()
         except Exception:
             pass
 
         sidecar = {
-            "schema_version": 1,
+            "schema_version": 2,
             "score_type": score_type,
             "name": self.name,
             "n_gen": n_gen,
             "n_imp": n_imp,
+            "n_case": n_case,
             "x_min": x_min,
             "x_max": x_max,
             "bins": bins.tolist(),
             "gen_hist_density": gen_hist.tolist(),
             "imp_hist_density": imp_hist.tolist(),
+            "case_hist_density": case_hist_payload,
+            "case_values": case_values_payload,
             "kde_x": kde_x.tolist(),
             "kde_gen_y": kde_gen_y,
             "kde_imp_y": kde_imp_y,
+            "kde_case_y": kde_case_y,
         }
 
         sidecar_path = parquet_path.with_name(parquet_path.stem + "_dist.json")
