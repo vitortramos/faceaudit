@@ -27,7 +27,10 @@ class TemplateCreatorController(QtCore.QObject):
         if not self.save_directory.exists():
             try:
                 self.save_directory.mkdir(parents=True, exist_ok=True)
-            except: pass
+            except OSError as e:
+                # Erro real (permissão, disco cheio, path inválido) — não
+                # silenciar: o save vai falhar depois com mensagem genérica.
+                print(f"⚠ Falha ao criar diretório de templates {self.save_directory}: {e}")
 
     def _connect_signals(self):
         # Ações de Botões Locais (Add/Rem)
@@ -37,10 +40,13 @@ class TemplateCreatorController(QtCore.QObject):
         self.view.btn_add_file.clicked.connect(self._on_add_file)
         self.view.btn_rem_file.clicked.connect(self.view.remove_file_item)
         
-        # Interceptação do botão Save
+        # Interceptação do botão Save: desconecta o handler default do QDialogButtonBox
+        # antes de injetar o nosso. Qt levanta TypeError quando não há slot conectado —
+        # esse caso é benigno e silenciado; demais erros propagam.
         try:
             self.view.buttons.accepted.disconnect()
-        except: pass
+        except TypeError:
+            pass
         self.view.buttons.accepted.connect(self._on_save_attempt)
 
     def _on_add_folder(self):
@@ -92,7 +98,7 @@ class TemplateCreatorController(QtCore.QObject):
         """Lê a lista visual de pastas e converte para dicionário {nivel: [attrs]}."""
         f_map = {}
         list_widget = self.view.list_folders
-        
+
         for i in range(list_widget.count()):
             text = list_widget.item(i).text()
             try:
@@ -100,19 +106,18 @@ class TemplateCreatorController(QtCore.QObject):
                 part1 = text.split("] ->")[0]
                 level = int(part1.split("Nível ")[1])
                 attr = text.split("-> ")[1].strip()
-                
-                if level not in f_map:
-                    f_map[level] = []
-                f_map[level].append(attr)
-            except:
+            except (IndexError, ValueError) as e:
+                print(f"⚠ Item de pasta mal formado, ignorado: {text!r} ({e})")
                 continue
+
+            f_map.setdefault(level, []).append(attr)
         return f_map
 
     def _parse_file_list(self):
         """Lê a lista visual de arquivos e converte para dicionário {idx: attr}."""
         fn_map = {}
         list_widget = self.view.list_files
-        
+
         for i in range(list_widget.count()):
             text = list_widget.item(i).text()
             try:
@@ -120,7 +125,9 @@ class TemplateCreatorController(QtCore.QObject):
                 part1 = text.split("] ->")[0]
                 idx = int(part1.split("Parte ")[1])
                 attr = text.split("-> ")[1].strip()
-                fn_map[idx] = attr
-            except:
+            except (IndexError, ValueError) as e:
+                print(f"⚠ Item de arquivo mal formado, ignorado: {text!r} ({e})")
                 continue
+
+            fn_map[idx] = attr
         return fn_map
