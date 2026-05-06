@@ -195,8 +195,33 @@ class DatasetManagerController(QtCore.QObject):
 
         self._iniciar_worker_load(path)
 
+    def _wait_previous_worker(self, timeout_ms: int = 3000):
+        """Garante que `self.thread`/`self.worker` anteriores não estão rodando
+        antes de re-atribuir. Sem isso, em qualquer fluxo onde o usuário consiga
+        disparar duas operações em sequência (ex: encadeamento programático),
+        o handle Python da QThread anterior é perdido enquanto a thread nativa
+        ainda executa — recipe para crash ou races em deleteLater."""
+        prev_worker = getattr(self, "worker", None)
+        prev_thread = getattr(self, "thread", None)
+        if prev_worker is not None:
+            try:
+                if hasattr(prev_worker, "stop"):
+                    prev_worker.stop()
+            except RuntimeError:
+                # Worker já deletado pelo deleteLater — ignorar.
+                pass
+        if prev_thread is not None:
+            try:
+                if prev_thread.isRunning():
+                    prev_thread.quit()
+                    prev_thread.wait(timeout_ms)
+            except RuntimeError:
+                # Thread C++ já destruída — ignorar.
+                pass
+
     def _iniciar_worker_load(self, path):
         try:
+            self._wait_previous_worker()
             self.thread = QtCore.QThread()
             self.worker = LoadDatasetWorker(path)
             self.worker.moveToThread(self.thread)
@@ -316,7 +341,8 @@ class DatasetManagerController(QtCore.QObject):
         self.progress_create = QProgressDialog("Processando Ingestão...", "Cancelar", 0, 100, self.view)
         self.progress_create.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.progress_create.setMinimumDuration(0)
-        
+
+        self._wait_previous_worker()
         self.thread = QtCore.QThread()
         self.worker = NewDatasetWorker(self.pipeline, config)
         self.worker.moveToThread(self.thread)
@@ -512,6 +538,7 @@ class DatasetManagerController(QtCore.QObject):
         self.progress_filter.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.progress_filter.setCancelButton(None)
 
+        self._wait_previous_worker()
         self.thread = QtCore.QThread()
         self.worker = FilterWorker(self.dataset_original, self.current_filter_config)
         self.worker.moveToThread(self.thread)
@@ -588,9 +615,10 @@ class DatasetManagerController(QtCore.QObject):
         self.progress_enrich = QProgressDialog("Enriquecendo Dataset...", "Cancelar", 0, 100, self.view)
         self.progress_enrich.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
         self.progress_enrich.setMinimumDuration(0)
-        
+
+        self._wait_previous_worker()
         self.thread = QtCore.QThread()
-        
+
         self.worker = EnrichWorker(self.pipeline, self.dataset, config)
         self.worker.moveToThread(self.thread)
         
