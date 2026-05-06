@@ -89,9 +89,32 @@ class CompareDialogController(QtCore.QObject):
         while self.view.tabs.count() > 1:
             self.view.tabs.removeTab(1)
 
-        self._add_detail_tab("Gênero", result.gender_diffs)
-        self._add_detail_tab("Etnia", result.ethnicity_diffs)
-        self._add_detail_tab("Origem", result.origin_diffs)
+        # PR 10: usa ColumnSpec.label quando o dataset tem schema-by-role.
+        # Mantém as strings atuais como fallback para parquets legados.
+        gender_label = self._label_for("gender", default="Gênero")
+        ethnicity_label = self._label_for("ethnicity", default="Etnia")
+        origin_label = self._label_for("origin", default="Origem")
+
+        self._add_detail_tab(gender_label, result.gender_diffs)
+        self._add_detail_tab(ethnicity_label, result.ethnicity_diffs)
+        self._add_detail_tab(origin_label, result.origin_diffs)
+
+    def _label_for(self, column_name: str, default: str) -> str:
+        """Resolve o label de uma coluna via column_specs do dataset A.
+
+        Procura no dataset A primeiro (referência); se não encontrar, tenta
+        no B; se nada, retorna o default. Pega o spec só se a coluna for
+        canônica (não-CUSTOM) — não faz sentido um custom virar tab fixa
+        de comparação demográfica.
+        """
+        for ds in (self.ds_a, self.ds_b):
+            specs = getattr(ds, "column_specs", None) or {}
+            spec = specs.get(column_name)
+            if spec is not None:
+                label = getattr(spec, "label", None)
+                if label:
+                    return label
+        return default
 
     def _add_detail_tab(self, title, diff_list):
         if not diff_list: return

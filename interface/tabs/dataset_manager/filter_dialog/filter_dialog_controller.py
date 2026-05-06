@@ -43,6 +43,12 @@ class FilterDialogController:
         if df is None or df.empty:
             return
 
+        # PR 10: column_specs do FaceDataset (post-PR 6). Quando uma coluna
+        # tem `vocabulary` declarado (ex: gender/ethnicity), os valores do
+        # vocabulário entram no combo mesmo se nenhum row ainda estiver com
+        # aquele valor — usuário enxerga TODAS as opções válidas.
+        specs = getattr(self.dataset, "column_specs", None) or {}
+
         def get_unique(col_name: str):
             if col_name not in df.columns:
                 return []
@@ -50,14 +56,29 @@ class FilterDialogController:
             series = series[series.str.strip() != ""]
             return series.unique().tolist()
 
-        self.view.populate_combo_options("identity", get_unique("identity"))
-        self.view.populate_combo_options("gender", get_unique("gender"))
-        self.view.populate_combo_options("ethnicity", get_unique("ethnicity"))
+        def get_options(col_name: str, vocab_key: str = None) -> list:
+            """Combina valores únicos do dataframe com o vocabulário do
+            spec (se houver). Mantém ordem: vistos no dado primeiro, depois
+            entradas do vocab que faltam.
+            """
+            unique = get_unique(col_name)
+            spec = specs.get(vocab_key or col_name)
+            vocab = getattr(spec, "vocabulary", None) if spec else None
+            if vocab:
+                extra = [v for v in vocab if v not in unique]
+                return unique + extra
+            return unique
 
+        self.view.populate_combo_options("identity", get_options("identity"))
+        self.view.populate_combo_options("gender", get_options("gender"))
+        self.view.populate_combo_options("ethnicity", get_options("ethnicity"))
+
+        # `source` no UI mapeia pra `origin` no dado (legado: alguns
+        # parquets antigos tinham coluna "source" em vez de "origin").
         if "origin" in df.columns:
-            origins = get_unique("origin")
+            origins = get_options("origin")
         else:
-            origins = get_unique("source")
+            origins = get_options("source")
         self.view.populate_combo_options("source", origins)
 
     def _connect_signals(self):
