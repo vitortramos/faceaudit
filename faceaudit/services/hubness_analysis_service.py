@@ -24,9 +24,27 @@ class HubnessAnalysisService:
     Otimizado para Big Data: Vetorização extrema, Zero-Copy Masks e Label Encoding.
     """
 
-    def __init__(self, comparison_service, k_neighbors: int = 20):
+    def __init__(self, comparison_service, k_neighbors: int = 20,
+                 pose_yaw_key: str = "yaw", pose_pitch_key: str = "pitch"):
         self.comparison_service = comparison_service
         self.k = k_neighbors
+        # Keys do dict `EmbeddingInfo.pose` usadas para leitura de yaw/pitch.
+        # Defaults batem com o produto do FF; um caller que queira priorizar
+        # OFIQ pode passar `pose_yaw_key="ofiq_yaw"` (idem pitch). A escolha
+        # vem do contexto da estratégia em PR 5+ — hoje só os defaults rodam.
+        self._pose_yaw_key = pose_yaw_key
+        self._pose_pitch_key = pose_pitch_key
+
+    def _read_pose(self, item) -> tuple:
+        """Retorna (yaw, pitch) lidos do `item.pose` respeitando os keys
+        configurados. Faz fallback para 0.0 quando o axis está ausente."""
+        pose = getattr(item, "pose", None) or {}
+        yaw = pose.get(self._pose_yaw_key)
+        pitch = pose.get(self._pose_pitch_key)
+        return (
+            float(yaw) if yaw is not None else 0.0,
+            float(pitch) if pitch is not None else 0.0,
+        )
 
     def compute_analysis(
         self,
@@ -57,7 +75,14 @@ class HubnessAnalysisService:
         max_impostors = np.zeros(n, dtype=np.float32)
         mean_delta_pose = np.zeros(n, dtype=np.float32)
         
-        poses = np.array([abs(float(item.yaw)) + abs(float(item.pitch)) for item in items])
+        # Pose: lê via `_read_pose` respeitando os keys configurados;
+        # pré-computa yaws/pitches/poses em uma única passada.
+        yaws = np.zeros(n, dtype=np.float32)
+        pitches = np.zeros(n, dtype=np.float32)
+        for i, item in enumerate(items):
+            yaws[i], pitches[i] = self._read_pose(item)
+        poses = np.abs(yaws) + np.abs(pitches)
+
         raw_norms = np.linalg.norm(matrix, axis=1)
 
         # 1. Label Encoding
@@ -225,7 +250,7 @@ class HubnessAnalysisService:
                 index=i, identity=item.identity, norm=float(raw_norms[i]),
                 quality_score=float(item.quality_score or 0.0),
                 serfiq=float(item.quality_scores.get('serfiq', 0.0)),
-                yaw=float(item.yaw), pitch=float(item.pitch), abs_pose=float(poses[i]),
+                yaw=float(yaws[i]), pitch=float(pitches[i]), abs_pose=float(poses[i]),
                 nk_score=int(nk_scores[i]), mean_impostor_score=float(mean_impostors[i]),
                 max_impostor_score=float(max_impostors[i]), mean_delta_pose_to_neighbors=float(mean_delta_pose[i])
             ))
@@ -461,10 +486,14 @@ class HubnessAnalysisService:
         logger_callback: Optional[callable] = None,
     ) -> AblationStudyInfo:
         """Ablação topológica priorizando as fotos mais frontais por identidade."""
-        temp_data = [
-            {'index': i, 'identity': item.identity, 'pose_err': abs(item.yaw) + abs(item.pitch)}
-            for i, item in enumerate(dataset.items)
-        ]
+        temp_data = []
+        for i, item in enumerate(dataset.items):
+            yaw, pitch = self._read_pose(item)
+            temp_data.append({
+                'index': i,
+                'identity': item.identity,
+                'pose_err': abs(yaw) + abs(pitch),
+            })
         df_order = pd.DataFrame(temp_data).sort_values(by=['identity', 'pose_err'], ascending=[True, True])
 
         scenarios = [
