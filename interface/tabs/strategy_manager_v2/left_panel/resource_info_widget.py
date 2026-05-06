@@ -149,16 +149,21 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_emb_cols = QtWidgets.QLabel("—")
         self.lbl_balance = QtWidgets.QLabel("—")
         self.lbl_samples_per_id = QtWidgets.QLabel("—")
+        # PR 7: cobertura de métricas de qualidade lida do column_coverage
+        # do sidecar JSON (que por sua vez vem da metadata do parquet pós-PR 3).
+        self.lbl_quality_coverage = QtWidgets.QLabel("—")
 
         for lbl in (
             self.lbl_n_imgs, self.lbl_n_ids, self.lbl_emb_cols,
             self.lbl_balance, self.lbl_samples_per_id,
+            self.lbl_quality_coverage,
         ):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
 
         self.lbl_emb_cols.setWordWrap(True)
         self.lbl_balance.setWordWrap(True)
         self.lbl_samples_per_id.setWordWrap(True)
+        self.lbl_quality_coverage.setWordWrap(True)
 
         for text, value_lbl in [
             ("Amostras:", self.lbl_n_imgs),
@@ -166,6 +171,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Embeddings:", self.lbl_emb_cols),
             ("Balanceamento:", self.lbl_balance),
             ("Amostras/ID:", self.lbl_samples_per_id),
+            ("Qualidade:", self.lbl_quality_coverage),
         ]:
             lbl = QtWidgets.QLabel(text)
             lbl.setStyleSheet(_lbl_style)
@@ -730,6 +736,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 else:
                     self.lbl_emb_cols.setText("—")
                 self._render_balance(data.get("balance_metrics"))
+                self._render_quality_coverage(data.get("column_coverage"))
                 return
             except Exception:
                 pass
@@ -807,6 +814,45 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_emb_cols.setText("—")
         self.lbl_balance.setText("—")
         self.lbl_samples_per_id.setText("—")
+        self.lbl_quality_coverage.setText("—")
+
+    # Métricas conhecidas que aparecem no resumo (tier "primary" do
+    # ColumnSpec.quality_subtype). EMBEDDING_NORM é calculado on-the-fly
+    # — sempre disponível, então não precisa de linha aqui.
+    _QUALITY_COLUMNS_TO_SHOW = (
+        ("fiqa_score", "FIQA"),
+        ("ofiq_score", "OFIQ"),
+        ("serfiq_score", "SER-FIQ"),
+    )
+
+    def _render_quality_coverage(self, coverage: Optional[dict]) -> None:
+        """Renderiza um resumo das colunas primárias de quality presentes
+        no dataset, com cobertura percentual.
+
+        Lê de `column_coverage` (sidecar JSON pós-PR 2 / metadata pós-PR 3).
+        Quando todas as três métricas primárias estão ausentes, mostra
+        apenas "Embedding Norm (sempre disponível)".
+        """
+        if not isinstance(coverage, dict) or not coverage:
+            self.lbl_quality_coverage.setText("Embedding Norm (sempre)")
+            return
+
+        lines = []
+        for col_name, label in self._QUALITY_COLUMNS_TO_SHOW:
+            cs = coverage.get(col_name)
+            if not cs:
+                continue
+            non_null = int(cs.get("non_null_count", 0))
+            total = int(cs.get("total_count", 0))
+            if total == 0 or non_null == 0:
+                continue
+            pct = (non_null / total) * 100.0
+            lines.append(f"{label}: {pct:.1f}% ({non_null}/{total})")
+
+        # EMBEDDING_NORM é sempre disponível (calc on-the-fly).
+        lines.append("Embedding Norm: sempre")
+
+        self.lbl_quality_coverage.setText("\n".join(lines))
 
     def _render_balance(self, bm: Optional[dict]) -> None:
         """
