@@ -92,17 +92,26 @@ class DatasetManagerController(QtCore.QObject):
         self.toolbar_ctrl.action_merge.connect(self.fluxo_merge)
         self.toolbar_ctrl.action_split.connect(self.fluxo_split)
         self.toolbar_ctrl.action_compare.connect(self.fluxo_comparar)
-        
+
         self.toolbar_ctrl.action_stats.connect(self.fluxo_estatisticas)
         # [NOVO] Conecta o botão Analisar ao novo fluxo
-        self.toolbar_ctrl.action_analyze.connect(self.fluxo_analise_dataset) 
-        
+        self.toolbar_ctrl.action_analyze.connect(self.fluxo_analise_dataset)
+
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
         self.table_ctrl.face_selected.connect(self.detail_ctrl.load_face_data)
-        
+
+        # Edits no modelo da tabela marcam dirty; sem isso, alterações de célula
+        # ficavam invisíveis até um flush manual e podiam ser perdidas no fechamento.
+        if hasattr(self.table_ctrl, "model"):
+            self.table_ctrl.model.dataChanged.connect(self._on_table_data_changed)
+
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
+
+    def _on_table_data_changed(self, *_args):
+        if self.dataset is not None:
+            self.set_dirty(True)
 
     def _get_initial_dir(self) -> str:
         if self.pipeline and hasattr(self.pipeline, 'storage_path'):
@@ -129,7 +138,7 @@ class DatasetManagerController(QtCore.QObject):
 
         dataset_visual_atualizado = FaceDataset.from_dataframe(df_edited, name=self.dataset.name)
         self.dataset = dataset_visual_atualizado
-        
+
         if self.dataset_original:
             print(f"🔄 Sync: Propagando {len(self.dataset)} registros editados para o Dataset Original...")
             mapa_edicoes = {face.image_path: face for face in self.dataset.faces}
@@ -141,7 +150,9 @@ class DatasetManagerController(QtCore.QObject):
             print(f"✅ Sync Concluído: {count_updates} faces atualizadas no backup.")
         else:
             print(f"✅ Sync Simples: Dataset atualizado ({len(self.dataset)} registros).")
-        self.set_dirty(True)
+        # NOTE: dirty é marcado por _on_table_data_changed quando o usuário edita
+        # uma célula. Sync apenas propaga; não inventa estado dirty quando o df
+        # estiver sem alterações reais.
 
     def is_dirty(self) -> bool:
         return self._is_dirty
@@ -255,9 +266,13 @@ class DatasetManagerController(QtCore.QObject):
             self.carregar_dataset_na_tela(self.dataset, path)
 
     def request_close(self) -> bool:
-        if not self.dataset: 
+        if not self.dataset:
             return True
-            
+
+        # Flush pending in-table edits para self.dataset antes de avaliar dirty —
+        # caso contrário, edições só no QAbstractTableModel são perdidas silenciosamente.
+        self.sync_changes_from_table()
+
         if self.is_dirty():
             res = QMessageBox.question(self.view, "Salvar Alterações?", 
                                        "O dataset possui alterações não salvas. Deseja salvar antes de fechar?", 
