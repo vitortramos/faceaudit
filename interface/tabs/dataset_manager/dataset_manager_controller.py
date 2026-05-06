@@ -246,11 +246,20 @@ class DatasetManagerController(QtCore.QObject):
         allow_cancel=False,
         determinate=True,
         wait_cursor=False,
+        use_log_dialog=False,
         on_finished=None,
     ):
         """Encapsula a criação do WorkerProgressRunner + ref forte.
+
+        `use_log_dialog=True` ativa o LogProgressDialog (área de texto
+        rolando os logs) — adequado pra fluxos multi-etapa onde o
+        usuário precisa ver cada fase (ingestão de dataset, enriquecimento).
+        Default é `False` (QProgressDialog compacto).
+
         Só permite uma operação ativa de cada vez — se o usuário disparar
-        outra antes da anterior terminar, a anterior é cancelada cooperativamente."""
+        outra antes da anterior terminar, a anterior é cancelada
+        cooperativamente.
+        """
         if self._active_runner is not None:
             self._active_runner.stop_and_wait()
             self._active_runner = None
@@ -271,6 +280,7 @@ class DatasetManagerController(QtCore.QObject):
             allow_cancel=allow_cancel,
             determinate=determinate,
             wait_cursor=wait_cursor,
+            use_log_dialog=use_log_dialog,
             on_finished=_wrap_finished,
             on_error=_wrap_error,
         )
@@ -345,7 +355,7 @@ class DatasetManagerController(QtCore.QObject):
         self.request_close()
 
     def fluxo_novo_dataset(self):
-        templates_path = Path(self.config.paths.templates)
+        templates_path = Path(self.config.paths.dir_templates)
         dialog = NewDatasetController(self.view, templates_path=templates_path)
         
         if dialog.exec():
@@ -363,9 +373,10 @@ class DatasetManagerController(QtCore.QObject):
     def _iniciar_worker_criacao(self, config):
         self._run_worker(
             NewDatasetWorker(self.pipeline, config),
-            label="Processando Ingestão...",
+            label="Criando Dataset",
             allow_cancel=True,
             determinate=True,
+            use_log_dialog=True,
             on_finished=self._on_criacao_concluida,
         )
 
@@ -604,9 +615,10 @@ class DatasetManagerController(QtCore.QObject):
     def _iniciar_worker_enrich(self, config: DatasetIngestionConfig):
         self._run_worker(
             EnrichWorker(self.pipeline, self.dataset, config),
-            label="Enriquecendo Dataset...",
+            label="Enriquecendo Dataset",
             allow_cancel=True,
             determinate=True,
+            use_log_dialog=True,
             on_finished=self._on_enrich_concluido,
         )
 

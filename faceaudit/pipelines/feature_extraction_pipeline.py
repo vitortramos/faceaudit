@@ -138,32 +138,53 @@ class FeatureExtractionPipeline:
             if config.compute_ff:
                 base_pct = self._calc_pct(current_stage_idx, total_stages)
                 next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
-                
-                # Callback adaptativo: Escala o % interno do FFService (0-100) para caber no slot atual do pipeline
+
+                ff_svc = self._resolve_ff_service(config)
+                wanted_models = list(config.ff_models or ["sepaelv2"])
+
+                # Callback adaptativo: escala o % interno do FFService (0-100)
+                # para caber no slot atual do pipeline.
                 def ff_callback(msg: str, internal_pct: int):
                     if progress_callback:
                         scaled_pct = base_pct + int((internal_pct / 100) * (next_pct - base_pct))
                         progress_callback(msg, scaled_pct)
 
-                self.ff_service.process_dataset(dataset, progress_callback=ff_callback)
+                ff_svc.process_dataset(
+                    dataset,
+                    progress_callback=ff_callback,
+                    models=wanted_models,
+                )
                 current_stage_idx += 1
 
             # B. OFIQ (Qualidade ISO)
             if config.compute_ofiq:
-                pct = self._calc_pct(current_stage_idx, total_stages)
+                base_pct = self._calc_pct(current_stage_idx, total_stages)
+                next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
                 msg = f"Calculando {active_stages[current_stage_idx]}..."
-                if progress_callback: progress_callback(msg, pct)
-                
-                self.ofiq_service.process_dataset(dataset)
+                if progress_callback: progress_callback(msg, base_pct)
+
+                ofiq_tick = self._make_noarg_stage_callback(
+                    msg, base_pct, next_pct, len(dataset), progress_callback
+                )
+                self.ofiq_service.process_dataset(dataset, callback=ofiq_tick)
                 current_stage_idx += 1
 
             # C. SER-FIQ (Qualidade Estocástica)
             if config.compute_serfiq:
-                pct = self._calc_pct(current_stage_idx, total_stages)
+                base_pct = self._calc_pct(current_stage_idx, total_stages)
+                next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
                 msg = f"Calculando {active_stages[current_stage_idx]}..."
-                if progress_callback: progress_callback(msg, pct)
-                
-                self.serfiq_service.process_dataset(dataset)
+                if progress_callback: progress_callback(msg, base_pct)
+
+                serfiq_tick = self._make_noarg_stage_callback(
+                    msg, base_pct, next_pct, len(dataset), progress_callback
+                )
+                self._resolve_serfiq_service(config).process_dataset(
+                    dataset,
+                    callback=serfiq_tick,
+                    t=config.serfiq_t,
+                    alpha=config.serfiq_alpha,
+                )
                 current_stage_idx += 1
 
         except InterruptedError:
@@ -197,6 +218,85 @@ class FeatureExtractionPipeline:
         if total_stages == 0: return 0
         # Reserva os 5% finais para persistência, distribuindo 95% entre as fases
         return int((current_stage / total_stages) * 95)
+
+    # =========================================================================
+    # Resolução dinâmica de serviços a partir do DatasetIngestionConfig
+    # =========================================================================
+
+    def _resolve_ff_service(self, config: DatasetIngestionConfig) -> FFService:
+        """Retorna o FFService Singleton se ele já cobre os params do
+        config; caso contrário, instancia um temporário com os params
+        pedidos. O temporário paga ~5-10s de carga ONNX uma vez por
+        execução — se você executar várias vezes seguidas com os mesmos
+        params, o helper continua reutilizando."""
+        wanted_models = list(config.ff_models or ["sepaelv2"])
+        det_size = int(config.ff_det_size)
+        extended = bool(config.ff_extended)
+
+        if self.ff_service.matches_config(
+            models=wanted_models, det_size=det_size, extended=extended
+        ):
+            return self.ff_service
+
+        # Singleton não cobre — constrói FFService temporário. `use_gpu`
+        # vem do Singleton (é capability da máquina, não da execução).
+        use_gpu = getattr(self.ff_service, "_use_gpu", False)
+        print(
+            f"⚙️ [Pipeline] FFService Singleton não cobre os params pedidos "
+            f"(models={wanted_models}, det_size={det_size}, extended={extended}). "
+            f"Instanciando temporário…"
+        )
+        return FFService(
+            models=wanted_models,
+            det_size=det_size,
+            use_gpu=use_gpu,
+            extended=extended,
+        )
+
+    def _resolve_serfiq_service(
+        self, config: DatasetIngestionConfig
+    ) -> SERFIQService:
+        """Retorna o SERFIQService Singleton, ajustando T/alpha in-place
+        antes do uso. SERFIQService é leve (não carrega modelo extra além
+        do FF embedded), então mutar atributos é mais barato que rebuild."""
+        # SERFIQService.process_dataset aceita `t=` e `alpha=` por chamada
+        # (override por execução), então não precisa rebuild — basta passar
+        # adiante na chamada. Retorna o Singleton.
+        return self.serfiq_service
+
+    def _make_noarg_stage_callback(
+        self,
+        stage_msg: str,
+        base_pct: int,
+        next_pct: int,
+        total_items: int,
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> Callable[[], None]:
+        """
+        Adaptador para serviços que emitem callback sem args (OFIQ, SER-FIQ),
+        equivalente ao `ff_callback` adaptativo usado pelo FFService.
+
+        Conta itens internamente, escala o progresso pro slot do estágio
+        (`base_pct` → `next_pct`) e chama `progress_callback(msg, pct)`.
+
+        Por que isso existe: o `EnrichWorker._callback` checa o flag de
+        cancelamento dentro do progress_callback. Se OFIQ/SER-FIQ rodam
+        sem callback, o cancel fica preso até a fase terminar. Esse
+        adaptador garante que cada item processado dispare a verificação.
+        """
+        if total_items <= 0 or progress_callback is None:
+            return lambda: None
+
+        state = {"count": 0}
+        slot_width = max(0, next_pct - base_pct)
+
+        def _tick() -> None:
+            state["count"] += 1
+            internal_pct = min(100, int((state["count"] / total_items) * 100))
+            scaled = base_pct + int((internal_pct / 100) * slot_width)
+            progress_callback(stage_msg, scaled)
+
+        return _tick
     
     def enrich_existing_dataset(self, 
                                 dataset: FaceDataset, 
@@ -225,29 +325,49 @@ class FeatureExtractionPipeline:
             if config.compute_ff:
                 base_pct = self._calc_pct(current_stage_idx, total_stages)
                 next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
-                
+
+                ff_svc = self._resolve_ff_service(config)
+                wanted_models = list(config.ff_models or ["sepaelv2"])
+
                 def ff_callback(msg: str, internal_pct: int):
                     if progress_callback:
                         scaled_pct = base_pct + int((internal_pct / 100) * (next_pct - base_pct))
                         progress_callback(msg, scaled_pct)
 
-                self.ff_service.process_dataset(dataset, progress_callback=ff_callback)
+                ff_svc.process_dataset(
+                    dataset,
+                    progress_callback=ff_callback,
+                    models=wanted_models,
+                )
                 current_stage_idx += 1
 
             if config.compute_ofiq:
-                pct = self._calc_pct(current_stage_idx, total_stages)
+                base_pct = self._calc_pct(current_stage_idx, total_stages)
+                next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
                 msg = f"Enriquecendo: {active_stages[current_stage_idx]}..."
-                if progress_callback: progress_callback(msg, pct)
-                
-                self.ofiq_service.process_dataset(dataset)
+                if progress_callback: progress_callback(msg, base_pct)
+
+                ofiq_tick = self._make_noarg_stage_callback(
+                    msg, base_pct, next_pct, len(dataset), progress_callback
+                )
+                self.ofiq_service.process_dataset(dataset, callback=ofiq_tick)
                 current_stage_idx += 1
 
             if config.compute_serfiq:
-                pct = self._calc_pct(current_stage_idx, total_stages)
+                base_pct = self._calc_pct(current_stage_idx, total_stages)
+                next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
                 msg = f"Enriquecendo: {active_stages[current_stage_idx]}..."
-                if progress_callback: progress_callback(msg, pct)
-                
-                self.serfiq_service.process_dataset(dataset)
+                if progress_callback: progress_callback(msg, base_pct)
+
+                serfiq_tick = self._make_noarg_stage_callback(
+                    msg, base_pct, next_pct, len(dataset), progress_callback
+                )
+                self._resolve_serfiq_service(config).process_dataset(
+                    dataset,
+                    callback=serfiq_tick,
+                    t=config.serfiq_t,
+                    alpha=config.serfiq_alpha,
+                )
                 current_stage_idx += 1
 
         except InterruptedError:

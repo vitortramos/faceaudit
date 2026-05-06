@@ -19,23 +19,27 @@ class EnrichDatasetController:
 
     def get_config(self) -> DatasetIngestionConfig:
         """
-        Gera um DatasetIngestionConfig estritamente compatível com o Dataclass fornecido.
+        Monta o DatasetIngestionConfig com os flags binários por serviço +
+        params operacionais (FF/SER-FIQ) lidos dos painéis avançados.
         """
-        from pathlib import Path # Garante o import caso não esteja no topo
+        from pathlib import Path
 
         return DatasetIngestionConfig(
-            # 1. Campos Obrigatórios (Necessários para o __init__ do Dataclass)
-            # Passamos um caminho fictício pois o método 'enrich_existing_dataset' do pipeline ignora isso.
-            input_path=Path("."), 
+            # Path fictício — o pipeline.enrich_existing_dataset ignora.
+            input_path=Path("."),
             dataset_name=self.dataset.name,
-            
-            # 2. Configurações de Processamento (Mapeando da View para o Config)
+
+            # Flags por serviço
             compute_ff=self.view.is_checked('ff'),
             compute_ofiq=self.view.is_checked('ofiq'),
-            compute_serfiq=self.view.is_checked('serfiq')
-            
-            # OBS: Removemos 'extract_features', 'enable_forensic', etc., 
-            # pois eles não existem na definição da sua classe.
+            compute_serfiq=self.view.is_checked('serfiq'),
+
+            # Params operacionais (defaults se o painel avançado não foi expandido)
+            ff_models=self.view.get_ff_models(),
+            ff_det_size=self.view.get_ff_det_size(),
+            ff_extended=self.view.get_ff_extended(),
+            serfiq_t=self.view.get_serfiq_t(),
+            serfiq_alpha=self.view.get_serfiq_alpha(),
         )
 
     def _analyze_and_populate(self):

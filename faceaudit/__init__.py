@@ -83,7 +83,6 @@ from .models.similarity.similarity_score_dataset import SimilarityScoreDataset
 from .models.instructions.similarity_scoring_instruction import SimilarityScoringInstruction
 
 # Services
-from .services.arena_validation_service import ArenaValidationService
 from .services.comparison_service import ComparisonService
 from .services.comparison_mining_service import ComparisonMiningService
 from .services.config_loader_service import ConfigLoaderService
@@ -94,14 +93,9 @@ from .services.dimensionality_reduction_service import DimensionalityReductionSe
 from .services.embedding_math_service import EmbeddingMathService
 from .services.ff_service import FFService
 from .services.hash_service import HashService
-from .services.kde_validation_service import KDEValidationService
-from .services.kde_visualization_service import KDEVisualizationService
 from .services.ofiq_service import OFIQService
-from .services.plda_validation_service import PLDAValidationService
 from .services.serfiq_service import SERFIQService
-from .services.file_system_service import FileSystemService
 from .services.trajectory_plotter_service import TrajectoryPlotterService
-from .services.kde_plotter_service import KDEPlotterService
 from .services.validation_math_service import ValidationMathService
 from .services.plda_split_service import PLDASplitService
 from .services.typicality_model import TypicalityModel
@@ -147,7 +141,7 @@ from .protocols.calibration_model_protocol import CalibrationModelProtocol
 from .contexts.strategy_execution_context import StrategyExecutionContext
 
 # Storage
-from .storage.artifact_storage_service import ArtifactStorageProtocol
+from .protocols.artifact_storage_protocol import ArtifactStorageProtocol
 
 # Repositories
 from .repositories.strategy_definition_repository import StrategyDefinitionRepository
@@ -173,10 +167,6 @@ from .transformators.centering_transformation import CenteringTransformation
 from .transformators.coral_transformation import CoralTransformation
 from .transformators.lda_transformation import LdaTransformation
 from .transformators.whitening_transformation import WhiteningTransformation
-
-# Strategies
-from .strategies.kde_strategy import KDEStrategy
-from .strategies.plda_strategy import PLDAStrategy
 
 # Parameters
 from .parameters.plda_parameters import PLDAParameters
@@ -209,15 +199,4 @@ from .enums.dataset_merge_mode import DatasetMergeMode
 from .enums.similarity_model_type import SimilarityModelType
 from .enums.calibration_model_type import CalibrationModelType
 
-# Controllers
-from .controllers.kde_preparation_controller import KDEPreparationController
-from .controllers.plda_training_controller import PLDATrainingController
-from .controllers.plda_transformation_pipelines_controller import PLDATransformationPipelinesController
-from .controllers.transformation_trajectory_controller import TransformationTrajectoryController
-
-
-# Managers
-from .manager.kde_manager import KDEManager
-from .manager.plda_manager import PLDAManager
-from .manager.strategies_manager import StrategiesManager
-from .manager.project_manager import ProjectManager
+# (Controllers e Managers da arch antiga foram movidos para `Código Velho/`.)

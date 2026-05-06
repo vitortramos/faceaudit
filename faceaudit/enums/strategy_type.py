@@ -15,17 +15,14 @@ class StrategyType(Enum):
 
     @property
     def strategy_class(self) -> Type['StrategyManagerProtocol']:
-        """
-        Retorna a classe do Manager associada ao tipo de estratégia.
-        Importação tardia para evitar referência circular.
-        """
-        if self is StrategyType.PLDA:
-            from faceaudit.manager.plda_manager import PLDAManager
-            return PLDAManager
-        elif self is StrategyType.KDE:
-            from faceaudit.manager.kde_manager import KDEManager
-            return KDEManager
-        raise ValueError(f"Tipo de estratégia desconhecido: {self.value}")
+        """Lookup do Manager associado — removido na Fase 3 da migração.
+        Os managers (PLDAManager/KDEManager) foram movidos para
+        `Código Velho/`; estratégias agora usam o pipeline declarativo
+        da nova arquitetura."""
+        raise NotImplementedError(
+            "Managers da arquitetura antiga foram movidos. Use a nova "
+            "arquitetura via StrategyExecutorFactory."
+        )
 
     @property
     def config_class(self) -> Type:

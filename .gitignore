@@ -42,3 +42,6 @@ str
 "Tuple[float"
 "Tuple[int"
 CaseResult
+
+# Backup local do código da arquitetura antiga (não versionado)
+Código Velho/

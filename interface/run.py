@@ -47,16 +47,16 @@ UI_MAIN = str(CURRENT_DIR / "resources" / "main_window.ui")
 APP_CONFIG_JSON = str(ROOT_DIR / "config.json")
 
 def bootstrap_configuration(config_path: str) -> None:
-    """Garante que o config.json exista antes do container ler."""
-    path_obj = Path(config_path)
-
-    if not path_obj.exists():
-        print(f"⚠️ Configuração não encontrada em: {path_obj}")
-        print("⚙️ Gerando arquivo padrão usando AppConfig...")
-        default_config = AppConfig()
-        default_config.save_to_file(str(path_obj))
-    else:
-        print(f"✅ Configuração encontrada: {path_obj}")
+    """Garante que o config.json existe E está em formato novo antes do
+    container ler. O ConfigLoaderService.__init__ detecta formato legado
+    (paths.datasets/pipelines/strategies separados, ff.model/det_size,
+    serfiq.*, plda.*) e regrava em formato novo (paths.library +
+    paths.dir_templates) — vital para o container conseguir resolver
+    `config.paths.library` no `_datasets_dir` provider.
+    """
+    from faceaudit.services.config_loader_service import ConfigLoaderService
+    ConfigLoaderService(config_file=config_path)
+    print(f"✅ Configuração pronta: {Path(config_path).resolve()}")
 
 def _apply_light_palette(app: QtWidgets.QApplication) -> None:
     """
@@ -122,14 +122,10 @@ if __name__ == "__main__":
     # 4) Define explicitamente o caminho do config.json
     container.config.system.config_file.from_value(APP_CONFIG_JSON)
 
-    # 5) WIRING (VITAL PARA O @inject FUNCIONAR NO BACKEND)
-    import faceaudit.manager.plda_manager
-    import faceaudit.manager.kde_manager
-    
-    container.wire(modules=[
-        faceaudit.manager.plda_manager,
-        faceaudit.manager.kde_manager,
-    ])
+    # Wiring do dependency-injector: a nova arch não usa @inject (recursos
+    # vão pelo construtor do StrategyExecutorFactory), então não há módulos
+    # a registrar. O bloco antigo apontava pra plda_manager/kde_manager,
+    # ambos movidos pra `Código Velho/`.
 
     try:
         view = MainGuiView(UI_MAIN)

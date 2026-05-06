@@ -162,17 +162,26 @@ class NewDatasetController(QtCore.QObject):
             input_path=self.view.txt_path.text().strip(),
             dataset_name=self.view.txt_name.text().strip(),
             description=self.view.txt_desc.toPlainText().strip(),
-            
+
             recursive=is_recursive,
             template=template_obj,
-            
+
             default_identity=identity,
             origin=self.view.txt_origin.text().strip(),
             default_gender=def_gender,
             default_ethnicity=def_ethnicity,
-            
+
+            # Flags por serviço
             compute_ff=self.view.chk_ff.isChecked(),
             compute_ofiq=self.view.chk_ofiq.isChecked(),
-            compute_serfiq=self.view.chk_serfiq.isChecked()
+            compute_serfiq=self.view.chk_serfiq.isChecked(),
+
+            # Params operacionais lidos dos painéis avançados (defaults
+            # se o usuário não expandiu).
+            ff_models=self.view.get_ff_models(),
+            ff_det_size=self.view.get_ff_det_size(),
+            ff_extended=self.view.get_ff_extended(),
+            serfiq_t=self.view.get_serfiq_t(),
+            serfiq_alpha=self.view.get_serfiq_alpha(),
         )
         return config
