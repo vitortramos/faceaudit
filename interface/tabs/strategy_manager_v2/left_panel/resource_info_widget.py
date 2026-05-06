@@ -699,13 +699,15 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        # Cache antigo sem balance_metrics → força recomputação (mesmo padrão
-        # usado em _load_scores_details para n_identities).
+        # Cache antigo sem balance_metrics ou column_coverage → força
+        # recomputação. Cada nova chave no sidecar entra nessa lista de
+        # required keys até estabilizar o schema.
         needs_recompute = not stats_path.exists() or is_stale
         if not needs_recompute:
             try:
                 _peek = json.loads(stats_path.read_text(encoding="utf-8"))
-                if "balance_metrics" not in _peek:
+                required_keys = ("balance_metrics", "column_coverage")
+                if any(k not in _peek for k in required_keys):
                     needs_recompute = True
             except Exception:
                 needs_recompute = True
@@ -735,46 +737,41 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
     def _compute_and_cache_stats(self, parquet_path: Path, stats_path: Path) -> None:
         """
-        Computa stats leves do parquet (n_imgs, n_ids, colunas de embedding e
-        suas dimensões) via pyarrow metadata, sem materializar embeddings, e
-        salva em JSON ao lado. Silencioso em caso de falha — stats são opcionais.
+        Computa stats leves do parquet via DatasetStatsService (que já cobre
+        column_coverage por pyarrow vetorizado) e salva em JSON ao lado do
+        parquet. Silencioso em caso de falha — stats são opcionais.
+
+        Em PR 3 isso vai pra metadata do parquet diretamente; o sidecar
+        permanece como fallback durante a transição.
         """
         try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
             from faceaudit.services.dataset_stats_service import DatasetStatsService
 
             svc = DatasetStatsService()
             stats = svc._read_parquet_stats(parquet_path)
 
+            # embedding_columns no formato rico (mantém retrocompat com a UI
+            # que já lê esse formato em _load_stats).
             embedding_columns = []
-            try:
-                schema = pq.ParquetFile(parquet_path).schema_arrow
-                emb_indices = [
-                    i for i, field in enumerate(schema)
-                    if pa.types.is_list(field.type) or pa.types.is_large_list(field.type)
-                ]
-                if emb_indices:
-                    pq_file = pq.ParquetFile(parquet_path)
-                    for batch in pq_file.iter_batches(batch_size=1):
-                        for pos, idx in enumerate(emb_indices):
-                            val = batch.column(idx)[0].as_py()
-                            dim = len(val) if (val is not None and hasattr(val, "__len__")) else 0
-                            col_name = schema.field(idx).name
-                            embedding_columns.append({
-                                "index": pos,
-                                "parquet_index": idx,
-                                "name": col_name,
-                                "dim": dim,
-                            })
-                        break
-            except Exception:
-                pass
+            for pos, (name, cs) in enumerate(stats.column_coverage.items()):
+                if cs.dim is None:
+                    continue
+                embedding_columns.append({
+                    "index": pos,
+                    "name": name,
+                    "dim": cs.dim,
+                })
 
             payload = {
                 "n_imgs": stats.n_imgs,
                 "n_ids": stats.n_ids,
                 "embedding_columns": embedding_columns,
+                # NOVO: cobertura por coluna (substitui probing colunar do
+                # QualityMetricAvailabilityService em PR 4).
+                "column_coverage": {
+                    name: cs.to_dict() for name, cs in stats.column_coverage.items()
+                },
+                "last_modified": stats.last_modified,
             }
 
             # Métricas de balanceamento (None quando inaplicável: 0 ou 1
