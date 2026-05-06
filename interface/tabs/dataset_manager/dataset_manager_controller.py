@@ -114,6 +114,15 @@ class DatasetManagerController(QtCore.QObject):
     def carregar_dataset_na_tela(self, dataset, path=None):
         self.dataset = dataset
         self.current_path = path
+
+        # Schema-by-role (PR 6): se o FaceDataset trouxe column_specs (parquet
+        # pós-PR 3), o table model usa eles para definir colunas visíveis +
+        # editabilidade + vocabulário. Caso contrário (parquet legado ou
+        # dataset criado em memória), o model cai no enum estático.
+        column_specs = getattr(self.dataset, "column_specs", None) or {}
+        if hasattr(self.table_ctrl, "model") and hasattr(self.table_ctrl.model, "set_column_specs"):
+            self.table_ctrl.model.set_column_specs(column_specs)
+
         self.table_ctrl.load_dataframe(self.dataset.to_pandas())
         self.set_dirty(False)
         
