@@ -38,6 +38,13 @@ class FaceDataset:
     hash: Optional[str] = None
     faces: List[FaceInfo] = field(default_factory=list)
 
+    # Schema-by-role: dict de nome → ColumnSpec persistido na metadata do
+    # parquet em `to_parquet`. Quando vazio (default), `to_parquet` constrói
+    # specs a partir do `column_catalog` filtrados pelas colunas presentes.
+    # Quando o parquet é lido, `from_parquet` popula este campo com os specs
+    # da metadata — esse passa a ser fonte de verdade para a UI tipo planilha.
+    column_specs: Dict[str, Any] = field(default_factory=dict)
+
     def add(self, face: FaceInfo) -> None:
         """
         Adiciona um registro de face ao dataset.
@@ -414,51 +421,191 @@ class FaceDataset:
     @classmethod
     def from_parquet(cls, path: Union[str, Path],
                      embedding_column: Optional[str] = None) -> 'FaceDataset':
+        """Carrega um dataset do disco — auto-detecta formato novo vs legado.
+
+        - Novo: parquet escrito por to_parquet pós-PR 3 contém `b"faceaudit:dataset_type"`
+          em schema.metadata. Nome/descrição/column_specs vêm da metadata.
+        - Legado: parquet sem essa key. Lê via pandas, extrai dataset_name da
+          coluna repetida (linha 0), emite warning recomendando migração.
         """
-        Carrega um dataset do disco a partir de um arquivo Parquet.
-        Recupera metadados globais (nome, descrição) se disponíveis.
-        """
+        import warnings
+        import pyarrow.parquet as pq
+
         path_obj = Path(path)
         if not path_obj.exists():
-             return cls(name=path_obj.stem)
+            return cls(name=path_obj.stem)
 
-        df = pd.read_parquet(path_obj)
+        try:
+            table = pq.read_table(path_obj)
+        except Exception:
+            # Fallback total para o caminho pandas em caso de erro pyarrow.
+            df = pd.read_parquet(path_obj)
+            return cls.from_dataframe(df, name=path_obj.stem, embedding_column=embedding_column)
 
+        meta = _decode_schema_metadata(table.schema.metadata)
+        is_new_format = "faceaudit:dataset_type" in meta
+
+        if is_new_format:
+            ds = cls._from_new_format(table, meta, path_obj, embedding_column)
+        else:
+            warnings.warn(
+                f"Parquet legado detectado em '{path_obj.name}' — sem column_specs na metadata. "
+                f"Recomenda-se migrar via `python -m faceaudit.scripts.migrate_legacy_parquet "
+                f"{path_obj}`.",
+                stacklevel=2,
+            )
+            ds = cls._from_legacy_format(table, path_obj, embedding_column)
+
+        return ds
+
+    @classmethod
+    def _from_new_format(cls, table, meta: Dict[str, str], path_obj: Path,
+                         embedding_column: Optional[str]) -> 'FaceDataset':
+        """Lê parquet escrito pelo to_parquet pós-PR 3."""
+        from faceaudit.models.column_catalog import specs_from_json
+
+        ds_name = meta.get("faceaudit:dataset_name") or path_obj.stem
+        ds_description = meta.get("faceaudit:dataset_description") or None
+
+        column_specs: Dict[str, Any] = {}
+        specs_payload = meta.get("faceaudit:column_specs")
+        if specs_payload:
+            try:
+                column_specs = dict(specs_from_json(specs_payload))
+            except Exception:
+                column_specs = {}
+
+        df = table.to_pandas()
+        ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
+        ds.description = ds_description
+        ds.column_specs = column_specs
+        return ds
+
+    @classmethod
+    def _from_legacy_format(cls, table, path_obj: Path,
+                            embedding_column: Optional[str]) -> 'FaceDataset':
+        """Lê parquet legado (pré-PR 3): nome vem da coluna `dataset_name` linha 0."""
+        df = table.to_pandas()
         ds_name = path_obj.stem
-        if not df.empty:
-            saved_name = df.iloc[0].get('dataset_name')
+        if not df.empty and "dataset_name" in df.columns:
+            saved_name = df.iloc[0].get("dataset_name")
             if saved_name and pd.notna(saved_name):
                 ds_name = str(saved_name)
-
         return cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
 
     def to_parquet(self, path: Union[str, Path]):
+        """Persiste o dataset em parquet com metadata role-aware (novo formato).
+
+        Diferente do save antigo:
+          - Não duplica `dataset_name`/`description`/`hash` como colunas — vão
+            para `schema.metadata`.
+          - Dropa o alias retrocompat `embedding` (= `embedding_v2`).
+          - Persiste `column_specs`, `column_coverage` e `samples_per_identity`
+            na metadata, eliminando o sidecar JSON em PR 4.
         """
-        Persiste o dataset em formato Parquet para armazenamento eficiente.
-        Preserva vetores numéricos e metadados.
-        """
+        import json
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        from faceaudit.models.column_catalog import (
+            DatasetType, get_default_specs, specs_to_json,
+        )
+        from faceaudit.services.dataset_stats_service import DatasetStatsService
+
         path_obj = Path(path)
-        
         if not path_obj.parent.exists():
             path_obj.parent.mkdir(parents=True, exist_ok=True)
 
         df = self.to_pandas()
-        
+
+        # Caso vazio — escreve apenas a metadata mínima e o schema vazio.
         if df.empty:
-            df.to_parquet(path_obj, index=False)
+            empty_table = pa.Table.from_pandas(df, preserve_index=False)
+            empty_table = empty_table.replace_schema_metadata(_build_metadata_bytes({
+                "faceaudit:dataset_type": DatasetType.FACE.value,
+                "faceaudit:dataset_name": self.name,
+                "faceaudit:dataset_description": self.description or "",
+                "faceaudit:path_mode": "absolute",
+            }))
+            pq.write_table(empty_table, path_obj)
             return
 
-        # Metadados de Nível de Dataset
-        df['dataset_name'] = self.name
-        df['dataset_description'] = self.description
-        df['dataset_hash'] = self.hash
+        # Dropa o alias `embedding` quando `embedding_v2` está presente (são o
+        # mesmo dado; alias só existia para retrocompat). Migração efetiva.
+        if "embedding" in df.columns and "embedding_v2" in df.columns:
+            df = df.drop(columns=["embedding"])
+
+        # Constrói column_specs: usa self.column_specs se populado (caso já
+        # tenha sido lido de um parquet novo ou customizado pela UI); caso
+        # contrário, deriva do catálogo built-in filtrado pelas colunas
+        # presentes.
+        if self.column_specs:
+            specs_to_persist = {
+                name: spec for name, spec in self.column_specs.items()
+                if name in df.columns
+            }
+        else:
+            defaults = get_default_specs(DatasetType.FACE)
+            specs_to_persist = {
+                name: spec for name, spec in defaults.items()
+                if name in df.columns
+            }
+            # Atualiza self.column_specs em memória (consistência pós-save)
+            self.column_specs = dict(specs_to_persist)
+
+        # Computa column_coverage + samples_per_identity via o serviço
+        stats_service = DatasetStatsService()
+        stats = stats_service._stats_from_dataframe(df, total_rows=len(df))
+
+        # Constrói a metadata do schema
+        meta_payload = {
+            "faceaudit:dataset_type": DatasetType.FACE.value,
+            "faceaudit:dataset_name": self.name,
+            "faceaudit:dataset_description": self.description or "",
+            "faceaudit:path_mode": "absolute",
+            "faceaudit:column_specs": specs_to_json(specs_to_persist),
+            "faceaudit:column_coverage": json.dumps({
+                name: cs.to_dict() for name, cs in stats.column_coverage.items()
+            }, ensure_ascii=False, separators=(",", ":")),
+            "faceaudit:samples_per_identity": json.dumps(
+                stats.samples_per_identity, ensure_ascii=False, separators=(",", ":")
+            ),
+            "faceaudit:n_imgs": str(stats.n_imgs),
+            "faceaudit:n_ids": str(stats.n_ids),
+            "faceaudit:last_modified": stats.last_modified or "",
+        }
 
         try:
-            df.to_parquet(path_obj, index=False)
-            print(f"✅ Dataset '{self.name}' salvo com sucesso em: {path_obj} ({len(df)} registros)")
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            table = table.replace_schema_metadata(_build_metadata_bytes(meta_payload))
+            pq.write_table(table, path_obj)
+            print(f"✅ Dataset '{self.name}' salvo em: {path_obj} ({len(df)} registros, "
+                  f"{len(specs_to_persist)} column_specs)")
         except Exception as e:
             print(f"❌ Erro ao salvar parquet: {e}")
-            raise e
+            raise
+
+
+# ───────────────── helpers de metadata pyarrow ─────────────────
+
+def _decode_schema_metadata(raw_meta: Optional[Dict[bytes, bytes]]) -> Dict[str, str]:
+    """Decodifica `schema.metadata` (Dict[bytes, bytes]) para Dict[str, str]."""
+    if not raw_meta:
+        return {}
+    decoded: Dict[str, str] = {}
+    for k, v in raw_meta.items():
+        try:
+            key = k.decode("utf-8") if isinstance(k, (bytes, bytearray)) else str(k)
+            val = v.decode("utf-8") if isinstance(v, (bytes, bytearray)) else str(v)
+            decoded[key] = val
+        except Exception:
+            continue
+    return decoded
+
+
+def _build_metadata_bytes(payload: Dict[str, str]) -> Dict[bytes, bytes]:
+    """Encoda Dict[str, str] para o formato do `replace_schema_metadata`."""
+    return {k.encode("utf-8"): v.encode("utf-8") for k, v in payload.items()}
     
     # =========================================================================
     # CONVERSÃO PARA EMBEDDING DATASET
