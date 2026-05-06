@@ -6,14 +6,20 @@ from PyQt6.QtCore import Qt
 from .manager_table_view import ManagerTableView
 from .dataset_table_model import DatasetTableModel
 from .replace_dialog.replace_dialog_controller import ReplaceDialogController
+from .vocabulary_combo_delegate import install_vocabulary_delegates
+
 
 class ManagerTableController(QtCore.QObject):
     """
     Controlador responsável pela Tabela de Datasets.
     Gerencia seleção por CÉLULA (Excel-like), menu de contexto e edição.
     """
-    
-    face_selected = QtCore.pyqtSignal(object) 
+
+    face_selected = QtCore.pyqtSignal(object)
+    # Sinal emitido quando o schema do dataset muda em runtime (visibilidade
+    # de coluna, adição de coluna custom, etc.). O controller pai escuta
+    # para marcar dirty + atualizar `FaceDataset.column_specs`.
+    schema_changed = QtCore.pyqtSignal()
 
     def __init__(self, parent_layout=None):
         super().__init__()
@@ -22,20 +28,30 @@ class ManagerTableController(QtCore.QObject):
         self.view.setModel(self.model)
 
         # --- MUDANÇA 1: PERMITIR SELEÇÃO DE CÉLULAS INDIVIDUAIS ---
-        # Antes estava SelectRows (Linha inteira). Agora é SelectItems (Célula).
         self.view.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectItems)
-        
-        # Mantém ExtendedSelection (Ctrl+Click, Shift+Click, Arrastar mouse)
         self.view.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
 
-        # Context Menu
+        # Context menu (células)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._open_context_menu)
+
+        # Context menu do header (show/hide colunas) — schema-by-role
+        header = self.view.horizontalHeader()
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._open_header_context_menu)
 
         if parent_layout:
             parent_layout.addWidget(self.view)
 
         self._connect_signals()
+
+    def apply_column_specs(self, specs):
+        """Hook chamado pelo controller pai quando um dataset com specs
+        é carregado. Atualiza o model + instala os delegates de vocabulário.
+        """
+        self.model.set_column_specs(specs)
+        install_vocabulary_delegates(self.view, self.model)
+        self.view.resizeColumnsToContents()
 
     def _connect_signals(self):
         self.view.selectionModel().selectionChanged.connect(self._on_selection_changed)
@@ -84,6 +100,69 @@ class ManagerTableController(QtCore.QObject):
 
     # =========================================================================
     # CONTEXT MENU
+    # =========================================================================
+
+    # =========================================================================
+    # HEADER CONTEXT MENU — show/hide colunas (PR 8)
+    # =========================================================================
+
+    def _open_header_context_menu(self, position):
+        """Menu de contexto do header da tabela.
+
+        Quando o schema-by-role está ativo (model.column_specs não vazio),
+        mostra checkboxes de visibilidade pra cada coluna conhecida —
+        agrupado por categoria. Em fallback ao enum, mostra mensagem
+        explicativa (não há schema editável).
+        """
+        specs = self.model.column_specs
+        header = self.view.horizontalHeader()
+        if not specs:
+            # Fallback: enum estático — não há nada pra customizar
+            menu = QMenu()
+            act = menu.addAction("(legacy) Schema fixo — sem column_specs")
+            act.setEnabled(False)
+            menu.exec(header.mapToGlobal(position))
+            return
+
+        menu = QMenu()
+        # Cabeçalho do menu
+        title_act = menu.addAction("📋 Mostrar/Ocultar Colunas")
+        title_act.setEnabled(False)
+        menu.addSeparator()
+
+        # Agrupa por categoria preservando ordem de inserção dos specs
+        category_order = []
+        by_category = {}
+        for name, spec in specs.items():
+            cat = getattr(spec, "category", None) or "Outras"
+            if cat not in by_category:
+                by_category[cat] = []
+                category_order.append(cat)
+            by_category[cat].append((name, spec))
+
+        for cat in category_order:
+            cat_header = menu.addAction(f"— {cat} —")
+            cat_header.setEnabled(False)
+            for name, spec in by_category[cat]:
+                visible = bool(getattr(spec, "visible_default", True))
+                act = menu.addAction(getattr(spec, "label", name))
+                act.setCheckable(True)
+                act.setChecked(visible)
+                act.toggled.connect(lambda checked, n=name: self._on_visibility_toggled(n, checked))
+            menu.addSeparator()
+
+        menu.exec(header.mapToGlobal(position))
+
+    def _on_visibility_toggled(self, name: str, checked: bool):
+        """Callback do checkbox no header context menu."""
+        if self.model.set_column_visibility(name, checked):
+            # Reinstala delegates pq column_specs mudou (visible reset → idx changed)
+            install_vocabulary_delegates(self.view, self.model)
+            self.view.resizeColumnsToContents()
+            self.schema_changed.emit()
+
+    # =========================================================================
+    # CELL CONTEXT MENU
     # =========================================================================
 
     def _open_context_menu(self, position):

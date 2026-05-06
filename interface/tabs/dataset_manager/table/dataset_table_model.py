@@ -91,6 +91,89 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
     def column_specs(self) -> Dict[str, Any]:
         return self._column_specs
 
+    def set_column_visibility(self, name: str, visible: bool) -> bool:
+        """Toggle visibility de uma coluna do dict de specs.
+
+        Funciona apenas no caminho schema-by-role (specs populados). No
+        fallback do enum, retorna False sem fazer nada — visibilidade do
+        enum é estática.
+
+        Modifica `column_specs` IN-PLACE (sem recriar o spec) — propaga
+        para o `FaceDataset.column_specs` que o controller mantém. Após
+        a mudança, dispara reset do model.
+        """
+        if not self._column_specs:
+            return False
+        spec = self._column_specs.get(name)
+        if spec is None:
+            return False
+        # ColumnSpec é frozen (dataclass) → reconstrói com o novo valor.
+        # Usa o `dataclasses.replace` para não duplicar lógica.
+        try:
+            import dataclasses
+            self._column_specs[name] = dataclasses.replace(spec, visible_default=bool(visible))
+        except Exception:
+            return False
+
+        self.beginResetModel()
+        self.visible_columns = _columns_from_specs(self._column_specs)
+        self.endResetModel()
+        return True
+
+    def add_custom_column(
+        self,
+        name: str,
+        label: str,
+        dtype: str = "str",
+        default_value: Any = None,
+        editable: bool = True,
+    ) -> bool:
+        """Adiciona uma nova coluna custom ao dataset.
+
+        Cria um ColumnSpec com role=custom e popula a coluna no DataFrame
+        com o `default_value`. Se a coluna já existir, retorna False.
+
+        Apenas no caminho schema-by-role (specs populados). No fallback do
+        enum, retorna False — não faz sentido adicionar coluna a um schema
+        legado sem metadata.
+        """
+        if not self._column_specs:
+            return False
+        if not name or name in self._column_specs:
+            return False
+
+        from faceaudit.models.column_catalog import (
+            ColumnSpec, ColumnRole, ColumnSource, ColumnDType, CATEGORY_CUSTOM,
+        )
+
+        # Mapeia string → ColumnDType (defensivo)
+        try:
+            dtype_enum = ColumnDType(dtype)
+        except ValueError:
+            dtype_enum = ColumnDType.STR
+
+        spec = ColumnSpec(
+            name=name,
+            label=label or name,
+            role=ColumnRole.CUSTOM,
+            source=ColumnSource.CUSTOM,
+            dtype=dtype_enum,
+            editable=editable,
+            visible_default=True,
+            category=CATEGORY_CUSTOM,
+            default_value=default_value,
+        )
+        self._column_specs[name] = spec
+
+        # Adiciona a coluna ao DataFrame com default_value em todas as linhas.
+        if name not in self._df.columns:
+            self._df[name] = default_value
+
+        self.beginResetModel()
+        self.visible_columns = _columns_from_specs(self._column_specs)
+        self.endResetModel()
+        return True
+
     def rowCount(self, parent=None):
         return self._df.shape[0]
 

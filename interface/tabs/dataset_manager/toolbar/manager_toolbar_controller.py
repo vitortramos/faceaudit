@@ -25,6 +25,9 @@ class ManagerToolbarController(QtCore.QObject):
     action_filter = QtCore.pyqtSignal()
     action_clear_filter = QtCore.pyqtSignal()
 
+    # PR 8 — Spreadsheet UX
+    action_add_column = QtCore.pyqtSignal()
+
     def __init__(self, parent_layout=None):
         super().__init__()
         self.view = ManagerToolbarView()
@@ -50,6 +53,7 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_analyze.clicked.connect(self.action_analyze.emit) # <--- [NOVO] Conexão
         self.view.btn_filter.clicked.connect(self.action_filter.emit)
         self.view.btn_clear_filter.clicked.connect(self.action_clear_filter.emit)
+        self.view.btn_add_column.clicked.connect(self.action_add_column.emit)  # PR 8
 
     def get_widget(self):
         return self.view

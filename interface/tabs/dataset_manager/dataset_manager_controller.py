@@ -98,12 +98,65 @@ class DatasetManagerController(QtCore.QObject):
         if hasattr(self.table_ctrl, "model"):
             self.table_ctrl.model.dataChanged.connect(self._on_table_data_changed)
 
+        # PR 8 — Spreadsheet UX
+        if hasattr(self.toolbar_ctrl, "action_add_column"):
+            self.toolbar_ctrl.action_add_column.connect(self.fluxo_adicionar_coluna)
+        if hasattr(self.table_ctrl, "schema_changed"):
+            self.table_ctrl.schema_changed.connect(self._on_schema_changed)
+
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
 
     def _on_table_data_changed(self, *_args):
         if self.dataset is not None:
             self.set_dirty(True)
+
+    # ── PR 8: Spreadsheet UX (add column + show/hide) ─────────────────
+
+    def _on_schema_changed(self):
+        """Disparado quando o usuário muda visibilidade/adiciona coluna via
+        header context-menu ou toolbar. Propaga o novo column_specs (que o
+        model já mutou in-place) para o FaceDataset e marca dirty.
+        """
+        if self.dataset is None:
+            return
+        # column_specs é o mesmo objeto referenciado pelo model — mas
+        # garantimos a atribuição explícita em caso de refactor futuro.
+        self.dataset.column_specs = dict(self.table_ctrl.model.column_specs)
+        self.set_dirty(True)
+
+    def fluxo_adicionar_coluna(self):
+        """Abre o AddColumnDialog. Se aceito, adiciona a coluna ao model
+        (via add_custom_column do DatasetTableModel) e propaga ao dataset.
+        """
+        if self.dataset is None:
+            return
+        if not self.table_ctrl.model.column_specs:
+            QMessageBox.warning(
+                self.view, "Schema legado",
+                "Este dataset foi carregado de um parquet sem column_specs "
+                "na metadata. Salve-o primeiro (Salvar) para atualizar para "
+                "o novo formato — depois você pode adicionar colunas custom.",
+            )
+            return
+
+        from .column_dialogs.add_column_dialog import AddColumnDialog
+        existing = set(self.table_ctrl.model.column_specs.keys())
+        dialog = AddColumnDialog(existing_column_names=existing, parent=self.view)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        name, label, dtype, default = dialog.get_result()
+        ok = self.table_ctrl.model.add_custom_column(
+            name=name, label=label, dtype=dtype, default_value=default, editable=True,
+        )
+        if not ok:
+            QMessageBox.warning(self.view, "Erro", "Falha ao adicionar coluna.")
+            return
+
+        # Re-propaga + marca dirty
+        self._on_schema_changed()
+        self.table_ctrl.view.resizeColumnsToContents()
 
     def _get_initial_dir(self) -> str:
         if self.pipeline and hasattr(self.pipeline, 'storage_path'):
@@ -116,11 +169,13 @@ class DatasetManagerController(QtCore.QObject):
         self.current_path = path
 
         # Schema-by-role (PR 6): se o FaceDataset trouxe column_specs (parquet
-        # pós-PR 3), o table model usa eles para definir colunas visíveis +
-        # editabilidade + vocabulário. Caso contrário (parquet legado ou
-        # dataset criado em memória), o model cai no enum estático.
+        # pós-PR 3), o table_ctrl propaga pra model + instala delegates de
+        # vocabulário. Caso contrário (parquet legado ou dataset criado em
+        # memória), o model cai no enum estático.
         column_specs = getattr(self.dataset, "column_specs", None) or {}
-        if hasattr(self.table_ctrl, "model") and hasattr(self.table_ctrl.model, "set_column_specs"):
+        if hasattr(self.table_ctrl, "apply_column_specs"):
+            self.table_ctrl.apply_column_specs(column_specs)
+        elif hasattr(self.table_ctrl, "model") and hasattr(self.table_ctrl.model, "set_column_specs"):
             self.table_ctrl.model.set_column_specs(column_specs)
 
         self.table_ctrl.load_dataframe(self.dataset.to_pandas())

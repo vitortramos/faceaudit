@@ -55,18 +55,25 @@ class ManagerToolbarView(QFrame):
 
         # --- GRUPO 3: ANÁLISE ---
         self.btn_stats = ToolbarButton("Estatísticas", "📊")
-        
+
         # <--- [NOVO] Botão de Análise de Integridade e Mineração --->
         self.btn_analyze = ToolbarButton("Analisar", "🔎", tooltip="Auditoria interna de integridade e hard-mining biométrico")
-        
+
         self.btn_filter = ToolbarButton("Filtrar", "🔍")
         self.btn_clear_filter = ToolbarButton("Limpar", "🗑️", tooltip="Remover filtros")
         self.btn_clear_filter.setEnabled(False)
+
+        # <--- [PR 8] Spreadsheet UX: adicionar coluna custom ao dataset --->
+        self.btn_add_column = ToolbarButton(
+            "Coluna", "➕📋",
+            tooltip="Adicionar coluna custom ao dataset (anotação livre)",
+        )
 
         btn_layout.addWidget(self.btn_stats)
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
         btn_layout.addWidget(self.btn_filter)
         btn_layout.addWidget(self.btn_clear_filter)
+        btn_layout.addWidget(self.btn_add_column)
         
         btn_layout.addStretch() # Empurra tudo para a esquerda
 
@@ -85,9 +92,10 @@ class ManagerToolbarView(QFrame):
             self.btn_close, self.btn_save, self.btn_save_as,
             self.btn_enrich,
             self.btn_merge, self.btn_split, self.btn_compare,
-            self.btn_stats, 
+            self.btn_stats,
             self.btn_analyze, # <--- [NOVO] Controlado dinamicamente
-            self.btn_filter
+            self.btn_filter,
+            self.btn_add_column,  # <--- [PR 8]
         ]
         for btn in buttons:
             btn.setEnabled(enabled)
