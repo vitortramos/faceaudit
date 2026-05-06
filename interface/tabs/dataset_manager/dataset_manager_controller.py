@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtWidgets import QMessageBox, QFileDialog, QProgressDialog, QApplication
+from PyQt6.QtWidgets import QMessageBox, QFileDialog, QApplication
 
 # --- COMPONENTES VISUAIS (SUB-CONTROLLERS) ---
 from .toolbar.manager_toolbar_controller import ManagerToolbarController
@@ -23,8 +23,9 @@ from .dataset_analysis.dataset_analysis_controller import DatasetAnalysisControl
 # --- WORKERS (PROCESSAMENTO) ---
 from .workers.load_dataset_worker import LoadDatasetWorker
 from .workers.filter_worker import FilterWorker
-from .workers.new_dataset_worker import NewDatasetWorker 
+from .workers.new_dataset_worker import NewDatasetWorker
 from .workers.enrich_worker import EnrichWorker
+from .workers.worker_progress_runner import WorkerProgressRunner
 
 # --- MODELOS ---
 from faceaudit.models import FaceDataset
@@ -54,6 +55,11 @@ class DatasetManagerController(QtCore.QObject):
         self.current_filter_config = FilterConfig()
         self._is_dirty = False
 
+        # Ref forte para o runner ativo — o WorkerProgressRunner gerencia o
+        # próprio QThread + QProgressDialog; só precisamos manter vivo até
+        # ele finalizar (quando finished/error disparam, é descartado).
+        self._active_runner: WorkerProgressRunner | None = None
+
         # --- 1. SUB-CONTROLADORES ---
         self.toolbar_ctrl = ManagerToolbarController(parent_layout=None)
         self.table_ctrl = ManagerTableController(parent_layout=None)
@@ -68,20 +74,6 @@ class DatasetManagerController(QtCore.QObject):
 
         # --- 2. SINAIS ---
         self._connect_submodules()
-
-        # --- 3. PRÉ-ALOCAÇÃO ---
-        self._init_loading_dialog()
-
-    def _init_loading_dialog(self):
-        self.progress = QProgressDialog("Inicializando...", None, 0, 0, parent=self.view)
-        self.progress.setWindowTitle("Aguarde")
-        self.progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        self.progress.setMinimumDuration(0)
-        self.progress.setCancelButton(None)
-        self.progress.setRange(0, 0) 
-        self.progress.setValue(0)
-        self.progress.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowTitleHint)
-        self.progress.close() 
 
     def _connect_submodules(self):
         self.toolbar_ctrl.action_new.connect(self.fluxo_novo_dataset)
@@ -168,98 +160,65 @@ class DatasetManagerController(QtCore.QObject):
             self.toolbar_ctrl.set_dataset_loaded_state(True, status_txt)
 
     def fluxo_abrir_dataset(self):
-        self.progress.setLabelText("Aguardando seleção do arquivo...")
-        self.progress.show()
-        
-        ag = self.view.geometry()
-        dg = self.progress.geometry()
-        self.progress.move(ag.center().x() - dg.width() // 2, ag.center().y() - dg.height() // 2)
-        
-        QApplication.processEvents()
-
         path, _ = QFileDialog.getOpenFileName(
             self.view, "Abrir Dataset", self._get_initial_dir(), "Parquet (*.parquet)"
         )
-        
-        self.progress.raise_()
-        self.progress.activateWindow()
-        QApplication.processEvents()
-        
         if not path:
-            self.progress.hide()
             return
+        self._run_worker(
+            LoadDatasetWorker(path),
+            label="Lendo arquivo Parquet...",
+            allow_cancel=False,
+            determinate=False,  # pyarrow não emite progresso
+            wait_cursor=True,
+            on_finished=lambda ds: self._on_load_success(ds, path),
+        )
 
-        self.progress.setLabelText("Lendo arquivo Parquet...")
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        QApplication.processEvents()
+    def _run_worker(
+        self,
+        worker,
+        *,
+        label,
+        allow_cancel=False,
+        determinate=True,
+        wait_cursor=False,
+        on_finished=None,
+    ):
+        """Encapsula a criação do WorkerProgressRunner + ref forte.
+        Só permite uma operação ativa de cada vez — se o usuário disparar
+        outra antes da anterior terminar, a anterior é cancelada cooperativamente."""
+        if self._active_runner is not None:
+            self._active_runner.stop_and_wait()
+            self._active_runner = None
 
-        self._iniciar_worker_load(path)
+        def _wrap_finished(payload):
+            self._active_runner = None
+            if on_finished is not None:
+                on_finished(payload)
 
-    def _wait_previous_worker(self, timeout_ms: int = 3000):
-        """Garante que `self.thread`/`self.worker` anteriores não estão rodando
-        antes de re-atribuir. Sem isso, em qualquer fluxo onde o usuário consiga
-        disparar duas operações em sequência (ex: encadeamento programático),
-        o handle Python da QThread anterior é perdido enquanto a thread nativa
-        ainda executa — recipe para crash ou races em deleteLater."""
-        prev_worker = getattr(self, "worker", None)
-        prev_thread = getattr(self, "thread", None)
-        if prev_worker is not None:
-            try:
-                if hasattr(prev_worker, "stop"):
-                    prev_worker.stop()
-            except RuntimeError:
-                # Worker já deletado pelo deleteLater — ignorar.
-                pass
-        if prev_thread is not None:
-            try:
-                if prev_thread.isRunning():
-                    prev_thread.quit()
-                    prev_thread.wait(timeout_ms)
-            except RuntimeError:
-                # Thread C++ já destruída — ignorar.
-                pass
+        def _wrap_error(msg):
+            self._active_runner = None
+            QMessageBox.critical(self.view, "Erro", msg)
 
-    def _iniciar_worker_load(self, path):
-        try:
-            self._wait_previous_worker()
-            self.thread = QtCore.QThread()
-            self.worker = LoadDatasetWorker(path)
-            self.worker.moveToThread(self.thread)
-            
-            self.thread.started.connect(self.worker.run)
-            self.worker.finished.connect(lambda ds: self._on_load_success(ds, path))
-            self.worker.error.connect(self._on_error)
-            
-            self.worker.finished.connect(self.thread.quit)
-            self.worker.finished.connect(self.worker.deleteLater)
-            self.thread.finished.connect(self.thread.deleteLater)
-            
-            self.thread.start()
-
-        except Exception as e:
-            QApplication.restoreOverrideCursor()
-            if hasattr(self, 'progress'): self.progress.hide()
-            raise e
+        runner = WorkerProgressRunner(
+            self.view,
+            worker,
+            label=label,
+            allow_cancel=allow_cancel,
+            determinate=determinate,
+            wait_cursor=wait_cursor,
+            on_finished=_wrap_finished,
+            on_error=_wrap_error,
+        )
+        self._active_runner = runner
+        runner.start()
+        return runner
 
     def _on_load_success(self, dataset, path):
-        if hasattr(self, 'progress'):
-            self.progress.setLabelText("Construindo tabela...")
-            QApplication.processEvents()
-
         try:
             self.carregar_dataset_na_tela(dataset, path)
         except Exception as e:
             QMessageBox.critical(self.view, "Erro de Renderização", f"Falha ao exibir tabela: {e}")
-        finally:
-            if hasattr(self, 'progress'):
-                self.progress.hide()
-            QApplication.restoreOverrideCursor()
-
-    def _on_error(self, msg):
-        if hasattr(self, 'progress'): 
-            self.progress.hide()
-        QApplication.restoreOverrideCursor()
-        QMessageBox.critical(self.view, "Erro", msg)
 
     def fluxo_salvar(self):
         if not self.dataset: return
@@ -338,32 +297,15 @@ class DatasetManagerController(QtCore.QObject):
             self._iniciar_worker_criacao(ingestion_config)
 
     def _iniciar_worker_criacao(self, config):
-        self.progress_create = QProgressDialog("Processando Ingestão...", "Cancelar", 0, 100, self.view)
-        self.progress_create.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        self.progress_create.setMinimumDuration(0)
-
-        self._wait_previous_worker()
-        self.thread = QtCore.QThread()
-        self.worker = NewDatasetWorker(self.pipeline, config)
-        self.worker.moveToThread(self.thread)
-        
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress_update.connect(lambda msg, pct: self.progress_create.setLabelText(msg))
-        self.worker.progress_update.connect(lambda msg, pct: self.progress_create.setValue(pct))
-        
-        self.worker.finished.connect(self._on_criacao_concluida)
-        self.worker.error.connect(self._on_error)
-        self.progress_create.canceled.connect(self.worker.stop)
-        
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        
-        self.thread.start()
+        self._run_worker(
+            NewDatasetWorker(self.pipeline, config),
+            label="Processando Ingestão...",
+            allow_cancel=True,
+            determinate=True,
+            on_finished=self._on_criacao_concluida,
+        )
 
     def _on_criacao_concluida(self, dataset):
-        if hasattr(self, 'progress_create'): self.progress_create.close()
-        
         if dataset and len(dataset) > 0:
             path_cache = self.pipeline.storage_path / f"{dataset.name}.parquet"
             self.carregar_dataset_na_tela(dataset, path=str(path_cache))
@@ -533,33 +475,19 @@ class DatasetManagerController(QtCore.QObject):
             QMessageBox.critical(self.view, "Erro", f"Erro ao abrir filtros: {e}")
 
     def _iniciar_worker_filtro(self):
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        self.progress_filter = QProgressDialog("Aplicando Filtros...", None, 0, 100, self.view)
-        self.progress_filter.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        self.progress_filter.setCancelButton(None)
-
-        self._wait_previous_worker()
-        self.thread = QtCore.QThread()
-        self.worker = FilterWorker(self.dataset_original, self.current_filter_config)
-        self.worker.moveToThread(self.thread)
-
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self.progress_filter.setValue)
-
-        self.worker.finished.connect(self._on_filtro_concluido)
-
-        self.worker.error.connect(self._on_error)
-
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-
-        self.thread.start()
-        self.progress_filter.exec()
+        self._run_worker(
+            FilterWorker(self.dataset_original, self.current_filter_config),
+            label="Aplicando Filtros...",
+            allow_cancel=True,
+            determinate=True,
+            wait_cursor=True,
+            on_finished=self._on_filtro_concluido,
+        )
 
     def _on_filtro_concluido(self, filtered_ds):
-        if hasattr(self, 'progress_filter'): self.progress_filter.close()
-        
+        if filtered_ds is None:
+            # Cancelamento cooperativo do usuário.
+            return
         try:
             if len(filtered_ds) > 0:
                 self.dataset = filtered_ds
@@ -573,8 +501,6 @@ class DatasetManagerController(QtCore.QObject):
                 QMessageBox.warning(self.view, "Filtro", "Nenhum resultado encontrado com estes critérios.")
         except Exception as e:
             QMessageBox.critical(self.view, "Erro", f"Erro ao aplicar filtro: {e}")
-        finally:
-            QApplication.restoreOverrideCursor()
 
     def fluxo_limpar_filtro(self):
         if self.dataset_original:
@@ -612,33 +538,15 @@ class DatasetManagerController(QtCore.QObject):
             QMessageBox.critical(self.view, "Erro", f"Erro ao abrir janela de enriquecimento: {e}")
 
     def _iniciar_worker_enrich(self, config: DatasetIngestionConfig):
-        self.progress_enrich = QProgressDialog("Enriquecendo Dataset...", "Cancelar", 0, 100, self.view)
-        self.progress_enrich.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
-        self.progress_enrich.setMinimumDuration(0)
-
-        self._wait_previous_worker()
-        self.thread = QtCore.QThread()
-
-        self.worker = EnrichWorker(self.pipeline, self.dataset, config)
-        self.worker.moveToThread(self.thread)
-        
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress_update.connect(lambda msg, pct: self.progress_enrich.setLabelText(msg))
-        self.worker.progress_update.connect(lambda msg, pct: self.progress_enrich.setValue(pct))
-        
-        self.worker.finished.connect(self._on_enrich_concluido)
-        self.worker.error.connect(self._on_error)
-        self.progress_enrich.canceled.connect(self.worker.stop) 
-        
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        
-        self.thread.start()
+        self._run_worker(
+            EnrichWorker(self.pipeline, self.dataset, config),
+            label="Enriquecendo Dataset...",
+            allow_cancel=True,
+            determinate=True,
+            on_finished=self._on_enrich_concluido,
+        )
 
     def _on_enrich_concluido(self, dataset):
-        if hasattr(self, 'progress_enrich'): self.progress_enrich.close()
-        
         if dataset:
             self.dataset = dataset
             self.table_ctrl.load_dataframe(self.dataset.to_pandas())

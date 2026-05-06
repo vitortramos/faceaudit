@@ -1,28 +1,41 @@
 from PyQt6 import QtCore
 
+
 class FilterWorker(QtCore.QObject):
+    """Aplica `FilterConfig` no Dataset em background.
+    Suporta cancelamento cooperativo via `stop()`.
     """
-    Worker responsável por aplicar filtros no Dataset em background.
-    Específico para a lógica de negócio do DatasetManager.
-    """
-    finished = QtCore.pyqtSignal(object)  # Retorna o dataset filtrado
-    progress = QtCore.pyqtSignal(int)     # Retorna % de progresso
-    error = QtCore.pyqtSignal(str)        # ✅ NOVO: reporta erro
+
+    finished = QtCore.pyqtSignal(object)  # dataset filtrado, ou None se cancelado
+    progress = QtCore.pyqtSignal(int)     # % de progresso
+    error = QtCore.pyqtSignal(str)
 
     def __init__(self, dataset, config):
         super().__init__()
         self.dataset = dataset
         self.config = config
+        self._is_running = True
+
+    def stop(self):
+        self._is_running = False
+
+    def _progress_callback(self, pct: int):
+        if not self._is_running:
+            raise InterruptedError("Filtro cancelado pelo usuário.")
+        self.progress.emit(pct)
 
     @QtCore.pyqtSlot()
     def run(self):
         try:
-            # Callback para atualizar a barra de progresso na UI
-            if hasattr(self.dataset, 'apply_filter'):
-                result = self.dataset.apply_filter(self.config, callback=self.progress.emit)
+            if hasattr(self.dataset, "apply_filter"):
+                result = self.dataset.apply_filter(
+                    self.config, callback=self._progress_callback
+                )
                 self.finished.emit(result)
             else:
-                # Fallback caso o método não exista (segurança)
+                # Fallback de segurança caso o método não exista.
                 self.finished.emit(self.dataset)
+        except InterruptedError:
+            self.finished.emit(None)
         except Exception as e:
             self.error.emit(str(e))
