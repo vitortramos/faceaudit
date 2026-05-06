@@ -154,10 +154,60 @@ class QualityMetricAvailabilityService:
     def _inspect_parquet(
         cls, path: Path, coverage_threshold: float
     ) -> Set[QualityScoreType]:
+        """Leitura colunar via pyarrow.
+
+        Fast path (parquets pós-PR 3): lê `column_coverage` da metadata do
+        schema — custo é só o footer do parquet (~poucos KB).
+        Fall back (parquets legados): probing colunar das 3 colunas de
+        métrica conhecidas — `pq.read_table(columns=[...])`.
         """
-        Leitura colunar via pyarrow — só as colunas de métrica + null_count.
-        Custo: O(colunas existentes), não O(N).
+        fast = cls._inspect_parquet_metadata(path, coverage_threshold)
+        if fast is not None:
+            return fast
+        return cls._inspect_parquet_columns(path, coverage_threshold)
+
+    @classmethod
+    def _inspect_parquet_metadata(
+        cls, path: Path, coverage_threshold: float
+    ) -> Optional[Set[QualityScoreType]]:
+        """Lê `faceaudit:column_coverage` direto da metadata do parquet.
+
+        Retorna None se a metadata não estiver populada (parquet legado),
+        sinalizando ao caller que deve tentar o probing.
         """
+        import json
+        import pyarrow.parquet as pq
+
+        try:
+            meta = pq.read_metadata(path).metadata or {}
+        except Exception:
+            return None
+
+        coverage_payload = meta.get(b"faceaudit:column_coverage")
+        if not coverage_payload:
+            return None
+
+        try:
+            coverage = json.loads(coverage_payload.decode("utf-8"))
+        except Exception:
+            return None
+
+        result: Set[QualityScoreType] = set()
+        for metric, col_name in _PARQUET_COLUMN_BY_METRIC.items():
+            cs = coverage.get(col_name)
+            if not cs:
+                continue
+            non_null = int(cs.get("non_null_count", 0))
+            total = int(cs.get("total_count", 0))
+            if total > 0 and non_null / total >= coverage_threshold:
+                result.add(metric)
+        return result
+
+    @classmethod
+    def _inspect_parquet_columns(
+        cls, path: Path, coverage_threshold: float
+    ) -> Set[QualityScoreType]:
+        """Probing colunar — caminho legado para parquets sem metadata."""
         import pyarrow.parquet as pq
 
         result: Set[QualityScoreType] = set()
@@ -177,12 +227,10 @@ class QualityMetricAvailabilityService:
         if not cols_to_read:
             return result
 
-        # Lê só as colunas relevantes — evita carregar embeddings.
         tbl = pq.read_table(path, columns=cols_to_read)
         for col_name, metric in col_to_metric.items():
             col = tbl.column(col_name)
             non_null_count = col.length() - col.null_count
             if non_null_count / n_total >= coverage_threshold:
                 result.add(metric)
-
         return result

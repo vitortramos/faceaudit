@@ -76,6 +76,35 @@ class QualityScoreType(Enum):
         """Retorna a chave usada em dicionários (ex: 'fiqa')."""
         return self.name.lower()
 
+    @property
+    def metric_name(self) -> Optional[str]:
+        """Nome da métrica em ColumnSpec.metric_name (pós-PR 3).
+
+        Retorna None para EMBEDDING_NORM porque a norma é calculada
+        on-the-fly e não corresponde a uma coluna persistida.
+        """
+        return {
+            "FIQA": "fiqa",
+            "OFIQ": "ofiq",
+            "SERFIQ": "serfiq",
+            "EMBEDDING_NORM": None,
+        }.get(self.name)
+
+    def column_name_in(self, column_specs: dict) -> Optional[str]:
+        """Procura no dict de ColumnSpecs qual coluna tem role=quality e
+        metric_name correspondente. Útil para localizar a coluna primária
+        de quality sem hardcodar nomes (FIQA→`fiqa_score`, etc.)."""
+        target = self.metric_name
+        if target is None:
+            return None
+        for name, spec in (column_specs or {}).items():
+            role = getattr(spec, "role", None)
+            mname = getattr(spec, "metric_name", None)
+            role_value = getattr(role, "value", role)
+            if role_value == "quality" and mname == target:
+                return name
+        return None
+
     # --- Interface de Serialização ---
 
     def to_str(self) -> str:

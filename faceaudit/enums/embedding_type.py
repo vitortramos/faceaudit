@@ -80,12 +80,41 @@ class EmbeddingType(Enum):
 
     @property
     def parquet_column(self) -> str:
-        """Nome da coluna de embedding no arquivo parquet."""
+        """Nome canônico da coluna no parquet (formato pós-PR 3).
+
+        Antes do PR 3, SEPAEL_V2 ficava em uma coluna `embedding` (alias) que
+        duplicava `embedding_v2`. Após a migração, só `embedding_v2` existe.
+        """
         _map = {
-            "SEPAEL_V2": "embedding",
+            "SEPAEL_V2": "embedding_v2",
             "SEPAEL_V4": "embedding_v4",
         }
         return _map[self.name]
+
+    @property
+    def model_name(self) -> str:
+        """Nome do modelo no `ColumnSpec.model_name` (pós-PR 3)."""
+        return {
+            "SEPAEL_V2": "sepaelv2",
+            "SEPAEL_V4": "sepaelv4",
+        }[self.name]
+
+    def column_name_in(self, column_specs: dict) -> Optional[str]:
+        """Procura no dict de ColumnSpecs (do parquet) qual coluna tem
+        role=embedding e model_name correspondente a este tipo.
+
+        Útil quando o caller já tem os specs em mãos (ex: FaceDataset com
+        column_specs populada por from_parquet) e quer saber qual coluna
+        usar sem hardcodar nomes.
+        """
+        target = self.model_name
+        for name, spec in (column_specs or {}).items():
+            role = getattr(spec, "role", None)
+            mname = getattr(spec, "model_name", None)
+            role_value = getattr(role, "value", role)
+            if role_value == "embedding" and mname == target:
+                return name
+        return None
 
     # --- Interface de Serialização ---
 
