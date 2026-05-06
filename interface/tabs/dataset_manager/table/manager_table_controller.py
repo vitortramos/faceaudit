@@ -110,27 +110,59 @@ class ManagerTableController(QtCore.QObject):
         """Menu de contexto do header da tabela.
 
         Quando o schema-by-role está ativo (model.column_specs não vazio),
-        mostra checkboxes de visibilidade pra cada coluna conhecida —
-        agrupado por categoria. Em fallback ao enum, mostra mensagem
-        explicativa (não há schema editável).
+        mostra:
+          1. Ações pra coluna clicada (Propriedades, Remover se custom)
+          2. Sub-menu "Mostrar/Ocultar" agrupado por categoria
+        Em fallback ao enum, mostra mensagem explicativa.
         """
         specs = self.model.column_specs
         header = self.view.horizontalHeader()
         if not specs:
-            # Fallback: enum estático — não há nada pra customizar
             menu = QMenu()
             act = menu.addAction("(legacy) Schema fixo — sem column_specs")
             act.setEnabled(False)
             menu.exec(header.mapToGlobal(position))
             return
 
-        menu = QMenu()
-        # Cabeçalho do menu
-        title_act = menu.addAction("📋 Mostrar/Ocultar Colunas")
-        title_act.setEnabled(False)
-        menu.addSeparator()
+        # Identifica a coluna clicada (logical index dentro de visible_columns)
+        clicked_logical = header.logicalIndexAt(position)
+        clicked_view = (
+            self.model.visible_columns[clicked_logical]
+            if 0 <= clicked_logical < len(self.model.visible_columns)
+            else None
+        )
 
-        # Agrupa por categoria preservando ordem de inserção dos specs
+        menu = QMenu()
+
+        if clicked_view is not None:
+            spec = specs.get(clicked_view.key)
+            label = getattr(spec, "label", clicked_view.key) if spec else clicked_view.key
+            head = menu.addAction(f"🎯 Coluna: {label}")
+            head.setEnabled(False)
+
+            act_props = menu.addAction("⚙️  Propriedades…")
+            act_props.triggered.connect(
+                lambda _checked=False, n=clicked_view.key: self._on_open_properties(n)
+            )
+
+            # Remover só pra custom
+            is_custom = (
+                getattr(getattr(spec, "role", None), "value", None) == "custom"
+                if spec else False
+            )
+            act_remove = menu.addAction("🗑️  Remover Coluna")
+            act_remove.setEnabled(is_custom)
+            if not is_custom:
+                act_remove.setToolTip("Apenas colunas customizadas podem ser removidas.")
+            act_remove.triggered.connect(
+                lambda _checked=False, n=clicked_view.key: self._on_remove_column(n)
+            )
+
+            menu.addSeparator()
+
+        # Sub-menu de visibilidade agrupado por categoria
+        vis_menu = menu.addMenu("📋 Mostrar/Ocultar Colunas")
+
         category_order = []
         by_category = {}
         for name, spec in specs.items():
@@ -141,17 +173,57 @@ class ManagerTableController(QtCore.QObject):
             by_category[cat].append((name, spec))
 
         for cat in category_order:
-            cat_header = menu.addAction(f"— {cat} —")
+            cat_header = vis_menu.addAction(f"— {cat} —")
             cat_header.setEnabled(False)
             for name, spec in by_category[cat]:
                 visible = bool(getattr(spec, "visible_default", True))
-                act = menu.addAction(getattr(spec, "label", name))
+                act = vis_menu.addAction(getattr(spec, "label", name))
                 act.setCheckable(True)
                 act.setChecked(visible)
-                act.toggled.connect(lambda checked, n=name: self._on_visibility_toggled(n, checked))
-            menu.addSeparator()
+                act.toggled.connect(
+                    lambda checked, n=name: self._on_visibility_toggled(n, checked)
+                )
+            vis_menu.addSeparator()
 
         menu.exec(header.mapToGlobal(position))
+
+    def _on_open_properties(self, name: str):
+        """Abre o diálogo de propriedades pra coluna `name` e aplica o
+        resultado via model.update_column_spec."""
+        from ..column_dialogs.column_properties_dialog import ColumnPropertiesDialog
+
+        spec = self.model.column_specs.get(name)
+        if spec is None:
+            return
+        dialog = ColumnPropertiesDialog(spec, parent=self.view)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        new_spec = dialog.apply_to_spec(spec)
+        if self.model.update_column_spec(name, new_spec):
+            install_vocabulary_delegates(self.view, self.model)
+            self.view.resizeColumnsToContents()
+            self.schema_changed.emit()
+
+    def _on_remove_column(self, name: str):
+        """Confirma e remove uma coluna custom."""
+        from PyQt6.QtWidgets import QMessageBox
+        spec = self.model.column_specs.get(name)
+        label = getattr(spec, "label", name) if spec else name
+
+        confirm = QMessageBox.question(
+            self.view, "Remover Coluna",
+            f"Remover a coluna '{label}'?\n\n"
+            "Os dados desta coluna serão perdidos. Esta ação só será "
+            "persistida ao salvar o dataset.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            defaultButton=QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        if self.model.remove_custom_column(name):
+            install_vocabulary_delegates(self.view, self.model)
+            self.view.resizeColumnsToContents()
+            self.schema_changed.emit()
 
     def _on_visibility_toggled(self, name: str, checked: bool):
         """Callback do checkbox no header context menu."""

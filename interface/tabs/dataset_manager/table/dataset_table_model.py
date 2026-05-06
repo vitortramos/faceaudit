@@ -120,6 +120,48 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         self.endResetModel()
         return True
 
+    def update_column_spec(self, name: str, new_spec: Any) -> bool:
+        """Substitui o spec de uma coluna existente pelo novo.
+
+        Usado pelo ColumnPropertiesDialog. Reseta o model porque label
+        (cabeçalho) ou vocabulary (delegate) podem ter mudado. Não toca
+        no DataFrame — só nos metadados.
+        """
+        if not self._column_specs or name not in self._column_specs:
+            return False
+        if new_spec is None:
+            return False
+        self._column_specs[name] = new_spec
+
+        self.beginResetModel()
+        self.visible_columns = _columns_from_specs(self._column_specs)
+        self.endResetModel()
+        return True
+
+    def remove_custom_column(self, name: str) -> bool:
+        """Remove uma coluna custom do dataset (spec + DataFrame).
+
+        Apenas para colunas com role=CUSTOM. Tentar remover canônica
+        retorna False — colunas vindas de FF/OFIQ/SERFIQ têm semântica
+        de código que não pode ser violada.
+        """
+        if not self._column_specs or name not in self._column_specs:
+            return False
+        spec = self._column_specs[name]
+        role = getattr(spec, "role", None)
+        if getattr(role, "value", None) != "custom":
+            return False  # canônicas não podem ser removidas
+
+        # Remove do schema + dataframe
+        self._column_specs.pop(name, None)
+        if name in self._df.columns:
+            self._df = self._df.drop(columns=[name])
+
+        self.beginResetModel()
+        self.visible_columns = _columns_from_specs(self._column_specs)
+        self.endResetModel()
+        return True
+
     def add_custom_column(
         self,
         name: str,
