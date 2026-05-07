@@ -100,6 +100,8 @@ class DatasetManagerController(QtCore.QObject):
         self.toolbar_ctrl.action_stats.connect(self.fluxo_estatisticas)
         # [NOVO] Conecta o botão Analisar ao novo fluxo
         self.toolbar_ctrl.action_analyze.connect(self.fluxo_analise_dataset)
+        # PR 24 (Tema 5.3 + 5.5) — relatório de schema + export CSV/Excel
+        self.toolbar_ctrl.action_schema_report.connect(self.fluxo_schema_report)
 
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
@@ -659,6 +661,21 @@ class DatasetManagerController(QtCore.QObject):
         except Exception as e:
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self.view, "Erro", f"Falha ao gerar estatísticas: {e}")
+
+    # =================================================================================
+    # PR 24 (Tema 5.3 + 5.5) — Relatório de schema + Export CSV/Excel
+    # =================================================================================
+    def fluxo_schema_report(self):
+        """Abre o SchemaReportDialog com a cobertura por coluna do
+        dataset atual. O dialog inclui um botão de export CSV/Excel."""
+        if not self.dataset:
+            return
+        # Sincroniza edições in-table antes — garante que custom columns
+        # editadas ali já apareçam no relatório.
+        self.sync_changes_from_table()
+        from .schema_report_dialog import SchemaReportDialog
+        dialog = SchemaReportDialog(self.dataset, parent=self.view)
+        dialog.exec()
 
     # =================================================================================
     # [NOVO] FLUXO DE ANÁLISE DO DATASET (AUDITORIA E MINERAÇÃO BIOMÉTRICA)

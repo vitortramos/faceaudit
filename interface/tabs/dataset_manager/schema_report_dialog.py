@@ -1,0 +1,396 @@
+"""Diálogo de Relatório de Schema (PR 24 — Tema 5.3).
+
+Mostra a cobertura por coluna do dataset atual (% NaN, distinct, min/max,
+dim) lendo de `DatasetStats.column_coverage` — que já é populado pelo
+`DatasetStatsService` em todos os 4 caminhos.
+
+Inclui também um dialog de export (Tema 5.5) acessível via botão no
+rodapé. Export aceita seleção de colunas, escolha de delimitador, formato
+CSV ou Excel, e opção de excluir embeddings (que viram strings gigantes
+inúteis em CSV).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from PyQt6 import QtCore, QtWidgets
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QBrush, QColor
+
+from faceaudit.models.face_dataset import FaceDataset
+from faceaudit.services.dataset_stats_service import DatasetStatsService
+
+
+# ─── Cores de cobertura — verde/amarelo/vermelho ───
+_COLOR_FULL = QColor("#d4edda")     # 100%
+_COLOR_PARTIAL = QColor("#fff3cd")  # 50–99%
+_COLOR_LOW = QColor("#f8d7da")      # < 50%
+_COLOR_EMPTY = QColor("#dddddd")    # 0%
+
+
+def _coverage_color(pct: float) -> QColor:
+    if pct >= 1.0:
+        return _COLOR_FULL
+    if pct <= 0.0:
+        return _COLOR_EMPTY
+    if pct >= 0.5:
+        return _COLOR_PARTIAL
+    return _COLOR_LOW
+
+
+def _format_pct(pct: float) -> str:
+    return f"{pct * 100:.1f}%"
+
+
+def _format_value(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    return f"{v:.3f}" if isinstance(v, float) else str(v)
+
+
+class SchemaReportDialog(QtWidgets.QDialog):
+    """Dialog de Relatório de Schema (Tema 5.3)."""
+
+    _COLUMNS = [
+        ("Coluna", 140),
+        ("Rótulo", 130),
+        ("Role", 90),
+        ("Source", 80),
+        ("Tipo", 60),
+        ("Não-nulos", 80),
+        ("Total", 70),
+        ("Cobertura", 90),
+        ("Min", 70),
+        ("Max", 70),
+        ("Média", 70),
+        ("Distintos", 80),
+        ("Dim", 50),
+    ]
+
+    def __init__(self, dataset: FaceDataset, parent=None):
+        super().__init__(parent)
+        self._dataset = dataset
+        self.setWindowTitle(f"Relatório de Schema — {dataset.name}")
+        self.setModal(True)
+        self.resize(1100, 600)
+        self._build_ui()
+        self._populate()
+
+    # ── UI ─────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # Header explicativo
+        header = QtWidgets.QLabel(
+            "<b>Cobertura por coluna</b> — % de não-nulos, valores distintos, "
+            "min/max para numéricas, dim para vetores. "
+            "<span style='color:#666;font-size:11px;'>Verde = 100%, "
+            "amarelo = parcial, vermelho = &lt; 50%.</span>"
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        # Tabela
+        self.table = QtWidgets.QTableWidget()
+        self.table.setColumnCount(len(self._COLUMNS))
+        self.table.setHorizontalHeaderLabels([h for h, _ in self._COLUMNS])
+        for i, (_, w) in enumerate(self._COLUMNS):
+            self.table.setColumnWidth(i, w)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        # Footer com botões
+        footer = QtWidgets.QHBoxLayout()
+        self.btn_export = QtWidgets.QPushButton("📤 Exportar para CSV/Excel…")
+        self.btn_export.clicked.connect(self._on_export)
+        footer.addWidget(self.btn_export)
+        footer.addStretch()
+        self.btn_close = QtWidgets.QPushButton("Fechar")
+        self.btn_close.clicked.connect(self.accept)
+        footer.addWidget(self.btn_close)
+        layout.addLayout(footer)
+
+    # ── Populate ────────────────────────────────────────────────────────────
+
+    def _populate(self):
+        service = DatasetStatsService()
+        stats = service.compute_from_dataset(self._dataset)
+        coverage = stats.column_coverage or {}
+        specs = self._dataset.column_specs or {}
+
+        # Ordena por (categoria, role.value, name) — agrupa visualmente.
+        # `column_specs` mantém ordem do dict (post-PR 20 drag-reorder),
+        # então respeitar essa ordem é o esperado pelo usuário.
+        names: List[str] = []
+        for name in specs.keys():
+            names.append(name)
+        # Inclui colunas que estão em coverage mas não em specs (parquets
+        # legados ou colunas técnicas não declaradas).
+        for name in coverage.keys():
+            if name not in names:
+                names.append(name)
+
+        self.table.setRowCount(len(names))
+        for row, name in enumerate(names):
+            spec = specs.get(name)
+            cs = coverage.get(name)
+            self._fill_row(row, name, spec, cs)
+
+        self.table.resizeRowsToContents()
+
+    def _fill_row(self, row: int, name: str, spec: Any, cs: Any):
+        label = getattr(spec, "label", name) if spec else name
+        role = getattr(getattr(spec, "role", None), "value", "—") if spec else "—"
+        source = getattr(getattr(spec, "source", None), "value", "—") if spec else "—"
+        dtype = getattr(getattr(spec, "dtype", None), "value", "—") if spec else "—"
+
+        non_null = getattr(cs, "non_null_count", 0) if cs else 0
+        total = getattr(cs, "total_count", 0) if cs else 0
+        pct = getattr(cs, "coverage", 0.0) if cs else 0.0
+        min_val = getattr(cs, "min_value", None) if cs else None
+        max_val = getattr(cs, "max_value", None) if cs else None
+        mean_val = getattr(cs, "mean_value", None) if cs else None
+        distinct = getattr(cs, "distinct_count", None) if cs else None
+        dim = getattr(cs, "dim", None) if cs else None
+
+        cells = [
+            name, label, role, source, dtype,
+            f"{non_null:,}", f"{total:,}", _format_pct(pct),
+            _format_value(min_val), _format_value(max_val), _format_value(mean_val),
+            "—" if distinct is None else f"{distinct:,}",
+            "—" if dim is None else str(dim),
+        ]
+        for col, text in enumerate(cells):
+            item = QtWidgets.QTableWidgetItem(text)
+            self.table.setItem(row, col, item)
+
+        # Pinta a linha inteira com a cor da cobertura
+        color = _coverage_color(pct)
+        brush = QBrush(color)
+        for col in range(self.table.columnCount()):
+            item = self.table.item(row, col)
+            if item is not None:
+                item.setBackground(brush)
+
+    # ── Export ──────────────────────────────────────────────────────────────
+
+    def _on_export(self):
+        dlg = ExportCsvDialog(self._dataset, parent=self)
+        dlg.exec()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Export Dialog (PR 24 — Tema 5.5)
+# ═══════════════════════════════════════════════════════════════════════════
+
+_DELIMITER_OPTIONS = [
+    (",", "Vírgula  ( , )"),
+    (";", "Ponto-e-vírgula  ( ; )"),
+    ("\t", "Tab"),
+    ("|", "Pipe  ( | )"),
+]
+
+_FORMAT_OPTIONS = [
+    ("csv", "CSV (.csv)"),
+    ("xlsx", "Excel (.xlsx)"),
+]
+
+
+class ExportCsvDialog(QtWidgets.QDialog):
+    """Coleta opções de export e salva via pandas. Tema 5.5 (PR 24).
+
+    UX:
+      - Lista de colunas com checkbox (default: visíveis no schema).
+      - Botões helper: "Todas", "Apenas visíveis", "Sem embeddings".
+      - Format CSV/XLSX, delimitador (apenas CSV).
+      - Excluir embeddings por default (ficam strings gigantes inúteis).
+    """
+
+    def __init__(self, dataset: FaceDataset, parent=None):
+        super().__init__(parent)
+        self._dataset = dataset
+        self.setWindowTitle("Exportar Dataset")
+        self.setModal(True)
+        self.resize(520, 520)
+        self._build_ui()
+        self._populate_columns()
+
+    def _build_ui(self):
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ── Seleção de colunas ────────────────────────────────────────────
+        layout.addWidget(QtWidgets.QLabel("<b>Colunas a exportar</b>"))
+        self.list_columns = QtWidgets.QListWidget()
+        self.list_columns.setMinimumHeight(220)
+        layout.addWidget(self.list_columns)
+
+        helper_row = QtWidgets.QHBoxLayout()
+        self.btn_all = QtWidgets.QPushButton("Todas")
+        self.btn_all.clicked.connect(lambda: self._toggle_all(True))
+        self.btn_none = QtWidgets.QPushButton("Nenhuma")
+        self.btn_none.clicked.connect(lambda: self._toggle_all(False))
+        self.btn_visible = QtWidgets.QPushButton("Apenas visíveis")
+        self.btn_visible.clicked.connect(self._select_visible_only)
+        self.btn_no_emb = QtWidgets.QPushButton("Sem embeddings")
+        self.btn_no_emb.clicked.connect(self._unselect_embeddings)
+        for btn in (self.btn_all, self.btn_none, self.btn_visible, self.btn_no_emb):
+            btn.setStyleSheet("padding: 4px 10px;")
+            helper_row.addWidget(btn)
+        helper_row.addStretch()
+        layout.addLayout(helper_row)
+
+        # ── Formato + delimitador ─────────────────────────────────────────
+        form = QtWidgets.QFormLayout()
+        self.cmb_format = QtWidgets.QComboBox()
+        for value, label in _FORMAT_OPTIONS:
+            self.cmb_format.addItem(label, userData=value)
+        self.cmb_format.currentIndexChanged.connect(self._on_format_changed)
+        form.addRow("Formato:", self.cmb_format)
+
+        self.cmb_delim = QtWidgets.QComboBox()
+        for value, label in _DELIMITER_OPTIONS:
+            self.cmb_delim.addItem(label, userData=value)
+        form.addRow("Delimitador:", self.cmb_delim)
+
+        layout.addLayout(form)
+
+        # ── Botões ────────────────────────────────────────────────────────
+        layout.addStretch()
+        self.buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok).setText("Exportar…")
+        self.buttons.accepted.connect(self._on_export)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+
+    def _populate_columns(self):
+        """Popula a lista a partir do df do dataset. Default checked:
+        visíveis e não-embedding."""
+        df = self._dataset.to_pandas()
+        if df is None or df.empty:
+            return
+        specs = self._dataset.column_specs or {}
+
+        self.list_columns.clear()
+        for col in df.columns:
+            spec = specs.get(col)
+            label = getattr(spec, "label", col) if spec else col
+            visible = bool(getattr(spec, "visible_default", True)) if spec else True
+            is_emb = self._is_embedding_column(col, spec)
+            display = f"{col}  [{label}]" if label != col else col
+            if is_emb:
+                display += "  ⚠ embedding (gigante em CSV)"
+            item = QtWidgets.QListWidgetItem(display)
+            item.setData(Qt.ItemDataRole.UserRole, col)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            check = visible and not is_emb
+            item.setCheckState(Qt.CheckState.Checked if check else Qt.CheckState.Unchecked)
+            self.list_columns.addItem(item)
+
+    @staticmethod
+    def _is_embedding_column(col: str, spec: Any) -> bool:
+        if spec is not None:
+            role = getattr(getattr(spec, "role", None), "value", None)
+            if role == "embedding":
+                return True
+        return col.startswith("embedding")
+
+    def _toggle_all(self, checked: bool):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.list_columns.count()):
+            self.list_columns.item(i).setCheckState(state)
+
+    def _select_visible_only(self):
+        specs = self._dataset.column_specs or {}
+        for i in range(self.list_columns.count()):
+            item = self.list_columns.item(i)
+            col = item.data(Qt.ItemDataRole.UserRole)
+            spec = specs.get(col)
+            visible = bool(getattr(spec, "visible_default", True)) if spec else True
+            item.setCheckState(Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
+
+    def _unselect_embeddings(self):
+        specs = self._dataset.column_specs or {}
+        for i in range(self.list_columns.count()):
+            item = self.list_columns.item(i)
+            col = item.data(Qt.ItemDataRole.UserRole)
+            if self._is_embedding_column(col, specs.get(col)):
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+    def _on_format_changed(self, _idx: int):
+        # Delimitador só é relevante pra CSV.
+        is_csv = self.cmb_format.currentData() == "csv"
+        self.cmb_delim.setEnabled(is_csv)
+
+    def _selected_columns(self) -> List[str]:
+        out: List[str] = []
+        for i in range(self.list_columns.count()):
+            item = self.list_columns.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                out.append(item.data(Qt.ItemDataRole.UserRole))
+        return out
+
+    def _on_export(self):
+        cols = self._selected_columns()
+        if not cols:
+            QtWidgets.QMessageBox.warning(
+                self, "Export", "Nenhuma coluna selecionada.",
+            )
+            return
+
+        fmt = self.cmb_format.currentData()
+        delim = self.cmb_delim.currentData()
+        ext = "csv" if fmt == "csv" else "xlsx"
+        filt = "CSV (*.csv)" if fmt == "csv" else "Excel (*.xlsx)"
+        suggested = f"{self._dataset.name or 'dataset'}.{ext}"
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Exportar para…", suggested, filt,
+        )
+        if not path:
+            return
+
+        try:
+            df = self._dataset.to_pandas()[cols]
+        except KeyError as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Coluna ausente",
+                f"Coluna selecionada não está no DataFrame: {e}",
+            )
+            return
+
+        try:
+            if fmt == "csv":
+                df.to_csv(path, sep=delim, index=False)
+            else:
+                # to_excel requer openpyxl; quando ausente, mostra dica.
+                try:
+                    df.to_excel(path, index=False)
+                except ImportError:
+                    QtWidgets.QMessageBox.critical(
+                        self, "Dependência ausente",
+                        "Export para Excel requer 'openpyxl'. "
+                        "Instale com: pip install openpyxl",
+                    )
+                    return
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self, "Erro ao exportar", str(e),
+            )
+            return
+
+        QtWidgets.QMessageBox.information(
+            self, "Export",
+            f"Salvo em:\n{path}\n\n{len(df):,} linhas, {len(cols)} colunas.",
+        )
+        self.accept()

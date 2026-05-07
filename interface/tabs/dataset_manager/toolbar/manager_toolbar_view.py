@@ -59,6 +59,13 @@ class ManagerToolbarView(QFrame):
         # <--- [NOVO] Botão de Análise de Integridade e Mineração --->
         self.btn_analyze = ToolbarButton("Analisar", "🔎", tooltip="Auditoria interna de integridade e hard-mining biométrico")
 
+        # <--- [PR 24, Tema 5.3+5.5] Relatório de schema + export CSV/Excel --->
+        self.btn_schema_report = ToolbarButton(
+            "Relatório", "📋",
+            tooltip="Relatório de cobertura por coluna (% NaN, distinct, "
+                    "min/max). Inclui exportação para CSV/Excel.",
+        )
+
         self.btn_filter = ToolbarButton("Filtrar", "🔍")
         self.btn_clear_filter = ToolbarButton("Limpar", "🗑️", tooltip="Remover filtros")
         self.btn_clear_filter.setEnabled(False)
@@ -93,6 +100,7 @@ class ManagerToolbarView(QFrame):
 
         btn_layout.addWidget(self.btn_stats)
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
+        btn_layout.addWidget(self.btn_schema_report)  # <--- [PR 24]
         btn_layout.addWidget(self.btn_filter)
         btn_layout.addWidget(self.btn_clear_filter)
         btn_layout.addWidget(self.btn_add_column)
@@ -119,6 +127,7 @@ class ManagerToolbarView(QFrame):
             self.btn_merge, self.btn_split, self.btn_compare,
             self.btn_stats,
             self.btn_analyze, # <--- [NOVO] Controlado dinamicamente
+            self.btn_schema_report,  # <--- [PR 24]
             self.btn_filter,
             self.btn_add_column,  # <--- [PR 8]
             self.btn_toggle_gallery,  # <--- [PR 15]

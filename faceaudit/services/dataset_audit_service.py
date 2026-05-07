@@ -127,6 +127,54 @@ class DatasetAuditService:
             summary=f"{len(issues)} grupo(s) de hash conflitante",
         )
 
+    def audit_exact_duplicates(self, dataset: FaceDataset) -> AuditFinding:
+        """Detecta linhas com hash idêntico — duplicatas exatas (PR 24, Tema 5.2).
+
+        Distinto de `audit_hash_conflicts`:
+          - `audit_hash_conflicts` flaga apenas quando o mesmo hash aparece
+            com identidades DIFERENTES (CRITICAL — bug de rotulagem).
+          - `audit_exact_duplicates` flaga qualquer hash repetido,
+            independente da identidade — caso típico: a mesma foto
+            importada duas vezes na ingestão (WARNING — pode ser bug de
+            workflow ou intencional, mas o usuário precisa saber).
+
+        Faces sem hash são ignoradas (sem critério pra dizer se duplicam).
+        """
+        groups: Dict[str, List[Tuple[int, Any]]] = defaultdict(list)
+        for idx, face in enumerate(dataset.faces):
+            h = getattr(face, "hash", None)
+            if h:
+                groups[h].append((idx, face))
+
+        issues: List[AuditIssue] = []
+        for h, members in groups.items():
+            if len(members) < 2:
+                continue
+            indices = tuple(idx for idx, _ in members)
+            paths = tuple(getattr(f, "image_path", "") for _, f in members)
+            ids = sorted({str(getattr(f, "identity", None) or "?") for _, f in members})
+            files = [getattr(f, "file_name", None) or "?" for _, f in members]
+            issues.append(AuditIssue(
+                locators=paths,
+                description=(
+                    f"{len(members)} linhas com hash idêntico"
+                    + (f" (identidade: {ids[0]})" if len(ids) == 1 else f" entre {len(ids)} identidades")
+                    + f" — {', '.join(files[:3])}"
+                    + ("…" if len(files) > 3 else "")
+                ),
+                row_indices=indices,
+                metadata={"hash": h, "count": len(members), "identities": ids},
+            ))
+
+        return AuditFinding(
+            audit_id="exact_duplicates",
+            audit_label="Duplicatas exatas (mesmo hash)",
+            category=CATEGORY_PHYSICAL,
+            severity=AuditSeverity.WARNING,
+            issues=tuple(issues),
+            summary=f"{len(issues)} grupo(s) de duplicatas exatas",
+        )
+
     def audit_singleton_identities(
         self, dataset: FaceDataset, min_samples: int = 2,
     ) -> AuditFinding:
@@ -681,6 +729,10 @@ class DatasetAuditService:
         out: List[AuditFinding] = []
         out.append(self.audit_orphan_paths(dataset))
         out.append(self.audit_hash_conflicts(dataset))
+        # PR 24 (Tema 5.2) — duplicatas exatas: mesmo hash em rows
+        # distintos, independente da identidade. Complementa
+        # `audit_hash_conflicts` (que cobre só conflitos cross-identity).
+        out.append(self.audit_exact_duplicates(dataset))
         # missing_embeddings agora retorna List[AuditFinding] — uma por
         # coluna de embedding declarada no schema.
         out.extend(self.audit_missing_embeddings(dataset))
