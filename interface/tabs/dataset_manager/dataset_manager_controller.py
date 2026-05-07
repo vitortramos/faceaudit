@@ -246,9 +246,10 @@ class DatasetManagerController(QtCore.QObject):
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
 
-        name, label, dtype, default = dialog.get_result()
+        name, label, dtype, default, computed_expr = dialog.get_result()
         ok = self.table_ctrl.model.add_custom_column(
-            name=name, label=label, dtype=dtype, default_value=default, editable=True,
+            name=name, label=label, dtype=dtype, default_value=default,
+            editable=True, computed_expr=computed_expr,
         )
         if not ok:
             QMessageBox.warning(self.view, "Erro", "Falha ao adicionar coluna.")

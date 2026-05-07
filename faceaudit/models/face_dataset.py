@@ -628,9 +628,13 @@ class FaceDataset:
         # contrário, deriva do catálogo built-in filtrado pelas colunas
         # presentes.
         if self.column_specs:
+            # PR 23 (Tema 4.3) — colunas computadas não têm coluna real no
+            # df (valor é avaliado on-the-fly), mas o spec com `computed_expr`
+            # precisa ser persistido pra que a fórmula sobreviva ao
+            # save/reload.
             specs_to_persist = {
                 name: spec for name, spec in self.column_specs.items()
-                if name in df.columns
+                if name in df.columns or getattr(spec, "computed_expr", None)
             }
         else:
             defaults = get_default_specs(DatasetType.FACE)

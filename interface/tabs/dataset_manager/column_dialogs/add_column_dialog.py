@@ -3,6 +3,11 @@
 Coleta nome, label, tipo e valor default. Usado na nova UX "tipo planilha"
 do Dataset Manager (PR 8). A coluna criada vira um ColumnSpec com role=custom
 + source=custom; persistido na metadata do parquet quando o usuário salvar.
+
+PR 23 (Tema 4.3) — adiciona modo "coluna computada": checkbox + textarea
+de fórmula. Quando ativo, esconde o campo de valor padrão (computadas são
+read-only, valor calculado on-the-fly por linha). Validação de sintaxe
+acontece no Aceitar via `expression_evaluator.validate_expression`.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ class AddColumnDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Adicionar Coluna")
         self.setModal(True)
-        self.resize(420, 260)
+        self.resize(460, 360)
         self._existing = set(existing_column_names or set())
         self._build_ui()
 
@@ -81,6 +86,46 @@ class AddColumnDialog(QtWidgets.QDialog):
         form.addRow("Valor padrão:", self._default_stack)
 
         layout.addLayout(form)
+
+        # ── PR 23 (Tema 4.3) — coluna computada ─────────────────────────
+        self.chk_computed = QtWidgets.QCheckBox(
+            "Coluna computada (fórmula simbólica, read-only)"
+        )
+        self.chk_computed.setToolTip(
+            "Quando marcado, o valor é calculado por linha a partir da "
+            "fórmula. Não é editável e não consome espaço no parquet — só "
+            "a fórmula é persistida."
+        )
+        self.chk_computed.toggled.connect(self._on_computed_toggled)
+        layout.addWidget(self.chk_computed)
+
+        self._computed_box = QtWidgets.QGroupBox("Fórmula")
+        comp_layout = QtWidgets.QVBoxLayout(self._computed_box)
+        hint = QtWidgets.QLabel(
+            "Use nomes de colunas existentes como variáveis. "
+            "Funções permitidas: <code>abs, min, max, round, len, str, int, "
+            "float, bool, sqrt, log, exp, floor, ceil</code>.<br>"
+            "Operadores: <code>+ - * / // % ** == != &lt; &gt; and or not</code>. "
+            "Suporta ternário <code>a if b else c</code>."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #666; font-size: 11px;")
+        comp_layout.addWidget(hint)
+
+        self.txt_expression = QtWidgets.QPlainTextEdit()
+        self.txt_expression.setPlaceholderText(
+            "Exemplos:\n"
+            "  abs(yaw)\n"
+            "  fiqa_score * 100\n"
+            "  1 if gender == 'F' else 0\n"
+            "  round(sqrt(yaw**2 + pitch**2), 2)"
+        )
+        self.txt_expression.setMaximumHeight(110)
+        comp_layout.addWidget(self.txt_expression)
+
+        self._computed_box.setVisible(False)
+        layout.addWidget(self._computed_box)
+
         layout.addStretch()
 
         # Botões
@@ -97,6 +142,12 @@ class AddColumnDialog(QtWidgets.QDialog):
     def _on_dtype_changed(self, idx: int):
         # Reordena pra bater com a ordem dos add → 0=str, 1=float, 2=int, 3=bool
         self._default_stack.setCurrentIndex(idx)
+
+    def _on_computed_toggled(self, checked: bool):
+        """Mostra/esconde o box de fórmula. Quando computada, esconde o
+        valor padrão (irrelevante — valor é calculado)."""
+        self._computed_box.setVisible(checked)
+        self._default_stack.setEnabled(not checked)
 
     def _on_accept(self):
         name = self.txt_name.text().strip()
@@ -120,12 +171,39 @@ class AddColumnDialog(QtWidgets.QDialog):
             )
             return
 
+        # PR 23 — valida sintaxe da fórmula antes de aceitar. Erro mostra
+        # mensagem amigável; usuário corrige antes de criar a coluna.
+        if self.chk_computed.isChecked():
+            expr = self.txt_expression.toPlainText().strip()
+            if not expr:
+                QtWidgets.QMessageBox.warning(
+                    self, "Fórmula vazia",
+                    "Marque 'Coluna computada' apenas se quiser definir uma fórmula.",
+                )
+                return
+            from faceaudit.services.expression_evaluator import (
+                validate_expression, ExpressionError,
+            )
+            try:
+                validate_expression(expr)
+            except ExpressionError as e:
+                QtWidgets.QMessageBox.warning(
+                    self, "Fórmula inválida", str(e),
+                )
+                return
+
         self.accept()
 
     # ── API pública ─────────────────────────────────────────────────────────
 
-    def get_result(self) -> Tuple[str, str, str, Any]:
-        """Retorna (name, label, dtype_str, default_value)."""
+    def get_result(self) -> Tuple[str, str, str, Any, Optional[str]]:
+        """Retorna (name, label, dtype_str, default_value, computed_expr).
+
+        PR 23 — `computed_expr` é a fórmula simbólica quando a checkbox
+        'Coluna computada' está marcada; None caso contrário. Quando
+        computed_expr é não-nulo, `default_value` é ignorado pelo model
+        (computadas não têm valor armazenado).
+        """
         name = self.txt_name.text().strip()
         label = self.txt_label.text().strip() or name
         dtype = self.cmb_dtype.currentData()
@@ -142,4 +220,9 @@ class AddColumnDialog(QtWidgets.QDialog):
         else:
             default = None
 
-        return name, label, dtype, default
+        computed_expr: Optional[str] = None
+        if self.chk_computed.isChecked():
+            expr = self.txt_expression.toPlainText().strip()
+            computed_expr = expr if expr else None
+
+        return name, label, dtype, default, computed_expr

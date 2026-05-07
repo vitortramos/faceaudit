@@ -241,11 +241,18 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         dtype: str = "str",
         default_value: Any = None,
         editable: bool = True,
+        computed_expr: Optional[str] = None,
     ) -> bool:
         """Adiciona uma nova coluna custom ao dataset.
 
         Cria um ColumnSpec com role=custom e popula a coluna no DataFrame
         com o `default_value`. Se a coluna já existir, retorna False.
+
+        PR 23 — quando `computed_expr` é não-nulo, a coluna é marcada como
+        computada (read-only): `editable=False`, valor avaliado por linha
+        em `data()`, sem coluna no DataFrame. Validação da expressão
+        acontece via `expression_evaluator.validate_expression` antes de
+        criar o spec — sintaxe inválida → False.
 
         Apenas no caminho schema-by-role (specs populados). No fallback do
         enum, retorna False — não faz sentido adicionar coluna a um schema
@@ -266,21 +273,36 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         except ValueError:
             dtype_enum = ColumnDType.STR
 
+        # PR 23 — valida a fórmula antes de criar o spec. Sintaxe inválida
+        # → False (UI mostra erro). Se `computed_expr` é None, normal flow.
+        if computed_expr:
+            from faceaudit.services.expression_evaluator import (
+                validate_expression, ExpressionError,
+            )
+            try:
+                validate_expression(computed_expr)
+            except ExpressionError:
+                return False
+
         spec = ColumnSpec(
             name=name,
             label=label or name,
             role=ColumnRole.CUSTOM,
             source=ColumnSource.CUSTOM,
             dtype=dtype_enum,
-            editable=editable,
+            # Computadas são sempre read-only — usuário não pode editar
+            # célula derivada, só a fórmula via Properties.
+            editable=False if computed_expr else editable,
             visible_default=True,
             category=CATEGORY_CUSTOM,
-            default_value=default_value,
+            default_value=None if computed_expr else default_value,
+            computed_expr=computed_expr,
         )
         self._column_specs[name] = spec
 
-        # Adiciona a coluna ao DataFrame com default_value em todas as linhas.
-        if name not in self._df.columns:
+        # Adiciona a coluna ao DataFrame com default_value SE não for
+        # computada — computadas vivem só nas specs (avaliadas on-the-fly).
+        if not computed_expr and name not in self._df.columns:
             self._df[name] = default_value
 
         self.beginResetModel()
@@ -302,6 +324,27 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         key = col.key
 
         if role == Qt.ItemDataRole.DisplayRole or role == Qt.ItemDataRole.EditRole:
+            # PR 23 (Tema 4.3) — coluna computada: avalia a fórmula on-the-fly
+            # com o row do DataFrame como namespace. Falha de avaliação
+            # exibida como "#ERR" pra dar visibilidade ao usuário sem
+            # quebrar a tabela inteira.
+            spec = self._column_specs.get(key) if self._column_specs else None
+            computed_expr = getattr(spec, "computed_expr", None) if spec else None
+            if computed_expr:
+                try:
+                    row_dict = self._df.iloc[index.row()].to_dict()
+                    from faceaudit.services.expression_evaluator import (
+                        evaluate_expression, ExpressionError,
+                    )
+                    val = evaluate_expression(computed_expr, row_dict)
+                except (ExpressionError, Exception):
+                    return "#ERR"
+                if val is None:
+                    return ""
+                if isinstance(val, (float, np.floating)):
+                    return f"{val:.2f}"
+                return str(val)
+
             if key not in self._df.columns:
                 return ""
 

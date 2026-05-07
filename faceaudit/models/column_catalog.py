@@ -151,6 +151,16 @@ class ColumnSpec:
     # --- role=custom ---
     default_value: Optional[Any] = None
 
+    # PR 23 (Tema 4.3) — coluna computada (read-only) com fórmula
+    # simbólica. Quando `computed_expr` é não-nulo, o valor exibido é
+    # avaliado por linha via `expression_evaluator.evaluate_expression`,
+    # com o row do DataFrame como namespace de variáveis. A coluna NÃO
+    # é editável (UI rejeita edição) e o valor NÃO é gravado no DataFrame
+    # — só a string `computed_expr` round-trippa via `column_specs` na
+    # metadata do parquet. Exemplos: "abs(yaw)", "fiqa_score * 0.5",
+    # "1 if gender == 'F' else 0". Apenas válido com role=CUSTOM.
+    computed_expr: Optional[str] = None
+
     # ---------------- Serialização ----------------
 
     def to_dict(self) -> Dict[str, Any]:
