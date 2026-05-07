@@ -13,6 +13,7 @@ from faceaudit.services import (
     DatasetLoaderService,
     ConfigLoaderService,
     DatasetStatsService,
+    DatasetAuditService,
     ComparisonMiningService,
     ValidationMathService,
     PLDASplitService,
@@ -79,6 +80,16 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
     comparison_service = providers.Singleton(ComparisonService)
     dataset_comparison_service = providers.Singleton(DatasetComparisonService)
+
+    # DatasetAuditService — auditoria de FaceDataset (paths órfãos, hash
+    # conflitante, identidades singleton, qualidade baixa, etc.). Stateless;
+    # consumido pelo Dataset Manager (UI) e (futuramente) por validation
+    # rules da V2 antes de treinar estratégia.
+    dataset_audit_service = providers.Singleton(
+        DatasetAuditService,
+        comparison_service=comparison_service,
+        stats_service=stats_service,
+    )
 
     # =========================================================================
     # PIPELINES

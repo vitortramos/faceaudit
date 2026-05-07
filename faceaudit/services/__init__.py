@@ -1,6 +1,7 @@
 from .comparison_service import ComparisonService
 from .comparison_mining_service import ComparisonMiningService
 from .config_loader_service import ConfigLoaderService
+from .dataset_audit_service import DatasetAuditService
 from .dataset_comparison_service import DatasetComparisonService
 from .dataset_loader_service import DatasetLoaderService
 from .dataset_stats_service import DatasetStatsService
@@ -30,6 +31,7 @@ __all__ = [
     "DatasetLoaderService",
     "DimensionalityReductionService",
     "ConfigLoaderService",
+    "DatasetAuditService",
     "DatasetComparisonService",
     "TrajectoryPlotterService",
     "ValidationMathService",
