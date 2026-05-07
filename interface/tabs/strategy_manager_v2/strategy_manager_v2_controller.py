@@ -115,6 +115,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.open_project_requested.connect(self.open_project)
         self._project_toolbar.save_project_requested.connect(self.save_project)
         self._project_toolbar.close_project_requested.connect(self.close_project)
+        self._project_toolbar.seal_project_requested.connect(self.seal_project)  # PR L2.b
         self._project_toolbar.pipeline_requested.connect(self._on_pipeline)
         self._project_toolbar.mining_requested.connect(self._on_mining)
         self._project_toolbar.split_requested.connect(self._on_split)
@@ -279,6 +280,106 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._left_panel.set_strategy_actions_enabled(False)
         self._view.show_welcome_screen()
         self._is_dirty = False
+
+    # ── PR L2.b — Selar projeto ──────────────────────────────────────────
+    def seal_project(self) -> None:
+        """Abre o `SealProjectDialog`, coleta opções e dispara o
+        `SealProjectWorker` em thread separada com LogProgressDialog.
+
+        Após sucesso: re-carrega definitions (path_modes mudaram em
+        memória) e força save do projeto.
+        """
+        if not self._project:
+            return
+
+        from .seal_project_dialog import SealProjectDialog
+        dialog = SealProjectDialog(self._project, parent=self._view)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        dry_run = dialog.dry_run
+        self._dispatch_seal_worker(dry_run=dry_run)
+
+    def _dispatch_seal_worker(self, *, dry_run: bool) -> None:
+        """Cria worker + thread + LogProgressDialog seguindo o padrão
+        de `run_strategy`."""
+        from .workers.seal_project_worker import SealProjectWorker
+
+        title = (
+            "Simulando selamento do projeto…" if dry_run
+            else "Selando projeto…"
+        )
+        progress_dialog = LogProgressDialog(title, parent=self._view)
+        progress_dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
+        progress_dialog.show()
+
+        thread = QtCore.QThread()
+        worker = SealProjectWorker(self._project, dry_run=dry_run)
+        worker.moveToThread(thread)
+        self._active_worker = worker
+
+        thread.started.connect(worker.run)
+        worker.progress_update.connect(
+            lambda msg, pct: progress_dialog.append_log(f"[{pct}%] {msg}")
+        )
+
+        def on_finished(result):
+            if result is None:
+                progress_dialog.finish(False)
+                return
+            progress_dialog.finish(True)
+            self._show_seal_summary(result)
+            # Após selar, definitions referenciam parquets que foram
+            # reescritos — refaça o refresh do left panel pra sincronizar
+            # os hashes nas refs em memória.
+            if not result.dry_run and result.n_datasets_sealed > 0:
+                # Marca dirty pra que o usuário saiba que precisa salvar
+                # o projeto (definitions têm artifact_refs com hashes
+                # antigos — o save vai recalcular).
+                self._is_dirty = True
+                self._refresh_left_panel()
+
+        def on_error(msg):
+            progress_dialog.finish(False)
+            QtWidgets.QMessageBox.critical(
+                self._view, "Erro ao selar", msg,
+            )
+
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._active_thread = thread
+        thread.start()
+
+    def _show_seal_summary(self, result) -> None:
+        """Mostra QMessageBox com resumo da operação de selo."""
+        if result.n_datasets_failed:
+            failures_preview = "\n".join(
+                f"  • {ds_id}: {msg}"
+                for ds_id, msg in list(result.total_failures)[:5]
+            )
+            extra = (
+                f"\n\n⚠ {result.n_datasets_failed} falha(s):\n{failures_preview}"
+                + ("\n  …" if result.n_datasets_failed > 5 else "")
+            )
+        else:
+            extra = ""
+
+        title = "Simulação concluída" if result.dry_run else "Projeto selado"
+        suffix = (
+            "\n\n[Simulação] Nenhum arquivo foi modificado. "
+            "Desmarque a opção 'Apenas simular' pra selar de verdade."
+            if result.dry_run else ""
+        )
+        QtWidgets.QMessageBox.information(
+            self._view, title,
+            f"{result.summary()}{extra}{suffix}",
+        )
 
     def _add_dataset(self) -> None:
         """Importa um dataset (.parquet) da biblioteca global para o projeto."""

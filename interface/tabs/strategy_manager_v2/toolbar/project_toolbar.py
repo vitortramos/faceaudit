@@ -26,6 +26,7 @@ class ProjectToolbar(QtWidgets.QToolBar):
     open_project_requested = QtCore.pyqtSignal()
     save_project_requested = QtCore.pyqtSignal()
     close_project_requested = QtCore.pyqtSignal()
+    seal_project_requested = QtCore.pyqtSignal()  # PR L2.b — selar projeto
     pipeline_requested = QtCore.pyqtSignal()
     mining_requested = QtCore.pyqtSignal()
     split_requested = QtCore.pyqtSignal()
@@ -62,6 +63,16 @@ class ProjectToolbar(QtWidgets.QToolBar):
         self.btn_close = self._make_button("Fechar", "Fechar projeto atual")
         self.btn_close.clicked.connect(self.close_project_requested)
         self.addWidget(self.btn_close)
+
+        # PR L2.b — Selar projeto (copia imagens pra dentro do .fa)
+        self.btn_seal = self._make_button(
+            "🔒 Selar",
+            "Selar projeto: copia todas as imagens referenciadas pra "
+            "dentro do .fa e reescreve paths como relativos. Empacota "
+            "o projeto pra entrega forense (USB/zip/laudo).",
+        )
+        self.btn_seal.clicked.connect(self.seal_project_requested)
+        self.addWidget(self.btn_seal)
 
         self.addSeparator()
 
@@ -111,6 +122,7 @@ class ProjectToolbar(QtWidgets.QToolBar):
         """Habilita/desabilita botões que dependem de um projeto aberto."""
         self.btn_save.setEnabled(is_open)
         self.btn_close.setEnabled(is_open)
+        self.btn_seal.setEnabled(is_open)  # PR L2.b
 
     @staticmethod
     def _make_button(text: str, tooltip: str) -> QtWidgets.QPushButton:
