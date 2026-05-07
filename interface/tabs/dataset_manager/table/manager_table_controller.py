@@ -21,6 +21,10 @@ class ManagerTableController(QtCore.QObject):
     # de coluna, adição de coluna custom, etc.). O controller pai escuta
     # para marcar dirty + atualizar `FaceDataset.column_specs`.
     schema_changed = QtCore.pyqtSignal()
+    # PR 15.2: usuário pediu comparação de par via context menu da tabela
+    # (apenas quando 2 linhas estão selecionadas). Emite os dois face_idx
+    # (índices do dataframe = mesma indexação de FaceDataset.faces).
+    compare_pair_requested = QtCore.pyqtSignal(int, int)
 
     def __init__(self, parent_layout=None):
         super().__init__()
@@ -291,7 +295,7 @@ class ManagerTableController(QtCore.QObject):
             # Mostra a quantidade de células selecionadas para dar feedback ao usuário
             indexes = self.view.selectedIndexes()
             count_sel = len(indexes)
-            
+
             txt_set = f"✏️ Definir Valor ({count_sel} células)..."
             txt_rep = f"🔄 Substituir ({count_sel} células)..."
 
@@ -303,6 +307,24 @@ class ManagerTableController(QtCore.QObject):
         else:
             act = menu.addAction(f"🔒 Coluna '{col_label}' não é editável")
             act.setEnabled(False)
+
+        # PR 15.2: comparar par habilitado quando exatamente 2 linhas
+        # estão selecionadas. Independe da editabilidade da coluna —
+        # qualquer célula da linha serve como hover-target.
+        rows_selected = sorted({i.row() for i in self.view.selectedIndexes()})
+        menu.addSeparator()
+        if len(rows_selected) == 2:
+            row_a, row_b = rows_selected
+            act_cmp = menu.addAction("⚖️ Comparar este par lado a lado…")
+            act_cmp.triggered.connect(
+                lambda _checked=False, a=row_a, b=row_b:
+                    self.compare_pair_requested.emit(a, b)
+            )
+        else:
+            act_cmp = menu.addAction(
+                f"⚖️ Comparar par (selecione 2 linhas — {len(rows_selected)})"
+            )
+            act_cmp.setEnabled(False)
 
         menu.exec(self.view.viewport().mapToGlobal(position))
 

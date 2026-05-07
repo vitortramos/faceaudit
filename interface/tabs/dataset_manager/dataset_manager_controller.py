@@ -118,6 +118,12 @@ class DatasetManagerController(QtCore.QObject):
         # Selection sync: galeria → detail panel + tabela
         self.gallery_widget.face_selected.connect(self._on_gallery_face_selected)
 
+        # PR 15.2 — Comparar par lado a lado (tabela + galeria emitem
+        # com a mesma assinatura: compare_pair_requested(int, int))
+        if hasattr(self.table_ctrl, "compare_pair_requested"):
+            self.table_ctrl.compare_pair_requested.connect(self._on_compare_pair)
+        self.gallery_widget.compare_pair_requested.connect(self._on_compare_pair)
+
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
 
@@ -152,6 +158,46 @@ class DatasetManagerController(QtCore.QObject):
             row_data = self.table_ctrl.model.get_row_data(face_idx)
             if row_data is not None:
                 self.detail_ctrl.load_face_data(row_data)
+
+    # ── PR 15.2: comparar par de faces lado a lado ────────────────────
+
+    def _on_compare_pair(self, idx_a: int, idx_b: int) -> None:
+        """Abre o ComparePairController com as duas faces selecionadas.
+
+        Disparado tanto pelo context menu da tabela quanto da galeria.
+        Recebe índices no `dataset.faces` (mesma indexação que o
+        dataframe, por construção). Usa `comparison_service` quando
+        disponível pra calcular cosine similarity.
+        """
+        if self.dataset is None:
+            return
+        n = len(self.dataset.faces)
+        if not (0 <= idx_a < n and 0 <= idx_b < n):
+            return
+        if idx_a == idx_b:
+            QMessageBox.warning(self.view, "Comparar par",
+                                "Os dois índices apontam pra mesma face.")
+            return
+
+        face_a = self.dataset.faces[idx_a]
+        face_b = self.dataset.faces[idx_b]
+
+        # comparison_service vem do container (já usado em outras flows
+        # como `_abrir_analise_real`); ausência é tolerada — o dialog
+        # só não mostra similaridade calculada.
+        comp_svc = None
+        try:
+            comp_svc = self.container.comparison_service()
+        except Exception:
+            pass
+
+        from .compare_pair_dialog.compare_pair_controller import ComparePairController
+        cmp_ctrl = ComparePairController(
+            face_a=face_a, face_b=face_b,
+            comparison_service=comp_svc,
+            parent_view=self.view,
+        )
+        cmp_ctrl.exec()
 
     # ── PR 8: Spreadsheet UX (add column + show/hide) ─────────────────
 

@@ -38,6 +38,9 @@ class GalleryWidget(QtWidgets.QWidget):
     face_selected = QtCore.pyqtSignal(int)
     # Double-click — reservado pra futuro "abrir comparador" ou similar.
     face_double_clicked = QtCore.pyqtSignal(int)
+    # PR 15.2: usuário pediu comparação de par via context menu, com
+    # exatamente 2 thumbs selecionadas.
+    compare_pair_requested = QtCore.pyqtSignal(int, int)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -84,6 +87,11 @@ class GalleryWidget(QtWidgets.QWidget):
         )
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
+        # PR 15.2: context menu com "Comparar par" (gated por 2 selecionados)
+        self.list_widget.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.list_widget.customContextMenuRequested.connect(self._open_context_menu)
         outer.addWidget(self.list_widget, 1)
 
     # ── API pública ───────────────────────────────────────────────────
@@ -220,6 +228,30 @@ class GalleryWidget(QtWidgets.QWidget):
         idx = item.data(QtCore.Qt.ItemDataRole.UserRole)
         if isinstance(idx, int):
             self.face_double_clicked.emit(idx)
+
+    # ── Context menu ──────────────────────────────────────────────────
+
+    def _open_context_menu(self, position) -> None:
+        """Menu de contexto: por enquanto só "Comparar par" gated em 2 sel."""
+        menu = QtWidgets.QMenu(self.list_widget)
+        selected_idxs = sorted({
+            it.data(QtCore.Qt.ItemDataRole.UserRole)
+            for it in self.list_widget.selectedItems()
+            if isinstance(it.data(QtCore.Qt.ItemDataRole.UserRole), int)
+        })
+        if len(selected_idxs) == 2:
+            a, b = selected_idxs
+            act = menu.addAction("⚖️ Comparar este par lado a lado…")
+            act.triggered.connect(
+                lambda _checked=False, ia=a, ib=b:
+                    self.compare_pair_requested.emit(ia, ib)
+            )
+        else:
+            act = menu.addAction(
+                f"⚖️ Comparar par (selecione 2 — {len(selected_idxs)})"
+            )
+            act.setEnabled(False)
+        menu.exec(self.list_widget.viewport().mapToGlobal(position))
 
 
 # ── Helpers livres ────────────────────────────────────────────────────
