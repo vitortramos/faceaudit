@@ -65,10 +65,18 @@ class DatasetManagerController(QtCore.QObject):
         self.table_ctrl = ManagerTableController(parent_layout=None)
         self.detail_ctrl = DetailPanelController(parent_layout=None)
 
+        # PR 15: galeria embutida em QStackedWidget junto com a tabela.
+        # Toggle na toolbar troca o índice (0=tabela, 1=galeria).
+        from .gallery.gallery_widget import GalleryWidget
+        self.gallery_widget = GalleryWidget()
+        self._view_stack = QtWidgets.QStackedWidget()
+        self._view_stack.addWidget(self.table_ctrl.view)   # index 0
+        self._view_stack.addWidget(self.gallery_widget)    # index 1
+
         if hasattr(self.view, 'toolbar_layout'):
             self.view.toolbar_layout.addWidget(self.toolbar_ctrl.view)
         if hasattr(self.view, 'table_layout'):
-            self.view.table_layout.addWidget(self.table_ctrl.view)
+            self.view.table_layout.addWidget(self._view_stack)
         if hasattr(self.view, 'detail_layout'):
             self.view.detail_layout.addWidget(self.detail_ctrl.view)
 
@@ -104,12 +112,46 @@ class DatasetManagerController(QtCore.QObject):
         if hasattr(self.table_ctrl, "schema_changed"):
             self.table_ctrl.schema_changed.connect(self._on_schema_changed)
 
+        # PR 15 — Modo galeria
+        if hasattr(self.toolbar_ctrl, "action_toggle_gallery"):
+            self.toolbar_ctrl.action_toggle_gallery.connect(self._on_toggle_gallery)
+        # Selection sync: galeria → detail panel + tabela
+        self.gallery_widget.face_selected.connect(self._on_gallery_face_selected)
+
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
 
     def _on_table_data_changed(self, *_args):
         if self.dataset is not None:
             self.set_dirty(True)
+
+    # ── PR 15: Modo galeria ──────────────────────────────────────────
+
+    def _on_toggle_gallery(self, is_gallery: bool) -> None:
+        """Toggle entre tabela (index 0) e galeria (index 1)."""
+        if is_gallery:
+            # Repopula a galeria com as faces atuais — barato pra cache hit
+            # (mesmo dataset, mesmos paths). Garante que edições recentes
+            # na tabela aparecem no grid.
+            faces = list(self.dataset.faces) if self.dataset else []
+            self.gallery_widget.populate(faces)
+            self._view_stack.setCurrentIndex(1)
+        else:
+            self._view_stack.setCurrentIndex(0)
+
+    def _on_gallery_face_selected(self, face_idx: int) -> None:
+        """Click no grid → atualiza detail panel (mesma semântica que tabela).
+
+        A tabela e a galeria compartilham o mesmo dataframe via
+        `table_ctrl.model`, então reusamos `get_row_data(face_idx)` pra
+        propagar pra detail panel — mesmo path que o slot da tabela.
+        """
+        if self.dataset is None:
+            return
+        if hasattr(self.table_ctrl, "model"):
+            row_data = self.table_ctrl.model.get_row_data(face_idx)
+            if row_data is not None:
+                self.detail_ctrl.load_face_data(row_data)
 
     # ── PR 8: Spreadsheet UX (add column + show/hide) ─────────────────
 
@@ -179,6 +221,18 @@ class DatasetManagerController(QtCore.QObject):
             self.table_ctrl.model.set_column_specs(column_specs)
 
         self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+
+        # PR 15: invalida cache da galeria (dataset trocou) e re-popula só
+        # se o usuário estiver no modo galeria. No modo tabela, a galeria
+        # popula on-demand quando o usuário ativar o toggle.
+        self.gallery_widget.clear_cache()
+        if self._view_stack.currentIndex() == 1:
+            self.gallery_widget.populate(list(self.dataset.faces))
+        else:
+            # Repopula com lista vazia pra resetar o estado interno do widget
+            # (evita seleção velha quando o user trocar pra modo galeria).
+            self.gallery_widget.populate([])
+
         self.set_dirty(False)
         
         qtd_imgs = len(self.dataset)

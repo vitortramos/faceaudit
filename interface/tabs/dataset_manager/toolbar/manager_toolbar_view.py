@@ -69,11 +69,19 @@ class ManagerToolbarView(QFrame):
             tooltip="Adicionar coluna custom ao dataset (anotação livre)",
         )
 
+        # <--- [PR 15] Modo galeria: toggle entre tabela e grid de thumbnails --->
+        self.btn_toggle_gallery = ToolbarButton(
+            "Galeria", "🖼",
+            tooltip="Alternar entre visualização de tabela e grid de thumbnails",
+        )
+        self.btn_toggle_gallery.setCheckable(True)
+
         btn_layout.addWidget(self.btn_stats)
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
         btn_layout.addWidget(self.btn_filter)
         btn_layout.addWidget(self.btn_clear_filter)
         btn_layout.addWidget(self.btn_add_column)
+        btn_layout.addWidget(self.btn_toggle_gallery)
         
         btn_layout.addStretch() # Empurra tudo para a esquerda
 
@@ -96,6 +104,7 @@ class ManagerToolbarView(QFrame):
             self.btn_analyze, # <--- [NOVO] Controlado dinamicamente
             self.btn_filter,
             self.btn_add_column,  # <--- [PR 8]
+            self.btn_toggle_gallery,  # <--- [PR 15]
         ]
         for btn in buttons:
             btn.setEnabled(enabled)
