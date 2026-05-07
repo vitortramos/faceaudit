@@ -48,14 +48,27 @@ class StepConfigPanel(QtWidgets.QWidget):
 
     config_changed = QtCore.pyqtSignal(object)  # ImageProcessingStepConfig
 
-    # Apenas tipos disponíveis em I1 — os demais (MOTION/BOX, EYES/MOUTH,
-    # USER_RECTANGLE) ficam ocultos até serem implementados.
-    _BLUR_KINDS_I1 = [BlurKind.GAUSSIAN]
-    _CROP_MODES_I1 = [CropMode.CENTERED, CropMode.FACE_DETECTED]
-    _OCCLUSION_KINDS_I1 = [OcclusionKind.RECTANGLE_BLACK]
-    _OCCLUSION_POSITIONS_I1 = [
-        OcclusionPosition.CENTER, OcclusionPosition.RANDOM,
+    # Tipos disponíveis no MVP — os demais (MOTION/BOX, USER_RECTANGLE,
+    # MASK_FACE, RECTANGLE_NOISE) ficam ocultos até serem implementados.
+    _BLUR_KINDS_AVAILABLE = [BlurKind.GAUSSIAN]
+    _CROP_MODES_AVAILABLE = [CropMode.CENTERED, CropMode.FACE_DETECTED]
+    # PR I7 — CIRCLE_BLACK + EYES/MOUTH adicionados
+    _OCCLUSION_KINDS_AVAILABLE = [
+        OcclusionKind.RECTANGLE_BLACK,
+        OcclusionKind.CIRCLE_BLACK,
     ]
+    # Positions liberadas por kind (combos dinâmicos)
+    _OCCLUSION_POSITIONS_BY_KIND = {
+        OcclusionKind.RECTANGLE_BLACK: [
+            OcclusionPosition.CENTER, OcclusionPosition.RANDOM,
+        ],
+        OcclusionKind.CIRCLE_BLACK: [
+            OcclusionPosition.CENTER,
+            OcclusionPosition.RANDOM,
+            OcclusionPosition.EYES,
+            OcclusionPosition.MOUTH,
+        ],
+    }
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -121,9 +134,9 @@ class StepConfigPanel(QtWidgets.QWidget):
 
     def _build_blur_form(self, config: BlurConfig):
         cmb_kind = QtWidgets.QComboBox()
-        for k in self._BLUR_KINDS_I1:
+        for k in self._BLUR_KINDS_AVAILABLE:
             cmb_kind.addItem(k.label_pt, userData=k)
-        cmb_kind.setCurrentIndex(self._BLUR_KINDS_I1.index(config.kind))
+        cmb_kind.setCurrentIndex(self._BLUR_KINDS_AVAILABLE.index(config.kind))
 
         spn_kernel = QtWidgets.QSpinBox()
         spn_kernel.setRange(1, 99)
@@ -201,9 +214,9 @@ class StepConfigPanel(QtWidgets.QWidget):
 
     def _build_crop_form(self, config: CropConfig):
         cmb_mode = QtWidgets.QComboBox()
-        for m in self._CROP_MODES_I1:
+        for m in self._CROP_MODES_AVAILABLE:
             cmb_mode.addItem(m.label_pt, userData=m)
-        cmb_mode.setCurrentIndex(self._CROP_MODES_I1.index(config.mode))
+        cmb_mode.setCurrentIndex(self._CROP_MODES_AVAILABLE.index(config.mode))
 
         spn_w = QtWidgets.QSpinBox()
         spn_w.setRange(8, 4096)
@@ -267,22 +280,19 @@ class StepConfigPanel(QtWidgets.QWidget):
         _refresh_visibility()
 
     def _build_occlusion_form(self, config: OcclusionConfig):
+        """PR I7 — combos dinâmicos: kind define quais positions estão
+        disponíveis. Spin coverage_pct vs radius_pct alternam conforme
+        kind selecionado. EYES/MOUTH só aparecem com CIRCLE_BLACK.
+        """
         cmb_kind = QtWidgets.QComboBox()
-        for k in self._OCCLUSION_KINDS_I1:
+        for k in self._OCCLUSION_KINDS_AVAILABLE:
             cmb_kind.addItem(k.label_pt, userData=k)
-        cmb_kind.setCurrentIndex(
-            self._OCCLUSION_KINDS_I1.index(config.kind)
-        )
+        if config.kind in self._OCCLUSION_KINDS_AVAILABLE:
+            cmb_kind.setCurrentIndex(
+                self._OCCLUSION_KINDS_AVAILABLE.index(config.kind)
+            )
 
         cmb_pos = QtWidgets.QComboBox()
-        for p in self._OCCLUSION_POSITIONS_I1:
-            cmb_pos.addItem(p.label_pt, userData=p)
-        # Defensivo: se config.position vier como EYES/MOUTH (não
-        # disponível em I1), cai pra CENTER no display.
-        if config.position in self._OCCLUSION_POSITIONS_I1:
-            cmb_pos.setCurrentIndex(
-                self._OCCLUSION_POSITIONS_I1.index(config.position)
-            )
 
         spn_coverage = QtWidgets.QDoubleSpinBox()
         spn_coverage.setRange(0.01, 1.0)
@@ -290,25 +300,85 @@ class StepConfigPanel(QtWidgets.QWidget):
         spn_coverage.setValue(float(config.coverage_pct))
         spn_coverage.setDecimals(2)
         spn_coverage.setToolTip(
-            "Fração da área da imagem coberta (0.25 = 25%)."
+            "Fração da ÁREA da imagem coberta pelo retângulo "
+            "(0.25 = 25%)."
         )
+
+        spn_radius = QtWidgets.QDoubleSpinBox()
+        spn_radius.setRange(0.01, 0.50)
+        spn_radius.setSingleStep(0.02)
+        spn_radius.setValue(float(config.radius_pct))
+        spn_radius.setDecimals(3)
+        spn_radius.setToolTip(
+            "Raio do círculo como fração do MENOR LADO da imagem "
+            "(0.10 = 10% do min(H, W)). Limite 0.50 mantém círculo "
+            "dentro do frame em CENTER."
+        )
+
+        # Linhas condicionais — guardamos QLabel pra esconder/mostrar
+        coverage_label = QtWidgets.QLabel("Cobertura:")
+        radius_label = QtWidgets.QLabel("Raio:")
+
+        def _refresh_positions():
+            """Repopula combo de positions conforme kind selecionado."""
+            current_pos = cmb_pos.currentData() if cmb_pos.count() else None
+            kind = cmb_kind.currentData()
+            allowed = self._OCCLUSION_POSITIONS_BY_KIND.get(kind, [])
+            cmb_pos.blockSignals(True)
+            cmb_pos.clear()
+            for p in allowed:
+                cmb_pos.addItem(p.label_pt, userData=p)
+            # Restaura seleção quando possível, senão CENTER (sempre presente)
+            if current_pos in allowed:
+                cmb_pos.setCurrentIndex(allowed.index(current_pos))
+            elif config.position in allowed:
+                cmb_pos.setCurrentIndex(allowed.index(config.position))
+            else:
+                cmb_pos.setCurrentIndex(0)
+            cmb_pos.blockSignals(False)
+            # Sincroniza config (mudança de kind pode forçar position)
+            new_pos = cmb_pos.currentData()
+            if new_pos is not None and new_pos != config.position:
+                config.position = new_pos
+
+        def _refresh_visibility():
+            """Mostra coverage OU radius conforme kind."""
+            is_rect = cmb_kind.currentData() == OcclusionKind.RECTANGLE_BLACK
+            coverage_label.setVisible(is_rect)
+            spn_coverage.setVisible(is_rect)
+            radius_label.setVisible(not is_rect)
+            spn_radius.setVisible(not is_rect)
 
         def _on_kind():
             config.kind = cmb_kind.currentData()
+            _refresh_positions()
+            _refresh_visibility()
             self._emit_changed()
 
         def _on_pos():
-            config.position = cmb_pos.currentData()
+            new = cmb_pos.currentData()
+            if new is not None:
+                config.position = new
             self._emit_changed()
 
         def _on_coverage():
             config.coverage_pct = float(spn_coverage.value())
             self._emit_changed()
 
+        def _on_radius():
+            config.radius_pct = float(spn_radius.value())
+            self._emit_changed()
+
         cmb_kind.currentIndexChanged.connect(_on_kind)
         cmb_pos.currentIndexChanged.connect(_on_pos)
         spn_coverage.valueChanged.connect(_on_coverage)
+        spn_radius.valueChanged.connect(_on_radius)
 
         self._form_layout.addRow("Tipo:", cmb_kind)
         self._form_layout.addRow("Posição:", cmb_pos)
-        self._form_layout.addRow("Cobertura:", spn_coverage)
+        self._form_layout.addRow(coverage_label, spn_coverage)
+        self._form_layout.addRow(radius_label, spn_radius)
+
+        # Estado inicial coerente com o kind do config
+        _refresh_positions()
+        _refresh_visibility()
