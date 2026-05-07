@@ -40,6 +40,9 @@ class AuditOperation(str, Enum):
     # Saída de dados
     EXPORT = "export"
 
+    # PR L1d (Tema Localização) — cópia/relativização de imagens
+    COPY_IMAGES = "copy_images"
+
     # Auditoria meta
     INTEGRITY_VERIFIED = "integrity_verified"
     INTEGRITY_FAILED = "integrity_failed"
@@ -60,6 +63,7 @@ class AuditOperation(str, Enum):
             "merge": "🔗",
             "split": "✂️",
             "export": "📤",
+            "copy_images": "🗂",
             "integrity_verified": "✅",
             "integrity_failed": "❌",
         }.get(self.value, "•")
@@ -81,6 +85,7 @@ class AuditOperation(str, Enum):
             "merge": "Concatenação",
             "split": "Divisão",
             "export": "Exportação",
+            "copy_images": "Localização (cópia/reescrita de imagens)",
             "integrity_verified": "Integridade verificada",
             "integrity_failed": "Falha de integridade",
         }.get(self.value, self.value)

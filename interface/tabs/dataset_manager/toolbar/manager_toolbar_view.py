@@ -73,6 +73,13 @@ class ManagerToolbarView(QFrame):
                     "no dataset com verificação de integridade SHA-256.",
         )
 
+        # <--- [PR L1d, Tema Localização] Localizar paths do dataset --->
+        self.btn_localize = ToolbarButton(
+            "Localizar", "🗂",
+            tooltip="Converte paths absolutos em relativos, opcionalmente "
+                    "copiando imagens pra pasta autocontida (portátil).",
+        )
+
         self.btn_filter = ToolbarButton("Filtrar", "🔍")
         self.btn_clear_filter = ToolbarButton("Limpar", "🗑️", tooltip="Remover filtros")
         self.btn_clear_filter.setEnabled(False)
@@ -109,6 +116,7 @@ class ManagerToolbarView(QFrame):
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
         btn_layout.addWidget(self.btn_schema_report)  # <--- [PR 24]
         btn_layout.addWidget(self.btn_audit_log)  # <--- [PR 25]
+        btn_layout.addWidget(self.btn_localize)  # <--- [PR L1d]
         btn_layout.addWidget(self.btn_filter)
         btn_layout.addWidget(self.btn_clear_filter)
         btn_layout.addWidget(self.btn_add_column)
@@ -137,6 +145,7 @@ class ManagerToolbarView(QFrame):
             self.btn_analyze, # <--- [NOVO] Controlado dinamicamente
             self.btn_schema_report,  # <--- [PR 24]
             self.btn_audit_log,  # <--- [PR 25]
+            self.btn_localize,  # <--- [PR L1d]
             self.btn_filter,
             self.btn_add_column,  # <--- [PR 8]
             self.btn_toggle_gallery,  # <--- [PR 15]

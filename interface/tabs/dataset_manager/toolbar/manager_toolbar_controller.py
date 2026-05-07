@@ -24,6 +24,7 @@ class ManagerToolbarController(QtCore.QObject):
     action_analyze = QtCore.pyqtSignal() # <--- [NOVO] Sinal de Análise Interna
     action_schema_report = QtCore.pyqtSignal()  # PR 24 — relatório de schema + export
     action_audit_log = QtCore.pyqtSignal()      # PR 25 — audit log forense
+    action_localize = QtCore.pyqtSignal()       # PR L1d — localização de paths
     action_filter = QtCore.pyqtSignal()
     action_clear_filter = QtCore.pyqtSignal()
 
@@ -64,6 +65,7 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_analyze.clicked.connect(self.action_analyze.emit) # <--- [NOVO] Conexão
         self.view.btn_schema_report.clicked.connect(self.action_schema_report.emit)  # PR 24
         self.view.btn_audit_log.clicked.connect(self.action_audit_log.emit)  # PR 25
+        self.view.btn_localize.clicked.connect(self.action_localize.emit)  # PR L1d
         self.view.btn_filter.clicked.connect(self.action_filter.emit)
         self.view.btn_clear_filter.clicked.connect(self.action_clear_filter.emit)
         self.view.btn_add_column.clicked.connect(self.action_add_column.emit)  # PR 8

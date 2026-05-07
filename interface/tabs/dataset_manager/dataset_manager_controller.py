@@ -22,6 +22,7 @@ from .dataset_analysis.dataset_analysis_controller import DatasetAnalysisControl
 
 # --- WORKERS (PROCESSAMENTO) ---
 from .workers.load_dataset_worker import LoadDatasetWorker
+from .workers.localize_dataset_worker import LocalizeDatasetWorker  # PR L1d
 from .workers.filter_worker import FilterWorker
 from .workers.new_dataset_worker import NewDatasetWorker
 from .workers.enrich_worker import EnrichWorker
@@ -110,6 +111,9 @@ class DatasetManagerController(QtCore.QObject):
         # PR 25 (Tema 5.4) — audit log forense
         if hasattr(self.toolbar_ctrl, "action_audit_log"):
             self.toolbar_ctrl.action_audit_log.connect(self.fluxo_audit_log)
+        # PR L1d — Localização de paths
+        if hasattr(self.toolbar_ctrl, "action_localize"):
+            self.toolbar_ctrl.action_localize.connect(self.fluxo_localizar)
 
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
@@ -840,6 +844,144 @@ class DatasetManagerController(QtCore.QObject):
         from .audit_log_dialog import AuditLogDialog
         dialog = AuditLogDialog(self.current_path, parent=self.view)
         dialog.exec()
+
+    # =================================================================================
+    # PR L1d — FLUXO DE LOCALIZAÇÃO (paths absolutos → relativos / cópia)
+    # =================================================================================
+    def fluxo_localizar(self):
+        """Abre o LocalizeDatasetDialog. Após exec aceito, dispara o
+        worker de localização e, ao final, substitui o dataset
+        corrente + propõe Save As (consistência com Enrich/Filter)."""
+        if not self.dataset:
+            return
+        self.sync_changes_from_table()
+
+        # Sugere target_dir = <parquet_dir_atual>/<dataset_name>__localized/
+        if self.current_path:
+            base = Path(self.current_path).parent
+        else:
+            base = Path(self._get_initial_dir() or os.getcwd())
+        suggested = base / f"{self.dataset.name}__localized"
+
+        from .localize_dataset_dialog import LocalizeDatasetDialog
+        dialog = LocalizeDatasetDialog(
+            dataset_name=self.dataset.name,
+            suggested_target_dir=suggested,
+            parent=self.view,
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            opts = dialog.get_options()
+        except ValueError as e:
+            QMessageBox.warning(self.view, "Configuração inválida", str(e))
+            return
+
+        self._iniciar_worker_localize(
+            target_dir=opts["target_dir"],
+            mode=opts["mode"],
+            naming=opts["naming"],
+            skip_existing=opts["skip_existing"],
+        )
+
+    def _iniciar_worker_localize(
+        self, target_dir: Path, mode, naming, skip_existing: bool,
+    ):
+        worker = LocalizeDatasetWorker(
+            dataset=self.dataset,
+            target_dir=target_dir,
+            mode=mode,
+            naming=naming,
+            skip_existing=skip_existing,
+        )
+        # Guarda contexto pra usar no on_finished
+        self._localize_target_dir = target_dir
+        self._localize_mode = mode
+        self._localize_naming = naming
+        self._run_worker(
+            worker,
+            label=f"Localizando dataset: {self.dataset.name}",
+            allow_cancel=True,
+            determinate=True,
+            use_log_dialog=True,  # feedback constante (decisão #3 do usuário)
+            on_finished=self._on_localize_concluido,
+        )
+
+    def _on_localize_concluido(self, result):
+        """Result é `LocalizationResult` ou None (cancelado/erro)."""
+        if result is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "Localização cancelada ou finalizada sem resultado.",
+            )
+            return
+
+        # Resumo na barra de status / popup
+        if result.n_failed:
+            failures_preview = "\n".join(
+                f"  • {p}: {msg}" for p, msg in list(result.failures)[:5]
+            )
+            extra = (
+                f"\n\n⚠ {result.n_failed} falha(s):\n{failures_preview}"
+                + ("\n  …" if result.n_failed > 5 else "")
+            )
+        else:
+            extra = ""
+
+        # PR 25 (Tema 5.4) — registra no audit log do dataset original
+        # ANTES de trocar o dataset corrente. Anchor da cadeia de
+        # custódia: depois de localizar, o original perde 'rastreio
+        # vivo' (continua existindo no disco mas o usuário fica com o
+        # localizado). O audit no original preserva essa transição.
+        try:
+            self._audit(
+                AuditOperation.COPY_IMAGES,
+                (
+                    f"Localização concluída: {result.summary()}. "
+                    f"Destino: {result.target_dir}"
+                ),
+                metadata={
+                    "mode": result.mode.value,
+                    "naming": result.naming.value,
+                    "target_dir": str(result.target_dir),
+                    "n_processed": result.n_processed,
+                    "n_copied": result.n_copied,
+                    "n_skipped": result.n_skipped,
+                    "n_failed": result.n_failed,
+                    "duration_seconds": round(result.duration_seconds, 3),
+                },
+            )
+        except Exception:
+            pass  # audit é best-effort
+
+        # Substitui o dataset corrente pelo localizado e força Save As
+        # (paths e schema mudaram — current_path do original não vale).
+        self.dataset = result.dataset
+        self.dataset_original = None
+        self.current_path = None
+        self.set_dirty(True)
+        self.carregar_dataset_na_tela(self.dataset, path=None)
+
+        QMessageBox.information(
+            self.view, "Localização concluída",
+            f"Dataset localizado em memória.\n\n{result.summary()}{extra}\n\n"
+            f"Próximo passo: salvar o dataset (sugerido em "
+            f"{result.target_dir / (self.dataset.name + '.parquet')}).",
+        )
+
+        # Sugere Save As com path pré-preenchido pra dentro do target_dir
+        suggested_save = result.target_dir / f"{self.dataset.name}.parquet"
+        path, _ = QFileDialog.getSaveFileName(
+            self.view, "Salvar dataset localizado",
+            str(suggested_save), "Parquet (*.parquet)",
+        )
+        if path:
+            self.dataset.name = Path(path).stem
+            self.dataset.to_parquet(path)
+            self.current_path = path
+            self.set_dirty(False)
+            self.carregar_dataset_na_tela(self.dataset, path)
 
     # =================================================================================
     # [NOVO] FLUXO DE ANÁLISE DO DATASET (AUDITORIA E MINERAÇÃO BIOMÉTRICA)
