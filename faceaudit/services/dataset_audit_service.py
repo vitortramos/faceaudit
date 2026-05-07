@@ -18,6 +18,8 @@ import os
 from collections import defaultdict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import numpy as np
+
 from faceaudit.enums.quality_score_type import QualityScoreType
 from faceaudit.models.audit import AuditFinding, AuditIssue, AuditSeverity
 from faceaudit.models.column_catalog import ColumnRole, build_role_index
@@ -32,6 +34,14 @@ CATEGORY_PHYSICAL = "Integridade Física"
 CATEGORY_LABELS = "Integridade Lógica (rótulos)"
 CATEGORY_QUALITY = "Qualidade das Amostras"
 CATEGORY_BIOMETRIC = "Auditoria Biométrica"
+
+
+def _l2_normalize(matrix: np.ndarray) -> np.ndarray:
+    """Fallback quando `comparison_service` não foi injetado.
+    Mesmo cálculo que `ComparisonService._l2_normalize_rows`."""
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    norms[norms < 1e-12] = 1.0
+    return matrix / norms
 
 
 class DatasetAuditService:
@@ -377,6 +387,281 @@ class DatasetAuditService:
                 "threshold": float(threshold),
                 "column_name": col_name,
             },
+        )
+
+    # =========================================================================
+    # Auditorias O(N²) biométricas (PR 13)
+    # =========================================================================
+
+    def audit_duplicate_identities(
+        self,
+        dataset: FaceDataset,
+        threshold: float = 0.85,
+        progress_cb: Optional[Callable[[str, int], None]] = None,
+    ) -> AuditFinding:
+        """Detecta identidades duplicadas — mesma pessoa marcada com 2+ labels.
+
+        Estratégia: computa centróides L2-normalizados por identidade, mede
+        cosseno entre centróides e flagra pares acima do threshold. Cada par
+        vira uma `AuditIssue` com TODAS as faces das duas identidades nos
+        `locators` (até o limite do preview), com `identities` posição-
+        alinhadas pra caption por face.
+
+        Custo: O(K²·D) onde K = número de identidades e D = dimensão do
+        embedding. Pra K=5000, D=256 leva poucos segundos.
+        """
+        cb = progress_cb or (lambda *_a: None)
+        cb("Convertendo para embedding dataset…", 5)
+
+        emb_ds = dataset.to_embedding_dataset()
+        if not emb_ds.items:
+            return self._empty_finding(
+                "duplicate_identities", "Identidades duplicadas",
+                CATEGORY_BIOMETRIC, AuditSeverity.WARNING,
+                "Dataset sem embeddings — não foi possível computar centróides",
+            )
+
+        cb("Calculando centróides por identidade…", 20)
+        centroids, identity_order, faces_by_identity = self._compute_identity_centroids(emb_ds)
+        if len(identity_order) < 2:
+            return self._empty_finding(
+                "duplicate_identities", "Identidades duplicadas",
+                CATEGORY_BIOMETRIC, AuditSeverity.WARNING,
+                f"Apenas {len(identity_order)} identidade(s) — comparação inviável",
+            )
+
+        cb(f"Comparando {len(identity_order)} identidades…", 50)
+        # Cosine sim entre centróides já L2-normalizados = produto interno
+        sim_matrix = centroids @ centroids.T
+        # Zera diagonal pra não comparar identidade consigo mesma
+        np.fill_diagonal(sim_matrix, -np.inf)
+
+        cb("Coletando pares acima do threshold…", 80)
+        issues: List[AuditIssue] = []
+        # Iteração no triângulo superior pra evitar duplicar (a, b) e (b, a)
+        n = len(identity_order)
+        for i in range(n):
+            for j in range(i + 1, n):
+                sim = float(sim_matrix[i, j])
+                if sim < threshold:
+                    continue
+                id_a, id_b = identity_order[i], identity_order[j]
+                faces_a = faces_by_identity[id_a]
+                faces_b = faces_by_identity[id_b]
+                # Locators concatenados (até cap razoável)
+                locators = tuple(faces_a + faces_b)
+                identities_aligned = (
+                    [id_a] * len(faces_a) + [id_b] * len(faces_b)
+                )
+                issues.append(AuditIssue(
+                    locators=locators,
+                    description=(
+                        f"'{id_a}' ↔ '{id_b}' — centróides com similaridade "
+                        f"{sim:.3f} (≥ {threshold:.2f})"
+                    ),
+                    metadata={
+                        "identity_a": id_a,
+                        "identity_b": id_b,
+                        "similarity": sim,
+                        "identities": identities_aligned,
+                        "n_faces_a": len(faces_a),
+                        "n_faces_b": len(faces_b),
+                    },
+                ))
+
+        # Ordena issues do mais confuso pro menos confuso
+        issues.sort(key=lambda x: -x.metadata.get("similarity", 0.0))
+
+        cb("Concluído.", 100)
+        return AuditFinding(
+            audit_id="duplicate_identities",
+            audit_label="Identidades duplicadas (pessoa em 2+ labels)",
+            category=CATEGORY_BIOMETRIC,
+            severity=AuditSeverity.WARNING,
+            issues=tuple(issues),
+            summary=(
+                f"{len(issues)} par(es) de identidades com centróide ≥ "
+                f"{threshold:.2f}"
+            ),
+            metadata={"threshold": threshold, "n_identities": n},
+        )
+
+    def audit_mixed_identities(
+        self,
+        dataset: FaceDataset,
+        outlier_threshold: float = 0.4,
+        min_samples: int = 3,
+        progress_cb: Optional[Callable[[str, int], None]] = None,
+    ) -> AuditFinding:
+        """Detecta identidades misturadas — mesmo label cobrindo 2+ pessoas.
+
+        Estratégia: pra cada identidade com ≥ `min_samples` amostras, computa
+        centróide e mede cosseno de cada face vs o próprio centróide. Faces
+        com cosseno < `outlier_threshold` são consideradas outliers — provável
+        anotação errada (face de outra pessoa rotulada como esta).
+
+        Cada identidade com pelo menos 1 outlier vira uma issue. Locators
+        listam outliers PRIMEIRO (visual em destaque) seguidos das típicas
+        (até completar 8 — limite do preview), com `locator_labels` posição-
+        alinhado distinguindo "outlier" / "típica" pra caption.
+
+        Custo: O(N) onde N = número de faces.
+        """
+        cb = progress_cb or (lambda *_a: None)
+        cb("Convertendo para embedding dataset…", 5)
+
+        emb_ds = dataset.to_embedding_dataset()
+        if not emb_ds.items:
+            return self._empty_finding(
+                "mixed_identities", "Identidades misturadas",
+                CATEGORY_BIOMETRIC, AuditSeverity.WARNING,
+                "Dataset sem embeddings — não foi possível computar centróides",
+            )
+
+        cb("Agrupando faces por identidade…", 15)
+        groups: Dict[str, List[int]] = defaultdict(list)
+        for idx, item in enumerate(emb_ds.items):
+            ident = getattr(item, "identity", None)
+            if ident:
+                groups[str(ident)].append(idx)
+
+        # Filtra só identidades com massa estatística suficiente
+        groups = {k: v for k, v in groups.items() if len(v) >= min_samples}
+        if not groups:
+            return self._empty_finding(
+                "mixed_identities", "Identidades misturadas",
+                CATEGORY_BIOMETRIC, AuditSeverity.WARNING,
+                f"Nenhuma identidade com ≥ {min_samples} amostras — análise inviável",
+            )
+
+        cb(f"Analisando outliers em {len(groups)} identidades…", 30)
+        matrix = emb_ds.matrix
+        norm_matrix = self._comparison._l2_normalize_rows(matrix) if self._comparison else _l2_normalize(matrix)
+
+        issues: List[AuditIssue] = []
+        n_processed = 0
+        n_total = len(groups)
+        for identity, idx_list in groups.items():
+            n_processed += 1
+            if n_processed % max(1, n_total // 10) == 0:
+                pct = 30 + int(60 * n_processed / n_total)
+                cb(f"Identidade {n_processed}/{n_total}…", min(pct, 90))
+
+            embs = norm_matrix[idx_list]
+            centroid = embs.mean(axis=0)
+            centroid /= max(np.linalg.norm(centroid), 1e-12)
+
+            # Cosine de cada face com o centróide
+            sims = embs @ centroid
+
+            outlier_local_idx = np.where(sims < outlier_threshold)[0]
+            if len(outlier_local_idx) == 0:
+                continue
+
+            # Ordena outliers do pior pro melhor (mais distantes primeiro)
+            outlier_local_idx = outlier_local_idx[np.argsort(sims[outlier_local_idx])]
+            # Paths das outliers (em ordem)
+            outlier_paths = [
+                getattr(emb_ds.items[idx_list[i]], "image_path", "")
+                for i in outlier_local_idx
+            ]
+            # Paths típicas pra contraste visual — top-2 mais alinhadas
+            typical_local_idx = np.argsort(-sims)[:2]
+            typical_paths = [
+                getattr(emb_ds.items[idx_list[i]], "image_path", "")
+                for i in typical_local_idx
+                if sims[i] >= outlier_threshold  # de fato típica
+            ]
+
+            locators = tuple(outlier_paths + typical_paths)
+            labels = (
+                ["outlier"] * len(outlier_paths)
+                + ["típica"] * len(typical_paths)
+            )
+
+            issues.append(AuditIssue(
+                locators=locators,
+                description=(
+                    f"'{identity}' — {len(outlier_local_idx)}/{len(idx_list)} "
+                    f"face(s) com cos < {outlier_threshold:.2f} ao centróide"
+                ),
+                metadata={
+                    "identity": identity,
+                    "n_outliers": int(len(outlier_local_idx)),
+                    "n_total": len(idx_list),
+                    "min_similarity": float(sims.min()),
+                    "mean_similarity": float(sims.mean()),
+                    "locator_labels": labels,
+                },
+            ))
+
+        # Ordena issues por severidade — mais outliers em primeiro
+        issues.sort(key=lambda x: -x.metadata.get("n_outliers", 0))
+
+        cb("Concluído.", 100)
+        return AuditFinding(
+            audit_id="mixed_identities",
+            audit_label="Identidades misturadas (label cobre 2+ pessoas)",
+            category=CATEGORY_BIOMETRIC,
+            severity=AuditSeverity.WARNING,
+            issues=tuple(issues),
+            summary=(
+                f"{len(issues)} identidade(s) com outliers intra-classe "
+                f"(cos < {outlier_threshold:.2f})"
+            ),
+            metadata={
+                "outlier_threshold": outlier_threshold,
+                "min_samples": min_samples,
+            },
+        )
+
+    def _compute_identity_centroids(self, emb_dataset):
+        """Helper compartilhado: agrupa embeddings por identidade, retorna
+        matriz de centróides L2-normalizados + ordem das identidades + dict
+        identidade → list de image_paths.
+        """
+        groups: Dict[str, List[int]] = defaultdict(list)
+        for idx, item in enumerate(emb_dataset.items):
+            ident = getattr(item, "identity", None)
+            if ident:
+                groups[str(ident)].append(idx)
+
+        identity_order = sorted(groups.keys())
+        if not identity_order:
+            return np.zeros((0, 0)), [], {}
+
+        matrix = emb_dataset.matrix
+        norm_matrix = (
+            self._comparison._l2_normalize_rows(matrix)
+            if self._comparison else _l2_normalize(matrix)
+        )
+
+        D = matrix.shape[1]
+        centroids = np.zeros((len(identity_order), D), dtype=np.float64)
+        faces_by_identity: Dict[str, List[str]] = {}
+        for i, ident in enumerate(identity_order):
+            idxs = groups[ident]
+            centroids[i] = norm_matrix[idxs].mean(axis=0)
+            faces_by_identity[ident] = [
+                getattr(emb_dataset.items[k], "image_path", "") for k in idxs
+            ]
+
+        # L2 normaliza os próprios centróides pra que produto interno = cosseno
+        norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+        norms[norms < 1e-12] = 1.0
+        centroids = centroids / norms
+
+        return centroids, identity_order, faces_by_identity
+
+    @staticmethod
+    def _empty_finding(
+        audit_id: str, label: str, category: str,
+        severity: AuditSeverity, summary: str,
+    ) -> AuditFinding:
+        """Atalho pra finding sem issues — usado nos casos limite."""
+        return AuditFinding(
+            audit_id=audit_id, audit_label=label, category=category,
+            severity=severity, issues=(), summary=summary,
         )
 
     # =========================================================================

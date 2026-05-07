@@ -22,6 +22,9 @@ from faceaudit.services.dataset_audit_service import (
 )
 
 from .dataset_analysis_view import DatasetAnalysisView
+from interface.tabs.dataset_manager.workers.biometric_audit_worker import (
+    BiometricAuditWorker,
+)
 from interface.tabs.dataset_manager.workers.dataset_analysis_worker import (
     DatasetAnalysisWorker,
 )
@@ -50,6 +53,8 @@ class DatasetAnalysisController(QtCore.QObject):
         self._comparison_service = comparison_service
         self._mining_runner: Optional[WorkerProgressRunner] = None
         self._mining_findings: List[AuditFinding] = []  # cache do último mining
+        self._biometric_runner: Optional[WorkerProgressRunner] = None
+        self._biometric_findings: List[AuditFinding] = []  # cache da última biometric
 
         self.view = DatasetAnalysisView(
             dataset_name=dataset.name or "Dataset",
@@ -58,6 +63,7 @@ class DatasetAnalysisController(QtCore.QObject):
         self.view.delete_issues_requested.connect(self._on_delete_issues)
         self.view.rerun_requested.connect(self._run_quick_audits)
         self.view.run_heavy_mining_requested.connect(self._run_heavy_mining)
+        self.view.run_biometric_audit_requested.connect(self._run_biometric_audit)
 
         # Roda as auditorias O(N) imediatamente ao abrir.
         self._run_quick_audits()
@@ -79,7 +85,10 @@ class DatasetAnalysisController(QtCore.QObject):
             )
             return
 
-        # Mantém findings de mining anexados (se válidos pro dataset atual).
+        # Mantém findings de mining e auditoria biométrica anexados (se já
+        # rodaram pra esse dataset). Re-execuções vão limpar esses caches.
+        if self._biometric_findings:
+            findings = list(findings) + list(self._biometric_findings)
         if self._mining_findings:
             findings = list(findings) + list(self._mining_findings)
         self.view.set_findings(findings)
@@ -155,6 +164,59 @@ class DatasetAnalysisController(QtCore.QObject):
     def _cleanup_mining_runner(self) -> None:
         self._mining_runner = None
 
+    # ── Auditoria biométrica O(N²) — duplicate / mixed identities ────────
+
+    def _run_biometric_audit(self) -> None:
+        """Dispara `audit_duplicate_identities` + `audit_mixed_identities`
+        em worker thread. Resultado vira 2 AuditFindings na categoria
+        biométrica, anexados à árvore."""
+        if self._biometric_runner is not None:
+            QMessageBox.information(
+                self.view, "Aguarde", "Auditoria biométrica já em execução.",
+            )
+            return
+
+        worker = BiometricAuditWorker(
+            dataset=self.dataset,
+            audit_service=self._audit_service,
+            duplicate_threshold=0.85,
+            mixed_outlier_threshold=0.4,
+            mixed_min_samples=3,
+        )
+        worker.finished.connect(self._on_biometric_done)
+        worker.error.connect(self._on_biometric_error)
+
+        self._biometric_runner = WorkerProgressRunner(
+            self.view,
+            worker,
+            label="Auditoria biométrica de identidades…",
+            allow_cancel=True,
+            determinate=True,
+            on_finished=lambda *_a: self._cleanup_biometric_runner(),
+            on_error=lambda *_a: self._cleanup_biometric_runner(),
+        )
+        self.view.btn_run_biometric.setEnabled(False)
+        self._biometric_runner.start()
+
+    def _on_biometric_done(self, payload) -> None:
+        """payload é List[AuditFinding] ou None (cancelado/erro)."""
+        if not payload:
+            self.view.btn_run_biometric.setEnabled(True)
+            return
+        self._biometric_findings = list(payload)
+        self.view.btn_run_biometric.setEnabled(True)
+        self.view.btn_run_biometric.setText("✅ Auditoria de IDs concluída — reexecutar?")
+        self._run_quick_audits()  # re-render com os novos findings
+
+    def _on_biometric_error(self, msg: str) -> None:
+        self.view.btn_run_biometric.setEnabled(True)
+        QMessageBox.critical(
+            self.view, "Erro na auditoria biométrica", msg,
+        )
+
+    def _cleanup_biometric_runner(self) -> None:
+        self._biometric_runner = None
+
     def _df_to_finding(
         self,
         df,
@@ -217,10 +279,13 @@ class DatasetAnalysisController(QtCore.QObject):
         ]
         deleted = before - len(self.dataset.faces)
 
-        # Limpa cache de mining — paths podem ter sido removidos, mas é
-        # cara de manter sync por face. Re-rodar mining é decisão do usuário.
+        # Limpa caches de auditoria pesada — paths podem ter sido removidos,
+        # mas é caro manter sync por face. Re-rodar é decisão do usuário.
         if self._mining_findings:
             self._mining_findings = []
+        if self._biometric_findings:
+            self._biometric_findings = []
+            self.view.btn_run_biometric.setText("🔬 Auditar identidades (pesada)")
 
         # Libera o cache de pixmaps do preview — paths excluídos não
         # serão mais necessários. Memória O(N_thumbs * 200x200 RGBA).

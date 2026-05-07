@@ -46,6 +46,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
     delete_issues_requested = QtCore.pyqtSignal(list)         # List[str] de image_paths
     rerun_requested = QtCore.pyqtSignal()
     run_heavy_mining_requested = QtCore.pyqtSignal()
+    run_biometric_audit_requested = QtCore.pyqtSignal()       # PR 13
 
     def __init__(self, dataset_name: str, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -170,6 +171,15 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.btn_run_mining.clicked.connect(self.run_heavy_mining_requested.emit)
 
+        # PR 13: auditoria biométrica de identidades
+        self.btn_run_biometric = QtWidgets.QPushButton("🔬 Auditar identidades (pesada)")
+        self.btn_run_biometric.setToolTip(
+            "Detecta identidades duplicadas (mesma pessoa em 2+ labels) e "
+            "identidades misturadas (label cobrindo 2+ pessoas). Usa "
+            "centróides de embedding — leva poucos segundos a alguns minutos."
+        )
+        self.btn_run_biometric.clicked.connect(self.run_biometric_audit_requested.emit)
+
         self.btn_rerun = QtWidgets.QPushButton("🔄 Reanalisar")
         self.btn_rerun.setToolTip(
             "Reexecuta as auditorias rápidas (após edição manual no dataset)."
@@ -180,6 +190,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         self.btn_close.clicked.connect(self.accept)
 
         bottom.addWidget(self.btn_run_mining)
+        bottom.addWidget(self.btn_run_biometric)
         bottom.addWidget(self.btn_rerun)
         bottom.addStretch()
         bottom.addWidget(self.btn_close)
@@ -433,31 +444,38 @@ def _captions_for_issue(issue, paths: Sequence[str]) -> List[str]:
     """Produz uma caption por path baseado no metadata do issue.
 
     Heurísticas (em ordem):
-      1. `identity` (string única) → aplica a todos os paths
-      2. `identities` (lista alinhada aos paths) → position-aligned
-      3. `value` numérico (audits de qualidade) → "value: X.XX"
-      4. fallback → string vazia (filename já é exibido pelo widget)
+      1. `locator_labels` (lista alinhada aos paths) → o caller já
+         decidiu — string explícita por locator (ex: "outlier" / "típica")
+      2. `identity` (string única) → aplica a todos os paths
+      3. `identities` (lista alinhada aos paths) → position-aligned
+      4. `value` numérico (audits de qualidade) → "valor: X.XX"
+      5. fallback → string vazia (filename já é exibido pelo widget)
     """
     if issue is None:
         return ["" for _ in paths]
     meta = getattr(issue, "metadata", {}) or {}
 
-    # 1. identity única
+    # 1. locator_labels explícito do caller
+    labels = meta.get("locator_labels")
+    if isinstance(labels, (list, tuple)) and len(labels) == len(paths):
+        return [str(x) for x in labels]
+
+    # 2. identity única
     identity = meta.get("identity")
     if identity:
         return [str(identity) for _ in paths]
 
-    # 2. identities posição-alinhadas (mesmo len que paths)
+    # 3. identities posição-alinhadas (mesmo len que paths)
     identities = meta.get("identities")
     if isinstance(identities, (list, tuple)) and len(identities) == len(paths):
         return [str(x) for x in identities]
 
-    # 3. valor numérico (low_quality, etc.)
+    # 4. valor numérico (low_quality, etc.)
     value = meta.get("value")
     if isinstance(value, (int, float)):
         return [f"valor: {value:.2f}" for _ in paths]
 
-    # 4. fallback
+    # 5. fallback
     return ["" for _ in paths]
 
 
