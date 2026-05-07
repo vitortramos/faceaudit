@@ -25,7 +25,12 @@ from faceaudit.models.image_processing.jpeg_compression_config import (
 class JpegCompressionProcessor:
     """Aplica recompressão JPEG no quality declarado no config."""
 
-    def __init__(self, config: JpegCompressionConfig):
+    def __init__(
+        self,
+        config: JpegCompressionConfig,
+        *,
+        ff_service=None,  # uniforme com outros processors; ignorado aqui
+    ):
         self._config = config
 
     @property

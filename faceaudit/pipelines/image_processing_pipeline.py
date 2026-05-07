@@ -27,12 +27,24 @@ from faceaudit.protocols.image_processing_step_protocol import (
 
 
 class ImageProcessingPipeline:
-    """Sequência ordenada de steps aplicada a uma imagem (BGR uint8)."""
+    """Sequência ordenada de steps aplicada a uma imagem (BGR uint8).
 
-    def __init__(self, config: ImageProcessingPipelineConfig):
+    PR I1 — `ff_service` opcional propagado pros processors que
+    precisam (CropProcessor em modo FACE_DETECTED). Quando None e
+    algum step exige, levanta `RuntimeError` clara no `apply` daquele
+    step.
+    """
+
+    def __init__(
+        self,
+        config: ImageProcessingPipelineConfig,
+        *,
+        ff_service=None,
+    ):
         self._config = config
+        self._ff_service = ff_service
         self._steps: List[ImageProcessingStepProtocol] = [
-            ImageProcessorFactory.build(step_config)
+            ImageProcessorFactory.build(step_config, ff_service=ff_service)
             for step_config in config.steps
         ]
 

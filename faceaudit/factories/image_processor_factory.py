@@ -21,15 +21,25 @@ from typing import Any, Dict, Type
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.image_processors.blur_processor import BlurProcessor
+from faceaudit.image_processors.crop_processor import CropProcessor
 from faceaudit.image_processors.jpeg_compression_processor import (
     JpegCompressionProcessor,
 )
+from faceaudit.image_processors.occlusion_processor import OcclusionProcessor
+from faceaudit.image_processors.webp_compression_processor import (
+    WebpCompressionProcessor,
+)
 from faceaudit.models.image_processing.blur_config import BlurConfig
+from faceaudit.models.image_processing.crop_config import CropConfig
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
 )
 from faceaudit.models.image_processing.jpeg_compression_config import (
     JpegCompressionConfig,
+)
+from faceaudit.models.image_processing.occlusion_config import OcclusionConfig
+from faceaudit.models.image_processing.webp_compression_config import (
+    WebpCompressionConfig,
 )
 from faceaudit.protocols.image_processing_step_protocol import (
     ImageProcessingStepProtocol,
@@ -43,21 +53,35 @@ class ImageProcessorFactory:
     _PROCESSOR_REGISTRY: Dict[ImageProcessingStepType, Type] = {
         ImageProcessingStepType.BLUR: BlurProcessor,
         ImageProcessingStepType.JPEG: JpegCompressionProcessor,
-        # I1+: WEBP, CROP, OCCLUSION
+        ImageProcessingStepType.WEBP: WebpCompressionProcessor,  # PR I1
+        ImageProcessingStepType.CROP: CropProcessor,             # PR I1
+        ImageProcessingStepType.OCCLUSION: OcclusionProcessor,   # PR I1
     }
 
     # step_type → config class (pra deserialização polimórfica)
     _CONFIG_REGISTRY: Dict[ImageProcessingStepType, Type] = {
         ImageProcessingStepType.BLUR: BlurConfig,
         ImageProcessingStepType.JPEG: JpegCompressionConfig,
-        # I1+: WEBP, CROP, OCCLUSION
+        ImageProcessingStepType.WEBP: WebpCompressionConfig,     # PR I1
+        ImageProcessingStepType.CROP: CropConfig,                # PR I1
+        ImageProcessingStepType.OCCLUSION: OcclusionConfig,      # PR I1
     }
 
     @classmethod
     def build(
-        cls, config: ImageProcessingStepConfig,
+        cls,
+        config: ImageProcessingStepConfig,
+        *,
+        ff_service=None,
     ) -> ImageProcessingStepProtocol:
         """Constrói um processor a partir do config.
+
+        Args:
+            config: DTO específico do step (BlurConfig, CropConfig...).
+            ff_service: opcional. Necessário pra `CropMode.FACE_DETECTED`
+                e (futuramente) `OcclusionPosition.EYES/MOUTH`. Os
+                outros processors aceitam o kwarg uniformemente mas
+                ignoram.
 
         Raises:
             ValueError: se o step_type não estiver registrado.
@@ -69,7 +93,7 @@ class ImageProcessorFactory:
                 f"Registrados: "
                 f"{sorted(t.value for t in cls._PROCESSOR_REGISTRY)}."
             )
-        return processor_cls(config)
+        return processor_cls(config, ff_service=ff_service)
 
     @classmethod
     def config_from_dict(

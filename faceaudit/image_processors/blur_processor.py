@@ -22,7 +22,12 @@ from faceaudit.models.image_processing.blur_config import BlurConfig
 class BlurProcessor:
     """Aplica desfoque conforme `BlurConfig`."""
 
-    def __init__(self, config: BlurConfig):
+    def __init__(
+        self,
+        config: BlurConfig,
+        *,
+        ff_service=None,  # uniforme com outros processors; ignorado aqui
+    ):
         self._config = config
 
     @property
