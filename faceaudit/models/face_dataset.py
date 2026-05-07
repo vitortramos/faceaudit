@@ -16,6 +16,7 @@ from .embedding_info import EmbeddingInfo
 from .filter_config import FilterConfig
 from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.enums.quality_score_type import QualityScoreType
+from faceaudit.enums.path_mode import PathMode
 
 
 # PR 21 (Tema 4.2) — predicado pra identificar colunas canônicas que
@@ -68,6 +69,40 @@ class FaceDataset:
     # Quando o parquet é lido, `from_parquet` popula este campo com os specs
     # da metadata — esse passa a ser fonte de verdade para a UI tipo planilha.
     column_specs: Dict[str, Any] = field(default_factory=dict)
+
+    # PR L1a — modo de path. ABSOLUTE preserva comportamento legado;
+    # RELATIVE habilita portabilidade via DatasetLocalizationService.
+    # `path_root` é a subpasta dentro do diretório do parquet onde
+    # estão as imagens (default `.` quando flat). Persistidos na
+    # metadata via `to_parquet` e relidos por `from_parquet`. Ver
+    # `faceaudit/services/image_path_resolver.py` para a resolução.
+    path_mode: PathMode = PathMode.ABSOLUTE
+    path_root: Optional[str] = None
+    # Runtime — diretório do parquet de origem, set por `from_parquet`.
+    # Não persiste; não entra em comparações; não aparece em repr.
+    _parquet_dir: Optional[Path] = field(
+        default=None, repr=False, compare=False,
+    )
+
+    def resolve_image_path(self, face_or_path: Any) -> Path:
+        """Atalho que delega à free-function
+        `faceaudit.services.image_path_resolver.resolve_image_path`,
+        passando os parâmetros de resolução do próprio dataset.
+
+        Use isso na UI / código que tem o dataset em mãos. Services
+        que recebem só o face (sem dataset) devem chamar a
+        free-function diretamente com `parquet_dir`/`path_mode`/
+        `path_root` explícitos.
+        """
+        from faceaudit.services.image_path_resolver import (
+            resolve_image_path as _resolve,
+        )
+        return _resolve(
+            face_or_path,
+            parquet_dir=self._parquet_dir,
+            path_mode=self.path_mode,
+            path_root=self.path_root,
+        )
 
     def add(self, face: FaceInfo) -> None:
         """
@@ -563,10 +598,25 @@ class FaceDataset:
             except Exception:
                 column_specs = {}
 
+        # PR L1a — lê path_mode/path_root da metadata. Defaults preservam
+        # comportamento legado: parquets sem path_mode são tratados como
+        # ABSOLUTE (era o que o writer hardcoded gravava antes).
+        path_mode_raw = meta.get("faceaudit:path_mode") or PathMode.ABSOLUTE.value
+        try:
+            path_mode = PathMode(path_mode_raw)
+        except ValueError:
+            path_mode = PathMode.ABSOLUTE
+        path_root = meta.get("faceaudit:path_root") or None
+
         df = table.to_pandas()
         ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
         ds.description = ds_description
         ds.column_specs = column_specs
+        ds.path_mode = path_mode
+        ds.path_root = path_root
+        # Set _parquet_dir runtime — usado por resolve_image_path em modo
+        # RELATIVE pra ancorar paths.
+        ds._parquet_dir = path_obj.parent.resolve()
         return ds
 
     @classmethod
@@ -579,7 +629,13 @@ class FaceDataset:
             saved_name = df.iloc[0].get("dataset_name")
             if saved_name and pd.notna(saved_name):
                 ds_name = str(saved_name)
-        return cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
+        ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
+        # PR L1a — parquets legados são sempre ABSOLUTE; ainda assim
+        # registramos `_parquet_dir` pra que código upstream que use
+        # `resolve_image_path` em datasets recém-abertos não dependa
+        # do modo (e pra suportar futura migração in-place).
+        ds._parquet_dir = path_obj.parent.resolve()
+        return ds
 
     def to_parquet(self, path: Union[str, Path]):
         """Persiste o dataset em parquet com metadata role-aware (novo formato).
@@ -608,13 +664,20 @@ class FaceDataset:
 
         # Caso vazio — escreve apenas a metadata mínima e o schema vazio.
         if df.empty:
-            empty_table = pa.Table.from_pandas(df, preserve_index=False)
-            empty_table = empty_table.replace_schema_metadata(_build_metadata_bytes({
+            empty_meta = {
                 "faceaudit:dataset_type": DatasetType.FACE.value,
                 "faceaudit:dataset_name": self.name,
                 "faceaudit:dataset_description": self.description or "",
-                "faceaudit:path_mode": "absolute",
-            }))
+                "faceaudit:path_mode": self.path_mode.value,
+            }
+            # PR L1a — `path_root` só é gravado em modo RELATIVE; em
+            # ABSOLUTE não faz sentido (e mantém metadata enxuta).
+            if self.path_mode == PathMode.RELATIVE and self.path_root:
+                empty_meta["faceaudit:path_root"] = self.path_root
+            empty_table = pa.Table.from_pandas(df, preserve_index=False)
+            empty_table = empty_table.replace_schema_metadata(
+                _build_metadata_bytes(empty_meta),
+            )
             pq.write_table(empty_table, path_obj)
             return
 
@@ -654,7 +717,7 @@ class FaceDataset:
             "faceaudit:dataset_type": DatasetType.FACE.value,
             "faceaudit:dataset_name": self.name,
             "faceaudit:dataset_description": self.description or "",
-            "faceaudit:path_mode": "absolute",
+            "faceaudit:path_mode": self.path_mode.value,
             "faceaudit:column_specs": specs_to_json(specs_to_persist),
             "faceaudit:column_coverage": json.dumps({
                 name: cs.to_dict() for name, cs in stats.column_coverage.items()
@@ -666,6 +729,10 @@ class FaceDataset:
             "faceaudit:n_ids": str(stats.n_ids),
             "faceaudit:last_modified": stats.last_modified or "",
         }
+
+        # PR L1a — `path_root` só entra na metadata em modo RELATIVE.
+        if self.path_mode == PathMode.RELATIVE and self.path_root:
+            meta_payload["faceaudit:path_root"] = self.path_root
 
         try:
             table = pa.Table.from_pandas(df, preserve_index=False)
