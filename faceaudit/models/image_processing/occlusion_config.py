@@ -24,8 +24,8 @@ falhar (sem face), cai em CENTER.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Optional
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.occlusion_kind import OcclusionKind
@@ -33,17 +33,21 @@ from faceaudit.enums.occlusion_position import OcclusionPosition
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
 )
+from faceaudit.models.image_processing.occlusion_mask import OcclusionMask
 
 
 @dataclass
 class OcclusionConfig(ImageProcessingStepConfig):
-    """Oclusão geométrica (I1 + I7)."""
+    """Oclusão geométrica (I1 + I7) ou desenhada (I6)."""
 
     step_type: ImageProcessingStepType = ImageProcessingStepType.OCCLUSION
     kind: OcclusionKind = OcclusionKind.RECTANGLE_BLACK
     position: OcclusionPosition = OcclusionPosition.CENTER
     coverage_pct: float = 0.25  # PR I1 — RECTANGLE_BLACK em CENTER/RANDOM
     radius_pct: float = 0.10    # PR I7 — CIRCLE_BLACK em qualquer position
+    # PR I6 — máscara desenhada pelo usuário no canvas. Só relevante
+    # quando kind=MASK_FACE. Position é ignorada nesse modo.
+    mask: Optional[OcclusionMask] = None
 
     def __post_init__(self):
         # Clamp coverage
@@ -59,16 +63,23 @@ class OcclusionConfig(ImageProcessingStepConfig):
             self.radius_pct = 0.5
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out: Dict[str, Any] = {
             **super().to_dict(),
             "kind": self.kind.value,
             "position": self.position.value,
             "coverage_pct": float(self.coverage_pct),
             "radius_pct": float(self.radius_pct),
         }
+        # PR I6 — só serializa mask quando há shapes (mantém JSON enxuto)
+        if self.mask is not None and not self.mask.is_empty:
+            out["mask"] = self.mask.to_dict()
+        return out
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OcclusionConfig":
+        mask = None
+        if "mask" in data and data["mask"]:
+            mask = OcclusionMask.from_dict(data["mask"])
         return cls(
             kind=OcclusionKind(
                 data.get("kind", OcclusionKind.RECTANGLE_BLACK.value)
@@ -78,4 +89,5 @@ class OcclusionConfig(ImageProcessingStepConfig):
             ),
             coverage_pct=float(data.get("coverage_pct", 0.25)),
             radius_pct=float(data.get("radius_pct", 0.10)),
+            mask=mask,
         )

@@ -47,17 +47,25 @@ class StepConfigPanel(QtWidgets.QWidget):
     """
 
     config_changed = QtCore.pyqtSignal(object)  # ImageProcessingStepConfig
+    # PR I6 — sinal emitido quando o usuário clica "Desenhar máscara".
+    # Carrega o config (que tem `mask` attr) — controller intercepta,
+    # abre canvas com a imagem corrente, recebe nova mask, atualiza
+    # o config in-place e emite config_changed pra refresh.
+    mask_canvas_requested = QtCore.pyqtSignal(object)  # OcclusionConfig
 
     # Tipos disponíveis no MVP — os demais (MOTION/BOX, USER_RECTANGLE,
-    # MASK_FACE, RECTANGLE_NOISE) ficam ocultos até serem implementados.
+    # RECTANGLE_NOISE) ficam ocultos até serem implementados.
     _BLUR_KINDS_AVAILABLE = [BlurKind.GAUSSIAN]
     _CROP_MODES_AVAILABLE = [CropMode.CENTERED, CropMode.FACE_DETECTED]
-    # PR I7 — CIRCLE_BLACK + EYES/MOUTH adicionados
+    # PR I7 — CIRCLE_BLACK + EYES/MOUTH adicionados.
+    # PR I6 — MASK_FACE adicionado.
     _OCCLUSION_KINDS_AVAILABLE = [
         OcclusionKind.RECTANGLE_BLACK,
         OcclusionKind.CIRCLE_BLACK,
+        OcclusionKind.MASK_FACE,
     ]
-    # Positions liberadas por kind (combos dinâmicos)
+    # Positions liberadas por kind (combos dinâmicos).
+    # MASK_FACE não usa position (apenas a máscara desenhada).
     _OCCLUSION_POSITIONS_BY_KIND = {
         OcclusionKind.RECTANGLE_BLACK: [
             OcclusionPosition.CENTER, OcclusionPosition.RANDOM,
@@ -68,6 +76,7 @@ class StepConfigPanel(QtWidgets.QWidget):
             OcclusionPosition.EYES,
             OcclusionPosition.MOUTH,
         ],
+        OcclusionKind.MASK_FACE: [],  # vazio — combo escondido
     }
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
@@ -319,6 +328,31 @@ class StepConfigPanel(QtWidgets.QWidget):
         coverage_label = QtWidgets.QLabel("Cobertura:")
         radius_label = QtWidgets.QLabel("Raio:")
 
+        # PR I6 — botão pra abrir canvas (só visível em MASK_FACE)
+        position_label = QtWidgets.QLabel("Posição:")
+        btn_draw_mask = QtWidgets.QPushButton("🎨 Desenhar máscara…")
+        btn_draw_mask.setToolTip(
+            "Abre canvas pra desenhar polígonos/retângulos/elipses sobre "
+            "a imagem do preview. Coordenadas salvas em [0..1] — mesma "
+            "máscara aplica a imagens de tamanhos diferentes."
+        )
+        btn_draw_mask.clicked.connect(
+            lambda: self.mask_canvas_requested.emit(config)
+        )
+        mask_label = QtWidgets.QLabel("Máscara:")
+
+        def _refresh_mask_status():
+            """Atualiza texto do botão refletindo estado da mask."""
+            from faceaudit.models.image_processing.occlusion_mask import OcclusionMask
+            if config.mask is None or config.mask.is_empty:
+                btn_draw_mask.setText("🎨 Desenhar máscara…")
+            else:
+                n = len(config.mask.shapes)
+                shape_word = "shape" if n == 1 else "shapes"
+                btn_draw_mask.setText(
+                    f"🎨 Editar ({n} {shape_word})…"
+                )
+
         def _refresh_positions():
             """Repopula combo de positions conforme kind selecionado."""
             current_pos = cmb_pos.currentData() if cmb_pos.count() else None
@@ -342,12 +376,25 @@ class StepConfigPanel(QtWidgets.QWidget):
                 config.position = new_pos
 
         def _refresh_visibility():
-            """Mostra coverage OU radius conforme kind."""
-            is_rect = cmb_kind.currentData() == OcclusionKind.RECTANGLE_BLACK
+            """Mostra coverage / radius / mask button conforme kind."""
+            kind = cmb_kind.currentData()
+            is_mask = kind == OcclusionKind.MASK_FACE
+            is_rect = kind == OcclusionKind.RECTANGLE_BLACK
+            is_circle = kind == OcclusionKind.CIRCLE_BLACK
+
+            # MASK_FACE: esconde position/coverage/radius, mostra botão
+            position_label.setVisible(not is_mask)
+            cmb_pos.setVisible(not is_mask)
+            mask_label.setVisible(is_mask)
+            btn_draw_mask.setVisible(is_mask)
+
             coverage_label.setVisible(is_rect)
             spn_coverage.setVisible(is_rect)
-            radius_label.setVisible(not is_rect)
-            spn_radius.setVisible(not is_rect)
+            radius_label.setVisible(is_circle)
+            spn_radius.setVisible(is_circle)
+
+            if is_mask:
+                _refresh_mask_status()
 
         def _on_kind():
             config.kind = cmb_kind.currentData()
@@ -375,9 +422,14 @@ class StepConfigPanel(QtWidgets.QWidget):
         spn_radius.valueChanged.connect(_on_radius)
 
         self._form_layout.addRow("Tipo:", cmb_kind)
-        self._form_layout.addRow("Posição:", cmb_pos)
+        self._form_layout.addRow(position_label, cmb_pos)
         self._form_layout.addRow(coverage_label, spn_coverage)
         self._form_layout.addRow(radius_label, spn_radius)
+        self._form_layout.addRow(mask_label, btn_draw_mask)
+
+        # Helper exposto pro controller atualizar texto do botão
+        # após callback do canvas.
+        self._refresh_mask_button = _refresh_mask_status
 
         # Estado inicial coerente com o kind do config
         _refresh_positions()

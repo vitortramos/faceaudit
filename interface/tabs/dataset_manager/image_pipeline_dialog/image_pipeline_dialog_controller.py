@@ -149,6 +149,10 @@ class ImagePipelineDialogController:
         self.view.step_config.config_changed.connect(
             self._on_step_config_changed
         )
+        # PR I6 — botão "Desenhar máscara" no form de OCCLUSION
+        self.view.step_config.mask_canvas_requested.connect(
+            self._on_mask_canvas_requested
+        )
 
         # Image compare
         self.view.image_compare.prev_clicked.connect(self._on_prev)
@@ -652,6 +656,44 @@ class ImagePipelineDialogController:
         for ch in bad:
             out = out.replace(ch, "_")
         return out.strip() or "untitled"
+
+    # ── PR I6 — Canvas de máscara de oclusão ──────────────────────────────
+
+    def _on_mask_canvas_requested(self, occlusion_config):
+        """Abre o `OcclusionMaskCanvas` com a imagem corrente do
+        preview. O usuário desenha shapes; ao confirmar, atualiza
+        `occlusion_config.mask` in-place e marca dirty.
+
+        `occlusion_config` é o mesmo objeto já dentro de
+        `_pipeline_config.steps` (form mutates in-place — padrão dos
+        outros configs).
+        """
+        if self._cached_original is None:
+            QtWidgets.QMessageBox.warning(
+                self.view, "Sem imagem",
+                "Carregue uma imagem no preview antes de desenhar a máscara.",
+            )
+            return
+
+        # Converte ndarray BGR → QPixmap
+        pixmap = self._ndarray_to_pixmap(self._cached_original)
+
+        from .occlusion_mask_canvas import OcclusionMaskCanvas
+        dlg = OcclusionMaskCanvas(
+            pixmap=pixmap,
+            initial_mask=occlusion_config.mask,
+            parent=self.view,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        new_mask = dlg.get_mask()
+        occlusion_config.mask = new_mask
+        # Refresh do botão pra mostrar contagem de shapes
+        if hasattr(self.view.step_config, "_refresh_mask_button"):
+            self.view.step_config._refresh_mask_button()
+        # Marca dirty (mesma semântica de outras edições do form)
+        self._mark_dirty()
 
     # ── PR I3 — Worker thread de scores de qualidade ──────────────────────
 
