@@ -40,6 +40,9 @@ class ManagerToolbarController(QtCore.QObject):
     # PR 17 — Enviar pra Estratégia (V2)
     action_send_to_strategy = QtCore.pyqtSignal()
 
+    # PR I2 — Editor de pipeline de imagens
+    action_image_pipeline_editor = QtCore.pyqtSignal()
+
     def __init__(self, parent_layout=None):
         super().__init__()
         self.view = ManagerToolbarView()
@@ -76,6 +79,10 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_save_to_library.clicked.connect(self.action_save_to_library.emit)
         # PR 17: enviar pra Estratégia
         self.view.btn_send_to_strategy.clicked.connect(self.action_send_to_strategy.emit)
+        # PR I2: editor de pipeline de imagens
+        self.view.btn_image_pipeline_editor.clicked.connect(
+            self.action_image_pipeline_editor.emit
+        )
 
     def get_widget(self):
         return self.view

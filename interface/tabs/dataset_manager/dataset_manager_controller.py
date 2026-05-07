@@ -114,6 +114,11 @@ class DatasetManagerController(QtCore.QObject):
         # PR L1d — Localização de paths
         if hasattr(self.toolbar_ctrl, "action_localize"):
             self.toolbar_ctrl.action_localize.connect(self.fluxo_localizar)
+        # PR I2 — Editor de pipeline de imagens
+        if hasattr(self.toolbar_ctrl, "action_image_pipeline_editor"):
+            self.toolbar_ctrl.action_image_pipeline_editor.connect(
+                self.fluxo_image_pipeline_editor
+            )
 
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
@@ -988,6 +993,54 @@ class DatasetManagerController(QtCore.QObject):
             self.current_path = path
             self.set_dirty(False)
             self.carregar_dataset_na_tela(self.dataset, path)
+
+    # =================================================================================
+    # PR I2 — FLUXO DE EDITOR DE PIPELINE DE IMAGENS
+    # =================================================================================
+    def fluxo_image_pipeline_editor(self):
+        """Abre o ImagePipelineDialogController em modal.
+
+        Imagem inicial: face única selecionada na tabela, ou aleatória
+        quando 0 ou múltiplas seleções (decisão #2 do tema).
+        """
+        if not self.dataset or len(self.dataset) == 0:
+            QMessageBox.information(
+                self.view, "Sem dataset",
+                "Abra ou crie um dataset antes de usar o editor de "
+                "pipeline de imagens.",
+            )
+            return
+
+        # Determina face inicial baseado na seleção da tabela.
+        # Decisão #2 do tema: 1 face selecionada → abre com ela;
+        # 0 ou múltiplas → aleatória (passamos -1 e o controller do
+        # editor escolhe).
+        initial_face_idx = -1
+        try:
+            selection_model = self.table_ctrl.view.selectionModel()
+            if selection_model is not None:
+                rows = {idx.row() for idx in selection_model.selectedIndexes()}
+                if len(rows) == 1:
+                    initial_face_idx = next(iter(rows))
+        except Exception:
+            pass  # API mudou ou estado não inicializado — cai pro aleatório
+
+        # FFService do pipeline pai pra suportar ALIGNED_FACE +
+        # CropMode.FACE_DETECTED.
+        ff_svc = (
+            getattr(self.pipeline, "ff_service", None)
+            if self.pipeline
+            else None
+        )
+
+        from .image_pipeline_dialog import ImagePipelineDialogController
+        ctrl = ImagePipelineDialogController(
+            dataset=self.dataset,
+            initial_face_index=initial_face_idx,
+            ff_service=ff_svc,
+            parent=self.view,
+        )
+        ctrl.exec()
 
     # =================================================================================
     # [NOVO] FLUXO DE ANÁLISE DO DATASET (AUDITORIA E MINERAÇÃO BIOMÉTRICA)
