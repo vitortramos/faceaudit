@@ -190,7 +190,7 @@ _FIELD_COERCERS = {
     "axis": PoseAxis,
 }
 
-_TUPLE_FIELDS = {"scale", "vocabulary"}
+_TUPLE_FIELDS = {"scale", "vocabulary", "aliases"}
 
 
 def _coerce_field(name: str, value: Any) -> Any:

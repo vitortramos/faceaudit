@@ -1,13 +1,17 @@
 """Diálogo de propriedades de coluna existente.
 
 Restrições por role:
-  - **canônicas** (qualquer role != CUSTOM): só `label` e `vocabulary` (apenas
-    para `demographic` que já têm vocab) podem ser editados. Role/source/
-    dtype são imutáveis — alterar quebra os contratos de código (ex: trocar
-    o role de `identity` para `custom` derruba todos os splits).
-  - **custom** (role=CUSTOM, source=CUSTOM): permite editar label, vocabulary
-    e default_value. Nome e dtype continuam fixos (mudar dtype invalidaria
-    os valores já gravados).
+  - **canônicas** (qualquer role != CUSTOM): só `label`, `aliases` e
+    `vocabulary` (apenas para `demographic` que já têm vocab) podem ser
+    editados. Role/source/dtype são imutáveis — alterar quebra os contratos
+    de código (ex: trocar o role de `identity` para `custom` derruba todos
+    os splits).
+  - **custom** (role=CUSTOM, source=CUSTOM): permite editar label,
+    vocabulary, default_value e aliases. Nome e dtype continuam fixos
+    (mudar dtype invalidaria os valores já gravados).
+
+`aliases` é sempre editável: lista de nomes legados aceitos como sinônimos
+do `name` canônico ao ler parquets/dicts antigos (não afeta a escrita).
 
 O usuário pode adicionar/remover entradas do vocabulário (estendível por
 dataset) — extensão respeita a decisão de design "vocabulários estendíveis".
@@ -24,8 +28,9 @@ from PyQt6 import QtCore, QtWidgets
 class ColumnPropertiesDialog(QtWidgets.QDialog):
     """Edita atributos editáveis de um ColumnSpec já existente.
 
-    Retorna (label, vocabulary_or_None, default_or_unset) via get_result.
-    Quem pegar o resultado deve construir o novo spec via dataclasses.replace.
+    Retorna (label, vocabulary_or_None, default_or_unset, aliases_or_None) via
+    get_result. Quem pegar o resultado deve construir o novo spec via
+    dataclasses.replace.
     """
 
     _UNSET = object()  # sentinela para "campo não foi mudado"
@@ -126,6 +131,26 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
         else:
             self.txt_vocab = None
 
+        # Aliases — sempre editáveis; resolução tolerante na leitura de
+        # parquets legados (ex: parquets antigos com `face_hash` carregam
+        # como a coluna canônica `hash` quando "face_hash" está nos aliases).
+        # Não afeta a escrita.
+        layout.addWidget(QtWidgets.QLabel("<b>Aliases (nomes legados)</b>"))
+        note_alias = QtWidgets.QLabel(
+            "Nomes alternativos aceitos ao carregar parquets antigos "
+            "(uma entrada por linha). Vazio = sem aliases."
+        )
+        note_alias.setStyleSheet("color: #666; font-size: 11px;")
+        note_alias.setWordWrap(True)
+        layout.addWidget(note_alias)
+
+        self.txt_aliases = QtWidgets.QPlainTextEdit()
+        self.txt_aliases.setPlaceholderText("face_hash\nimage_hash")
+        current_aliases = getattr(self._spec, "aliases", None) or ()
+        self.txt_aliases.setPlainText("\n".join(current_aliases))
+        self.txt_aliases.setMaximumHeight(100)
+        layout.addWidget(self.txt_aliases)
+
         return layout
 
     def _horizontal_separator(self) -> QtWidgets.QFrame:
@@ -150,12 +175,13 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
 
     # ── API ────────────────────────────────────────────────────────────────
 
-    def get_result(self) -> Tuple[str, Optional[Tuple[str, ...]], Any]:
-        """Retorna (label, vocabulary_or_None, default_value_sentinel).
+    def get_result(self) -> Tuple[str, Optional[Tuple[str, ...]], Any, Optional[Tuple[str, ...]]]:
+        """Retorna (label, vocabulary_or_None, default_value_sentinel, aliases_or_None).
 
         - `vocabulary_or_None`: tupla das entradas (vazia → None — "sem vocab")
           ou `_UNSET` quando o widget não foi exibido (não muda).
         - `default_value`: o novo default ou `_UNSET` quando não exibido.
+        - `aliases_or_None`: tupla das entradas (vazia → None) — sempre editável.
         """
         label = self.txt_label.text().strip() or self._spec.name
 
@@ -175,15 +201,24 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
         else:
             default = self._UNSET
 
-        return label, vocab, default
+        raw_aliases = self.txt_aliases.toPlainText().strip()
+        if not raw_aliases:
+            aliases: Optional[Tuple[str, ...]] = None
+        else:
+            alias_items = tuple(
+                line.strip() for line in raw_aliases.splitlines() if line.strip()
+            )
+            aliases = alias_items if alias_items else None
+
+        return label, vocab, default, aliases
 
     def apply_to_spec(self, spec: Any) -> Any:
         """Constrói novo ColumnSpec aplicando o resultado deste diálogo.
 
         Helper conveniente — o caller pode fazer manualmente também.
         """
-        label, vocab, default = self.get_result()
-        kwargs = {"label": label}
+        label, vocab, default, aliases = self.get_result()
+        kwargs = {"label": label, "aliases": aliases}
         if vocab is not self._UNSET:
             kwargs["vocabulary"] = vocab
         if default is not self._UNSET:
