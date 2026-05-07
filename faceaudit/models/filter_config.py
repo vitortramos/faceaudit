@@ -78,10 +78,20 @@ class FilterConfig(JSONSerializableMixin):
     min_age: Optional[float] = None
     max_age: Optional[float] = None
     abs_age: bool = False
-    
+
     min_ipd: Optional[float] = None
     max_ipd: Optional[float] = None # Adicionado para simetria
     abs_ipd: bool = False
+
+    # PR 21 (Tema 4.2) — filtros genéricos por coluna custom.
+    # Mapeia nome da coluna → especificação do filtro. Cada spec aceita as
+    # mesmas chaves dos canônicos:
+    #   {"value": str|float, "min": float, "max": float, "abs": bool, "list": [str]}
+    # Os valores numéricos só são considerados se a coluna tem tipo numérico
+    # em `face.extra_data` (cast best-effort via float()). `apply_filter` lê
+    # de `face.extra_data` — populado por `FaceDataset.from_dataframe` a
+    # partir do parquet e da edição via UI.
+    column_filters: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> T:

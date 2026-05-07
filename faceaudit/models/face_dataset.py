@@ -18,6 +18,30 @@ from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.enums.quality_score_type import QualityScoreType
 
 
+# PR 21 (Tema 4.2) — predicado pra identificar colunas canônicas que
+# `FaceInfo.to_flat_dict` emite. Tudo fora dessa lista é capturado como
+# `face.extra_data` em `from_dataframe` e re-emitido em `to_flat_dict` —
+# round-trip pra preservar colunas custom em save/load/filter.
+_CANONICAL_FACE_COLUMNS = frozenset({
+    # FaceInfo metadata
+    "image_path", "file_name", "hash", "origin", "source",
+    "ethnicity", "identity", "gender",
+    # FFInfo (exclude_heavy=True) + renomeados em to_flat_dict
+    "ipd", "fiqa_score", "det_score", "gender_est", "age_est",
+    "yaw", "pitch", "roll",
+    # FFInfo embeddings (preservados como colunas planas)
+    "embedding", "embedding_v2", "embedding_v4", "embedding_serfiq",
+})
+
+
+def _is_canonical_face_column(name: str) -> bool:
+    """True quando `name` pertence ao mapeamento canônico de FaceInfo."""
+    if name in _CANONICAL_FACE_COLUMNS:
+        return True
+    # OFIQ/SERFIQ emitem múltiplas colunas com prefixo — todas canônicas
+    return name.startswith("ofiq_") or name.startswith("serfiq_")
+
+
 @dataclass
 class FaceDataset:
     """
@@ -144,9 +168,12 @@ class FaceDataset:
             (face.ff_info.pitch if face.ff_info else None, config.ff_pitch, config.min_ff_pitch, config.max_ff_pitch, config.abs_ff_pitch),
             (face.ff_info.roll if face.ff_info else None, config.ff_roll, config.min_ff_roll, config.max_ff_roll, config.abs_ff_roll),
             
-            # Outros
-            (face.ff_info.age if face.ff_info else None, config.age, config.min_age, config.max_age, config.abs_age),
-            (face.ff_info.ipd if face.ff_info else None, config.ipd, config.min_ipd, config.max_ipd, config.abs_ipd),
+            # Outros — `age`/`ipd` (sem prefixo) não são fields dataclass
+            # do FilterConfig, só são criados quando a UI faz setattr. Lemos
+            # via getattr pra suportar uso programático (testes e código
+            # que não passa pela UI).
+            (face.ff_info.age if face.ff_info else None, getattr(config, "age", None), config.min_age, config.max_age, config.abs_age),
+            (face.ff_info.ipd if face.ff_info else None, getattr(config, "ipd", None), config.min_ipd, config.max_ipd, config.abs_ipd),
         ]
 
         for val, target, c_min, c_max, use_abs in numeric_map:
@@ -182,18 +209,58 @@ class FaceDataset:
         for val, search_str, inclusion_list in categorical_map:
             if not search_str and not inclusion_list:
                 continue
-                
+
             val_str = str(val).strip() if val is not None else ""
-            
+
             # Verificação de Lista (Multi-seleção)
             if inclusion_list:
                 if val_str not in inclusion_list:
                     return False
-            
+
             # Verificação de String Única (Combobox/Texto)
             elif search_str:
                 if search_str.lower() != val_str.lower():
                     return False
+
+        # 3. FILTROS GENÉRICOS POR COLUNA CUSTOM (PR 21 — Tema 4.2)
+        # Lê valores de `face.extra_data` (custom columns) e compara com
+        # `config.column_filters`. Mesmas semânticas dos canônicos:
+        #   value → match exato (case-insensitive p/ string, ±0.001 p/ num)
+        #   list  → multi-select inclusion
+        #   min/max + abs → range numérico (com módulo opcional)
+        if config.column_filters:
+            for col_name, spec in config.column_filters.items():
+                if not spec:
+                    continue
+                val = face.extra_data.get(col_name) if face.extra_data else None
+                target_value = spec.get("value")
+                target_list = spec.get("list") or []
+                c_min = spec.get("min")
+                c_max = spec.get("max")
+                use_abs = bool(spec.get("abs"))
+
+                # Categórico: value/list
+                if target_list:
+                    val_str = str(val).strip() if val is not None else ""
+                    if val_str not in target_list:
+                        return False
+                elif target_value not in (None, ""):
+                    val_str = str(val).strip().lower() if val is not None else ""
+                    if str(target_value).strip().lower() != val_str:
+                        return False
+
+                # Numérico: min/max
+                if c_min is not None or c_max is not None:
+                    if val is None:
+                        return False
+                    try:
+                        num = abs(float(val)) if use_abs else float(val)
+                    except (TypeError, ValueError):
+                        return False
+                    if c_min is not None and num < c_min:
+                        return False
+                    if c_max is not None and num > c_max:
+                        return False
 
         return True
 
@@ -409,14 +476,35 @@ class FaceDataset:
             # D. SERFIQ
             if pd.notna(row.get('serfiq_score')):
                 face.serfiq_info = SERFIQInfo(
-                    score=float(row['serfiq_score']), 
-                    t=10, 
+                    score=float(row['serfiq_score']),
+                    t=10,
                     alpha=1.5
                 )
-                
+
+            # E. Custom columns (PR 21 — Tema 4.2). Captura colunas que
+            # não pertencem ao mapeamento canônico (FaceInfo / FFInfo /
+            # OFIQInfo / SERFIQInfo) em `face.extra_data`. Round-trip via
+            # `to_flat_dict` → `to_pandas` → `to_parquet` → `from_dataframe`
+            # mantém custom columns vivas em save/load/filter.
+            extra_data: Dict[str, Any] = {}
+            for col in df.columns:
+                if _is_canonical_face_column(col):
+                    continue
+                val = row[col]
+                if pd.isna(val):
+                    continue
+                # Mantém apenas escalares — listas/arrays/dicts ficam fora
+                # do round-trip (consistente com to_flat_dict que só emite
+                # custom values via update simples).
+                if isinstance(val, (list, np.ndarray, dict)):
+                    continue
+                extra_data[col] = clean(val)
+            if extra_data:
+                face.extra_data = extra_data
+
             dataset.add(face)
-            
-        return dataset        
+
+        return dataset
 
     @classmethod
     def from_parquet(cls, path: Union[str, Path],

@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any
 import numpy as np
 import pandas as pd
@@ -20,21 +20,31 @@ class FaceInfo:
     Atua como o 'Ground Truth' e container de metadados biométricos.
     """
     image_path: str
-    
+
     # --- Identificadores do Arquivo ---
     file_name: Optional[str] = None
     hash: Optional[str] = None
-    
+
     # --- Sub-modelos ---
     ff_info: Optional[FFInfo] = None
     ofiq_info: Optional[OFIQInfo] = None
     serfiq_info: Optional[SERFIQInfo] = None
-    
+
     # --- Metadados ---
-    origin: Optional[str] = None 
+    origin: Optional[str] = None
     ethnicity: Optional[str] = None
     identity: Optional[str] = None
     gender: Optional[str] = None
+
+    # PR 21 (Tema 4.2) — captura colunas custom adicionadas via UI ou
+    # presentes em parquets com `column_specs` que não pertencem ao
+    # mapeamento canônico de FaceInfo. Mantém valores escalares (str,
+    # int, float, bool, None). Round-trip:
+    #   from_dataframe → captura leftovers da row aqui
+    #   to_flat_dict   → re-emite as chaves no row (flatten)
+    # Sem isso, custom columns ficavam só no `_df` do table model e
+    # eram perdidas em save/load/filter.
+    extra_data: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Preenche automaticamente o file_name se estiver vazio."""
@@ -207,5 +217,11 @@ class FaceInfo:
             'identity': self.identity,
             'gender': self.gender
         })
+
+        # 5. Custom columns capturadas via UI (PR 21). Aplicadas por último
+        # para que sobrescrevam qualquer chave canônica eventual com mesmo
+        # nome — política: usuário sempre vence quando explicitamente edita.
+        if self.extra_data:
+            row.update(self.extra_data)
 
         return row

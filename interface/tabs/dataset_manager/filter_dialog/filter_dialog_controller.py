@@ -26,6 +26,7 @@ class FilterDialogController:
         self.view = FilterDialogView(parent)
 
         self._populate_combos_from_dataset()
+        self._populate_custom_columns_section()
         self._connect_signals()
         self._load_ui_from_config()
 
@@ -81,6 +82,56 @@ class FilterDialogController:
             origins = get_options("source")
         self.view.populate_combo_options("source", origins)
 
+    def _populate_custom_columns_section(self):
+        """Descobre colunas custom no `column_specs` do dataset e constrói
+        a seção dinâmica 'Colunas Custom' (PR 21 — Tema 4.2).
+
+        Critério: `spec.role.value == "custom"`. Para cada coluna:
+          - dtype STR → combo (vocab + valores únicos do df)
+          - dtype FLOAT/INT → linha numérica (min/max + Abs)
+          - demais dtypes (BOOL, VECTOR, LIST) ficam de fora — sem
+            semântica clara de filtro.
+        """
+        if not self.dataset:
+            return
+        specs = getattr(self.dataset, "column_specs", None) or {}
+        if not specs:
+            return
+
+        df = self.dataset.to_pandas()
+
+        custom_specs = []
+        for name, spec in specs.items():
+            role = getattr(getattr(spec, "role", None), "value", None)
+            if role != "custom":
+                continue
+            dtype = getattr(getattr(spec, "dtype", None), "value", None)
+            label = getattr(spec, "label", name) or name
+
+            if dtype == "str":
+                # Combina valores únicos do df + vocab declarado no spec
+                if df is not None and not df.empty and name in df.columns:
+                    series = df[name].dropna().astype(str)
+                    series = series[series.str.strip() != ""]
+                    unique = series.unique().tolist()
+                else:
+                    unique = []
+                vocab = getattr(spec, "vocabulary", None) or ()
+                # Ordem: vocab primeiro (decisão deliberada do usuário),
+                # depois valores observados que não estão no vocab.
+                seen = set(vocab)
+                options = list(vocab) + [v for v in unique if v not in seen]
+                custom_specs.append({
+                    "name": name, "label": label, "kind": "combo", "options": options,
+                })
+            elif dtype in ("float", "int"):
+                custom_specs.append({
+                    "name": name, "label": label, "kind": "numeric",
+                })
+            # outros dtypes ignorados
+
+        self.view.populate_custom_columns(custom_specs)
+
     def _connect_signals(self):
         self.view.btn_load_cfg.clicked.connect(self._action_load_file)
         self.view.btn_save_cfg.clicked.connect(self._action_save_file)
@@ -91,6 +142,9 @@ class FilterDialogController:
             if hasattr(self.config, attr):
                 data[attr] = getattr(self.config, attr)
         self.view.set_form_data(data)
+        # PR 21 — restaura estado dos widgets custom a partir de
+        # `config.column_filters` (no-op quando vazio ou seção ausente).
+        self.view.set_custom_data(getattr(self.config, "column_filters", {}) or {})
 
     def _is_numeric_key(self, key: str) -> bool:
         base = key
@@ -126,6 +180,10 @@ class FilterDialogController:
                     setattr(self.config, key, None)
             else:
                 setattr(self.config, key, text)
+
+        # PR 21 — coluna custom: lê widgets dinâmicos e popula
+        # `column_filters` (dict de dicts).
+        self.config.column_filters = self.view.get_custom_data()
 
         return self.config
 

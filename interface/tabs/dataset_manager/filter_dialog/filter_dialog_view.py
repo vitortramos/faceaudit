@@ -18,6 +18,12 @@ class FilterDialogView(QDialog):
         # Armazena referências aos widgets
         self.widgets_map = {}
 
+        # PR 21 (Tema 4.2) — widgets dinâmicos por coluna custom.
+        # Cada entrada: col_name → dict {kind, widgets...}
+        # kind ∈ {"combo", "numeric"}; widgets dependem do kind.
+        self.custom_column_widgets: dict = {}
+        self._custom_group = None  # QGroupBox criado on-demand
+
         self._init_ui()
 
     def _init_ui(self):
@@ -196,3 +202,131 @@ class FilterDialogView(QDialog):
                 data[key] = None if val == "Todos" else val
 
         return data
+
+    # =========================================================================
+    # COLUNAS CUSTOM (PR 21 — Tema 4.2)
+    # =========================================================================
+
+    def populate_custom_columns(self, custom_specs: list):
+        """Constrói (ou reconstrói) a seção 'Colunas Custom' na UI a partir
+        de uma lista de specs descobertos do `column_specs` do dataset.
+
+        Cada item em `custom_specs` é um dict com:
+          - name (str): nome da coluna
+          - label (str): label amigável
+          - kind (str): "combo" | "numeric"
+          - options (list[str], opcional): para "combo" (vocab + valores
+            únicos do df)
+
+        Reentrante: chamadas subsequentes destroem o group anterior antes
+        de reconstruir. Quando `custom_specs` está vazio, remove a seção.
+        """
+        # Limpa estado anterior
+        if self._custom_group is not None:
+            self._custom_group.setParent(None)
+            self._custom_group.deleteLater()
+            self._custom_group = None
+        self.custom_column_widgets.clear()
+
+        if not custom_specs:
+            return
+
+        group = QGroupBox("Colunas Custom")
+        layout = QFormLayout(group)
+
+        for spec in custom_specs:
+            name = spec["name"]
+            label = spec.get("label") or name
+            kind = spec.get("kind", "combo")
+
+            if kind == "combo":
+                combo = QComboBox()
+                combo.addItem("Todos")
+                opts = spec.get("options", []) or []
+                cleaned = [str(x) for x in opts if x is not None and str(x).strip() != ""]
+                combo.addItems(sorted(set(cleaned)))
+                self.custom_column_widgets[name] = {"kind": "combo", "combo": combo}
+                layout.addRow(f"<b>{label}:</b>", combo)
+
+            elif kind == "numeric":
+                container = QWidget()
+                row = QHBoxLayout(container)
+                row.setContentsMargins(0, 0, 0, 0)
+                edit_min = QLineEdit()
+                edit_min.setPlaceholderText("Mín")
+                edit_max = QLineEdit()
+                edit_max.setPlaceholderText("Máx")
+                chk_abs = QCheckBox("Abs")
+                chk_abs.setToolTip("Considera o valor absoluto (ignora sinal +/-)")
+                style = "max-width: 70px;"
+                edit_min.setStyleSheet(style)
+                edit_max.setStyleSheet(style)
+                row.addWidget(edit_min)
+                row.addWidget(QLabel("-"))
+                row.addWidget(edit_max)
+                row.addSpacing(5)
+                row.addWidget(chk_abs)
+                row.addStretch()
+                self.custom_column_widgets[name] = {
+                    "kind": "numeric", "min": edit_min, "max": edit_max, "abs": chk_abs,
+                }
+                layout.addRow(f"{label}:", container)
+
+        # Insere antes da barra de persistência. form_container só tem
+        # QGroupBoxes, então append no final é seguro.
+        self.form_container.addWidget(group)
+        self._custom_group = group
+
+    def set_custom_data(self, column_filters: dict):
+        """Carrega os widgets custom a partir de um dict {col: spec}."""
+        if not column_filters:
+            return
+        for name, spec in column_filters.items():
+            entry = self.custom_column_widgets.get(name)
+            if entry is None or not spec:
+                continue
+            if entry["kind"] == "combo":
+                value = spec.get("value")
+                if value:
+                    idx = entry["combo"].findText(str(value))
+                    entry["combo"].setCurrentIndex(idx if idx >= 0 else 0)
+                else:
+                    entry["combo"].setCurrentIndex(0)
+            elif entry["kind"] == "numeric":
+                c_min = spec.get("min")
+                c_max = spec.get("max")
+                use_abs = bool(spec.get("abs"))
+                entry["min"].setText("" if c_min is None else str(c_min))
+                entry["max"].setText("" if c_max is None else str(c_max))
+                entry["abs"].setChecked(use_abs)
+
+    def get_custom_data(self) -> dict:
+        """Lê os widgets custom e devolve o dict {col: spec} pra
+        `FilterConfig.column_filters`. Entradas vazias são omitidas (não
+        aparecem no dict — sem filtro pra aquela coluna)."""
+        out: dict = {}
+        for name, entry in self.custom_column_widgets.items():
+            if entry["kind"] == "combo":
+                val = entry["combo"].currentText()
+                if val and val != "Todos":
+                    out[name] = {"value": val}
+            elif entry["kind"] == "numeric":
+                txt_min = entry["min"].text().strip().replace(",", ".")
+                txt_max = entry["max"].text().strip().replace(",", ".")
+                use_abs = entry["abs"].isChecked()
+                spec: dict = {}
+                if txt_min:
+                    try:
+                        spec["min"] = float(txt_min)
+                    except ValueError:
+                        pass
+                if txt_max:
+                    try:
+                        spec["max"] = float(txt_max)
+                    except ValueError:
+                        pass
+                if use_abs:
+                    spec["abs"] = True
+                if spec:
+                    out[name] = spec
+        return out

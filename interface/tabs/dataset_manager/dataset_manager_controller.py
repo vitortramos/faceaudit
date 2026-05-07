@@ -305,6 +305,12 @@ class DatasetManagerController(QtCore.QObject):
         if df_edited is None or df_edited.empty: return
 
         dataset_visual_atualizado = FaceDataset.from_dataframe(df_edited, name=self.dataset.name)
+        # PR 21 (Tema 4.2) — `from_dataframe` constrói um FaceDataset novo
+        # sem column_specs (default {}). Preserva os specs vindos do
+        # parquet/UI pra que custom columns continuem visíveis no filter
+        # dialog e na próxima save (parquet metadata).
+        if self.dataset.column_specs:
+            dataset_visual_atualizado.column_specs = dict(self.dataset.column_specs)
         self.dataset = dataset_visual_atualizado
 
         if self.dataset_original:
@@ -792,6 +798,12 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_filtrar(self):
         if not self.dataset: return
+        # PR 21 (Tema 4.2) — sincroniza edições in-table (incluindo
+        # colunas custom no model._df) pra `dataset.faces[i].extra_data`
+        # antes de abrir o dialog. Sem isso, custom columns adicionadas/
+        # editadas via UI ficariam só no model e seriam invisíveis pra
+        # `apply_filter`.
+        self.sync_changes_from_table()
         if not self.dataset_original: self.dataset_original = self.dataset
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         QTimer.singleShot(10, self._abrir_dialogo_filtro_real)
