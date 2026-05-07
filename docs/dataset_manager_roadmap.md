@@ -3,6 +3,30 @@
 Brainstorm consolidado de candidatas a próximas features do Dataset Manager
 (pós-migração schema-by-role, PRs 1–10).
 
+## Requisito transversal — preview visual nas auditorias
+
+Toda ação de sanitização (excluir, renomear identidade, mesclar
+identidades, marcar com tag) precisa de **contexto visual** antes da
+decisão. O perito não confirma "remover face X" só com path + descrição
+— ele precisa **ver a face**.
+
+Aplicar em todos os fluxos de auditoria/sanitização daqui pra frente:
+
+- **Painel de preview** ao lado/abaixo da tabela de issues, mostrando a
+  thumbnail da face selecionada (lazy-load do `image_path`).
+- **Side-by-side** quando o issue tem 2+ paths (hash conflict, hard
+  genuine/impostor pair, identidade duplicada): renderiza ambas as faces
+  lado a lado.
+- **Cache de QPixmap** por path pra evitar re-leitura ao re-selecionar.
+- Tamanho default ~250×250 mantendo proporção; clicar abre fullsize.
+
+Já existia no view legado (em `build_mining_tables` pre-PR 12) — vale
+extrair pra widget reusável (`IssuePreviewWidget` ou similar) e plugar
+em todos os pontos relevantes.
+
+**Status:** PR 12 atual NÃO inclui isso ainda — tabela só mostra texto.
+Próxima iteração imediata.
+
 Estado atual (já entregue):
 
 - Toolbar: Novo / Abrir / Fechar / Salvar / Salvar Como / Enriquecer / Juntar
