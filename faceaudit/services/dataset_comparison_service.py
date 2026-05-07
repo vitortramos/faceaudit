@@ -43,10 +43,24 @@ class DatasetComparisonService:
         ethnicity_diffs = self._generate_diff_list(stats_a.ethnicity_counts, stats_b.ethnicity_counts)
         origin_diffs = self._generate_diff_list(stats_a.origin_counts, stats_b.origin_counts)
 
+        # 2b. PR 22 — Diffs genéricos por coluna categórica. Itera a união
+        # de chaves de A e B em `categorical_counts` (cobre demográficas
+        # canônicas + custom columns STR de baixa cardinalidade) e produz
+        # um CategoryDiff list por coluna. Quando uma coluna existe em só
+        # um lado, o outro contribui {} e o diff fica todo zerado num lado.
+        cat_a = getattr(stats_a, "categorical_counts", {}) or {}
+        cat_b = getattr(stats_b, "categorical_counts", {}) or {}
+        all_cat_columns = sorted(set(cat_a.keys()) | set(cat_b.keys()))
+        category_diffs: Dict[str, List[CategoryDiff]] = {}
+        for col in all_cat_columns:
+            diffs = self._generate_diff_list(cat_a.get(col, {}), cat_b.get(col, {}))
+            if diffs:
+                category_diffs[col] = diffs
+
         # 3. Comparação Técnica (Colunas de Vetores)
         cols_a = stats_a.embedding_columns
         cols_b = stats_b.embedding_columns
-        
+
         common_cols = sorted(list(cols_a.intersection(cols_b)))
         missing_in_b = sorted(list(cols_a - cols_b))
 
@@ -54,23 +68,24 @@ class DatasetComparisonService:
         return ComparisonResult(
             dataset_a_name=name_a,
             dataset_b_name=name_b,
-            
+
             # Totais Brutos
             total_imgs_a=stats_a.n_imgs,
             total_imgs_b=stats_b.n_imgs,
             total_ids_a=stats_a.n_ids,
             total_ids_b=stats_b.n_ids,
-            
+
             # Análise de Conjuntos
             common_ids_count=common_ids,
             unique_ids_a_count=unique_a,
             unique_ids_b_count=unique_b,
-            
+
             # Detalhes (Listas)
             gender_diffs=gender_diffs,
             ethnicity_diffs=ethnicity_diffs,
             origin_diffs=origin_diffs,
-            
+            category_diffs=category_diffs,
+
             # Técnico
             common_columns=common_cols,
             missing_in_b=missing_in_b

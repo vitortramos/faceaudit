@@ -109,12 +109,20 @@ class DatasetStatsService:
         # Cobertura por coluna — derivada da iteração (sem nova passada)
         column_coverage = self._coverage_from_embedding_items(items, embedding_dim)
 
+        # PR 22 — categorical_counts genérico via reflection no EmbeddingInfo:
+        # `origin` é a única coluna categórica de baixa cardinalidade tipicamente
+        # presente. Estendido conforme demanda futura.
+        categorical_counts: Dict[str, Dict[str, int]] = {}
+        if origin_counts and len(origin_counts) <= _CATEGORICAL_MAX_CARDINALITY:
+            categorical_counts["origin"] = dict(origin_counts)
+
         return DatasetStats(
             n_imgs=n_imgs,
             n_ids=len(identity_set),
             embedding_dim=embedding_dim,
             identity_set=identity_set,
             origin_counts=origin_counts,
+            categorical_counts=categorical_counts,
             samples_per_identity=samples_per_identity,
             embedding_columns={"embedding"} if embedding_dim > 0 else set(),
             column_coverage=column_coverage,
@@ -160,6 +168,7 @@ class DatasetStatsService:
             gender_counts=_get_counts(df, "gender"),
             ethnicity_counts=_get_counts(df, "ethnicity"),
             origin_counts=_get_counts(df, "origin") or _get_counts(df, "source"),
+            categorical_counts=_get_categorical_counts(df),
             samples_per_identity=_get_counts(df, "identity"),
             column_coverage=column_coverage,
             last_modified=_iso_from_path(file_path),
@@ -202,6 +211,7 @@ class DatasetStatsService:
             gender_counts=_get_counts(df, "gender"),
             ethnicity_counts=_get_counts(df, "ethnicity"),
             origin_counts=_get_counts(df, "origin") or _get_counts(df, "source"),
+            categorical_counts=_get_categorical_counts(df),
             samples_per_identity=_get_counts(df, "identity"),
             column_coverage=column_coverage,
             last_modified=_iso_from_path(file_path) if file_path else _now_iso(),
@@ -450,6 +460,59 @@ def _get_counts(df: pd.DataFrame, col_name: str) -> Dict[str, int]:
         if k_str and k_str.lower() not in ("nan", "none", "null", ""):
             clean[k_str] = int(v)
     return clean
+
+
+# PR 22 (Tema 4.5) — Cardinalidade máxima pra considerar uma coluna
+# string como "categórica" no histograma genérico. Acima disso, vira
+# free-text e a contagem ficaria gigante (ex: identity, file_name).
+_CATEGORICAL_MAX_CARDINALITY = 50
+
+# Colunas que nunca contam como categóricas, independente da cardinalidade.
+# Identity/path/hash/file_name são identificadoras — histograma delas não
+# tem semântica útil.
+_EXCLUDED_FROM_CATEGORICAL = frozenset({
+    "identity", "image_path", "hash", "file_name",
+    "embedding", "embedding_v2", "embedding_v4", "embedding_serfiq",
+})
+
+
+def _get_categorical_counts(
+    df: pd.DataFrame,
+    column_specs: Optional[Dict[str, "object"]] = None,
+    max_cardinality: int = _CATEGORICAL_MAX_CARDINALITY,
+) -> Dict[str, Dict[str, int]]:
+    """Computa histogramas para todas as colunas categóricas do df.
+
+    Critério de inclusão:
+      - dtype object/string + nunique ∈ [1, max_cardinality]
+    Critério de exclusão:
+      - Coluna em `_EXCLUDED_FROM_CATEGORICAL`.
+      - Quando `column_specs` presente, role IDENTITY/IMAGE_PATH/FILE_HASH/
+        EMBEDDING são excluídas independente do dtype/cardinalidade.
+    """
+    out: Dict[str, Dict[str, int]] = {}
+    for col in df.columns:
+        if col in _EXCLUDED_FROM_CATEGORICAL:
+            continue
+        if column_specs:
+            spec = column_specs.get(col)
+            if spec is not None:
+                role = getattr(getattr(spec, "role", None), "value", None)
+                if role in ("identity", "image_path", "file_hash", "embedding"):
+                    continue
+        series = df[col]
+        if not (pd.api.types.is_object_dtype(series) or pd.api.types.is_string_dtype(series)):
+            continue
+        try:
+            nunique = int(series.dropna().nunique())
+        except Exception:
+            continue
+        if nunique == 0 or nunique > max_cardinality:
+            continue
+        counts = _get_counts(df, col)
+        if counts:
+            out[col] = counts
+    return out
 
 
 def _string_unique(df: pd.DataFrame, col_name: str) -> set:

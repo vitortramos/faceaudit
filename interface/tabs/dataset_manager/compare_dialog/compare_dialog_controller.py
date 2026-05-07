@@ -89,23 +89,45 @@ class CompareDialogController(QtCore.QObject):
         while self.view.tabs.count() > 1:
             self.view.tabs.removeTab(1)
 
-        # PR 10: usa ColumnSpec.label quando o dataset tem schema-by-role.
-        # Mantém as strings atuais como fallback para parquets legados.
-        gender_label = self._label_for("gender", default="Gênero")
-        ethnicity_label = self._label_for("ethnicity", default="Etnia")
-        origin_label = self._label_for("origin", default="Origem")
+        # PR 22 (Tema 4.5) — render genérico a partir de `category_diffs`.
+        # Itera as chaves do dict (ordenadas pra estabilidade visual:
+        # canônicas demográficas conhecidas primeiro, depois custom columns
+        # em ordem alfabética) e cria uma aba por categoria. Fallback aos
+        # campos legados (`gender_diffs`/`ethnicity_diffs`/`origin_diffs`)
+        # quando `category_diffs` não está populado — preserva
+        # comportamento pra ComparisonResult criados manualmente em testes
+        # ou código antigo.
+        category_diffs = getattr(result, "category_diffs", None) or {}
+        if category_diffs:
+            for col_name in self._sort_categorical_columns(category_diffs.keys()):
+                label = self._label_for(col_name, default=col_name)
+                self._add_detail_tab(label, category_diffs[col_name])
+        else:
+            # Fallback retrocompat
+            gender_label = self._label_for("gender", default="Gênero")
+            ethnicity_label = self._label_for("ethnicity", default="Etnia")
+            origin_label = self._label_for("origin", default="Origem")
+            self._add_detail_tab(gender_label, result.gender_diffs)
+            self._add_detail_tab(ethnicity_label, result.ethnicity_diffs)
+            self._add_detail_tab(origin_label, result.origin_diffs)
 
-        self._add_detail_tab(gender_label, result.gender_diffs)
-        self._add_detail_tab(ethnicity_label, result.ethnicity_diffs)
-        self._add_detail_tab(origin_label, result.origin_diffs)
+    # Ordem canônica para as abas demográficas — mantém estabilidade visual
+    # entre execuções e prioriza as colunas mais comuns no topo.
+    _CANONICAL_CATEGORY_ORDER = ("gender", "ethnicity", "origin", "source")
+
+    def _sort_categorical_columns(self, columns):
+        """Canônicas primeiro (na ordem fixa), depois custom em ordem alfabética."""
+        cols = list(columns)
+        canonical = [c for c in self._CANONICAL_CATEGORY_ORDER if c in cols]
+        rest = sorted(c for c in cols if c not in self._CANONICAL_CATEGORY_ORDER)
+        return canonical + rest
 
     def _label_for(self, column_name: str, default: str) -> str:
         """Resolve o label de uma coluna via column_specs do dataset A.
 
         Procura no dataset A primeiro (referência); se não encontrar, tenta
-        no B; se nada, retorna o default. Pega o spec só se a coluna for
-        canônica (não-CUSTOM) — não faz sentido um custom virar tab fixa
-        de comparação demográfica.
+        no B; se nada, retorna o default. PR 22: também aceita labels de
+        colunas CUSTOM (qualquer categórica de baixa cardinalidade vira aba).
         """
         for ds in (self.ds_a, self.ds_b):
             specs = getattr(ds, "column_specs", None) or {}

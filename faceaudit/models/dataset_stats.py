@@ -141,6 +141,16 @@ class DatasetStats:
     ethnicity_counts: Dict[str, int] = field(default_factory=dict)
     origin_counts: Dict[str, int] = field(default_factory=dict)
 
+    # PR 22 (Tema 4.5) — categorical_counts genérico: histograma para
+    # qualquer coluna categórica de baixa cardinalidade (≤ 50 valores
+    # distintos). Cobre as canônicas (gender/ethnicity/origin/source),
+    # demais demográficas adicionadas via UI, e custom columns STR.
+    # Identidade/path/hash são excluídas independente da cardinalidade
+    # — não fazem sentido como histograma. As entradas
+    # gender_counts/ethnicity_counts/origin_counts ficam para
+    # retrocompat (mesmo conteúdo, chaves específicas).
+    categorical_counts: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
     # Balanceamento por identidade — { identity: n_samples }
     # Permite calcular dispersão (CV, max/min) sem recarregar o dataset.
     samples_per_identity: Dict[str, int] = field(default_factory=dict)
@@ -155,56 +165,6 @@ class DatasetStats:
 
     @property
     def balance_metrics(self) -> Optional[BalanceMetrics]:
-        """
-        Retorna métricas de balanceamento por identidade ou None quando
-        não aplicável (sem identidades, ou só uma identidade — caso em
-        que "balanceamento" não tem sentido estatístico).
-        """
-        counts = list(self.samples_per_identity.values())
-        if len(counts) < 2:
-            return None
-
-        mn = int(min(counts))
-        mx = int(max(counts))
-        mean = float(statistics.fmean(counts))
-        median = float(statistics.median(counts))
-        std = float(statistics.pstdev(counts))
-        cv = (std / mean) if mean > 0 else 0.0
-        ratio = (mx / mn) if mn > 0 else math.inf
-
-        # Verdict = pior caso entre CV e imbalance ratio.
-        # Ordem: balanceado < aceitável < moderado < severo.
-        cv_level = (
-            0 if cv == 0.0
-            else 1 if cv <= 0.35
-            else 2 if cv <= 0.75
-            else 3
-        )
-        ratio_level = (
-            0 if ratio == 1.0
-            else 1 if ratio <= 4.0
-            else 2 if ratio <= 10.0
-            else 3
-        )
-        level = max(cv_level, ratio_level)
-        verdict = {
-            0: "✅ Balanceado",
-            1: "🟢 Aceitável",
-            2: "🟡 Moderadamente desbalanceado",
-            3: "🔴 Severamente desbalanceado",
-        }[level]
-
-        return BalanceMetrics(
-            n_identities=len(counts),
-            min_samples=mn,
-            max_samples=mx,
-            mean_samples=mean,
-            median_samples=median,
-            std_samples=std,
-            cv=cv,
-            imbalance_ratio=ratio,
-            verdict=verdict,
-        )
         """
         Retorna métricas de balanceamento por identidade ou None quando
         não aplicável (sem identidades, ou só uma identidade — caso em
