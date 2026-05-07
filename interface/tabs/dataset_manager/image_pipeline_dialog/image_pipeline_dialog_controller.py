@@ -23,7 +23,7 @@ from typing import List, Optional
 
 import cv2
 import numpy as np
-from PyQt6 import QtGui, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.enums.image_input_source import ImageInputSource
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
@@ -48,6 +48,7 @@ from faceaudit.pipelines.image_processing_pipeline import (
 )
 
 from .image_pipeline_dialog_view import ImagePipelineDialogView
+from .workers.quality_scores_worker import QualityScoresWorker
 
 
 # Defaults pra steps recém-adicionados — refletem casos típicos
@@ -93,6 +94,11 @@ class ImagePipelineDialogController:
 
         self._cached_original: Optional[np.ndarray] = None
         self._cached_processed: Optional[np.ndarray] = None
+
+        # PR I3 — worker thread pra scores de qualidade. Mantém
+        # referências fortes pra evitar GC durante a execução.
+        self._quality_thread: Optional[QtCore.QThread] = None
+        self._quality_worker: Optional[QualityScoresWorker] = None
 
         # View
         self.view = ImagePipelineDialogView(parent=parent)
@@ -352,6 +358,10 @@ class ImagePipelineDialogController:
         self.view.image_compare.show_status(
             "Clique ▶ Aplicar pra processar a imagem com o pipeline atual."
         )
+        # PR I3 — limpa scores quando a imagem muda (navegação)
+        self.view.quality_scores.clear()
+        # Cancela worker em andamento (resultado seria pra imagem antiga)
+        self._cancel_quality_worker()
 
     def _on_apply(self):
         """Aplica o pipeline corrente na imagem em `_cached_original`."""
@@ -369,6 +379,9 @@ class ImagePipelineDialogController:
             self.view.image_compare.show_status(
                 "Pipeline vazio — saída idêntica à entrada."
             )
+            # Limpa scores em vez de calcular (pipeline vazio = scores
+            # idênticos, não vale o custo de extrair embeddings 2×).
+            self.view.quality_scores.clear()
             return
 
         try:
@@ -393,6 +406,78 @@ class ImagePipelineDialogController:
         self.view.image_compare.show_status(
             f"Pipeline aplicado: {len(self._pipeline_config.steps)} step(s)."
         )
+
+        # PR I3 — dispara worker pra calcular FIQA + ‖emb‖ + cosine.
+        # Worker thread é cancelado/recriado a cada Apply pra refletir
+        # o estado mais recente.
+        self._dispatch_quality_scores_worker()
+
+    # ── PR I3 — Worker thread de scores de qualidade ──────────────────────
+
+    def _dispatch_quality_scores_worker(self):
+        """Cria worker + thread pra calcular scores em background.
+
+        Cancela qualquer worker anterior (resultado seria stale).
+        Mostra "loading" no painel imediatamente; resultado chega via
+        sinal `finished` ou `error`.
+        """
+        if self._cached_original is None or self._cached_processed is None:
+            return
+        if self._ff_service is None:
+            self.view.quality_scores.show_error(
+                "FFService não disponível neste contexto."
+            )
+            return
+
+        self._cancel_quality_worker()
+        self.view.quality_scores.show_loading()
+
+        thread = QtCore.QThread()
+        worker = QualityScoresWorker(
+            ff_service=self._ff_service,
+            original_bgr=self._cached_original,
+            processed_bgr=self._cached_processed,
+            input_source=self._pipeline_config.input_source,
+        )
+        worker.moveToThread(thread)
+
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_quality_finished)
+        worker.error.connect(self._on_quality_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._quality_thread = thread
+        self._quality_worker = worker
+        thread.start()
+
+    def _cancel_quality_worker(self):
+        """Cancela worker em andamento. Não tem ponto de cancelamento
+        granular — apenas detacha referência e ignora o resultado
+        quando emitir."""
+        if self._quality_worker is not None:
+            try:
+                self._quality_worker.finished.disconnect(self._on_quality_finished)
+                self._quality_worker.error.disconnect(self._on_quality_error)
+            except (TypeError, RuntimeError):
+                pass  # já desconectado ou worker GC'd
+        self._quality_worker = None
+        self._quality_thread = None
+
+    def _on_quality_finished(self, result):
+        """Resultado do worker chegou — atualiza panel."""
+        self.view.quality_scores.show_results(result)
+        self._quality_worker = None
+        self._quality_thread = None
+
+    def _on_quality_error(self, msg: str):
+        """Worker falhou — mostra erro no panel."""
+        self.view.quality_scores.show_error(msg)
+        self._quality_worker = None
+        self._quality_thread = None
 
     @staticmethod
     def _ndarray_to_pixmap(bgr: np.ndarray) -> QtGui.QPixmap:

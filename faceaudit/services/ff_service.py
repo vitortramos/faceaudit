@@ -216,6 +216,44 @@ class FFService:
     # PR L3 — Alinhamento isolado e extração a partir de face já alinhada
     # ─────────────────────────────────────────────────────────────────────
 
+    def align_face_from_array(
+        self,
+        bgr_image: np.ndarray,
+        *,
+        model: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
+        """Variante de `align_face_only` que recebe ndarray direto
+        em vez de `FaceInfo` (PR I3).
+
+        Útil em pipelines in-memory onde a imagem já está carregada
+        e não há FaceInfo associado — caso típico: editor de pipeline
+        de imagens calculando scores de qualidade da imagem
+        processada (que existe só em RAM).
+
+        Pipeline interno idêntico: `backend.detect_faces` →
+        `_get_best_face` → `backend.norm_crop`. Pula o
+        `_safe_read_image` (input já é ndarray).
+
+        Args:
+            bgr_image: ndarray BGR (H, W, 3) uint8.
+            model: nome do modelo (None = default).
+
+        Returns:
+            ndarray BGR (112, 112, 3) uint8 ou None se não detectou.
+        """
+        if bgr_image is None or bgr_image.size == 0:
+            return None
+        try:
+            _, engine = self._resolve_engine(model)
+            faces = engine.backend.detect_faces(bgr_image)
+            if not faces:
+                return None
+            face = engine._get_best_face(bgr_image, faces, criterion="size")
+            return engine.backend.norm_crop(bgr_image, face.kps)
+        except Exception as e:
+            print(f"Error in align_face_from_array: {e}")
+            return None
+
     def align_face_only(
         self,
         face_info: FaceInfo,

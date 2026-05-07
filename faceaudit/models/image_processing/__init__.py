@@ -12,6 +12,7 @@ from .image_processing_pipeline_config import ImageProcessingPipelineConfig
 from .image_processing_step_config import ImageProcessingStepConfig
 from .jpeg_compression_config import JpegCompressionConfig
 from .occlusion_config import OcclusionConfig
+from .quality_scores_result import QualityScoresResult
 from .webp_compression_config import WebpCompressionConfig
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "ImageProcessingStepConfig",
     "JpegCompressionConfig",
     "OcclusionConfig",
+    "QualityScoresResult",
     "WebpCompressionConfig",
 ]

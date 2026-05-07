@@ -20,6 +20,7 @@ from PyQt6 import QtCore, QtWidgets
 from faceaudit.enums.image_input_source import ImageInputSource
 
 from .image_compare_widget import ImageCompareWidget
+from .quality_scores_panel import QualityScoresPanel
 from .step_config_panel import StepConfigPanel
 from .steps_list_widget import StepsListWidget
 
@@ -109,8 +110,20 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         left_split.setSizes([320, 480])
         self.splitter.addWidget(left_split)
 
+        # Direita: container vertical com preview + painel de scores
+        right_container = QtWidgets.QWidget()
+        right_layout = QtWidgets.QVBoxLayout(right_container)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
+
         self.image_compare = ImageCompareWidget()
-        self.splitter.addWidget(self.image_compare)
+        right_layout.addWidget(self.image_compare, 1)
+
+        # PR I3 — painel de scores embaixo do preview
+        self.quality_scores = QualityScoresPanel()
+        right_layout.addWidget(self.quality_scores)
+
+        self.splitter.addWidget(right_container)
 
         self.splitter.setSizes([460, 840])
         main.addWidget(self.splitter, 1)
