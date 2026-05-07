@@ -292,6 +292,92 @@ class StrategyManagerV2Controller(QtCore.QObject):
             compute_stats=True,
         )
 
+    def import_dataset_from_path(self, parquet_path: str) -> None:
+        """Entry point público chamado pelo MainGUIController quando o
+        Dataset Manager pede "Enviar pra Estratégia" (PR 17).
+
+        Diferente do `_add_dataset` (que abre QFileDialog), este recebe
+        o path direto. Se nenhum projeto está aberto, oferece ao usuário:
+        abrir existente, criar novo, ou cancelar. Após garantir o
+        projeto, segue o mesmo caminho de import (resource_id editável,
+        copy_artifact_to_project, refresh do left panel, sidecar de
+        stats).
+        """
+        if not parquet_path:
+            return
+        path_obj = Path(parquet_path)
+        if not path_obj.exists():
+            QtWidgets.QMessageBox.warning(
+                self._view, "Arquivo inexistente",
+                f"O arquivo informado não existe:\n{parquet_path}",
+            )
+            return
+
+        # 1. Garante projeto aberto
+        if self._project is None:
+            msg = QtWidgets.QMessageBox(self._view)
+            msg.setWindowTitle("Selecionar projeto")
+            msg.setIcon(QtWidgets.QMessageBox.Icon.Question)
+            msg.setText(
+                "Para enviar o dataset, é preciso ter um projeto aberto."
+            )
+            msg.setInformativeText(
+                "Deseja abrir um projeto existente ou criar um novo?"
+            )
+            btn_open = msg.addButton(
+                "Abrir existente…", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+            )
+            btn_new = msg.addButton(
+                "Criar novo…", QtWidgets.QMessageBox.ButtonRole.AcceptRole
+            )
+            msg.addButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked is btn_open:
+                self.open_project()
+            elif clicked is btn_new:
+                self.new_project()
+            else:
+                return
+            # Se o usuário cancelou o sub-dialog, _project continua None
+            if self._project is None:
+                return
+
+        # 2. Pede o resource_id (default = stem do parquet)
+        suggested_id = path_obj.stem
+        resource_id, ok = QtWidgets.QInputDialog.getText(
+            self._view,
+            "ID do recurso",
+            "Confirme ou edite o ID do recurso\n"
+            "(deve ser único dentro do projeto):",
+            text=suggested_id,
+        )
+        if not ok or not resource_id.strip():
+            return
+        resource_id = resource_id.strip()
+
+        # 3. Copia pro projeto + sidecar de stats + refresh
+        try:
+            ref = self._project.storage.copy_artifact_to_project(
+                source_path=parquet_path,
+                artifact_type=StrategyArtifactType.GLOBAL_DATASET,
+                dataset_id=resource_id,
+            )
+            self._compute_and_save_dataset_stats(
+                self._project.storage.project_root / ref.path
+            )
+            self._refresh_left_panel()
+            QtWidgets.QMessageBox.information(
+                self._view, "Recurso adicionado",
+                f"Dataset '{resource_id}' importado com sucesso ao projeto.\n"
+                f"Path no projeto: {ref.path}",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view, "Erro ao importar",
+                f"Não foi possível importar o dataset:\n{exc}",
+            )
+
     def _add_split_config(self) -> None:
         """Importa uma Split Config (.json) da biblioteca global para o projeto."""
         self._import_resource(

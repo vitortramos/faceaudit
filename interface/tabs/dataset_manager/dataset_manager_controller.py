@@ -38,7 +38,11 @@ class DatasetManagerController(QtCore.QObject):
     Controlador Mestre do Gerenciamento de Datasets.
     """
     
-    dataset_changed = QtCore.pyqtSignal() 
+    dataset_changed = QtCore.pyqtSignal()
+    # PR 17: emitido quando o usuário pede pra enviar o dataset corrente
+    # pra V2. Carrega o caminho absoluto do parquet salvo. Capturado pelo
+    # MainGUIController, que troca de aba e chama a V2.
+    send_to_strategy_requested = QtCore.pyqtSignal(str)
 
     # RECEBE O CONTAINER AQUI
     def __init__(self, view, pipeline, config, container):
@@ -127,6 +131,10 @@ class DatasetManagerController(QtCore.QObject):
         # PR 16 — Adicionar à Biblioteca Global
         if hasattr(self.toolbar_ctrl, "action_save_to_library"):
             self.toolbar_ctrl.action_save_to_library.connect(self.fluxo_salvar_biblioteca)
+
+        # PR 17 — Enviar pra Estratégia (V2)
+        if hasattr(self.toolbar_ctrl, "action_send_to_strategy"):
+            self.toolbar_ctrl.action_send_to_strategy.connect(self.fluxo_enviar_para_estrategia)
 
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
@@ -529,6 +537,39 @@ class DatasetManagerController(QtCore.QObject):
             f"Path: {target_path}\n"
             f"Hash: {ref.hash[:16]}…",
         )
+
+    # ── PR 17: Enviar dataset pra Strategy Manager V2 ─────────────────────
+
+    def fluxo_enviar_para_estrategia(self):
+        """Garante dataset salvo, então emite `send_to_strategy_requested`
+        com o path absoluto. O `MainGUIController` captura, troca de aba
+        e delega o import pra V2 (criando/abrindo projeto se necessário).
+
+        Pré-condições:
+          - Dataset carregado e salvo em disco (current_path setado).
+          - Edições não salvas → prompt pra salvar antes; aborta se cancelar.
+        """
+        if not self.dataset:
+            return
+
+        self.sync_changes_from_table()
+        if self._is_dirty or not self.current_path or not Path(self.current_path).exists():
+            res = QMessageBox.question(
+                self.view, "Salvar antes",
+                "O dataset precisa estar salvo em disco antes de ir pra V2. "
+                "Salvar agora?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if res != QMessageBox.StandardButton.Save:
+                return
+            self.fluxo_salvar()
+            if self._is_dirty or not self.current_path:
+                return
+
+        # Emite o signal pro MainGUIController fazer a ponte cross-tab
+        abs_path = str(Path(self.current_path).resolve())
+        self.send_to_strategy_requested.emit(abs_path)
 
     def request_close(self) -> bool:
         if not self.dataset:

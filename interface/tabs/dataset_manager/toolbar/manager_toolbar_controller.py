@@ -34,6 +34,9 @@ class ManagerToolbarController(QtCore.QObject):
     # PR 16 — Adicionar à Biblioteca Global
     action_save_to_library = QtCore.pyqtSignal()
 
+    # PR 17 — Enviar pra Estratégia (V2)
+    action_send_to_strategy = QtCore.pyqtSignal()
+
     def __init__(self, parent_layout=None):
         super().__init__()
         self.view = ManagerToolbarView()
@@ -65,6 +68,8 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_toggle_gallery.toggled.connect(self.action_toggle_gallery.emit)
         # PR 16: adicionar à biblioteca global
         self.view.btn_save_to_library.clicked.connect(self.action_save_to_library.emit)
+        # PR 17: enviar pra Estratégia
+        self.view.btn_send_to_strategy.clicked.connect(self.action_send_to_strategy.emit)
 
     def get_widget(self):
         return self.view

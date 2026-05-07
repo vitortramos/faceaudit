@@ -83,6 +83,14 @@ class ManagerToolbarView(QFrame):
                     "(reusável entre projetos do Strategy Manager V2)",
         )
 
+        # <--- [PR 17] Enviar pra Estratégia (V2) --->
+        self.btn_send_to_strategy = ToolbarButton(
+            "→ Estratégia", "🎯",
+            tooltip="Envia o dataset atual para o Strategy Manager V2 — "
+                    "switch de aba + import automático no projeto aberto "
+                    "(ou prompt pra abrir/criar projeto)",
+        )
+
         btn_layout.addWidget(self.btn_stats)
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
         btn_layout.addWidget(self.btn_filter)
@@ -90,6 +98,7 @@ class ManagerToolbarView(QFrame):
         btn_layout.addWidget(self.btn_add_column)
         btn_layout.addWidget(self.btn_toggle_gallery)
         btn_layout.addWidget(self.btn_save_to_library)
+        btn_layout.addWidget(self.btn_send_to_strategy)
         
         btn_layout.addStretch() # Empurra tudo para a esquerda
 
@@ -114,6 +123,7 @@ class ManagerToolbarView(QFrame):
             self.btn_add_column,  # <--- [PR 8]
             self.btn_toggle_gallery,  # <--- [PR 15]
             self.btn_save_to_library,  # <--- [PR 16]
+            self.btn_send_to_strategy,  # <--- [PR 17]
         ]
         for btn in buttons:
             btn.setEnabled(enabled)

@@ -115,13 +115,44 @@ class MainGuiController:
     def _setup_connections(self):
         """Estabelece a comunicação via sinais."""
         self.view.config_requested.connect(self.abrir_dialogo_configuracoes)
-        
+
         if self.manager_controller is not None and hasattr(self.manager_controller, 'request_new_dataset'):
             self.manager_controller.request_new_dataset.connect(
                 self.manager_controller.abrir_dialog_novo_dataset
             )
+
+        # PR 17 — cross-tab: Dataset Manager → Strategy Manager V2.
+        # Quando o usuário clica "🎯 → Estratégia" no Dataset Manager,
+        # trocamos pra aba V2 e delegamos o import. Só conectamos se
+        # ambos os lados existem (V2 pode estar desativada se faltar
+        # storage; Dataset Manager pode estar desativado se FFService
+        # falhou).
+        if (
+            self.manager_controller is not None
+            and hasattr(self.manager_controller, "send_to_strategy_requested")
+            and getattr(self, "strategy_manager_v2", None) is not None
+        ):
+            self.manager_controller.send_to_strategy_requested.connect(
+                self._on_send_dataset_to_strategy
+            )
+
         # Sequestra o botão "X" da janela principal
         self.view.closeEvent = self.handle_app_close
+
+    def _on_send_dataset_to_strategy(self, parquet_path: str) -> None:
+        """Hook chamado pelo Dataset Manager via signal (PR 17). Troca de
+        aba pro V2 e delega o import — V2 cuida do prompt pra abrir/criar
+        projeto se necessário."""
+        try:
+            self.view.main_tabs.setCurrentWidget(self.strategy_manager_v2.view)
+        except Exception:
+            # View pode ter sido destruída em algum cenário inesperado;
+            # tentamos por índice como fallback.
+            try:
+                self.view.main_tabs.setCurrentIndex(1)
+            except Exception:
+                pass
+        self.strategy_manager_v2.import_dataset_from_path(parquet_path)
 
     def abrir_dialogo_configuracoes(self):
         """Executa o diálogo de configurações."""
