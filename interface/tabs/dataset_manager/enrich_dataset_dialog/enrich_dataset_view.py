@@ -101,6 +101,21 @@ class EnrichDatasetView(QDialog):
         group_layout.addStretch()
         main_layout.addWidget(group)
 
+        # PR 18: idempotência. Default desmarcado — pula faces que já têm
+        # o enrichment pedido. Marcado = força reprocessamento de tudo
+        # (sobrescreve *_info existentes).
+        self.chk_force_reprocess = QCheckBox(
+            "Reprocessar mesmo as faces já enriquecidas"
+        )
+        self.chk_force_reprocess.setChecked(False)
+        self.chk_force_reprocess.setToolTip(
+            "Por padrão, cada estágio (FF/OFIQ/SER-FIQ) processa apenas as "
+            "faces que ainda não têm aquele dado preenchido — útil para "
+            "completar um dataset parcialmente enriquecido sem desperdiçar "
+            "GPU. Marque esta opção para reprocessar todas as faces."
+        )
+        main_layout.addWidget(self.chk_force_reprocess)
+
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )

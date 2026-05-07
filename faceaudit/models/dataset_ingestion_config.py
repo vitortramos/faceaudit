@@ -48,6 +48,14 @@ class DatasetIngestionConfig:
     serfiq_t: int = 10        # iterações estocásticas (mais = mais robusto)
     serfiq_alpha: float = 1.5  # fator de escala do score
 
+    # 7. PR 18 — idempotência do enriquecimento.
+    # Quando False (default), o `FeatureExtractionPipeline.enrich_existing_dataset`
+    # filtra as faces que já têm o enrichment solicitado e pula as demais —
+    # útil pra "completar" um dataset parcialmente enriquecido sem reprocessar
+    # faces que já passaram (economia de GPU/CPU). True força reprocessamento
+    # de tudo, sobrescrevendo os campos *_info existentes.
+    force_reprocess: bool = False
+
     def __post_init__(self):
         # Garante que o path seja Path object
         if isinstance(self.input_path, str):

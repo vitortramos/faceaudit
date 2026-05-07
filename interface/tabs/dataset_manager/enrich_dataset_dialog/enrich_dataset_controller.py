@@ -40,6 +40,10 @@ class EnrichDatasetController:
             ff_extended=self.view.get_ff_extended(),
             serfiq_t=self.view.get_serfiq_t(),
             serfiq_alpha=self.view.get_serfiq_alpha(),
+
+            # PR 18: idempotência — quando False (default), o pipeline pula
+            # faces que já têm o enrichment solicitado. True força tudo.
+            force_reprocess=self.view.chk_force_reprocess.isChecked(),
         )
 
     def _analyze_and_populate(self):

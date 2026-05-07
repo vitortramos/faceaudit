@@ -298,14 +298,21 @@ class FeatureExtractionPipeline:
 
         return _tick
     
-    def enrich_existing_dataset(self, 
-                                dataset: FaceDataset, 
-                                config: DatasetIngestionConfig, 
+    def enrich_existing_dataset(self,
+                                dataset: FaceDataset,
+                                config: DatasetIngestionConfig,
                                 progress_callback: Optional[Callable[[str, int], None]] = None
                                 ) -> FaceDataset:
         """
         Processa um dataset já existente em memória, aplicando apenas os serviços de IA solicitados.
         Ignora as etapas de varredura de diretório (Extract) e carregamento de cache.
+
+        PR 18 — idempotência: por padrão (`config.force_reprocess=False`),
+        cada estágio recebe um sub-dataset com APENAS as faces que ainda
+        não têm aquele enrichment, economizando GPU/CPU em datasets
+        parcialmente enriquecidos. As mutações nos `FaceInfo` propagam
+        pra `dataset` original via referência. `force_reprocess=True`
+        ignora o filtro e processa tudo (sobrescreve os *_info existentes).
         """
         print(f"🚀 [Pipeline] Iniciando enriquecimento do dataset: {dataset.name}")
 
@@ -313,10 +320,10 @@ class FeatureExtractionPipeline:
         if config.compute_ff: active_stages.append("Biometria (ForensicFace)")
         if config.compute_ofiq: active_stages.append("Qualidade (OFIQ)")
         if config.compute_serfiq: active_stages.append("Robustez (SER-FIQ)")
-        
+
         total_stages = len(active_stages)
         current_stage_idx = 0
-        
+
         if total_stages == 0:
             print("⚠️ [Pipeline] Nenhum processamento foi selecionado para enriquecimento.")
             return dataset
@@ -334,11 +341,18 @@ class FeatureExtractionPipeline:
                         scaled_pct = base_pct + int((internal_pct / 100) * (next_pct - base_pct))
                         progress_callback(msg, scaled_pct)
 
-                ff_svc.process_dataset(
-                    dataset,
-                    progress_callback=ff_callback,
-                    models=wanted_models,
+                target = self._select_target_for_stage(
+                    dataset, active_stages[current_stage_idx],
+                    self._faces_needing_ff(dataset, wanted_models),
+                    base_pct, progress_callback,
+                    force=config.force_reprocess,
                 )
+                if target is not None:
+                    ff_svc.process_dataset(
+                        target,
+                        progress_callback=ff_callback,
+                        models=wanted_models,
+                    )
                 current_stage_idx += 1
 
             if config.compute_ofiq:
@@ -347,10 +361,17 @@ class FeatureExtractionPipeline:
                 msg = f"Enriquecendo: {active_stages[current_stage_idx]}..."
                 if progress_callback: progress_callback(msg, base_pct)
 
-                ofiq_tick = self._make_noarg_stage_callback(
-                    msg, base_pct, next_pct, len(dataset), progress_callback
+                target = self._select_target_for_stage(
+                    dataset, active_stages[current_stage_idx],
+                    self._faces_needing_ofiq(dataset),
+                    base_pct, progress_callback,
+                    force=config.force_reprocess,
                 )
-                self.ofiq_service.process_dataset(dataset, callback=ofiq_tick)
+                if target is not None:
+                    ofiq_tick = self._make_noarg_stage_callback(
+                        msg, base_pct, next_pct, len(target), progress_callback
+                    )
+                    self.ofiq_service.process_dataset(target, callback=ofiq_tick)
                 current_stage_idx += 1
 
             if config.compute_serfiq:
@@ -359,15 +380,22 @@ class FeatureExtractionPipeline:
                 msg = f"Enriquecendo: {active_stages[current_stage_idx]}..."
                 if progress_callback: progress_callback(msg, base_pct)
 
-                serfiq_tick = self._make_noarg_stage_callback(
-                    msg, base_pct, next_pct, len(dataset), progress_callback
+                target = self._select_target_for_stage(
+                    dataset, active_stages[current_stage_idx],
+                    self._faces_needing_serfiq(dataset),
+                    base_pct, progress_callback,
+                    force=config.force_reprocess,
                 )
-                self._resolve_serfiq_service(config).process_dataset(
-                    dataset,
-                    callback=serfiq_tick,
-                    t=config.serfiq_t,
-                    alpha=config.serfiq_alpha,
-                )
+                if target is not None:
+                    serfiq_tick = self._make_noarg_stage_callback(
+                        msg, base_pct, next_pct, len(target), progress_callback
+                    )
+                    self._resolve_serfiq_service(config).process_dataset(
+                        target,
+                        callback=serfiq_tick,
+                        t=config.serfiq_t,
+                        alpha=config.serfiq_alpha,
+                    )
                 current_stage_idx += 1
 
         except InterruptedError:
@@ -387,7 +415,98 @@ class FeatureExtractionPipeline:
             except Exception as e:
                 self.logger.error(f"Erro ao salvar pós-enriquecimento: {e}")
 
-        if progress_callback: 
+        if progress_callback:
             progress_callback("Enriquecimento Concluído!", 100)
 
         return dataset
+
+    # =========================================================================
+    # PR 18 — Helpers de idempotência por estágio
+    # =========================================================================
+
+    def _select_target_for_stage(
+        self,
+        dataset: FaceDataset,
+        stage_label: str,
+        missing_faces: list,
+        base_pct: int,
+        progress_callback: Optional[Callable[[str, int], None]],
+        force: bool,
+    ) -> Optional[FaceDataset]:
+        """Decide o que enviar pro service do estágio:
+
+          - `force=True` → o dataset original inteiro (reprocessa tudo).
+          - `missing_faces` vazio → None (skip do estágio inteiro).
+          - Caso intermediário → sub-FaceDataset com APENAS os faltantes.
+            Mutações nos `FaceInfo` propagam ao original via referência.
+
+        Loga skip/processed via `progress_callback` quando aplicável.
+        """
+        total = len(dataset)
+        if force:
+            if progress_callback:
+                progress_callback(
+                    f"Enriquecendo (force): {stage_label} — {total} face(s)…",
+                    base_pct,
+                )
+            return dataset
+
+        n_missing = len(missing_faces)
+        n_skipped = total - n_missing
+        if n_missing == 0:
+            if progress_callback:
+                progress_callback(
+                    f"Pulando: {stage_label} — todas as {total} face(s) já enriquecidas",
+                    base_pct,
+                )
+            print(
+                f"⏭ [Pipeline] {stage_label}: pulando — todas as {total} faces "
+                "já têm este enrichment."
+            )
+            return None
+
+        if progress_callback:
+            progress_callback(
+                f"Enriquecendo: {stage_label} — {n_missing} pendentes "
+                f"({n_skipped} já enriquecidas)",
+                base_pct,
+            )
+        print(
+            f"➡ [Pipeline] {stage_label}: processando {n_missing} de {total} faces "
+            f"(pulando {n_skipped} já enriquecidas)."
+        )
+        return FaceDataset(
+            name=f"{dataset.name}_subset",
+            faces=missing_faces,
+        )
+
+    @staticmethod
+    def _faces_needing_ff(dataset: FaceDataset, wanted_models: list) -> list:
+        """Faces sem TODOS os embeddings dos modelos solicitados.
+
+        Convenção do FFInfo: `embedding_<model>` (ex: `embedding_sepaelv2`).
+        Se a face tem ff_info mas falta pelo menos um dos `wanted_models`,
+        ela é incluída — o serviço preenche o que faltar.
+        """
+        out = []
+        for face in dataset.faces:
+            ff = getattr(face, "ff_info", None)
+            if ff is None:
+                out.append(face)
+                continue
+            for model in wanted_models:
+                attr = f"embedding_{model}"
+                if getattr(ff, attr, None) is None:
+                    out.append(face)
+                    break
+        return out
+
+    @staticmethod
+    def _faces_needing_ofiq(dataset: FaceDataset) -> list:
+        """Faces sem `ofiq_info` populado."""
+        return [f for f in dataset.faces if getattr(f, "ofiq_info", None) is None]
+
+    @staticmethod
+    def _faces_needing_serfiq(dataset: FaceDataset) -> list:
+        """Faces sem `serfiq_info` populado."""
+        return [f for f in dataset.faces if getattr(f, "serfiq_info", None) is None]
