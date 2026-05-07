@@ -31,6 +31,9 @@ class ManagerToolbarController(QtCore.QObject):
     # PR 15 — Modo galeria
     action_toggle_gallery = QtCore.pyqtSignal(bool)  # bool = is_gallery_mode
 
+    # PR 16 — Adicionar à Biblioteca Global
+    action_save_to_library = QtCore.pyqtSignal()
+
     def __init__(self, parent_layout=None):
         super().__init__()
         self.view = ManagerToolbarView()
@@ -60,6 +63,8 @@ class ManagerToolbarController(QtCore.QObject):
         # PR 15: toggled emite com checked state — controller pode tratar
         # como flag (gallery on/off) sem precisar consultar o botão.
         self.view.btn_toggle_gallery.toggled.connect(self.action_toggle_gallery.emit)
+        # PR 16: adicionar à biblioteca global
+        self.view.btn_save_to_library.clicked.connect(self.action_save_to_library.emit)
 
     def get_widget(self):
         return self.view

@@ -76,12 +76,20 @@ class ManagerToolbarView(QFrame):
         )
         self.btn_toggle_gallery.setCheckable(True)
 
+        # <--- [PR 16] Adicionar à Biblioteca Global --->
+        self.btn_save_to_library = ToolbarButton(
+            "Biblioteca", "📚",
+            tooltip="Adiciona o dataset atual à biblioteca global "
+                    "(reusável entre projetos do Strategy Manager V2)",
+        )
+
         btn_layout.addWidget(self.btn_stats)
         btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
         btn_layout.addWidget(self.btn_filter)
         btn_layout.addWidget(self.btn_clear_filter)
         btn_layout.addWidget(self.btn_add_column)
         btn_layout.addWidget(self.btn_toggle_gallery)
+        btn_layout.addWidget(self.btn_save_to_library)
         
         btn_layout.addStretch() # Empurra tudo para a esquerda
 
@@ -105,6 +113,7 @@ class ManagerToolbarView(QFrame):
             self.btn_filter,
             self.btn_add_column,  # <--- [PR 8]
             self.btn_toggle_gallery,  # <--- [PR 15]
+            self.btn_save_to_library,  # <--- [PR 16]
         ]
         for btn in buttons:
             btn.setEnabled(enabled)

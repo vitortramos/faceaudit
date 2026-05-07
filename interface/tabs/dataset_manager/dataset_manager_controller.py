@@ -124,6 +124,10 @@ class DatasetManagerController(QtCore.QObject):
             self.table_ctrl.compare_pair_requested.connect(self._on_compare_pair)
         self.gallery_widget.compare_pair_requested.connect(self._on_compare_pair)
 
+        # PR 16 — Adicionar à Biblioteca Global
+        if hasattr(self.toolbar_ctrl, "action_save_to_library"):
+            self.toolbar_ctrl.action_save_to_library.connect(self.fluxo_salvar_biblioteca)
+
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
 
@@ -411,10 +415,10 @@ class DatasetManagerController(QtCore.QObject):
     def fluxo_salvar_como(self):
         if not self.dataset: return
         self.sync_changes_from_table()
-        
+
         default_name = f"{self.dataset.name}.parquet"
         init_path = os.path.join(self._get_initial_dir(), default_name)
-        
+
         path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
         if path:
             self.dataset.name = Path(path).stem
@@ -422,6 +426,109 @@ class DatasetManagerController(QtCore.QObject):
             self.current_path = path
             self.set_dirty(False)
             self.carregar_dataset_na_tela(self.dataset, path)
+
+    # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────
+
+    def fluxo_salvar_biblioteca(self):
+        """Copia o parquet salvo do dataset atual pra biblioteca global,
+        ficando reusável entre projetos do Strategy Manager V2.
+
+        Pré-condições:
+          - Dataset carregado e salvo em disco (current_path setado).
+          - Se houver edições não-salvas, prompt pra salvar antes (a
+            biblioteca só recebe o que está em disco).
+          - Library path configurado (`config.paths.library`).
+        """
+        if not self.dataset:
+            return
+
+        # 1. Garante que o dataset foi salvo primeiro — a biblioteca
+        # global aceita só arquivos em disco; edições em memória ficam de fora.
+        self.sync_changes_from_table()
+        if self._is_dirty or not self.current_path or not Path(self.current_path).exists():
+            res = QMessageBox.question(
+                self.view, "Salvar antes",
+                "O dataset precisa estar salvo em disco antes de ir pra "
+                "biblioteca global. Salvar agora?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if res != QMessageBox.StandardButton.Save:
+                return
+            self.fluxo_salvar()
+            if self._is_dirty or not self.current_path:
+                return  # falhou ou usuário cancelou o save dialog
+
+        # 2. Resolve o root da biblioteca via app_config.paths.library
+        library_root = getattr(getattr(self.config, "paths", None), "library", None)
+        if not library_root:
+            QMessageBox.warning(
+                self.view, "Biblioteca não configurada",
+                "Configure 'paths.library' no config.json antes de "
+                "adicionar datasets à biblioteca global.",
+            )
+            return
+
+        # 3. Pede o dataset_id (default = nome atual). Permite versionar
+        # ao salvar (ex: "passaportes_2025_01" sem afetar o nome interno
+        # do dataset).
+        from PyQt6.QtWidgets import QInputDialog
+        default_id = self.dataset.name or Path(self.current_path).stem
+        dataset_id, ok = QInputDialog.getText(
+            self.view, "Adicionar à Biblioteca",
+            "Identificador (sem extensão) — será usado como nome do "
+            "arquivo na biblioteca:",
+            text=default_id,
+        )
+        if not ok:
+            return
+        dataset_id = (dataset_id or "").strip()
+        if not dataset_id:
+            QMessageBox.warning(self.view, "Inválido",
+                                "O identificador não pode ser vazio.")
+            return
+
+        # 4. Confirma overwrite
+        target_path = Path(library_root) / "datasets" / f"{dataset_id}.parquet"
+        if target_path.exists():
+            res = QMessageBox.question(
+                self.view, "Já existe",
+                f"Já existe um dataset '{dataset_id}.parquet' na biblioteca. "
+                "Sobrescrever?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                defaultButton=QMessageBox.StandardButton.No,
+            )
+            if res != QMessageBox.StandardButton.Yes:
+                return
+
+        # 5. Copia via GlobalLibraryStorage — preserva schema metadata
+        # (PR 3) e calcula hash SHA-256 automaticamente.
+        try:
+            from faceaudit.storage.global_library_storage import GlobalLibraryStorage
+            from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+
+            storage = GlobalLibraryStorage(library_root=library_root)
+            storage.create_library_structure()  # idempotente
+            ref = storage.copy_artifact_to_project(
+                source_path=self.current_path,
+                artifact_type=StrategyArtifactType.GLOBAL_DATASET,
+                dataset_id=dataset_id,
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(
+                self.view, "Erro",
+                f"Falha ao copiar pra biblioteca: {e}",
+            )
+            return
+
+        QMessageBox.information(
+            self.view, "Adicionado à biblioteca",
+            f"Dataset salvo na biblioteca global como '{dataset_id}.parquet'.\n\n"
+            f"Path: {target_path}\n"
+            f"Hash: {ref.hash[:16]}…",
+        )
 
     def request_close(self) -> bool:
         if not self.dataset:
