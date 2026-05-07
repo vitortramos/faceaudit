@@ -1,5 +1,5 @@
 """Resolve `image_path` de um FaceInfo/EmbeddingInfo em path absoluto
-pronto pra leitura (PR L1a).
+pronto pra leitura (PR L1a, normalização cross-platform L1c.1).
 
 Free-function — recebe parâmetros crus, sem dependência de
 `FaceDataset`. Mora em `services/` por convenção do projeto, mas é
@@ -12,6 +12,13 @@ conhecer a classe inteira do dataset.
 
 Atalho de conveniência: `FaceDataset.resolve_image_path(face)` delega
 a essa função preenchendo os parâmetros a partir do próprio dataset.
+
+**Convenção cross-platform (L1c.1)** — todos os paths armazenados em
+disco (parquet metadata, `FaceInfo.image_path`, `FaceDataset.path_root`)
+usam `/` como separador, independente do SO. Em runtime, `pathlib.Path`
+aceita `/` em todos os SOs (até Windows com `C:/Users/...`). Padrão
+herdado de `StrategyArtifactReference.from_dict` (mesma motivação:
+parquets criados no Windows abrirem no macOS sem normalização manual).
 """
 
 from __future__ import annotations
@@ -20,6 +27,26 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from faceaudit.enums.path_mode import PathMode
+
+
+def normalize_stored_path(raw: str) -> str:
+    """Normaliza path-string pra POSIX (forward slashes).
+
+    Aplicar a qualquer string de path **antes de armazenar em disco**
+    e **defensivamente ao ler** parquets/JSON gerados em outras
+    plataformas. `pathlib.Path` aceita `/` em todos os SOs.
+
+    No-op pra strings sem `\\`. Não toca em paths absolutos do macOS/
+    Linux (já em POSIX). Em paths absolutos do Windows (`C:\\Users\\...`)
+    converte pra `C:/Users/...` — `Path` no Windows aceita ambos.
+
+    Args:
+        raw: string de path possivelmente com mistura de separadores.
+
+    Returns:
+        String com apenas `/` como separador.
+    """
+    return raw.replace("\\", "/")
 
 
 def resolve_image_path(
@@ -77,8 +104,11 @@ def _extract_path_str(face_or_path: Any) -> str:
     """Extrai a string de path de um FaceInfo/EmbeddingInfo/str/Path.
 
     Aceita qualquer um dos quatro pra que callers (services) não
-    precisem desambiguar.
+    precisem desambiguar. **Normaliza para POSIX (L1c.1)** — protege
+    contra paths gravados no Windows com `\\` lidos no macOS/Linux.
     """
     if hasattr(face_or_path, "image_path"):
-        return str(face_or_path.image_path)
-    return str(face_or_path)
+        raw = str(face_or_path.image_path)
+    else:
+        raw = str(face_or_path)
+    return normalize_stored_path(raw)

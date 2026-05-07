@@ -607,6 +607,11 @@ class FaceDataset:
         except ValueError:
             path_mode = PathMode.ABSOLUTE
         path_root = meta.get("faceaudit:path_root") or None
+        # PR L1c.1 — normaliza defensivamente pra POSIX (parquets gerados
+        # no Windows pré-fix podem ter `\` no path_root).
+        if path_root:
+            from faceaudit.services.image_path_resolver import normalize_stored_path
+            path_root = normalize_stored_path(path_root)
 
         df = table.to_pandas()
         ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
@@ -672,8 +677,10 @@ class FaceDataset:
             }
             # PR L1a — `path_root` só é gravado em modo RELATIVE; em
             # ABSOLUTE não faz sentido (e mantém metadata enxuta).
+            # PR L1c.1 — normaliza pra POSIX antes de gravar (cross-platform).
             if self.path_mode == PathMode.RELATIVE and self.path_root:
-                empty_meta["faceaudit:path_root"] = self.path_root
+                from faceaudit.services.image_path_resolver import normalize_stored_path
+                empty_meta["faceaudit:path_root"] = normalize_stored_path(self.path_root)
             empty_table = pa.Table.from_pandas(df, preserve_index=False)
             empty_table = empty_table.replace_schema_metadata(
                 _build_metadata_bytes(empty_meta),
@@ -731,8 +738,10 @@ class FaceDataset:
         }
 
         # PR L1a — `path_root` só entra na metadata em modo RELATIVE.
+        # PR L1c.1 — normaliza pra POSIX antes de gravar (cross-platform).
         if self.path_mode == PathMode.RELATIVE and self.path_root:
-            meta_payload["faceaudit:path_root"] = self.path_root
+            from faceaudit.services.image_path_resolver import normalize_stored_path
+            meta_payload["faceaudit:path_root"] = normalize_stored_path(self.path_root)
 
         try:
             table = pa.Table.from_pandas(df, preserve_index=False)

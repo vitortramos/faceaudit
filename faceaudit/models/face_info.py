@@ -47,7 +47,16 @@ class FaceInfo:
     extra_data: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Preenche automaticamente o file_name se estiver vazio."""
+        """Preenche automaticamente o file_name se estiver vazio.
+
+        PR L1c.1 — normaliza `image_path` pra POSIX (forward slashes)
+        em qualquer FaceInfo construído. Garante que datasets gerados
+        no Windows e abertos no macOS/Linux (e vice-versa) tenham
+        `image_path` consistente. `pathlib.Path` aceita `/` em todos
+        os SOs, então não há perda de funcionalidade.
+        """
+        if self.image_path:
+            self.image_path = self.image_path.replace("\\", "/")
         if self.file_name is None and self.image_path:
             self.file_name = os.path.basename(self.image_path)
 

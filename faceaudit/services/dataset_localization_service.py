@@ -28,7 +28,7 @@ import copy
 import hashlib
 import shutil
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, List, Optional, Tuple, Union
 
 from faceaudit.enums.localization_mode import LocalizationMode
@@ -138,8 +138,10 @@ class DatasetLocalizationService:
                 ))
                 continue
 
-            # Clona o FaceInfo com novo image_path relativo
-            new_face = self._clone_face_with_path(face, str(rel_path))
+            # PR L1c.1 — `as_posix()` garante separador `/` em qualquer SO.
+            # No Windows, `str(rel_path)` produziria `imgs\a.jpg` que quebra
+            # ao abrir o parquet em macOS/Linux.
+            new_face = self._clone_face_with_path(face, rel_path.as_posix())
             new_faces.append(new_face)
 
         # path_root="." porque os paths são relativos a target_dir direto.
@@ -303,11 +305,18 @@ class DatasetLocalizationService:
     @staticmethod
     def _disambiguate(name: str, used: set[str]) -> str:
         """Se `name` já está em `used`, gera `<stem>_1<ext>`,
-        `<stem>_2<ext>` ... até achar um livre."""
+        `<stem>_2<ext>` ... até achar um livre.
+
+        PR L1c.1 — usa `PurePosixPath` em vez de `Path` pra que os
+        componentes sempre sejam separados por `/`, independente do
+        SO. `str(Path("a/b").parent)` em Windows retorna `"a"`, mas
+        com paths de 2 níveis (`"a/b/c"`) retornaria `"a\\b"` —
+        misturando separadores no resultado final.
+        """
         if name not in used:
             return name
-        p = Path(name)
-        parent = str(p.parent) if str(p.parent) != "." else ""
+        p = PurePosixPath(name)
+        parent = p.parent.as_posix() if str(p.parent) != "." else ""
         stem = p.stem
         ext = p.suffix
         i = 1
@@ -323,8 +332,8 @@ class DatasetLocalizationService:
     ) -> str:
         """Idem `_disambiguate` mas também checa o filesystem (caso
         rodadas anteriores tenham deixado arquivos)."""
-        p = Path(name)
-        parent = str(p.parent) if str(p.parent) != "." else ""
+        p = PurePosixPath(name)
+        parent = p.parent.as_posix() if str(p.parent) != "." else ""
         stem = p.stem
         ext = p.suffix
         i = 1
@@ -356,9 +365,14 @@ class DatasetLocalizationService:
     def _clone_face_with_path(face: FaceInfo, new_path: str) -> FaceInfo:
         """Clone shallow do FaceInfo com novo `image_path`. file_name
         é recalculado pelo `__post_init__` quando vazio; preservamos
-        explicitamente o file_name original pra evitar mudar a UX."""
+        explicitamente o file_name original pra evitar mudar a UX.
+
+        PR L1c.1 — defesa final: normaliza pra POSIX antes de atribuir.
+        `copy.copy` não dispara `__post_init__`, então a normalização
+        precisa ser explícita aqui.
+        """
         clone = copy.copy(face)
-        clone.image_path = new_path
+        clone.image_path = new_path.replace("\\", "/")
         # Não mexemos no file_name nem no hash — ambos continuam válidos
         # (file_name preserva a legibilidade original; hash é do conteúdo,
         # cópia preserva bytes).
