@@ -55,6 +55,14 @@ class GlobalLibraryFileType(Enum):
         "{template_id}",
     )
 
+    # PR I4 — pipeline de processamento de imagens (blur/JPEG/WebP/crop/oclusão).
+    # Salvo via Editor de Pipeline de Imagens no Dataset Manager.
+    IMAGE_PIPELINE_CONFIG = (
+        ".json",
+        GlobalLibraryFolder.IMAGE_PIPELINES,
+        "{config_id}",
+    )
+
     def __init__(self, extension: str, folder: GlobalLibraryFolder, name_template: str):
         self.extension = extension
         self.folder = folder
@@ -129,9 +137,10 @@ class GlobalLibraryFileType(Enum):
     @classmethod
     def _artifact_map(cls) -> dict:
         return {
-            StrategyArtifactType.GLOBAL_DATASET:     cls.GLOBAL_DATASET,
-            StrategyArtifactType.SPLIT_CONFIG:        cls.SPLIT_CONFIG,
-            StrategyArtifactType.MINING_CONFIG:       cls.MINING_CONFIG,
-            StrategyArtifactType.PIPELINE_CONFIG:     cls.PIPELINE_CONFIG,
-            StrategyArtifactType.STRATEGY_TEMPLATE:   cls.STRATEGY_TEMPLATE,
+            StrategyArtifactType.GLOBAL_DATASET:        cls.GLOBAL_DATASET,
+            StrategyArtifactType.SPLIT_CONFIG:           cls.SPLIT_CONFIG,
+            StrategyArtifactType.MINING_CONFIG:          cls.MINING_CONFIG,
+            StrategyArtifactType.PIPELINE_CONFIG:        cls.PIPELINE_CONFIG,
+            StrategyArtifactType.IMAGE_PIPELINE_CONFIG:  cls.IMAGE_PIPELINE_CONFIG,
+            StrategyArtifactType.STRATEGY_TEMPLATE:      cls.STRATEGY_TEMPLATE,
         }

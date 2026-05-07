@@ -1033,11 +1033,18 @@ class DatasetManagerController(QtCore.QObject):
             else None
         )
 
+        # PR I4 — library_root pra Salvar/Carregar pipelines da
+        # biblioteca global. None desabilita esses 2 botões.
+        library_root = getattr(
+            getattr(self.config, "paths", None), "library", None,
+        )
+
         from .image_pipeline_dialog import ImagePipelineDialogController
         ctrl = ImagePipelineDialogController(
             dataset=self.dataset,
             initial_face_index=initial_face_idx,
             ff_service=ff_svc,
+            library_root=library_root,
             parent=self.view,
         )
         ctrl.exec()

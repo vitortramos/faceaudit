@@ -46,6 +46,7 @@ class StrategyArtifactType(Enum):
     SPLIT_CONFIG = "split_config"            # Configuração de split (SplitConfig JSON)
     MINING_CONFIG = "mining_config"          # Configuração de mineração (ComparisonMiningConfig JSON)
     PIPELINE_CONFIG = "pipeline_config"      # Configuração de pipeline de transformação (JSON)
+    IMAGE_PIPELINE_CONFIG = "image_pipeline_config"  # PR I4 — configuração de pipeline de processamento de imagens (JSON)
     STRATEGY_TEMPLATE = "strategy_template"  # Template de estratégia (LRStrategyDefinition JSON sem recursos vinculados)
 
     # --- FALLBACK ---

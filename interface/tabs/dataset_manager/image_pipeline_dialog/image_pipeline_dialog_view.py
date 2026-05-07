@@ -13,9 +13,9 @@ Layout:
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Callable, Optional
 
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.enums.image_input_source import ImageInputSource
 
@@ -29,6 +29,7 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
     """Dialog top-level. Modal, 1300×820."""
 
     save_clicked = QtCore.pyqtSignal()
+    load_clicked = QtCore.pyqtSignal()  # PR I4
     name_changed = QtCore.pyqtSignal(str)
     input_source_changed = QtCore.pyqtSignal(object)  # ImageInputSource
     seed_changed = QtCore.pyqtSignal(int)
@@ -38,7 +39,23 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.setWindowTitle("Editor de Pipeline de Imagens")
         self.setModal(True)
         self.resize(1300, 820)
+        # PR I4 — controller injeta callback aqui pra interceptar
+        # close quando há mudanças não salvas.
+        self.confirm_close_callback: Optional[Callable[[], bool]] = None
         self._build_ui()
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        """PR I4 — pergunta confirmação se o controller marcou dirty.
+
+        O controller injeta `confirm_close_callback` que retorna True
+        pra fechar ou False pra cancelar. Sem callback, fecha direto.
+        """
+        if self.confirm_close_callback is not None:
+            if not self.confirm_close_callback():
+                event.ignore()
+                return
+        event.accept()
+        super().closeEvent(event)
 
     def _build_ui(self):
         main = QtWidgets.QVBoxLayout(self)
@@ -75,11 +92,22 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         top_row.addWidget(self.spn_seed)
 
         top_row.addSpacing(20)
+
+        # PR I4 — Carregar pipeline da biblioteca global
+        self.btn_load = QtWidgets.QPushButton("📂 Carregar")
+        self.btn_load.setToolTip(
+            "Carregar pipeline salvo da biblioteca global (substitui "
+            "o pipeline atual em memória — mudanças não salvas são "
+            "descartadas após confirmação)."
+        )
+        self.btn_load.clicked.connect(self.load_clicked.emit)
+        top_row.addWidget(self.btn_load)
+
+        # PR I4 — Salvar pipeline na biblioteca global
         self.btn_save = QtWidgets.QPushButton("💾 Salvar")
         self.btn_save.setToolTip(
-            "Persistência na biblioteca global virá no PR I4."
+            "Salvar pipeline atual na biblioteca global como JSON."
         )
-        self.btn_save.setEnabled(False)  # I4
         self.btn_save.clicked.connect(self.save_clicked.emit)
         top_row.addWidget(self.btn_save)
 
@@ -159,3 +187,19 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.spn_seed.blockSignals(True)
         self.spn_seed.setValue(int(seed))
         self.spn_seed.blockSignals(False)
+
+    def set_save_load_enabled(self, enabled: bool, reason: str = ""):
+        """PR I4 — desabilita Salvar/Carregar quando library_root
+        não está disponível. `reason` vai pro tooltip."""
+        self.btn_save.setEnabled(enabled)
+        self.btn_load.setEnabled(enabled)
+        if not enabled and reason:
+            tip = f"Indisponível: {reason}"
+            self.btn_save.setToolTip(tip)
+            self.btn_load.setToolTip(tip)
+
+    def set_dirty_indicator(self, dirty: bool):
+        """PR I4 — adiciona/remove asterisco no título da janela
+        quando há mudanças não salvas."""
+        title = "Editor de Pipeline de Imagens"
+        self.setWindowTitle(f"{title} *" if dirty else title)

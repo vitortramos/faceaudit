@@ -19,6 +19,7 @@ Decisões de design:
 from __future__ import annotations
 
 import random as random_module
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
@@ -27,6 +28,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.enums.image_input_source import ImageInputSource
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
+from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.image_processing.blur_config import BlurConfig
 from faceaudit.models.image_processing.crop_config import CropConfig
@@ -76,13 +78,22 @@ class ImagePipelineDialogController:
         dataset: FaceDataset,
         initial_face_index: int = -1,
         ff_service=None,
+        library_root: Optional[Path] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         self._dataset = dataset
         self._ff_service = ff_service
+        # PR I4 — root da biblioteca global. None = save/load
+        # desabilitados (config sem `paths.library`).
+        self._library_root: Optional[Path] = (
+            Path(library_root) if library_root else None
+        )
 
         self._pipeline_config = ImageProcessingPipelineConfig()
         self._current_step_idx: int = -1
+        # PR I4 — dirty tracking. Setado em todas as mudanças do
+        # pipeline; limpado em save/load.
+        self._is_dirty: bool = False
 
         # Imagem corrente
         if not dataset or len(dataset) == 0:
@@ -119,6 +130,11 @@ class ImagePipelineDialogController:
         self.view.input_source_changed.connect(self._on_input_source_changed)
         self.view.seed_changed.connect(self._on_seed_changed)
 
+        # PR I4 — Save/Load + close hook
+        self.view.save_clicked.connect(self._on_save_clicked)
+        self.view.load_clicked.connect(self._on_load_clicked)
+        self.view.confirm_close_callback = self._on_close_attempt
+
         # Steps list
         self.view.steps_list.step_added.connect(self._on_step_added)
         self.view.steps_list.step_removed.connect(self._on_step_removed)
@@ -147,6 +163,16 @@ class ImagePipelineDialogController:
             self._pipeline_config.input_source,
             self._pipeline_config.seed,
         )
+        # PR I4 — habilita/desabilita Save/Load conforme library_root
+        if self._library_root is None:
+            self.view.set_save_load_enabled(
+                False,
+                "biblioteca global não configurada "
+                "(config.paths.library)",
+            )
+        else:
+            self.view.set_save_load_enabled(True)
+
         # Lista
         self.view.steps_list.populate(
             [s.step_type for s in self._pipeline_config.steps]
@@ -164,15 +190,22 @@ class ImagePipelineDialogController:
     # ── Top meta ────────────────────────────────────────────────────────────
 
     def _on_name_changed(self, name: str):
-        self._pipeline_config.name = name or "untitled"
+        new = name or "untitled"
+        if new != self._pipeline_config.name:
+            self._pipeline_config.name = new
+            self._mark_dirty()
 
     def _on_input_source_changed(self, src: ImageInputSource):
-        self._pipeline_config.input_source = src
+        if src != self._pipeline_config.input_source:
+            self._pipeline_config.input_source = src
+            self._mark_dirty()
         # Re-carrega a imagem corrente (mudou o que mostrar)
         self._reload_current_image()
 
     def _on_seed_changed(self, seed: int):
-        self._pipeline_config.seed = int(seed)
+        if int(seed) != self._pipeline_config.seed:
+            self._pipeline_config.seed = int(seed)
+            self._mark_dirty()
         # Não força re-aplicação — usuário clica Aplicar quando quiser
 
     # ── Steps ──────────────────────────────────────────────────────────────
@@ -185,6 +218,7 @@ class ImagePipelineDialogController:
             [s.step_type for s in self._pipeline_config.steps]
         )
         self.view.steps_list.select_index(new_idx)
+        self._mark_dirty()
 
     def _on_step_removed(self, idx: int):
         if 0 <= idx < len(self._pipeline_config.steps):
@@ -199,6 +233,7 @@ class ImagePipelineDialogController:
             else:
                 self._current_step_idx = -1
                 self.view.step_config.show_config(None)
+            self._mark_dirty()
 
     def _on_step_selection_changed(self, idx: int):
         self._current_step_idx = idx
@@ -229,14 +264,14 @@ class ImagePipelineDialogController:
                     used[i] = True
                     break
         self._pipeline_config.steps = new_steps
+        self._mark_dirty()
 
     def _on_step_config_changed(
         self, _config: ImageProcessingStepConfig,
     ):
         # `_config` é o mesmo objeto já dentro de `_pipeline_config.steps`
-        # (form mutates in place). Não precisa fazer nada aqui — a
-        # próxima chamada de "Aplicar" reflete a mudança.
-        pass
+        # (form mutates in place). Marca dirty pra UX consistente.
+        self._mark_dirty()
 
     # ── Navegação de imagem ────────────────────────────────────────────────
 
@@ -411,6 +446,212 @@ class ImagePipelineDialogController:
         # Worker thread é cancelado/recriado a cada Apply pra refletir
         # o estado mais recente.
         self._dispatch_quality_scores_worker()
+
+    # ── PR I4 — Persistência na biblioteca global ──────────────────────────
+
+    def _mark_dirty(self):
+        if not self._is_dirty:
+            self._is_dirty = True
+            self.view.set_dirty_indicator(True)
+
+    def _mark_clean(self):
+        if self._is_dirty:
+            self._is_dirty = False
+            self.view.set_dirty_indicator(False)
+
+    def _on_close_attempt(self) -> bool:
+        """Hook injetado em `view.confirm_close_callback`. Retorna
+        True pra fechar, False pra cancelar."""
+        if not self._is_dirty:
+            return True
+        res = QtWidgets.QMessageBox.question(
+            self.view,
+            "Mudanças não salvas",
+            f"O pipeline '{self._pipeline_config.name}' tem mudanças "
+            f"não salvas.\n\nDescartar mudanças e fechar?",
+            QtWidgets.QMessageBox.StandardButton.Discard
+            | QtWidgets.QMessageBox.StandardButton.Cancel,
+        )
+        return res == QtWidgets.QMessageBox.StandardButton.Discard
+
+    def _on_save_clicked(self):
+        """Salva o pipeline atual em
+        `<library_root>/image_pipelines/<id>.json`.
+
+        Sequência:
+          1. Pede confirmação do `config_id` (default = config.name).
+          2. Se já existe, pergunta sobreescrever.
+          3. Persiste via GlobalLibraryStorage.
+          4. Marca clean.
+        """
+        if self._library_root is None:
+            QtWidgets.QMessageBox.warning(
+                self.view, "Biblioteca indisponível",
+                "Configure 'paths.library' no config.json antes de "
+                "salvar pipelines.",
+            )
+            return
+
+        suggested = self._pipeline_config.name or "untitled"
+        config_id, ok = QtWidgets.QInputDialog.getText(
+            self.view,
+            "Salvar pipeline",
+            "ID do pipeline (vai virar o nome do arquivo):",
+            text=suggested,
+        )
+        if not ok or not config_id.strip():
+            return
+        config_id = self._sanitize_id(config_id.strip())
+
+        from faceaudit.storage.global_library_storage import (
+            GlobalLibraryStorage,
+        )
+        storage = GlobalLibraryStorage(library_root=self._library_root)
+
+        # Verifica se já existe
+        from faceaudit.enums.global_library_file_type import (
+            GlobalLibraryFileType,
+        )
+        rel_path = GlobalLibraryFileType.IMAGE_PIPELINE_CONFIG.build_path(
+            config_id=config_id,
+        )
+        abs_path = self._library_root / rel_path
+        if abs_path.exists():
+            res = QtWidgets.QMessageBox.question(
+                self.view,
+                "Pipeline existente",
+                f"Já existe um pipeline com ID '{config_id}' "
+                f"na biblioteca global. Sobrescrever?",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        # Atualiza name no config pra refletir o ID escolhido
+        if config_id != self._pipeline_config.name:
+            self._pipeline_config.name = config_id
+            self.view.input_name.setText(config_id)
+
+        try:
+            ref = storage.save_artifact(
+                StrategyArtifactType.IMAGE_PIPELINE_CONFIG,
+                self._pipeline_config,
+                config_id=config_id,
+            )
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self.view, "Erro ao salvar",
+                f"Falha ao salvar pipeline: {e}",
+            )
+            return
+
+        self._mark_clean()
+        QtWidgets.QMessageBox.information(
+            self.view, "Pipeline salvo",
+            f"Salvo em:\n{ref.path}",
+        )
+
+    def _on_load_clicked(self):
+        """Carrega um pipeline salvo da biblioteca global, substituindo
+        o pipeline atual em RAM. Pergunta confirmação se há mudanças
+        não salvas.
+        """
+        if self._library_root is None:
+            QtWidgets.QMessageBox.warning(
+                self.view, "Biblioteca indisponível",
+                "Configure 'paths.library' no config.json antes de "
+                "carregar pipelines.",
+            )
+            return
+
+        # Confirma descarte de mudanças não salvas
+        if self._is_dirty:
+            res = QtWidgets.QMessageBox.question(
+                self.view,
+                "Mudanças não salvas",
+                "Carregar vai descartar as mudanças não salvas no "
+                "pipeline atual.\n\nContinuar?",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            if res != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
+        # Lista pipelines disponíveis
+        from faceaudit.enums.global_library_folder import GlobalLibraryFolder
+        pipelines_dir = (
+            self._library_root / GlobalLibraryFolder.IMAGE_PIPELINES.value
+        )
+        if not pipelines_dir.exists():
+            QtWidgets.QMessageBox.information(
+                self.view, "Sem pipelines",
+                "Nenhum pipeline salvo na biblioteca global ainda.",
+            )
+            return
+
+        files = sorted(pipelines_dir.glob("*.json"))
+        if not files:
+            QtWidgets.QMessageBox.information(
+                self.view, "Sem pipelines",
+                "Nenhum pipeline salvo na biblioteca global ainda.",
+            )
+            return
+
+        ids = [f.stem for f in files]
+        chosen, ok = QtWidgets.QInputDialog.getItem(
+            self.view,
+            "Carregar pipeline",
+            f"Pipelines disponíveis em {pipelines_dir}:",
+            ids, 0, False,
+        )
+        if not ok:
+            return
+
+        target = pipelines_dir / f"{chosen}.json"
+        try:
+            raw = target.read_text(encoding="utf-8")
+            new_config = ImageProcessingPipelineConfig.from_json_string(raw)
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self.view, "Erro ao carregar",
+                f"Falha ao ler {target.name}: {e}",
+            )
+            return
+
+        # Substitui pipeline atual
+        self._pipeline_config = new_config
+        self._current_step_idx = -1
+        self._cached_processed = None  # invalida — usuário roda Apply
+        self._cancel_quality_worker()
+        self.view.quality_scores.clear()
+        self.view.image_compare.show_processed(None)
+        self.view.image_compare.show_status(
+            f"Pipeline '{chosen}' carregado. Clique ▶ Aplicar."
+        )
+
+        # Re-sincroniza UI
+        self.view.set_pipeline_meta(
+            self._pipeline_config.name,
+            self._pipeline_config.input_source,
+            self._pipeline_config.seed,
+        )
+        self.view.steps_list.populate(
+            [s.step_type for s in self._pipeline_config.steps]
+        )
+        self.view.step_config.show_config(None)
+
+        self._mark_clean()
+
+    @staticmethod
+    def _sanitize_id(raw: str) -> str:
+        """Remove caracteres problemáticos pra nome de arquivo
+        cross-platform. Substitui `\\/:*?"<>|` por `_`."""
+        bad = '\\/:*?"<>|'
+        out = raw
+        for ch in bad:
+            out = out.replace(ch, "_")
+        return out.strip() or "untitled"
 
     # ── PR I3 — Worker thread de scores de qualidade ──────────────────────
 

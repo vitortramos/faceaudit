@@ -20,6 +20,7 @@ class GlobalLibraryFolder(Enum):
     SPLIT_CONFIGS = "split_configs"         # Configurações de split (SplitConfig JSON)
     MINING_CONFIGS = "mining_configs"       # Configurações de mineração de pares (ComparisonMiningConfig JSON)
     PIPELINE_CONFIGS = "pipeline_configs"   # Configurações de pipeline de transformação (JSON)
+    IMAGE_PIPELINES = "image_pipelines"     # PR I4 — pipelines de processamento de imagens (JSON)
     STRATEGY_TEMPLATES = "strategy_templates"  # Templates de estratégia (LRStrategyDefinition JSON)
 
     def __str__(self) -> str:
