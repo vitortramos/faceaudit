@@ -217,6 +217,8 @@ class FFService:
         face_info: FaceInfo,
         model: Optional[str] = None,
         models: Optional[List[str]] = None,
+        *,
+        dataset: Optional[FaceDataset] = None,
     ) -> FaceInfo:
         """
         Processa uma face, preenchendo `face_info.ff_info` com bbox,
@@ -232,8 +234,18 @@ class FFService:
                 quando o usuário pede múltiplos embeddings — todos vão
                 pra mesma `FFInfo`, com metadata (bbox/keypoints/...)
                 vindo da primeira chamada.
+            dataset: PR L1b — quando passado, resolve o `image_path` via
+                `dataset.resolve_image_path(face_info)` (suporta paths
+                relativos pós-localização). Quando None, usa
+                `face_info.image_path` direto (compat 100% com chamadas
+                pré-L1b).
         """
-        img_array = self._safe_read_image(face_info.image_path)
+        image_path = (
+            str(dataset.resolve_image_path(face_info))
+            if dataset is not None
+            else face_info.image_path
+        )
+        img_array = self._safe_read_image(image_path)
         if img_array is None:
             return face_info
 
@@ -277,7 +289,7 @@ class FFService:
                 setattr(ff_data, self._slot_for_model(model_name), emb)
 
             except Exception as e:
-                print(f"Error processing face {face_info.image_path} (model={m}): {e}")
+                print(f"Error processing face {image_path} (model={m}): {e}")
 
         if ff_data is not None:
             face_info.ff_info = ff_data
@@ -318,10 +330,12 @@ class FFService:
         )
 
         # 1. Extração biométrica (até 95% do progresso)
+        # PR L1b — propaga `dataset` pra `process_face` resolver paths
+        # corretamente quando o dataset estiver em modo RELATIVE.
         for idx, face in enumerate(
             tqdm(dataset, desc=f"Processando {dataset.name}", unit="face")
         ):
-            self.process_face(face, model=model, models=models)
+            self.process_face(face, model=model, models=models, dataset=dataset)
 
             if progress_callback:
                 pct = int(((idx + 1) / total_faces) * 95)
@@ -344,10 +358,17 @@ class FFService:
         self,
         faces: List[FaceInfo],
         model: Optional[str] = None,
+        *,
+        dataset: Optional[FaceDataset] = None,
     ) -> List[FaceInfo]:
-        """Processa uma lista de faces em sequência (wrapper para tqdm)."""
+        """Processa uma lista de faces em sequência (wrapper para tqdm).
+
+        Args:
+            dataset: PR L1b — quando passado, propaga pra `process_face`
+                pra resolver paths em modo RELATIVE.
+        """
         return [
-            self.process_face(f, model=model)
+            self.process_face(f, model=model, dataset=dataset)
             for f in tqdm(faces, desc="Extracting Features", unit="img")
         ]
 

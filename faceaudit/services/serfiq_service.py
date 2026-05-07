@@ -44,7 +44,14 @@ class SERFIQService:
         self.default_T = T
         self.default_alpha = alpha
 
-    def process_face(self, face_info: FaceInfo, t: Optional[int] = None, alpha: Optional[float] = None) -> FaceInfo:
+    def process_face(
+        self,
+        face_info: FaceInfo,
+        t: Optional[int] = None,
+        alpha: Optional[float] = None,
+        *,
+        dataset: Optional[FaceDataset] = None,
+    ) -> FaceInfo:
         """
         Calcula o score SER-FIQ para uma única face.
 
@@ -59,6 +66,9 @@ class SERFIQService:
             face_info (FaceInfo): Objeto contendo o caminho da imagem.
             t (Optional[int]): Sobrescreve o número de variações T para esta execução.
             alpha (Optional[float]): Sobrescreve o parâmetro alpha para esta execução.
+            dataset: PR L1b — quando passado, resolve `image_path` via
+                `dataset.resolve_image_path` (suporta paths relativos).
+                None → usa `face_info.image_path` direto (compat).
 
         Returns:
             FaceInfo: Objeto enriquecido com os dados do SER-FIQ (.serfiq_info).
@@ -68,7 +78,12 @@ class SERFIQService:
         use_alpha = alpha if alpha is not None else self.default_alpha
 
         # 2. Read original image using FFService's safe utility
-        img_original = self.ff_service._safe_read_image(face_info.image_path)
+        image_path = (
+            str(dataset.resolve_image_path(face_info))
+            if dataset is not None
+            else face_info.image_path
+        )
+        img_original = self.ff_service._safe_read_image(image_path)
         
         if img_original is None:
             # Falha na leitura: retorna sem score
@@ -87,21 +102,29 @@ class SERFIQService:
 
         return face_info
 
-    def process_batch(self, faces: List[FaceInfo], t: Optional[int] = None, alpha: Optional[float] = None) -> List[FaceInfo]:
+    def process_batch(
+        self,
+        faces: List[FaceInfo],
+        t: Optional[int] = None,
+        alpha: Optional[float] = None,
+        *,
+        dataset: Optional[FaceDataset] = None,
+    ) -> List[FaceInfo]:
         """
         Processa uma lista de faces (Wrapper para tqdm).
-        
+
         Args:
             faces (List[FaceInfo]): Lista de faces para processar.
             t (Optional[int]): Sobrescreve T para este lote.
             alpha (Optional[float]): Sobrescreve alpha para este lote.
+            dataset: PR L1b — propaga pra process_face.
 
         Nota: Preferir `process_dataset` para integração completa.
         """
         use_T = t if t is not None else self.default_T
 
         for face in tqdm(faces, desc=f"Calculating SER-FIQ (T={use_T})", unit="img"):
-            self.process_face(face, t=t, alpha=alpha)
+            self.process_face(face, t=t, alpha=alpha, dataset=dataset)
         return faces
 
     def process_dataset(self, 
@@ -133,8 +156,9 @@ class SERFIQService:
         print(f"Iniciando cálculo SER-FIQ (T={use_T}) para: {dataset.name}")
         
         # Como o SER-FIQ é pesado (roda 10x por face), o feedback visual é crucial
+        # PR L1b — propaga `dataset` pra resolver paths em modo RELATIVE.
         for face in tqdm(dataset, desc=f"SER-FIQ {dataset.name}", unit="face"):
-            self.process_face(face, t=t, alpha=alpha)
+            self.process_face(face, t=t, alpha=alpha, dataset=dataset)
             
             # Aciona o progresso para a GUI
             if callback:

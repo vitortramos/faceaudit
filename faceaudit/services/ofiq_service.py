@@ -51,28 +51,42 @@ class OFIQService:
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(f"Pasta 'data' do OFIQ não encontrada em: {self.config_path}")
 
-    def process_face(self, face: FaceInfo) -> FaceInfo:
+    def process_face(
+        self,
+        face: FaceInfo,
+        *,
+        dataset: Optional[FaceDataset] = None,
+    ) -> FaceInfo:
         """
         Processa uma única face isoladamente.
-        
-        Atenção: Este método é ineficiente para grandes volumes, pois cria um 
+
+        Atenção: Este método é ineficiente para grandes volumes, pois cria um
         ambiente temporário inteiro para apenas um arquivo. Prefira `process_dataset`.
 
         Args:
             face (FaceInfo): Objeto a ser processado.
+            dataset: PR L1b — propaga pra `process_batch` resolver paths.
 
         Returns:
             FaceInfo: Objeto enriquecido com métricas OFIQ.
         """
-        results = self.process_batch([face])
+        results = self.process_batch([face], dataset=dataset)
         return results[0]
 
-    def process_batch(self, faces: List[FaceInfo]) -> List[FaceInfo]:
+    def process_batch(
+        self,
+        faces: List[FaceInfo],
+        *,
+        dataset: Optional[FaceDataset] = None,
+    ) -> List[FaceInfo]:
         """
         Executa o pipeline OFIQ para uma lista de faces em uma única operação de I/O.
 
         Args:
             faces (List[FaceInfo]): Lista de objetos a serem processados.
+            dataset: PR L1b — quando passado, resolve `image_path` de cada
+                face via `dataset.resolve_image_path` (suporta paths
+                relativos). None → usa `face.image_path` direto (compat).
 
         Returns:
             List[FaceInfo]: A mesma lista, com os objetos modificados in-place.
@@ -92,22 +106,29 @@ class OFIQService:
             imagens_validas = []
             
             for idx, face in enumerate(faces):
-                if not os.path.exists(face.image_path):
+                # PR L1b — resolve o path uma vez por face. Quando `dataset`
+                # é None mantém o comportamento legado (face.image_path).
+                src_path = (
+                    str(dataset.resolve_image_path(face))
+                    if dataset is not None
+                    else face.image_path
+                )
+                if not os.path.exists(src_path):
                     continue
-                    
-                ext = os.path.splitext(face.image_path)[1]
+
+                ext = os.path.splitext(src_path)[1]
                 if not ext: ext = ".jpg"
-                
+
                 # Nome simples para evitar problemas de encoding no C++
                 nome_temp = f"img_{idx:05d}{ext}"
                 dest_path = os.path.join(dir_temp, nome_temp)
-                
+
                 try:
-                    shutil.copy2(face.image_path, dest_path)
+                    shutil.copy2(src_path, dest_path)
                     imagens_validas.append(nome_temp)
                     mapa_temp_face[nome_temp] = face
                 except Exception as e:
-                    print(f"Erro ao copiar {face.image_path}: {e}")
+                    print(f"Erro ao copiar {src_path}: {e}")
 
             if not imagens_validas:
                 return faces
@@ -197,7 +218,8 @@ class OFIQService:
                 chunk = all_faces[i : i + batch_size]
                 
                 # Processa esse lote (copia, executa, lê CSV, limpa)
-                self.process_batch(chunk)
+                # PR L1b — propaga `dataset` pra `process_batch` resolver paths.
+                self.process_batch(chunk, dataset=dataset)
                 
                 # Atualiza a barra de progresso do TQDM
                 chunk_len = len(chunk)

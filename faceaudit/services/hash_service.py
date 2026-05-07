@@ -54,36 +54,53 @@ class HashService:
             print(f"Erro ao calcular hash do arquivo {file_path}: {e}")
             return None
 
-    def process_face(self, face_info: FaceInfo) -> FaceInfo:
+    def process_face(
+        self,
+        face_info: FaceInfo,
+        *,
+        dataset: Optional[FaceDataset] = None,
+    ) -> FaceInfo:
         """
         Processa uma única instância de FaceInfo para calcular seu hash.
 
         Atualiza o atributo `.hash` do objeto face_info. Em caso de erro
         (ex: arquivo não encontrado), define o hash como None e loga o erro,
         não interrompendo o fluxo.
+
+        Args:
+            face_info: face a processar (consome `face_info.image_path`).
+            dataset: PR L1b — quando passado, resolve `image_path` via
+                `dataset.resolve_image_path` (suporta paths relativos).
+                None → usa `face_info.image_path` direto (compat).
         """
         try:
             if face_info.image_path:
-                face_info.hash = self.calculate_file_hash(face_info.image_path)
+                path_to_hash = (
+                    str(dataset.resolve_image_path(face_info))
+                    if dataset is not None
+                    else face_info.image_path
+                )
+                face_info.hash = self.calculate_file_hash(path_to_hash)
         except Exception as e:
             print(f"Erro ao processar face {face_info.image_path}: {e}")
             face_info.hash = None
-            
+
         return face_info
 
-    def process_face_dataset(self, 
-                             dataset: FaceDataset, 
+    def process_face_dataset(self,
+                             dataset: FaceDataset,
                              callback: Optional[Callable[[], None]] = None) -> FaceDataset:
         """
         Itera sobre todas as faces do dataset e força o cálculo do hash para cada uma.
         """
         print(f"Calculando Hashes SHA256 individuais para: {dataset.name}")
-        
+
+        # PR L1b — propaga `dataset` pra resolver paths em modo RELATIVE.
         for face in tqdm(dataset, desc="Hashing Faces", unit="img"):
-            self.process_face(face)
+            self.process_face(face, dataset=dataset)
             if callback:
                 callback()
-            
+
         return dataset
 
     def compute_dataset_hash(self, 
@@ -100,7 +117,8 @@ class HashService:
         if faces_to_process:
             print(f"Encontradas {len(faces_to_process)} faces sem hash. Calculando...")
             for face in tqdm(faces_to_process, desc="Preenchendo Hashes Faltantes"):
-                self.process_face(face)
+                # PR L1b — propaga `dataset` pra resolver paths em modo RELATIVE.
+                self.process_face(face, dataset=dataset)
                 
                 # Aciona o progresso para a GUI
                 if callback:
