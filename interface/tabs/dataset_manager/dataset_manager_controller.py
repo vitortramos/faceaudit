@@ -119,6 +119,11 @@ class DatasetManagerController(QtCore.QObject):
             self.toolbar_ctrl.action_image_pipeline_editor.connect(
                 self.fluxo_image_pipeline_editor
             )
+        # PR I5 — Aplicar pipeline em batch
+        if hasattr(self.toolbar_ctrl, "action_image_pipeline_apply"):
+            self.toolbar_ctrl.action_image_pipeline_apply.connect(
+                self.fluxo_aplicar_image_pipeline
+            )
 
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
@@ -1048,6 +1053,154 @@ class DatasetManagerController(QtCore.QObject):
             parent=self.view,
         )
         ctrl.exec()
+
+    # =================================================================================
+    # PR I5 — FLUXO DE BATCH PROCESSING DE PIPELINE DE IMAGENS
+    # =================================================================================
+    def fluxo_aplicar_image_pipeline(self):
+        """Abre o ApplyImagePipelineDialog. Após confirmação, dispara
+        worker que aplica pipeline em todo dataset."""
+        if not self.dataset or len(self.dataset) == 0:
+            QMessageBox.information(
+                self.view, "Sem dataset",
+                "Abra ou crie um dataset antes de aplicar pipelines.",
+            )
+            return
+
+        library_root = getattr(
+            getattr(self.config, "paths", None), "library", None,
+        )
+        if not library_root:
+            QMessageBox.warning(
+                self.view, "Biblioteca indisponível",
+                "Configure 'paths.library' no config.json antes de "
+                "aplicar pipelines de imagens.",
+            )
+            return
+
+        # Default destino: <parquet_dir>/<dataset>__<pipeline>/
+        if self.current_path:
+            base = Path(self.current_path).parent
+        else:
+            base = Path(self._get_initial_dir() or os.getcwd())
+
+        from .apply_image_pipeline_dialog import ApplyImagePipelineDialog
+        dialog = ApplyImagePipelineDialog(
+            library_root=Path(library_root),
+            dataset_name=self.dataset.name,
+            suggested_target_parent=base,
+            parent=self.view,
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        pipeline_cfg = dialog.selected_pipeline()
+        if pipeline_cfg is None:
+            QMessageBox.warning(
+                self.view, "Pipeline inválido",
+                "Nenhum pipeline foi selecionado.",
+            )
+            return
+
+        target_dir = dialog.target_dir()
+        if not target_dir:
+            QMessageBox.warning(
+                self.view, "Destino vazio",
+                "Pasta destino não pode estar vazia.",
+            )
+            return
+
+        skip_existing = dialog.skip_existing()
+        self._iniciar_worker_aplicar_image_pipeline(
+            pipeline_cfg, target_dir, skip_existing,
+        )
+
+    def _iniciar_worker_aplicar_image_pipeline(
+        self, pipeline_cfg, target_dir, skip_existing: bool,
+    ):
+        from .workers.apply_image_pipeline_worker import (
+            ApplyImagePipelineWorker,
+        )
+
+        ff_svc = (
+            getattr(self.pipeline, "ff_service", None)
+            if self.pipeline
+            else None
+        )
+
+        worker = ApplyImagePipelineWorker(
+            dataset=self.dataset,
+            pipeline_config=pipeline_cfg,
+            target_dir=Path(target_dir),
+            ff_service=ff_svc,
+            skip_existing=skip_existing,
+        )
+        # Guarda contexto pra usar no on_finished
+        self._batch_target_dir = Path(target_dir)
+        self._batch_pipeline_name = pipeline_cfg.name
+        self._run_worker(
+            worker,
+            label=(
+                f"Aplicando pipeline '{pipeline_cfg.name}' em "
+                f"'{self.dataset.name}'…"
+            ),
+            allow_cancel=True,
+            determinate=True,
+            use_log_dialog=True,  # feedback constante
+            on_finished=self._on_aplicar_image_pipeline_concluido,
+        )
+
+    def _on_aplicar_image_pipeline_concluido(self, result):
+        if result is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "Aplicação de pipeline cancelada ou finalizada sem "
+                "resultado.",
+            )
+            return
+
+        # Audit log (PR 25) — registra COPY_IMAGES no parquet original
+        try:
+            self._audit(
+                AuditOperation.COPY_IMAGES,
+                (
+                    f"Pipeline de imagens '{result.pipeline_name}' "
+                    f"aplicado em todo o dataset. {result.summary()}"
+                ),
+                metadata={
+                    "operation": "image_pipeline_batch",
+                    "pipeline_name": result.pipeline_name,
+                    "target_dir": str(result.target_dir),
+                    "parquet_path": str(result.parquet_path),
+                    "n_processed": result.n_processed,
+                    "n_succeeded": result.n_succeeded,
+                    "n_skipped": result.n_skipped,
+                    "n_failed": result.n_failed,
+                    "duration_seconds": round(result.duration_seconds, 3),
+                },
+            )
+        except Exception:
+            pass  # audit é best-effort
+
+        # Resumo + falhas
+        if result.n_failed:
+            failures_preview = "\n".join(
+                f"  • {p}: {msg}"
+                for p, msg in list(result.failures)[:5]
+            )
+            extra = (
+                f"\n\n⚠ {result.n_failed} falha(s):\n{failures_preview}"
+                + ("\n  …" if result.n_failed > 5 else "")
+            )
+        else:
+            extra = ""
+
+        QMessageBox.information(
+            self.view, "Pipeline aplicado",
+            f"{result.summary()}{extra}\n\n"
+            f"Dataset derivado: {result.parquet_path}\n"
+            f"Manifest forense: {result.target_dir / 'manifest.json'}",
+        )
 
     # =================================================================================
     # [NOVO] FLUXO DE ANÁLISE DO DATASET (AUDITORIA E MINERAÇÃO BIOMÉTRICA)

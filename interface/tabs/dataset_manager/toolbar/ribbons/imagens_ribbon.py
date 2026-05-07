@@ -2,7 +2,7 @@
 
 PR Ribbon refactor — botões já estruturados.
 PR I2 — botão Editor habilitado (preview-only).
-PR I4 — Editor ganha persistência (Salvar).
+PR I4 — Editor ganha persistência (Salvar/Carregar).
 PR I5 — botão Processar (batch) habilitado.
 """
 
@@ -32,14 +32,15 @@ class ImagensRibbon(QWidget):
         # Habilitado dinamicamente quando dataset estiver carregado
         # (set_dataset_actions_enabled controla o estado).
 
-        # ── PR I5 — Processar (batch) continua desabilitado ──
+        # ── PR I5 — Processar (batch) habilitado ──
         self.btn_image_pipeline_apply = ToolbarButton(
             "Processar", "🌀",
-            tooltip="(em desenvolvimento — virá em PR I5) Aplicar "
-                    "pipeline de imagens (blur, JPEG, WebP, crop, "
-                    "oclusão) a todo o dataset.",
+            tooltip="Aplicar pipeline de imagens da biblioteca global a "
+                    "todo o dataset. Produz dataset enxuto com PNGs "
+                    "processados + manifest forense.",
         )
-        self.btn_image_pipeline_apply.setEnabled(False)
+        # Habilitado dinamicamente pelo controlador pai quando dataset
+        # estiver carregado (set_dataset_actions_enabled).
 
         layout.addWidget(self.btn_image_pipeline_editor)
         layout.addWidget(self.btn_image_pipeline_apply)

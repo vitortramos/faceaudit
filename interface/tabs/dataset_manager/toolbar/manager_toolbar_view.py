@@ -135,8 +135,9 @@ class ManagerToolbarView(QFrame):
             self.btn_localize, self.btn_filter,
             self.btn_add_column, self.btn_toggle_gallery,
             self.btn_send_to_strategy,
-            # Imagens (PR I2 — Editor habilitado dinamicamente)
+            # Imagens (PR I2 — Editor; PR I5 — Processar)
             self.btn_image_pipeline_editor,
+            self.btn_image_pipeline_apply,
         ]
         for btn in buttons:
             btn.setEnabled(enabled)

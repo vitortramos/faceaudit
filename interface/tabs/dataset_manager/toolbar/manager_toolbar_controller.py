@@ -42,6 +42,8 @@ class ManagerToolbarController(QtCore.QObject):
 
     # PR I2 — Editor de pipeline de imagens
     action_image_pipeline_editor = QtCore.pyqtSignal()
+    # PR I5 — Processar (batch) pipeline de imagens
+    action_image_pipeline_apply = QtCore.pyqtSignal()
 
     def __init__(self, parent_layout=None):
         super().__init__()
@@ -82,6 +84,10 @@ class ManagerToolbarController(QtCore.QObject):
         # PR I2: editor de pipeline de imagens
         self.view.btn_image_pipeline_editor.clicked.connect(
             self.action_image_pipeline_editor.emit
+        )
+        # PR I5: aplicar pipeline em batch
+        self.view.btn_image_pipeline_apply.clicked.connect(
+            self.action_image_pipeline_apply.emit
         )
 
     def get_widget(self):

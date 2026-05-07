@@ -6,6 +6,7 @@ JpegConfig, ...) e o pipeline inteiro
 `<global_library>/image_pipelines/<id>.json` (PR I4).
 """
 
+from .batch_processing_result import BatchProcessingResult
 from .blur_config import BlurConfig
 from .crop_config import CropConfig
 from .image_processing_pipeline_config import ImageProcessingPipelineConfig
@@ -16,6 +17,7 @@ from .quality_scores_result import QualityScoresResult
 from .webp_compression_config import WebpCompressionConfig
 
 __all__ = [
+    "BatchProcessingResult",
     "BlurConfig",
     "CropConfig",
     "ImageProcessingPipelineConfig",
