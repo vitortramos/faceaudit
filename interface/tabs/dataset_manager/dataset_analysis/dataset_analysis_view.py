@@ -29,9 +29,12 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.models.audit import AuditFinding, AuditIssue, AuditSeverity
 
+from .issue_preview_widget import IssuePreviewWidget
+
 
 _FINDING_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
 _PATH_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+_ISSUE_ROLE = QtCore.Qt.ItemDataRole.UserRole + 2  # AuditIssue inteiro na linha
 
 
 class DatasetAnalysisView(QtWidgets.QDialog):
@@ -98,6 +101,11 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         self.lbl_finding_summary.setStyleSheet("color: #666; font-size: 11px;")
         right_layout.addWidget(self.lbl_finding_summary)
 
+        # Splitter vertical: tabela em cima, preview abaixo. Permite o
+        # usuário ajustar a divisão entre área tabular e visual.
+        details_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        right_layout.addWidget(details_splitter, 1)
+
         # Tabela de issues
         self.table_issues = QtWidgets.QTableWidget()
         self.table_issues.setColumnCount(3)
@@ -115,7 +123,18 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-        right_layout.addWidget(self.table_issues, 1)
+        # Quando a seleção muda, atualiza o preview com os paths das
+        # linhas selecionadas (deduplicados, com caption de identidade).
+        self.table_issues.itemSelectionChanged.connect(self._on_issue_selection_changed)
+        details_splitter.addWidget(self.table_issues)
+
+        # Preview: thumbnails das faces da issue selecionada
+        self.preview = IssuePreviewWidget()
+        details_splitter.addWidget(self.preview)
+
+        # Tabela em cima ocupa ~55%, preview ~45% — preview precisa
+        # acomodar as thumbs de 200px.
+        details_splitter.setSizes([280, 280])
 
         # Barra de ações batch
         actions_row = QtWidgets.QHBoxLayout()
@@ -282,6 +301,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.lbl_finding_summary.setText(finding.summary)
 
+        # blockSignals: evita disparar _on_issue_selection_changed pra cada
+        # célula durante o populate (causaria N renders do preview).
+        self.table_issues.blockSignals(True)
         self.table_issues.setRowCount(len(finding.issues))
         for row, issue in enumerate(finding.issues):
             # Coluna 0: locator(s) — joga o primeiro path, mostra "(+N)" se mais
@@ -290,6 +312,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
                      if len(issue.locators) > 1 else "")
             cell0 = QtWidgets.QTableWidgetItem(primary + extra)
             cell0.setData(_PATH_ROLE, list(issue.locators))
+            # Issue inteiro armazenado na coluna 0 — _on_issue_selection_changed
+            # extrai metadata pra montar captions do preview.
+            cell0.setData(_ISSUE_ROLE, issue)
             cell0.setToolTip("\n".join(issue.locators) if issue.locators else "")
             self.table_issues.setItem(row, 0, cell0)
 
@@ -304,12 +329,57 @@ class DatasetAnalysisView(QtWidgets.QDialog):
             self.table_issues.setItem(row, 2, cell2)
 
         self.btn_delete.setEnabled(len(finding.issues) > 0)
+        self.table_issues.blockSignals(False)
+
+        # Auto-seleciona a primeira issue pra que o preview já mostre
+        # algo útil sem exigir clique adicional.
+        if len(finding.issues) > 0:
+            self.table_issues.selectRow(0)
+        else:
+            self.preview.set_paths([])
 
     def _render_empty_finding(self) -> None:
         self.lbl_finding_title.setText("Nenhuma auditoria selecionada.")
         self.lbl_finding_summary.setText("")
         self.table_issues.setRowCount(0)
         self.btn_delete.setEnabled(False)
+        self.preview.set_paths([])
+
+    def _on_issue_selection_changed(self) -> None:
+        """Atualiza o preview com os paths das linhas selecionadas.
+
+        Quando 1 issue é selecionada, mostra os N paths daquela issue
+        (geralmente 1 ou 2). Quando múltiplas são selecionadas, concatena
+        todos os paths deduplicando (até `_MAX_VISIBLE` thumbs no widget).
+        Captions vêm do `metadata` do issue: `identity`, `identities`
+        list, `file1`/`file2` para hard pairs.
+        """
+        rows = sorted({i.row() for i in self.table_issues.selectedIndexes()})
+        if not rows:
+            self.preview.set_paths([])
+            return
+
+        seen: set = set()
+        paths: List[str] = []
+        captions: List[str] = []
+        for row in rows:
+            cell0 = self.table_issues.item(row, 0)
+            if cell0 is None:
+                continue
+            issue = cell0.data(_ISSUE_ROLE)
+            row_paths = cell0.data(_PATH_ROLE) or []
+            row_captions = _captions_for_issue(issue, row_paths)
+            for p, cap in zip(row_paths, row_captions):
+                if p and p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+                    captions.append(cap)
+        self.preview.set_paths(paths, captions=captions)
+
+    def clear_preview_cache(self) -> None:
+        """Limpa o cache de pixmaps do preview. Chamar após bulk-delete
+        pra liberar memória de paths que sumiram."""
+        self.preview.clear_cache()
 
     # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -357,6 +427,38 @@ def _severity_color(severity: AuditSeverity) -> str:
         AuditSeverity.WARNING: "#ef6c00",
         AuditSeverity.INFO: "#1565c0",
     }.get(severity, "#333")
+
+
+def _captions_for_issue(issue, paths: Sequence[str]) -> List[str]:
+    """Produz uma caption por path baseado no metadata do issue.
+
+    Heurísticas (em ordem):
+      1. `identity` (string única) → aplica a todos os paths
+      2. `identities` (lista alinhada aos paths) → position-aligned
+      3. `value` numérico (audits de qualidade) → "value: X.XX"
+      4. fallback → string vazia (filename já é exibido pelo widget)
+    """
+    if issue is None:
+        return ["" for _ in paths]
+    meta = getattr(issue, "metadata", {}) or {}
+
+    # 1. identity única
+    identity = meta.get("identity")
+    if identity:
+        return [str(identity) for _ in paths]
+
+    # 2. identities posição-alinhadas (mesmo len que paths)
+    identities = meta.get("identities")
+    if isinstance(identities, (list, tuple)) and len(identities) == len(paths):
+        return [str(x) for x in identities]
+
+    # 3. valor numérico (low_quality, etc.)
+    value = meta.get("value")
+    if isinstance(value, (int, float)):
+        return [f"valor: {value:.2f}" for _ in paths]
+
+    # 4. fallback
+    return ["" for _ in paths]
 
 
 def _format_metadata(meta: dict) -> str:

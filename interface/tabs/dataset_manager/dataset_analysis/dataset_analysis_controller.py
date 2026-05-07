@@ -222,6 +222,10 @@ class DatasetAnalysisController(QtCore.QObject):
         if self._mining_findings:
             self._mining_findings = []
 
+        # Libera o cache de pixmaps do preview — paths excluídos não
+        # serão mais necessários. Memória O(N_thumbs * 200x200 RGBA).
+        self.view.clear_preview_cache()
+
         # Avisa o pai pra refrescar tabela + marcar dirty
         self.dataset_modified.emit()
 
