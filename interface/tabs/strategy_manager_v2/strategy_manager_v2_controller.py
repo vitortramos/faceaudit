@@ -463,12 +463,24 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         resource_id = resource_id.strip()
 
+        # PR L2.a — só pra DATASET, oferece a opção de copiar imagens
+        # pra dentro do projeto. Default Não — perito pode rodar
+        # "Selar projeto" (L2.b) no final pra empacotar o pendrive.
+        copy_images_to_project = False
+        if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
+            copy_images_to_project = self._ask_copy_images(resource_id)
+
         try:
-            ref = self._project.storage.copy_artifact_to_project(
-                source_path=source_path,
-                artifact_type=artifact_type,
-                **{artifact_kwargs_key: resource_id},
-            )
+            if copy_images_to_project:
+                ref = self._import_dataset_with_image_copy(
+                    source_path, resource_id,
+                )
+            else:
+                ref = self._project.storage.copy_artifact_to_project(
+                    source_path=source_path,
+                    artifact_type=artifact_type,
+                    **{artifact_kwargs_key: resource_id},
+                )
 
             if compute_stats:
                 self._compute_and_save_dataset_stats(
@@ -476,15 +488,128 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 )
 
             self._refresh_left_panel()
+            extra = (
+                "\n\nImagens copiadas pra <projeto>/images/{id}/"
+                .format(id=resource_id)
+                if copy_images_to_project
+                else ""
+            )
             QtWidgets.QMessageBox.information(
                 self._view,
                 "Recurso adicionado",
-                f"Recurso '{resource_id}' importado com sucesso.\nPath: {ref.path}",
+                f"Recurso '{resource_id}' importado com sucesso.\n"
+                f"Path: {ref.path}{extra}",
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self._view, "Erro ao importar", f"Não foi possível importar o recurso:\n{exc}"
             )
+
+    # ── PR L2.a — Helpers de import com cópia opcional de imagens ────────
+
+    def _ask_copy_images(self, resource_id: str) -> bool:
+        """Pergunta se deseja copiar imagens referenciadas pro projeto.
+        Default: Não. Operação custosa em disco e tempo — perito pode
+        deixar pra rodar "Selar projeto" no final do trabalho."""
+        msg = QtWidgets.QMessageBox(self._view)
+        msg.setWindowTitle("Copiar imagens pro projeto?")
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        msg.setText(
+            f"<b>Copiar as imagens referenciadas pelo dataset "
+            f"'{resource_id}' pra dentro do projeto?</b>"
+        )
+        msg.setInformativeText(
+            "<p>Recomendado quando o projeto será compartilhado ou levado a "
+            "outra máquina (autocontido / pendrive paradigm).</p>"
+            "<p>Pode demorar e ocupar bastante espaço em disco.</p>"
+            "<p><b>Padrão: Não</b> — você pode rodar isso depois com "
+            "<i>Selar projeto</i> na toolbar.</p>"
+        )
+        msg.setStandardButtons(
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No
+        )
+        msg.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
+        return msg.exec() == QtWidgets.QMessageBox.StandardButton.Yes
+
+    def _import_dataset_with_image_copy(
+        self, source_path: str, resource_id: str,
+    ):
+        """Carrega o parquet, copia imagens pra `<projeto>/images/<id>/`,
+        salva o parquet localizado em `<projeto>/datasets/<id>.parquet`
+        e retorna o `StrategyArtifactReference`.
+
+        Reusa `DatasetLocalizationService` com mode=COPY_ORIGINALS e
+        naming=PRESERVE (defaults sensatos do plano L1).
+        """
+        from faceaudit.enums.localization_mode import LocalizationMode
+        from faceaudit.enums.localization_naming import NamingStrategy
+        from faceaudit.enums.project_folder import ProjectFolder
+        from faceaudit.enums.strategy_file_type import StrategyFileType
+        from faceaudit.models.face_dataset import FaceDataset
+        from faceaudit.models.storage.strategy_artifact_reference import (
+            StrategyArtifactReference,
+        )
+        from faceaudit.services.dataset_localization_service import (
+            DatasetLocalizationService,
+        )
+
+        project_root = Path(self._project.storage.project_root)
+        target_images_dir = project_root / ProjectFolder.IMAGES.value / resource_id
+
+        # 1. Carrega o parquet original (de fora do projeto).
+        ds = FaceDataset.from_parquet(source_path)
+
+        # 2. Localiza com COPY_ORIGINALS pro <project>/images/<id>/
+        service = DatasetLocalizationService()
+        result = service.localize(
+            ds,
+            target_images_dir,
+            mode=LocalizationMode.COPY_ORIGINALS,
+            naming=NamingStrategy.PRESERVE,
+            skip_existing=True,
+        )
+
+        if result.n_failed:
+            # Falhas de localização não abortam — perito vê na próxima tela
+            # que algumas imagens não foram copiadas. Mas o dataset
+            # importado contém só as que tiveram sucesso.
+            print(
+                f"⚠ Localização: {result.n_failed} de {result.n_processed} "
+                f"falharam. Veja `result.failures` no log."
+            )
+
+        # 3. Ajusta path_root pro destino dentro do projeto. O service
+        # cria a estrutura `<target_images_dir>/images/<file>` com
+        # path_root="images" — mas como já estamos dentro de
+        # `<project>/images/<id>/`, o path_root "images" aponta pra
+        # `<project>/images/<id>/images/`. Pra ficar mais limpo, ajustamos
+        # o path_root do dataset salvo pra apontar `images/<id>/images`
+        # relativo ao parquet (que vai pra `<project>/datasets/`).
+        #
+        # Math: parquet em `<project>/datasets/<id>.parquet`, imagens em
+        # `<project>/images/<id>/images/`. Path_root relativo ao parquet
+        # = `../images/<id>/images`. POSIX, cross-platform.
+        result.dataset.path_root = f"../{ProjectFolder.IMAGES.value}/{resource_id}/images"
+
+        # 4. Salva parquet localizado
+        parquet_dest = (
+            project_root
+            / StrategyFileType.SOURCE_DATASET.build_path(dataset_id=resource_id)
+        )
+        parquet_dest.parent.mkdir(parents=True, exist_ok=True)
+        result.dataset.to_parquet(parquet_dest)
+
+        # 5. Calcula hash + monta artifact_ref
+        from faceaudit.services.hash_service import HashService
+        file_hash = HashService().calculate_file_hash(parquet_dest)
+        relative_path = parquet_dest.relative_to(project_root)
+
+        return StrategyArtifactReference(
+            artifact_type=StrategyArtifactType.GLOBAL_DATASET,
+            path=relative_path.as_posix(),
+            hash=file_hash,
+        )
 
     def run_strategy(self) -> None:
         if not self._project or not self._current_definition:
