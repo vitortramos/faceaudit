@@ -67,11 +67,15 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
     `_ColumnView` resolvidos no momento da escolha.
     """
 
-    def __init__(self, data: Optional[pd.DataFrame] = None):
+    def __init__(self, data: Optional[pd.DataFrame] = None,
+                 tooltip_cache: Optional[Any] = None):
         super().__init__()
         self._df = data if data is not None else pd.DataFrame()
         self._column_specs: Dict[str, Any] = {}
         self.visible_columns: List[_ColumnView] = _columns_from_enum()
+        # PR 15.1: cache opcional pra hover-thumb tooltip. Quando None,
+        # os tooltips são strings normais (path completo).
+        self._tooltip_cache = tooltip_cache
 
     def set_column_specs(self, specs: Dict[str, Any]) -> None:
         """Atualiza a lista de colunas visíveis a partir do dict de specs.
@@ -282,6 +286,29 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
                 return f"{val:.2f}"
 
             return str(val)
+
+        # PR 15.1: hover preview da face. Qualquer célula da linha mostra
+        # a thumbnail, com fallback pro path quando o cache não conhece
+        # ou o arquivo está quebrado. Renderização rich-text pelo Qt
+        # automaticamente quando a string começa com `<`.
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if "image_path" not in self._df.columns:
+                return None
+            try:
+                path = self._df.iloc[index.row()]["image_path"]
+            except (IndexError, KeyError):
+                return None
+            if not path or pd.isna(path):
+                return None
+            path_str = str(path)
+            if self._tooltip_cache is not None:
+                html = self._tooltip_cache.get_html(path_str)
+                if html:
+                    return html
+            # Fallback: quando o cache falha (path quebrado) ou não foi
+            # injetado, mostra o path puro — comportamento de tooltip
+            # padrão pré-PR 15.1.
+            return path_str
 
         return None
 

@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from .manager_table_view import ManagerTableView
 from .dataset_table_model import DatasetTableModel
 from .replace_dialog.replace_dialog_controller import ReplaceDialogController
+from .tooltip_thumb_cache import TooltipThumbCache
 from .vocabulary_combo_delegate import install_vocabulary_delegates
 
 
@@ -24,7 +25,10 @@ class ManagerTableController(QtCore.QObject):
     def __init__(self, parent_layout=None):
         super().__init__()
         self.view = ManagerTableView()
-        self.model = DatasetTableModel()
+        # PR 15.1: cache de tooltip-thumb compartilhado pelo model;
+        # invalidado em cada `load_dataframe` quando o dataset muda.
+        self._tooltip_cache = TooltipThumbCache()
+        self.model = DatasetTableModel(tooltip_cache=self._tooltip_cache)
         self.view.setModel(self.model)
 
         # --- MUDANÇA 1: PERMITIR SELEÇÃO DE CÉLULAS INDIVIDUAIS ---
@@ -61,6 +65,11 @@ class ManagerTableController(QtCore.QObject):
     # =========================================================================
 
     def load_dataframe(self, df):
+        # PR 15.1: dataset trocou — esvazia o cache de tooltip-thumbs.
+        # Cache é populado lazy em hover; nada urgente aqui, só evita
+        # memória stale acumulada de datasets anteriores.
+        self._tooltip_cache.clear()
+
         self.model.load_dataframe(df)
         self.view.resizeColumnsToContents()
 
