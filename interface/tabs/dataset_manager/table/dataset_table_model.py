@@ -124,6 +124,39 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         self.endResetModel()
         return True
 
+    def reorder_columns(self, ordered_visible_keys: List[str]) -> bool:
+        """Reordena `_column_specs` colocando `ordered_visible_keys` no
+        início (na ordem dada) e mantendo as colunas ocultas no fim, na
+        ordem original. Usado pelo drag-reorder do header.
+
+        Funciona apenas no caminho schema-by-role (specs populados); no
+        fallback do enum, retorna False — a ordem é estática.
+
+        A ordem do dict é o que `_columns_from_specs` consome e o que
+        `specs_to_json`/`from_json` round-trippa via parquet metadata, então
+        save → reopen preserva a escolha do usuário.
+        """
+        if not self._column_specs:
+            return False
+        # Defensivo: ignora chaves desconhecidas na entrada
+        visible_set = set()
+        new_specs: Dict[str, Any] = {}
+        for k in ordered_visible_keys:
+            if k in self._column_specs and k not in visible_set:
+                new_specs[k] = self._column_specs[k]
+                visible_set.add(k)
+        # Ocultas (e quaisquer visíveis ausentes da entrada) são apensadas
+        # na ordem original — preserva schema completo sem perder colunas.
+        for k, spec in self._column_specs.items():
+            if k not in visible_set:
+                new_specs[k] = spec
+
+        self.beginResetModel()
+        self._column_specs = new_specs
+        self.visible_columns = _columns_from_specs(self._column_specs)
+        self.endResetModel()
+        return True
+
     def update_column_spec(self, name: str, new_spec: Any) -> bool:
         """Substitui o spec de uma coluna existente pelo novo.
 

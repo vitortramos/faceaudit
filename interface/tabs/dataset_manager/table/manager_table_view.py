@@ -35,3 +35,9 @@ class ManagerTableView(QTableView):
         
         # INTERACTIVE: Usuário pode redimensionar qualquer coluna manualmente
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+
+        # PR 20 (Tema 4.1) — drag-reorder: arrastar o header reordena colunas.
+        # O controller escuta `sectionMoved` para persistir a nova ordem em
+        # `column_specs` (mantém Python dict insertion order), de modo que
+        # save → reopen do parquet preserva a escolha do usuário.
+        header.setSectionsMovable(True)

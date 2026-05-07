@@ -48,6 +48,13 @@ class ManagerTableController(QtCore.QObject):
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(self._open_header_context_menu)
 
+        # PR 20 (Tema 4.1) — drag-reorder. `sectionMoved` dispara várias
+        # vezes durante um drag (visual updates intermediários). Usamos
+        # `_reorder_pending` + `QTimer.singleShot(0, ...)` pra debounçar
+        # e processar uma única vez no fim do drag, fora do callback.
+        self._reorder_pending = False
+        header.sectionMoved.connect(self._on_section_moved)
+
         if parent_layout:
             parent_layout.addWidget(self.view)
 
@@ -267,6 +274,53 @@ class ManagerTableController(QtCore.QObject):
             install_vocabulary_delegates(self.view, self.model)
             self.view.resizeColumnsToContents()
             self.schema_changed.emit()
+
+    # =========================================================================
+    # DRAG-REORDER (PR 20 — Tema 4.1)
+    # =========================================================================
+
+    def _on_section_moved(self, _logical_index: int, _old_visual: int, _new_visual: int):
+        """Disparado pelo header sempre que uma coluna é arrastada.
+
+        Debouncing via `_reorder_pending`: drags emitem múltiplos
+        `sectionMoved` em sequência (snap visual). Processamos só uma vez
+        no próximo tick do event loop, fora do callback do drag — evita
+        re-entrância no `beginResetModel/endResetModel`.
+
+        No fallback do enum (sem column_specs), drag continua funcionando
+        visualmente mas não é persistido — o `reorder_columns` retorna
+        False sem fazer nada.
+        """
+        if not self.model.column_specs:
+            return
+        if self._reorder_pending:
+            return
+        self._reorder_pending = True
+        QtCore.QTimer.singleShot(0, self._apply_column_reorder)
+
+    def _apply_column_reorder(self):
+        """Lê a ordem visual atual do header e reordena `column_specs`.
+
+        Após o reset do model, a ordem dict↔visual volta a coincidir
+        (logical = visual) — drags subsequentes começam de um estado
+        limpo.
+        """
+        self._reorder_pending = False
+        header = self.view.horizontalHeader()
+        n = self.model.columnCount()
+        visible = self.model.visible_columns
+
+        new_order = []
+        for visual in range(n):
+            logical = header.logicalIndex(visual)
+            if 0 <= logical < len(visible):
+                new_order.append(visible[logical].key)
+
+        if not self.model.reorder_columns(new_order):
+            return
+        install_vocabulary_delegates(self.view, self.model)
+        self.view.resizeColumnsToContents()
+        self.schema_changed.emit()
 
     # =========================================================================
     # CELL CONTEXT MENU
