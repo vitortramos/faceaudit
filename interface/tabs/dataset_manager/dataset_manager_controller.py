@@ -32,6 +32,11 @@ from faceaudit.models import FaceDataset
 from faceaudit.models.filter_config import FilterConfig
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 
+# PR 25 (Tema 5.4) — audit log forense / chain of custody
+from faceaudit.enums.audit_operation import AuditOperation
+from faceaudit.services.audit_log_service import AuditLogService
+from faceaudit.services.hash_service import HashService
+
 
 class DatasetManagerController(QtCore.QObject):
     """
@@ -102,6 +107,9 @@ class DatasetManagerController(QtCore.QObject):
         self.toolbar_ctrl.action_analyze.connect(self.fluxo_analise_dataset)
         # PR 24 (Tema 5.3 + 5.5) — relatório de schema + export CSV/Excel
         self.toolbar_ctrl.action_schema_report.connect(self.fluxo_schema_report)
+        # PR 25 (Tema 5.4) — audit log forense
+        if hasattr(self.toolbar_ctrl, "action_audit_log"):
+            self.toolbar_ctrl.action_audit_log.connect(self.fluxo_audit_log)
 
         self.toolbar_ctrl.action_filter.connect(self.fluxo_filtrar)
         self.toolbar_ctrl.action_clear_filter.connect(self.fluxo_limpar_filtro)
@@ -260,12 +268,75 @@ class DatasetManagerController(QtCore.QObject):
         # Re-propaga + marca dirty
         self._on_schema_changed()
         self.table_ctrl.view.resizeColumnsToContents()
+        # PR 25 (Tema 5.4) — registra ADD_COLUMN.
+        self._audit(
+            AuditOperation.ADD_COLUMN,
+            f"Coluna '{name}' adicionada (rótulo: '{label}', dtype: {dtype}).",
+            metadata={
+                "column": name,
+                "label": label,
+                "dtype": str(dtype),
+                "computed_expr": computed_expr,
+            },
+        )
 
     def _get_initial_dir(self) -> str:
         if self.pipeline and hasattr(self.pipeline, 'storage_path'):
             path = str(self.pipeline.storage_path)
             if os.path.isdir(path): return path
         return ""
+
+    # ── PR 25 (Tema 5.4) — Audit log forense / chain of custody ──────────
+    def _audit(
+        self,
+        operation: AuditOperation,
+        description: str,
+        *,
+        metadata: dict | None = None,
+        path_override: str | None = None,
+        hash_file: bool = False,
+    ) -> None:
+        """Append best-effort no audit log do dataset corrente.
+
+        - `path_override`: para SAVE_AS, onde `current_path` ainda
+          aponta para o path antigo no momento da chamada.
+        - `hash_file`: quando True, calcula SHA-256 do parquet via
+          `HashService.calculate_file_hash` e grava em `dataset_hash`.
+          Pular em arquivos > 500 MB (nesses casos grava
+          `metadata['hash_skipped']=True` com o tamanho).
+        - Falhas no append ficam em stderr e NÃO interrompem o fluxo
+          chamado — auditoria é observabilidade, não bloqueio.
+        """
+        path = path_override or self.current_path
+        if not path:
+            return  # dataset em memória ainda — sem sidecar pra escrever
+        try:
+            ds_hash = None
+            extra_meta = dict(metadata or {})
+            if hash_file:
+                try:
+                    p = Path(path)
+                    if p.exists():
+                        size_mb = p.stat().st_size / (1024 * 1024)
+                        if size_mb > 500.0:
+                            extra_meta["hash_skipped"] = True
+                            extra_meta["file_size_mb"] = round(size_mb, 1)
+                        else:
+                            ds_hash = HashService().calculate_file_hash(p)
+                except Exception as e:
+                    extra_meta["hash_error"] = str(e)
+            AuditLogService.append(
+                path,
+                operation,
+                description,
+                metadata=extra_meta,
+                dataset_hash=ds_hash,
+            )
+        except Exception as e:
+            # Best-effort — não abortar o fluxo principal
+            import sys as _sys
+            print(f"[AuditLog] Falha ao registrar {operation.value}: {e}",
+                  file=_sys.stderr)
 
     def carregar_dataset_na_tela(self, dataset, path=None):
         self.dataset = dataset
@@ -412,18 +483,41 @@ class DatasetManagerController(QtCore.QObject):
     def _on_load_success(self, dataset, path):
         try:
             self.carregar_dataset_na_tela(dataset, path)
+            # PR 25 (Tema 5.4) — registra OPEN no audit log do dataset.
+            # hash_file=True calcula SHA-256 do parquet (eficiente via
+            # hashlib.file_digest) — anchor da cadeia de custódia.
+            self._audit(
+                AuditOperation.OPEN,
+                f"Dataset '{dataset.name}' aberto.",
+                metadata={
+                    "rows": len(dataset),
+                    "identities": dataset.number_of_identities,
+                },
+                hash_file=True,
+            )
         except Exception as e:
             QMessageBox.critical(self.view, "Erro de Renderização", f"Falha ao exibir tabela: {e}")
 
     def fluxo_salvar(self):
         if not self.dataset: return
         self.sync_changes_from_table()
-        
+
         if self.current_path:
             try:
                 self.dataset.to_parquet(self.current_path)
                 QMessageBox.information(self.view, "Salvo", "Dataset salvo com sucesso.")
                 self.set_dirty(False)
+                # PR 25 (Tema 5.4) — registra SAVE com hash do arquivo
+                # recém-escrito.
+                self._audit(
+                    AuditOperation.SAVE,
+                    f"Dataset salvo em '{Path(self.current_path).name}'.",
+                    metadata={
+                        "rows": len(self.dataset),
+                        "identities": self.dataset.number_of_identities,
+                    },
+                    hash_file=True,
+                )
             except Exception as e:
                 QMessageBox.critical(self.view, "Erro", f"Falha ao salvar: {e}")
         else:
@@ -438,11 +532,32 @@ class DatasetManagerController(QtCore.QObject):
 
         path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
         if path:
+            old_path = self.current_path
             self.dataset.name = Path(path).stem
             self.dataset.to_parquet(path)
+            # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
+            # quando o usuário faz Save As: copia o `.audit.json` antigo
+            # para o novo path antes de adicionar a entrada SAVE_AS,
+            # mantendo a cadeia de custódia ininterrupta.
+            if old_path and old_path != path:
+                try:
+                    AuditLogService.migrate_sidecar(old_path, path)
+                except Exception:
+                    pass  # se a migração falhar, segue com chain nova
             self.current_path = path
             self.set_dirty(False)
             self.carregar_dataset_na_tela(self.dataset, path)
+            self._audit(
+                AuditOperation.SAVE_AS,
+                f"Dataset salvo em novo arquivo '{Path(path).name}'.",
+                metadata={
+                    "previous_path": old_path,
+                    "rows": len(self.dataset),
+                    "identities": self.dataset.number_of_identities,
+                },
+                path_override=path,
+                hash_file=True,
+            )
 
     # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────
 
@@ -593,11 +708,18 @@ class DatasetManagerController(QtCore.QObject):
                                        "O dataset possui alterações não salvas. Deseja salvar antes de fechar?", 
                                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             
-            if res == QMessageBox.StandardButton.Cancel: 
+            if res == QMessageBox.StandardButton.Cancel:
                 return False
-            if res == QMessageBox.StandardButton.Save: 
+            if res == QMessageBox.StandardButton.Save:
                 self.fluxo_salvar()
                 if self.is_dirty(): return False
+
+        # PR 25 (Tema 5.4) — registra CLOSE antes de zerar current_path.
+        # Sem hash do arquivo (não muda no fechamento) — só timestamp/operator.
+        self._audit(
+            AuditOperation.CLOSE,
+            f"Dataset '{self.dataset.name}' fechado.",
+        )
 
         self.dataset = None
         self.current_path = None
@@ -641,6 +763,18 @@ class DatasetManagerController(QtCore.QObject):
         if dataset and len(dataset) > 0:
             path_cache = self.pipeline.storage_path / f"{dataset.name}.parquet"
             self.carregar_dataset_na_tela(dataset, path=str(path_cache))
+            # PR 25 (Tema 5.4) — registra CREATE como primeira entrada
+            # da chain. hash_file=True dá um anchor inicial: o hash do
+            # parquet recém-ingerido.
+            self._audit(
+                AuditOperation.CREATE,
+                f"Dataset '{dataset.name}' criado a partir de ingestão.",
+                metadata={
+                    "rows": len(dataset),
+                    "identities": dataset.number_of_identities,
+                },
+                hash_file=True,
+            )
             QMessageBox.information(self.view, "Sucesso", "Dataset Criado!")
         else:
             QMessageBox.warning(self.view, "Aviso", "Processo finalizado sem dados.")
@@ -674,7 +808,37 @@ class DatasetManagerController(QtCore.QObject):
         # editadas ali já apareçam no relatório.
         self.sync_changes_from_table()
         from .schema_report_dialog import SchemaReportDialog
-        dialog = SchemaReportDialog(self.dataset, parent=self.view)
+        # PR 25 (Tema 5.4) — passa callback de audit pro dialog. Quando
+        # o usuário clica "Exportar para CSV/Excel" lá dentro e
+        # confirma, o callback registra um evento EXPORT na chain.
+        def _audit_export(meta: dict) -> None:
+            self._audit(
+                AuditOperation.EXPORT,
+                f"Dataset exportado para {meta.get('format', 'arquivo')} "
+                f"({meta.get('rows', '?')} linhas, "
+                f"{meta.get('cols', '?')} colunas).",
+                metadata=meta,
+            )
+        dialog = SchemaReportDialog(
+            self.dataset, parent=self.view,
+            on_export=_audit_export,
+        )
+        dialog.exec()
+
+    def fluxo_audit_log(self):
+        """Abre o AuditLogDialog com a chain de custódia do dataset
+        atual. Requer dataset salvo em disco — log é per-arquivo."""
+        if not self.dataset:
+            return
+        if not self.current_path:
+            QMessageBox.information(
+                self.view, "Audit log indisponível",
+                "Salve o dataset primeiro — a cadeia de custódia é "
+                "anexada ao arquivo parquet (sidecar .audit.json).",
+            )
+            return
+        from .audit_log_dialog import AuditLogDialog
+        dialog = AuditLogDialog(self.current_path, parent=self.view)
         dialog.exec()
 
     # =================================================================================
@@ -919,6 +1083,16 @@ class DatasetManagerController(QtCore.QObject):
         if dataset:
             self.dataset = dataset
             self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+            # PR 25 (Tema 5.4) — registra ENRICH (sem hash; o parquet
+            # ainda não foi resalvo, o save subsequente fecha o ciclo).
+            self._audit(
+                AuditOperation.ENRICH,
+                f"Enriquecimento aplicado em '{dataset.name}'.",
+                metadata={
+                    "rows": len(self.dataset),
+                    "identities": self.dataset.number_of_identities,
+                },
+            )
             QMessageBox.information(self.view, "Sucesso", "Enriquecimento concluído com sucesso!")
             self.set_dirty(True)
         else:

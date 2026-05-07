@@ -13,7 +13,7 @@ inúteis em CSV).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import Qt
@@ -69,9 +69,20 @@ class SchemaReportDialog(QtWidgets.QDialog):
         ("Dim", 50),
     ]
 
-    def __init__(self, dataset: FaceDataset, parent=None):
+    def __init__(
+        self,
+        dataset: FaceDataset,
+        parent=None,
+        *,
+        on_export: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
         super().__init__(parent)
         self._dataset = dataset
+        # PR 25 (Tema 5.4) — callback opcional chamado quando o usuário
+        # exporta o dataset via ExportCsvDialog. Recebe um dict com
+        # `format`, `rows`, `cols`, `path`. Default None preserva o
+        # comportamento standalone (sem audit log).
+        self._on_export = on_export
         self.setWindowTitle(f"Relatório de Schema — {dataset.name}")
         self.setModal(True)
         self.resize(1100, 600)
@@ -182,8 +193,19 @@ class SchemaReportDialog(QtWidgets.QDialog):
     # ── Export ──────────────────────────────────────────────────────────────
 
     def _on_export(self):
-        dlg = ExportCsvDialog(self._dataset, parent=self)
+        dlg = ExportCsvDialog(
+            self._dataset, parent=self, on_export_complete=self._on_export_callback,
+        )
         dlg.exec()
+
+    def _on_export_callback(self, meta: Dict[str, Any]) -> None:
+        """Chamado pelo ExportCsvDialog após save bem-sucedido.
+        Repassa pra fora se houver um callback registrado."""
+        if self._on_export is not None:
+            try:
+                self._on_export(meta)
+            except Exception:
+                pass  # callback de auditoria é best-effort
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -213,9 +235,16 @@ class ExportCsvDialog(QtWidgets.QDialog):
       - Excluir embeddings por default (ficam strings gigantes inúteis).
     """
 
-    def __init__(self, dataset: FaceDataset, parent=None):
+    def __init__(
+        self,
+        dataset: FaceDataset,
+        parent=None,
+        *,
+        on_export_complete: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ):
         super().__init__(parent)
         self._dataset = dataset
+        self._on_export_complete = on_export_complete
         self.setWindowTitle("Exportar Dataset")
         self.setModal(True)
         self.resize(520, 520)
@@ -388,6 +417,21 @@ class ExportCsvDialog(QtWidgets.QDialog):
                 self, "Erro ao exportar", str(e),
             )
             return
+
+        # PR 25 (Tema 5.4) — notifica o caller (Schema Report → controller)
+        # pra que o evento EXPORT seja registrado no audit log.
+        if self._on_export_complete is not None:
+            try:
+                self._on_export_complete({
+                    "format": fmt,
+                    "delimiter": delim if fmt == "csv" else None,
+                    "path": str(path),
+                    "rows": int(len(df)),
+                    "cols": int(len(cols)),
+                    "column_names": list(cols),
+                })
+            except Exception:
+                pass  # best-effort
 
         QtWidgets.QMessageBox.information(
             self, "Export",
