@@ -417,24 +417,39 @@ class DatasetManagerController(QtCore.QObject):
         try:
             # Salva qualquer edição de rótulo antes de rodar a auditoria
             self.sync_changes_from_table()
-            
-            # Busca o serviço diretamente do container, livre de erros de namespace
+
+            # Pós-PR 11: o controller delega pro DatasetAuditService (cheap audits
+            # automáticos no abrir) e o ComparisonService (hard mining sob demanda).
             comp_svc = self.container.comparison_service()
-            
-            # Inicializa a injeção explicitamente
+            audit_svc = self.container.dataset_audit_service()
+
             analysis_ctrl = DatasetAnalysisController(
-                dataset=self.dataset, 
-                comparison_service=comp_svc, 
-                parent_view=self.view
+                dataset=self.dataset,
+                audit_service=audit_svc,
+                comparison_service=comp_svc,
+                parent_view=self.view,
             )
+            # Quando o usuário usa as ações de sanitização (excluir, ...),
+            # o dialog muta self.dataset em memória. Refrescamos a tabela
+            # principal e marcamos dirty.
+            analysis_ctrl.dataset_modified.connect(self._on_dataset_modified_by_audit)
+
             QApplication.restoreOverrideCursor()
             analysis_ctrl.exec()
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self.view, "Erro", f"Falha ao abrir Auditoria: {e}")
+
+    def _on_dataset_modified_by_audit(self) -> None:
+        """Hook chamado pelo DatasetAnalysisController quando faces foram
+        deletadas/modificadas via o painel de auditoria."""
+        if self.dataset is None:
+            return
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        self.set_dirty(True)
 
     def fluxo_comparar(self):
         if not self.dataset: return
