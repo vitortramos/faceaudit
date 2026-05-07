@@ -154,10 +154,99 @@ class DatasetAuditService:
             metadata={"min_samples": min_samples},
         )
 
-    def audit_missing_embeddings(self, dataset: FaceDataset) -> AuditFinding:
-        """Faces sem embedding extraído — não podem ir pra estratégia."""
-        # Convenção: face.ff_info.embedding_sepaelv2 é o embedding primário.
-        # Quando falta, FF não rodou ou a face foi rejeitada na extração.
+    def audit_missing_embeddings(
+        self, dataset: FaceDataset,
+    ) -> List[AuditFinding]:
+        """Faces sem embedding extraído — uma `AuditFinding` por coluna de
+        embedding declarada no schema.
+
+        Schema-by-role: itera sobre as colunas do `dataset.column_specs` que
+        têm `role=EMBEDDING`, gerando uma auditoria por modelo. Cada
+        modelo conhecido (sepaelv2, sepaelv4, serfiq_mean) tem um predicate
+        que sabe onde o embedding mora no `FaceInfo`. Custom embedding
+        models (model_name desconhecido) emitem finding INFO indicando
+        que o auditor não sabe verificar — provavelmente o pipeline
+        externo é responsável por essa coluna.
+
+        Fallback legacy: quando `column_specs` é vazio (parquet pré-PR 3),
+        comporta-se como antes — 1 finding pra `embedding_sepaelv2`.
+        """
+        # Caminho legacy: convenção pré-PR 3.
+        if not dataset.column_specs:
+            return [self._audit_legacy_missing_embedding(dataset)]
+
+        embedding_cols = self._resolve_role_columns(dataset, ColumnRole.EMBEDDING)
+        if not embedding_cols:
+            # Specs populadas mas sem nenhuma coluna de embedding declarada.
+            return [AuditFinding(
+                audit_id="missing_embeddings",
+                audit_label="Faces sem embedding",
+                category=CATEGORY_PHYSICAL,
+                severity=AuditSeverity.CRITICAL,
+                issues=(),
+                summary="Schema do dataset não declara nenhuma coluna de embedding",
+                metadata={"reason": "no_embedding_columns_in_schema"},
+            )]
+
+        out: List[AuditFinding] = []
+        for col_name in embedding_cols:
+            spec = dataset.column_specs[col_name]
+            model_name = getattr(spec, "model_name", None)
+            label = getattr(spec, "label", col_name)
+
+            predicate = self._make_embedding_presence_check(model_name)
+            if predicate is None:
+                # Modelo desconhecido — não conseguimos verificar via FaceInfo.
+                # Emite finding informativo pra avisar o usuário em vez de
+                # mentir que está OK ou que está ruim.
+                out.append(AuditFinding(
+                    audit_id=f"missing_embedding_{col_name}",
+                    audit_label=f"Faces sem {label} (verificação indisponível)",
+                    category=CATEGORY_PHYSICAL,
+                    severity=AuditSeverity.INFO,
+                    issues=(),
+                    summary=(
+                        f"Modelo de embedding '{model_name or '?'}' desconhecido "
+                        f"pelo auditor — pulando '{col_name}'"
+                    ),
+                    metadata={"column_name": col_name, "model_name": model_name},
+                ))
+                continue
+
+            issues: List[AuditIssue] = []
+            for idx, face in enumerate(dataset.faces):
+                if not predicate(face):
+                    issues.append(AuditIssue(
+                        locators=(getattr(face, "image_path", ""),),
+                        description=(
+                            f"Sem {label} — extração FF/SERFIQ falhou ou não rodou"
+                        ),
+                        row_indices=(idx,),
+                        metadata={
+                            "identity": getattr(face, "identity", None),
+                            "column_name": col_name,
+                            "model_name": model_name,
+                        },
+                    ))
+            out.append(AuditFinding(
+                audit_id=f"missing_embedding_{col_name}",
+                audit_label=f"Faces sem {label}",
+                category=CATEGORY_PHYSICAL,
+                severity=AuditSeverity.CRITICAL,
+                issues=tuple(issues),
+                summary=f"{len(issues)} face(s) sem embedding '{col_name}'",
+                metadata={"column_name": col_name, "model_name": model_name},
+            ))
+        return out
+
+    def _audit_legacy_missing_embedding(
+        self, dataset: FaceDataset,
+    ) -> AuditFinding:
+        """Caminho de retrocompat pra parquets sem `column_specs`.
+
+        Comportamento idêntico ao da versão anterior do `audit_missing_embeddings`:
+        verifica `face.ff_info.embedding_sepaelv2` (convenção pré-migração).
+        """
         issues: List[AuditIssue] = []
         for idx, face in enumerate(dataset.faces):
             ff = getattr(face, "ff_info", None)
@@ -171,12 +260,39 @@ class DatasetAuditService:
                 ))
         return AuditFinding(
             audit_id="missing_embeddings",
-            audit_label="Faces sem embedding",
+            audit_label="Faces sem embedding (legacy)",
             category=CATEGORY_PHYSICAL,
             severity=AuditSeverity.CRITICAL,
             issues=tuple(issues),
             summary=f"{len(issues)} face(s) sem embedding primário",
+            metadata={"reason": "legacy_no_column_specs"},
         )
+
+    @staticmethod
+    def _make_embedding_presence_check(model_name: Optional[str]):
+        """Retorna predicate `(face) -> bool` que indica presença do embedding
+        do modelo correspondente em `FaceInfo`. None quando o modelo é
+        desconhecido (custom externo, plugin não registrado, etc.).
+
+        Os 3 modelos built-in mapeiam pros atributos atuais de FFInfo /
+        SERFIQInfo. Quando entrar mais um (ex: AdaFace via outro path),
+        adiciona aqui. Pra evitar drift entre auditor e produtor, vale
+        consolidar isso num registro central no futuro.
+        """
+        if not model_name:
+            return None
+        registry = {
+            "sepaelv2": lambda f: bool(
+                getattr(getattr(f, "ff_info", None), "embedding_sepaelv2", None) is not None
+            ),
+            "sepaelv4": lambda f: bool(
+                getattr(getattr(f, "ff_info", None), "embedding_sepaelv4", None) is not None
+            ),
+            "serfiq_mean": lambda f: bool(
+                getattr(getattr(f, "serfiq_info", None), "mean_embedding", None) is not None
+            ),
+        }
+        return registry.get(model_name)
 
     def audit_incomplete_enrichment(
         self, dataset: FaceDataset,
@@ -280,7 +396,9 @@ class DatasetAuditService:
         out: List[AuditFinding] = []
         out.append(self.audit_orphan_paths(dataset))
         out.append(self.audit_hash_conflicts(dataset))
-        out.append(self.audit_missing_embeddings(dataset))
+        # missing_embeddings agora retorna List[AuditFinding] — uma por
+        # coluna de embedding declarada no schema.
+        out.extend(self.audit_missing_embeddings(dataset))
         out.append(self.audit_singleton_identities(dataset, min_samples=singleton_min_samples))
         out.extend(self.audit_incomplete_enrichment(dataset))
         out.append(self.audit_low_quality(
