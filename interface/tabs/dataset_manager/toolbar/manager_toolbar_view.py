@@ -1,172 +1,157 @@
-from PyQt6.QtWidgets import QWidget, QFrame, QVBoxLayout, QHBoxLayout
-from .toolbar_widgets import ToolbarButton, ToolbarSeparator, StatusLabel
+"""View da Toolbar do Dataset Manager — formato Ribbon (PR Ribbon refactor).
+
+Refator: substitui a toolbar single-row anterior por um `QTabWidget`
+com 3 ribbons (Arquivo / Dataset / Imagens) + barra de status dedicada
+abaixo, sempre visível.
+
+**Compatibilidade preservada (decisão #5 do usuário)** — a view continua
+expondo os mesmos atributos `self.btn_save`, `self.btn_localize`, etc.
+via delegação aos ribbons. Controller (`manager_toolbar_controller.py`)
+e demais call sites continuam inalterados.
+
+**Decisões consolidadas pelo usuário:**
+  1. Salvar na biblioteca → Arquivo; Enviar pra estratégia → Dataset;
+     Filtrar/Limpar → Dataset.
+  2. Aba Imagens com 2 botões desabilitados como placeholder (opção C).
+  3. Default = Arquivo.
+  4. Filter status numa barra dedicada abaixo do ribbon (sempre visível).
+  5. API pública dos botões mantida via delegação.
+"""
+
+from PyQt6.QtWidgets import QFrame, QVBoxLayout, QTabWidget
+
+from .toolbar_widgets import StatusLabel
+from .ribbons.arquivo_ribbon import ArquivoRibbon
+from .ribbons.dataset_ribbon import DatasetRibbon
+from .ribbons.imagens_ribbon import ImagensRibbon
+
 
 class ManagerToolbarView(QFrame):
+    """Toolbar no formato Ribbon — 3 abas + barra de status dedicada.
+
+    Atalhos `self.btn_xyz` delegam aos ribbons pra preservar API
+    pública. Métodos `set_dataset_actions_enabled` e `set_status_text`
+    mantidos com mesma assinatura/comportamento.
     """
-    View da Barra de Ferramentas.
-    Responsável pelo layout dos botões e do status.
-    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._init_style()
         self._init_ui()
+        self._wire_button_aliases()
 
     def _init_style(self):
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setMaximumHeight(90)
-        self.setStyleSheet("QFrame { background-color: #f5f5f5; border-radius: 5px; border: 1px solid #e0e0e0; }")
+        # Mais alto que a toolbar single-row (90) pra acomodar QTabBar
+        # + ribbon row + status bar.
+        self.setMaximumHeight(130)
+        self.setStyleSheet(
+            "QFrame { background-color: #f5f5f5; "
+            "border-radius: 5px; border: 1px solid #e0e0e0; }"
+        )
 
     def _init_ui(self):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(2)
 
-        # Layout Horizontal dos Botões
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-
-        # --- GRUPO 1: ARQUIVO ---
-        self.btn_new = ToolbarButton("Novo Dataset", "➕", style="success", tooltip="Criar novo dataset")
-        self.btn_load = ToolbarButton("Abrir", "📂", style="primary")
-        self.btn_close = ToolbarButton("Fechar", "❌", style="danger")
-        self.btn_save = ToolbarButton("Salvar", "💾")
-        self.btn_save_as = ToolbarButton("Salvar Como...", "💾")
-
-        btn_layout.addWidget(self.btn_new)
-        btn_layout.addWidget(self.btn_load)
-        btn_layout.addWidget(self.btn_close)
-        btn_layout.addWidget(self.btn_save)
-        btn_layout.addWidget(self.btn_save_as)
-
-        btn_layout.addWidget(ToolbarSeparator())
-
-        # --- GRUPO 2: FERRAMENTAS ---
-        self.btn_enrich = ToolbarButton("Enriquecer", "💎", tooltip="Adicionar métricas (OFIQ, SER-FIQ) a um dataset existente")
-        self.btn_merge = ToolbarButton("Juntar", "🔗")
-        self.btn_split = ToolbarButton("Dividir", "✂️")
-        self.btn_compare = ToolbarButton("Comparar", "⚖️", tooltip="Comparar este dataset com outro")
-
-        btn_layout.addWidget(self.btn_enrich)
-        btn_layout.addWidget(self.btn_merge)
-        btn_layout.addWidget(self.btn_split)
-        btn_layout.addWidget(self.btn_compare)
-
-        btn_layout.addWidget(ToolbarSeparator())
-
-        # --- GRUPO 3: ANÁLISE ---
-        self.btn_stats = ToolbarButton("Estatísticas", "📊")
-
-        # <--- [NOVO] Botão de Análise de Integridade e Mineração --->
-        self.btn_analyze = ToolbarButton("Analisar", "🔎", tooltip="Auditoria interna de integridade e hard-mining biométrico")
-
-        # <--- [PR 24, Tema 5.3+5.5] Relatório de schema + export CSV/Excel --->
-        self.btn_schema_report = ToolbarButton(
-            "Relatório", "📋",
-            tooltip="Relatório de cobertura por coluna (% NaN, distinct, "
-                    "min/max). Inclui exportação para CSV/Excel.",
+        # ── QTabWidget contendo os 3 ribbons ──
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #ddd; "
+            "background: white; border-radius: 4px; } "
+            "QTabBar::tab { padding: 6px 16px; font-size: 11px; } "
+            "QTabBar::tab:selected { background: white; "
+            "border: 1px solid #ddd; border-bottom: 2px solid white; "
+            "font-weight: bold; }"
         )
 
-        # <--- [PR 25, Tema 5.4] Audit log forense / chain of custody --->
-        self.btn_audit_log = ToolbarButton(
-            "Custódia", "📜",
-            tooltip="Cadeia de custódia forense — histórico de operações "
-                    "no dataset com verificação de integridade SHA-256.",
-        )
+        self.arquivo_ribbon = ArquivoRibbon()
+        self.dataset_ribbon = DatasetRibbon()
+        self.imagens_ribbon = ImagensRibbon()
 
-        # <--- [PR L1d, Tema Localização] Localizar paths do dataset --->
-        self.btn_localize = ToolbarButton(
-            "Localizar", "🗂",
-            tooltip="Converte paths absolutos em relativos, opcionalmente "
-                    "copiando imagens pra pasta autocontida (portátil).",
-        )
+        self.tabs.addTab(self.arquivo_ribbon, "Arquivo")
+        self.tabs.addTab(self.dataset_ribbon, "Dataset")
+        self.tabs.addTab(self.imagens_ribbon, "Imagens")
+        self.tabs.setCurrentIndex(0)  # default: Arquivo (decisão #3)
 
-        self.btn_filter = ToolbarButton("Filtrar", "🔍")
-        self.btn_clear_filter = ToolbarButton("Limpar", "🗑️", tooltip="Remover filtros")
-        self.btn_clear_filter.setEnabled(False)
+        main_layout.addWidget(self.tabs)
 
-        # <--- [PR 8] Spreadsheet UX: adicionar coluna custom ao dataset --->
-        self.btn_add_column = ToolbarButton(
-            "Coluna", "➕📋",
-            tooltip="Adicionar coluna custom ao dataset (anotação livre)",
-        )
-
-        # <--- [PR 15] Modo galeria: toggle entre tabela e grid de thumbnails --->
-        self.btn_toggle_gallery = ToolbarButton(
-            "Galeria", "🖼",
-            tooltip="Alternar entre visualização de tabela e grid de thumbnails",
-        )
-        self.btn_toggle_gallery.setCheckable(True)
-
-        # <--- [PR 16] Adicionar à Biblioteca Global --->
-        self.btn_save_to_library = ToolbarButton(
-            "Biblioteca", "📚",
-            tooltip="Adiciona o dataset atual à biblioteca global "
-                    "(reusável entre projetos do Strategy Manager V2)",
-        )
-
-        # <--- [PR 17] Enviar pra Estratégia (V2) --->
-        self.btn_send_to_strategy = ToolbarButton(
-            "→ Estratégia", "🎯",
-            tooltip="Envia o dataset atual para o Strategy Manager V2 — "
-                    "switch de aba + import automático no projeto aberto "
-                    "(ou prompt pra abrir/criar projeto)",
-        )
-
-        btn_layout.addWidget(self.btn_stats)
-        btn_layout.addWidget(self.btn_analyze) # <--- [NOVO] Adicionado ao layout
-        btn_layout.addWidget(self.btn_schema_report)  # <--- [PR 24]
-        btn_layout.addWidget(self.btn_audit_log)  # <--- [PR 25]
-        btn_layout.addWidget(self.btn_localize)  # <--- [PR L1d]
-        btn_layout.addWidget(self.btn_filter)
-        btn_layout.addWidget(self.btn_clear_filter)
-        btn_layout.addWidget(self.btn_add_column)
-        btn_layout.addWidget(self.btn_toggle_gallery)
-        btn_layout.addWidget(self.btn_save_to_library)
-        btn_layout.addWidget(self.btn_send_to_strategy)
-        
-        btn_layout.addStretch() # Empurra tudo para a esquerda
-
-        # --- LABEL DE STATUS ---
+        # ── Barra de status dedicada (decisão #4 — sempre visível) ──
         self.lbl_status = StatusLabel()
-
-        # Adiciona ao layout principal
-        main_layout.addLayout(btn_layout)
         main_layout.addWidget(self.lbl_status)
 
-    # --- API de Manipulação Visual ---
+    def _wire_button_aliases(self):
+        """Cria atalhos `self.btn_<x>` delegando aos ribbons.
+
+        Preserva 100% da API pública anterior — controller e demais
+        call sites (PRs 8/15/16/17/24/25/L1d) continuam usando
+        `self.view.btn_save` etc. sem mudança.
+        """
+        # Arquivo
+        self.btn_new = self.arquivo_ribbon.btn_new
+        self.btn_load = self.arquivo_ribbon.btn_load
+        self.btn_save = self.arquivo_ribbon.btn_save
+        self.btn_save_as = self.arquivo_ribbon.btn_save_as
+        self.btn_close = self.arquivo_ribbon.btn_close
+        self.btn_save_to_library = self.arquivo_ribbon.btn_save_to_library
+
+        # Dataset
+        self.btn_enrich = self.dataset_ribbon.btn_enrich
+        self.btn_merge = self.dataset_ribbon.btn_merge
+        self.btn_split = self.dataset_ribbon.btn_split
+        self.btn_compare = self.dataset_ribbon.btn_compare
+        self.btn_stats = self.dataset_ribbon.btn_stats
+        self.btn_analyze = self.dataset_ribbon.btn_analyze
+        self.btn_schema_report = self.dataset_ribbon.btn_schema_report
+        self.btn_audit_log = self.dataset_ribbon.btn_audit_log
+        self.btn_localize = self.dataset_ribbon.btn_localize
+        self.btn_filter = self.dataset_ribbon.btn_filter
+        self.btn_clear_filter = self.dataset_ribbon.btn_clear_filter
+        self.btn_add_column = self.dataset_ribbon.btn_add_column
+        self.btn_toggle_gallery = self.dataset_ribbon.btn_toggle_gallery
+        self.btn_send_to_strategy = self.dataset_ribbon.btn_send_to_strategy
+
+        # Imagens (placeholder — desabilitados)
+        self.btn_image_pipeline_editor = self.imagens_ribbon.btn_image_pipeline_editor
+        self.btn_image_pipeline_apply = self.imagens_ribbon.btn_image_pipeline_apply
+
+    # --- API de Manipulação Visual (compatibilidade preservada) ---
 
     def set_dataset_actions_enabled(self, enabled: bool):
-        """Habilita/Desabilita botões que dependem de um dataset carregado."""
+        """Habilita/Desabilita botões que dependem de um dataset
+        carregado. Lista mantida estável — qualquer adição futura de
+        botão dependente de dataset entra aqui.
+        """
         buttons = [
+            # Arquivo
             self.btn_close, self.btn_save, self.btn_save_as,
+            self.btn_save_to_library,
+            # Dataset
             self.btn_enrich,
             self.btn_merge, self.btn_split, self.btn_compare,
-            self.btn_stats,
-            self.btn_analyze, # <--- [NOVO] Controlado dinamicamente
-            self.btn_schema_report,  # <--- [PR 24]
-            self.btn_audit_log,  # <--- [PR 25]
-            self.btn_localize,  # <--- [PR L1d]
-            self.btn_filter,
-            self.btn_add_column,  # <--- [PR 8]
-            self.btn_toggle_gallery,  # <--- [PR 15]
-            self.btn_save_to_library,  # <--- [PR 16]
-            self.btn_send_to_strategy,  # <--- [PR 17]
+            self.btn_stats, self.btn_analyze,
+            self.btn_schema_report, self.btn_audit_log,
+            self.btn_localize, self.btn_filter,
+            self.btn_add_column, self.btn_toggle_gallery,
+            self.btn_send_to_strategy,
         ]
         for btn in buttons:
             btn.setEnabled(enabled)
-            
-        # O btn_clear_filter tem lógica própria, então forçamos False se desabilitar tudo
+
+        # btn_clear_filter tem lógica própria — quando desabilita
+        # tudo, força False (mesmo se um filtro estiver ativo).
         if not enabled:
             self.btn_clear_filter.setEnabled(False)
 
     def set_status_text(self, text: str, is_filtered: bool = False):
         """Atualiza o texto de status e o estado do botão de filtro."""
         self.lbl_status.setText(text)
-        
+
         if is_filtered:
             self.btn_clear_filter.setEnabled(True)
-            self.btn_filter.set_style("warning") # Muda cor para amarelo
+            self.btn_filter.set_style("warning")  # Muda cor para amarelo
         else:
-            if self.btn_filter.isEnabled(): 
+            if self.btn_filter.isEnabled():
                 self.btn_clear_filter.setEnabled(False)
-                self.btn_filter.set_style("default") # Volta ao normal
+                self.btn_filter.set_style("default")  # Volta ao normal
