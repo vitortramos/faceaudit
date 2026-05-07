@@ -212,6 +212,184 @@ class FFService:
             pass
         return None
 
+    # ─────────────────────────────────────────────────────────────────────
+    # PR L3 — Alinhamento isolado e extração a partir de face já alinhada
+    # ─────────────────────────────────────────────────────────────────────
+
+    def align_face_only(
+        self,
+        face_info: FaceInfo,
+        *,
+        dataset: Optional[FaceDataset] = None,
+        model: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
+        """Detecta + alinha SEM extrair embedding (~30-50% mais rápido
+        que `process_face`).
+
+        Pipeline interno: `_safe_read_image` → `backend.detect_faces` →
+        `_get_best_face` (criterion=size) → `backend.norm_crop`. Pula
+        o `_compute_embeddings` que é a etapa cara (AdaFace ONNX).
+
+        Útil pra COPY_ALIGNED em datasets grandes onde só queremos
+        guardar a face alinhada como PNG, sem rodar embedding.
+
+        Args:
+            face_info: face com `image_path` apontando pra imagem
+                original (foto inteira com background).
+            dataset: opcional — quando passado, resolve `image_path`
+                via `dataset.resolve_image_path` (suporta paths
+                relativos pós-localização).
+            model: nome do modelo a usar (None = default). O modelo só
+                influencia qual `det_size` é aplicado; alinhamento em
+                si é determinístico.
+
+        Returns:
+            ndarray BGR (112, 112, 3) uint8 da face alinhada, ou None
+            se nenhuma face foi detectada / arquivo ilegível / erro.
+        """
+        image_path = (
+            str(dataset.resolve_image_path(face_info))
+            if dataset is not None
+            else face_info.image_path
+        )
+        img_array = self._safe_read_image(image_path)
+        if img_array is None:
+            return None
+        try:
+            _, engine = self._resolve_engine(model)
+            faces = engine.backend.detect_faces(img_array)
+            if not faces:
+                return None
+            face = engine._get_best_face(img_array, faces, criterion="size")
+            return engine.backend.norm_crop(img_array, face.kps)
+        except Exception as e:
+            print(f"Error in align_face_only for {image_path}: {e}")
+            return None
+
+    def extract_embeddings_from_aligned_face(
+        self,
+        bgr_aligned_face: np.ndarray,
+        *,
+        model: Optional[str] = None,
+        models: Optional[List[str]] = None,
+    ) -> Optional[FFInfo]:
+        """Extrai embeddings + FIQA de uma face JÁ alinhada (BGR
+        (112, 112, 3) uint8). Pula detecção e alinhamento.
+
+        Útil quando o input já é uma face alinhada — caso típico:
+            - Pipeline de imagens (futuro) aplicando processamento
+              sobre faces alinhadas e querendo medir o impacto no
+              embedding.
+            - Enrichment num dataset COPY_ALIGNED (combinado via
+              `process_face_aligned` que faz read + extract).
+
+        Suporta múltiplos modelos via `models=[...]`. Os embeddings
+        vão pra slots correspondentes em FFInfo
+        (`embedding_sepaelv2`, `embedding_sepaelv4`, etc.) — mesmo
+        layout do `process_face`. Não preenche bbox / keypoints /
+        aligned_face — input já é a face alinhada.
+
+        Internamente: BGR → RGB → `engine.process_aligned_face_image`
+        (a API original do ForensicFace recebe RGB e converte de
+        volta pra BGR antes de rodar o embedding model). Custo da
+        conversão dupla é desprezível (~2 × 37 KB swap).
+
+        Args:
+            bgr_aligned_face: ndarray BGR (112, 112, 3) uint8.
+            model: modelo único (default = `_default_model`). Ignorado
+                se `models` for passado.
+            models: lista de modelos a extrair em uma só passada por
+                face. Cada modelo preenche o slot correspondente em
+                FFInfo. FIQA score vem do primeiro engine consultado.
+
+        Returns:
+            FFInfo com embeddings + fiqa_score, ou None se a entrada
+            for inválida / todos os modelos falharem.
+        """
+        if bgr_aligned_face is None or bgr_aligned_face.size == 0:
+            return None
+
+        target_models: List[str]
+        if models:
+            target_models = list(models)
+        elif model is not None:
+            target_models = [model]
+        else:
+            target_models = [self._default_model]
+
+        # BGR → RGB (process_aligned_face_image espera RGB)
+        rgb_aligned_face = bgr_aligned_face[..., ::-1].copy()
+
+        ff_data: Optional[FFInfo] = None
+        for m in target_models:
+            try:
+                model_name, engine = self._resolve_engine(m)
+                res = engine.process_aligned_face_image(rgb_aligned_face)
+                if not res:
+                    continue
+                # Cada engine carrega só 1 modelo internamente com
+                # concat_embeddings=True (ver __init__), então a chave
+                # do dict é sempre "embedding" — não "embedding_<model>".
+                emb = res.get("embedding")
+                if emb is None:
+                    continue
+                if ff_data is None:
+                    # FIQA score só vem do primeiro engine consultado
+                    # (todos retornam o mesmo valor — é função do FIQA
+                    # network, não do embedding model).
+                    ff_data = FFInfo(fiqa_score=res.get("fiqa_score"))
+                setattr(ff_data, self._slot_for_model(model_name), emb)
+            except Exception as e:
+                print(
+                    f"Error in extract_embeddings_from_aligned_face "
+                    f"(model={m}): {e}"
+                )
+
+        return ff_data
+
+    def process_face_aligned(
+        self,
+        face_info: FaceInfo,
+        *,
+        dataset: Optional[FaceDataset] = None,
+        model: Optional[str] = None,
+        models: Optional[List[str]] = None,
+    ) -> FaceInfo:
+        """Processa uma face quando o `image_path` aponta pra imagem
+        JÁ alinhada (caso típico: dataset pós-COPY_ALIGNED).
+
+        Pula detecção e alinhamento — só lê o arquivo e delega ao
+        `extract_embeddings_from_aligned_face`. ~50% mais rápido que
+        `process_face` e mais robusto: não falha tentando detectar
+        uma face dentro de uma imagem 112×112 que JÁ é só a face.
+
+        Args:
+            face_info: face com `image_path` apontando pra
+                PNG/JPG (112, 112, 3).
+            dataset: opcional — pra resolver paths em RELATIVE.
+            model/models: igual `process_face`.
+
+        Returns:
+            FaceInfo com `ff_info` populado (embeddings + fiqa_score).
+            Se a leitura falhar ou os modelos não retornarem nada,
+            retorna o face_info inalterado.
+        """
+        image_path = (
+            str(dataset.resolve_image_path(face_info))
+            if dataset is not None
+            else face_info.image_path
+        )
+        bgr_aligned_face = self._safe_read_image(image_path)
+        if bgr_aligned_face is None:
+            return face_info
+
+        ff_data = self.extract_embeddings_from_aligned_face(
+            bgr_aligned_face, model=model, models=models,
+        )
+        if ff_data is not None:
+            face_info.ff_info = ff_data
+        return face_info
+
     def process_face(
         self,
         face_info: FaceInfo,

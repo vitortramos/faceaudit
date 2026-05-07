@@ -42,6 +42,7 @@ class LocalizeDatasetWorker(QtCore.QObject):
         mode: LocalizationMode,
         naming: NamingStrategy = NamingStrategy.PRESERVE,
         skip_existing: bool = True,
+        ff_service=None,
     ):
         super().__init__()
         self.dataset = dataset
@@ -49,6 +50,9 @@ class LocalizeDatasetWorker(QtCore.QObject):
         self.mode = mode
         self.naming = naming
         self.skip_existing = skip_existing
+        # PR L3 — necessário pra COPY_ALIGNED. Aceita None pros outros
+        # modos (REWRITE_RELATIVE / COPY_ORIGINALS).
+        self.ff_service = ff_service
         self._is_running = True
 
     def run(self):
@@ -58,7 +62,7 @@ class LocalizeDatasetWorker(QtCore.QObject):
             self.progress_update.emit(
                 f"Iniciando {self.mode.value} para '{self.dataset.name}'…", 0,
             )
-            service = DatasetLocalizationService()
+            service = DatasetLocalizationService(ff_service=self.ff_service)
             result = service.localize(
                 self.dataset,
                 self.target_dir,

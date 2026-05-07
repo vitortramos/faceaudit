@@ -19,4 +19,4 @@ from enum import Enum
 class LocalizationMode(str, Enum):
     REWRITE_RELATIVE = "rewrite_relative"
     COPY_ORIGINALS = "copy_originals"
-    # COPY_ALIGNED = "copy_aligned"  # PR L4
+    COPY_ALIGNED = "copy_aligned"  # PR L3 — exige FFService injetado no service

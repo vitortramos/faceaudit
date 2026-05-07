@@ -35,6 +35,14 @@ _MODE_OPTIONS = [
      "Apenas reescreve os caminhos no parquet como relativos à pasta "
      "destino. Nenhuma imagem é copiada. Requer que TODAS as imagens "
      "já estejam dentro da pasta destino — caso contrário, falha."),
+    (LocalizationMode.COPY_ALIGNED,
+     "Copiar faces alinhadas (PNG)",
+     "Para cada face: detecta + alinha (via ForensicFace) e salva como "
+     "PNG (lossless) em <pasta destino>/images/. Resultado: dataset "
+     "enxuto com APENAS as faces (já no input do modelo, 112×112). "
+     "Operação custosa (~80-150 ms por face) — datasets grandes podem "
+     "levar dezenas de minutos. Idempotente: re-execução pula PNGs já "
+     "criados. Requer ForensicFace instalado."),
 ]
 
 _NAMING_OPTIONS = [
@@ -163,8 +171,11 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
             if m == mode:
                 self.lbl_mode_help.setText(h)
                 break
-        # Naming só faz sentido em COPY_ORIGINALS
-        is_copy = mode == LocalizationMode.COPY_ORIGINALS
+        # Naming faz sentido nos dois modos de cópia (originais e alinhadas)
+        is_copy = mode in (
+            LocalizationMode.COPY_ORIGINALS,
+            LocalizationMode.COPY_ALIGNED,
+        )
         self.naming_box.setEnabled(is_copy)
 
     def _on_naming_changed(self, idx: int):
