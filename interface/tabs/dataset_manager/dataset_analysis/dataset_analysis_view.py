@@ -23,7 +23,7 @@ só renderiza estado e emite sinais semânticos.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -47,6 +47,11 @@ class DatasetAnalysisView(QtWidgets.QDialog):
     rerun_requested = QtCore.pyqtSignal()
     run_heavy_mining_requested = QtCore.pyqtSignal()
     run_biometric_audit_requested = QtCore.pyqtSignal()       # PR 13
+
+    # PR 14 — sanitização de identidades + undo
+    rename_identity_requested = QtCore.pyqtSignal(list)       # List[str] de image_paths
+    merge_identities_requested = QtCore.pyqtSignal(list)      # List[str] de image_paths
+    undo_requested = QtCore.pyqtSignal()
 
     def __init__(self, dataset_name: str, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -139,13 +144,31 @@ class DatasetAnalysisView(QtWidgets.QDialog):
 
         # Barra de ações batch
         actions_row = QtWidgets.QHBoxLayout()
-        self.btn_select_all = QtWidgets.QPushButton("☑ Selecionar tudo")
+        self.btn_select_all = QtWidgets.QPushButton("☑ Sel. tudo")
         self.btn_select_all.clicked.connect(self.table_issues.selectAll)
 
-        self.btn_select_none = QtWidgets.QPushButton("☐ Limpar seleção")
+        self.btn_select_none = QtWidgets.QPushButton("☐ Limpar")
         self.btn_select_none.clicked.connect(self.table_issues.clearSelection)
 
-        self.btn_delete = QtWidgets.QPushButton("🗑 Excluir face(s) selecionada(s)")
+        # PR 14: ações de sanitização de identidade (estado dinâmico).
+        self.btn_rename = QtWidgets.QPushButton("✏️ Renomear ID")
+        self.btn_rename.setToolTip(
+            "Renomeia em lote TODAS as faces com a identidade selecionada. "
+            "Habilitado quando as faces selecionadas têm uma única identidade."
+        )
+        self.btn_rename.clicked.connect(self._on_rename_clicked)
+        self.btn_rename.setEnabled(False)
+
+        self.btn_merge = QtWidgets.QPushButton("🔗 Mesclar IDs")
+        self.btn_merge.setToolTip(
+            "Funde duas (ou mais) identidades em uma única — útil quando o "
+            "auditor de duplicatas detectou que são a mesma pessoa. "
+            "Habilitado quando há 2+ identidades distintas na seleção."
+        )
+        self.btn_merge.clicked.connect(self._on_merge_clicked)
+        self.btn_merge.setEnabled(False)
+
+        self.btn_delete = QtWidgets.QPushButton("🗑 Excluir face(s)")
         self.btn_delete.setStyleSheet(
             "background-color: #c62828; color: white; font-weight: bold; padding: 4px 10px;"
         )
@@ -154,6 +177,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
 
         actions_row.addWidget(self.btn_select_all)
         actions_row.addWidget(self.btn_select_none)
+        actions_row.addSpacing(10)
+        actions_row.addWidget(self.btn_rename)
+        actions_row.addWidget(self.btn_merge)
         actions_row.addStretch()
         actions_row.addWidget(self.btn_delete)
         right_layout.addLayout(actions_row)
@@ -186,12 +212,20 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.btn_rerun.clicked.connect(self.rerun_requested.emit)
 
+        # PR 14: undo da última ação (delete/rename/merge). Label dinâmico
+        # com a descrição da ação no topo da pilha.
+        self.btn_undo = QtWidgets.QPushButton("↶ Desfazer")
+        self.btn_undo.setEnabled(False)
+        self.btn_undo.setShortcut(QtGui.QKeySequence.StandardKey.Undo)  # Ctrl+Z
+        self.btn_undo.clicked.connect(self.undo_requested.emit)
+
         self.btn_close = QtWidgets.QPushButton("Fechar")
         self.btn_close.clicked.connect(self.accept)
 
         bottom.addWidget(self.btn_run_mining)
         bottom.addWidget(self.btn_run_biometric)
         bottom.addWidget(self.btn_rerun)
+        bottom.addWidget(self.btn_undo)
         bottom.addStretch()
         bottom.addWidget(self.btn_close)
         outer.addLayout(bottom)
@@ -304,6 +338,36 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         if confirm == QtWidgets.QMessageBox.StandardButton.Yes:
             self.delete_issues_requested.emit(paths)
 
+    def _on_rename_clicked(self) -> None:
+        """Emite o sinal — controller faz o input dialog + lógica."""
+        paths = self._selected_locators()
+        if paths:
+            self.rename_identity_requested.emit(paths)
+
+    def _on_merge_clicked(self) -> None:
+        """Emite o sinal — controller faz o input dialog + lógica."""
+        paths = self._selected_locators()
+        if paths:
+            self.merge_identities_requested.emit(paths)
+
+    # ── Undo button state ────────────────────────────────────────────────
+
+    def set_undo_state(self, can_undo: bool, description: Optional[str] = None) -> None:
+        """Atualiza o botão de undo conforme a pilha de ações do controller.
+
+        Quando `can_undo=False`, o botão fica desabilitado com label genérico.
+        Quando True, exibe a descrição da última ação ("Desfazer renomear...")
+        pra dar feedback visual do que vai ser revertido.
+        """
+        self.btn_undo.setEnabled(can_undo)
+        if can_undo and description:
+            short = description if len(description) <= 60 else description[:57] + "…"
+            self.btn_undo.setText(f"↶ Desfazer: {short}")
+        else:
+            self.btn_undo.setText("↶ Desfazer")
+
+    # ── Action button states (depend on selection) ───────────────────────
+
     # ── Renderização ────────────────────────────────────────────────────
 
     def _render_finding(self, finding: AuditFinding) -> None:
@@ -357,22 +421,18 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         self.preview.set_paths([])
 
     def _on_issue_selection_changed(self) -> None:
-        """Atualiza o preview com os paths das linhas selecionadas.
-
-        Quando 1 issue é selecionada, mostra os N paths daquela issue
-        (geralmente 1 ou 2). Quando múltiplas são selecionadas, concatena
-        todos os paths deduplicando (até `_MAX_VISIBLE` thumbs no widget).
-        Captions vêm do `metadata` do issue: `identity`, `identities`
-        list, `file1`/`file2` para hard pairs.
-        """
+        """Atualiza o preview + estados dos botões de ação."""
         rows = sorted({i.row() for i in self.table_issues.selectedIndexes()})
         if not rows:
             self.preview.set_paths([])
+            self._update_action_buttons(identities=set())
             return
 
         seen: set = set()
         paths: List[str] = []
         captions: List[str] = []
+        identities_per_path: Dict[str, str] = {}
+
         for row in rows:
             cell0 = self.table_issues.item(row, 0)
             if cell0 is None:
@@ -380,12 +440,33 @@ class DatasetAnalysisView(QtWidgets.QDialog):
             issue = cell0.data(_ISSUE_ROLE)
             row_paths = cell0.data(_PATH_ROLE) or []
             row_captions = _captions_for_issue(issue, row_paths)
-            for p, cap in zip(row_paths, row_captions):
+
+            # Constrói identities_per_path pra alimentar enabling dos botões.
+            # Heurística: usa identities posição-alinhadas se presentes;
+            # senão, identity única; senão, ignora.
+            row_identities = _identities_for_issue(issue, row_paths)
+
+            for p, cap, ident in zip(row_paths, row_captions, row_identities):
                 if p and p not in seen:
                     seen.add(p)
                     paths.append(p)
                     captions.append(cap)
+                    if ident is not None:
+                        identities_per_path[p] = ident
+
         self.preview.set_paths(paths, captions=captions)
+        self._update_action_buttons(set(identities_per_path.values()))
+
+    def _update_action_buttons(self, identities: set) -> None:
+        """Habilita/desabilita Renomear/Mesclar conforme a seleção atual.
+
+        - Renomear: 1 única identidade conhecida
+        - Mesclar: 2+ identidades distintas
+        - Excluir: qualquer seleção (já tratado no _render_finding)
+        """
+        n_ids = len(identities)
+        self.btn_rename.setEnabled(n_ids == 1)
+        self.btn_merge.setEnabled(n_ids >= 2)
 
     def clear_preview_cache(self) -> None:
         """Limpa o cache de pixmaps do preview. Chamar após bulk-delete
@@ -477,6 +558,30 @@ def _captions_for_issue(issue, paths: Sequence[str]) -> List[str]:
 
     # 5. fallback
     return ["" for _ in paths]
+
+
+def _identities_for_issue(issue, paths: Sequence[str]) -> List[Optional[str]]:
+    """Retorna a identidade aproximada por path da issue (alinhada com `paths`).
+
+    Usado pra decidir habilitação dos botões Renomear/Mesclar — saber
+    quantas identidades distintas estão na seleção. Ordem da heurística:
+      1. `identities` (lista alinhada, audit_duplicate_identities)
+      2. `identity` (única, audit_singleton/orphan/missing/mixed)
+      3. None (não dá pra determinar)
+    """
+    if issue is None:
+        return [None for _ in paths]
+    meta = getattr(issue, "metadata", {}) or {}
+
+    identities = meta.get("identities")
+    if isinstance(identities, (list, tuple)) and len(identities) == len(paths):
+        return [str(x) if x is not None else None for x in identities]
+
+    identity = meta.get("identity")
+    if identity:
+        return [str(identity) for _ in paths]
+
+    return [None for _ in paths]
 
 
 def _format_metadata(meta: dict) -> str:
