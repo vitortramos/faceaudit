@@ -227,18 +227,14 @@ class UmapScatterWidget(QtWidgets.QWidget):
         self._coords = coords
 
         # Popula combobox sem disparar render (vamos chamar manualmente).
-        # Em modo centroides, exclui "identity" — cada ponto JÁ é uma
-        # identidade única, então colorir por isso seria 49k cores
-        # (ou top-20 aleatório com legenda inútil ocupando espaço).
-        attrs = [
-            a for a in result.available_attributes
-            if not (self._is_centroids_mode and a == "identity")
-        ]
+        # Em modo centroides "identity" continua disponível — cada ponto
+        # JÁ é uma identidade única, então renderizamos todos com a
+        # mesma cor (sem top-N cluttered legend, ver `_render_categorical`).
         self._combo_color.blockSignals(True)
         self._combo_color.clear()
-        for attr in attrs:
+        for attr in result.available_attributes:
             self._combo_color.addItem(self._humanize_attr(attr), attr)
-        # Default: identity (se modo faces) ou primeiro disponível
+        # Default: identity se disponível, senão primeiro
         default_idx = self._combo_color.findData("identity")
         if default_idx < 0:
             default_idx = 0
@@ -299,6 +295,12 @@ class UmapScatterWidget(QtWidgets.QWidget):
             self._render_continuous(ax, attr)
         elif attr == "yaw_bin":
             self._render_yaw_bins(ax)
+        elif attr == "identity" and self._is_centroids_mode:
+            # Em modo centroides cada ponto JÁ é uma identidade única
+            # — render plain com cor única, sem legenda (top-N seria
+            # arbitrário e não acrescenta info). Mantém a opção no
+            # dropdown como "ver scatter sem categorização".
+            self._render_centroids_plain(ax)
         else:
             # Categórico — identity (alta cardinalidade), gender,
             # ethnicity, origin, source.
@@ -426,6 +428,16 @@ class UmapScatterWidget(QtWidgets.QWidget):
                 loc="best", fontsize=9, framealpha=0.9,
                 title=self._humanize_attr(attr),
             )
+
+    def _render_centroids_plain(self, ax) -> None:
+        """Render simples para 'Identidade' em modo centroides — todos
+        os pontos com a mesma cor azul, sem legenda. Cada ponto JÁ
+        é uma identidade única, então segmentar não acrescenta info."""
+        coords = self._coords
+        ax.scatter(
+            *coords.T,
+            s=8, c="#1976d2", alpha=0.6, edgecolors="none",
+        )
 
     def _render_yaw_bins(self, ax) -> None:
         """Yaw discretizado em faixas (placeholder)."""
