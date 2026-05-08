@@ -269,6 +269,7 @@ class UmapEmbeddingService:
         `umap.UMAP`."""
         # Import local: evita custo de carregamento (numba JIT) quando
         # o serviço é apenas instanciado mas nunca chamado.
+        import warnings
         import umap
 
         reducer = umap.UMAP(
@@ -278,7 +279,21 @@ class UmapEmbeddingService:
             metric=str(config.metric),
             random_state=int(config.random_state),
         )
-        return reducer.fit_transform(matrix)
+        # UMAP emite UserWarning informacional sempre que random_state
+        # é setado, avisando que `n_jobs` foi forçado a 1 pra garantir
+        # determinismo. Reprodutibilidade é desejável aqui — auditoria
+        # forense precisa dos mesmos coords ao reexecutar — então o
+        # comportamento é correto e o warning é só ruído. Suprimimos
+        # localmente em vez de globalmente pra não esconder warnings
+        # legítimos do UMAP em outras chamadas.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=".*n_jobs value .* overridden to 1 by setting random_state.*",
+                category=UserWarning,
+                module="umap.*",
+            )
+            return reducer.fit_transform(matrix)
 
     @staticmethod
     def _build_samples(

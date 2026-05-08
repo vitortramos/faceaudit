@@ -57,6 +57,9 @@ class UmapScatterWidget(QtWidgets.QWidget):
         # Highlight do ponto selecionado pelo click — guarda o
         # collection do scatter pra remover/recriar a cada click.
         self._highlight_artist = None
+        # Marker do lookalike selecionado na tabela — círculo azul,
+        # distinto da estrela amarela do clicked.
+        self._lookalike_marker_artist = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(2, 2, 2, 2)
@@ -223,12 +226,19 @@ class UmapScatterWidget(QtWidgets.QWidget):
                 coords[i, 2] = float(s.z if s.z is not None else 0.0)
         self._coords = coords
 
-        # Popula combobox sem disparar render (vamos chamar manualmente)
+        # Popula combobox sem disparar render (vamos chamar manualmente).
+        # Em modo centroides, exclui "identity" — cada ponto JÁ é uma
+        # identidade única, então colorir por isso seria 49k cores
+        # (ou top-20 aleatório com legenda inútil ocupando espaço).
+        attrs = [
+            a for a in result.available_attributes
+            if not (self._is_centroids_mode and a == "identity")
+        ]
         self._combo_color.blockSignals(True)
         self._combo_color.clear()
-        for attr in result.available_attributes:
+        for attr in attrs:
             self._combo_color.addItem(self._humanize_attr(attr), attr)
-        # Default: identity se disponível, senão primeiro
+        # Default: identity (se modo faces) ou primeiro disponível
         default_idx = self._combo_color.findData("identity")
         if default_idx < 0:
             default_idx = 0
@@ -246,6 +256,7 @@ class UmapScatterWidget(QtWidgets.QWidget):
         self._is_centroids_mode = False
         self._embeddings_matrix = None
         self._highlight_artist = None
+        self._lookalike_marker_artist = None
         self._combo_color.blockSignals(True)
         self._combo_color.clear()
         self._combo_color.blockSignals(False)
@@ -258,9 +269,11 @@ class UmapScatterWidget(QtWidgets.QWidget):
     # ── Slots / dispatch ─────────────────────────────────────────────
 
     def _on_color_attribute_changed(self) -> None:
-        """Recolora o scatter sem refit. Limpa highlight (marker
-        amarelo de lookalike) — fica órfão num scatter recolorido."""
+        """Recolora o scatter sem refit. Limpa markers (estrela
+        amarela do clicked + círculo azul do lookalike selecionado)
+        — ficariam órfãos num scatter recolorido."""
         self._highlight_artist = None
+        self._lookalike_marker_artist = None
         self._render_plot()
 
     def _render_plot(self) -> None:
@@ -468,9 +481,10 @@ class UmapScatterWidget(QtWidgets.QWidget):
         clicked_idx = int(np.argmin(d2))
 
         # Tolerância: descarta clique muito longe de qualquer ponto
-        # (~5% do range médio dos eixos)
-        x_range = float(self._coords[:, 0].ptp())
-        y_range = float(self._coords[:, 1].ptp())
+        # (~5% do range médio dos eixos). NumPy 2.x removeu o método
+        # `ndarray.ptp()`; usa a função `np.ptp(arr)` que segue válida.
+        x_range = float(np.ptp(self._coords[:, 0]))
+        y_range = float(np.ptp(self._coords[:, 1]))
         max_d = max(x_range, y_range) * 0.05
         if max_d > 0 and d2[clicked_idx] > max_d * max_d:
             return
@@ -483,6 +497,10 @@ class UmapScatterWidget(QtWidgets.QWidget):
         desc, e desenha um marker no scatter."""
         if self._embeddings_matrix is None or self._result is None:
             return
+
+        # Limpa marker do lookalike anterior — vai ser substituído
+        # quando a nova primeira linha for auto-selecionada.
+        self._clear_lookalike_marker()
 
         clicked = self._embeddings_matrix[clicked_idx]
         # Cosseno = produto interno entre vetores L2-norm. Como o
@@ -565,14 +583,23 @@ class UmapScatterWidget(QtWidgets.QWidget):
 
     def _on_lookalike_row_selected(self) -> None:
         """Quando o usuário clica numa linha da tabela de lookalikes,
-        carrega o thumb da identidade correspondente."""
+        carrega o thumb da identidade correspondente E desenha um
+        círculo azul no ponto correspondente do scatter."""
         rows = sorted({i.row() for i in self._lookalikes_table.selectedIndexes()})
         if not rows:
             self._lookalike_thumb.clear()
+            self._clear_lookalike_marker()
             return
         cell = self._lookalikes_table.item(rows[0], 0)
         if cell is None:
             return
+
+        # Marker no scatter — círculo azul no ponto da identidade
+        sample_idx = cell.data(QtCore.Qt.ItemDataRole.UserRole)
+        if sample_idx is not None:
+            self._draw_lookalike_marker(int(sample_idx))
+
+        # Thumb da face representante
         path = cell.data(QtCore.Qt.ItemDataRole.UserRole + 1) or ""
         if not path:
             self._lookalike_thumb.clear()
@@ -620,6 +647,42 @@ class UmapScatterWidget(QtWidgets.QWidget):
                 edgecolors="#000", linewidths=1.5, zorder=10,
             )
         self._canvas.draw_idle()
+
+    def _draw_lookalike_marker(self, idx: int) -> None:
+        """Desenha um círculo AZUL no ponto da identidade selecionada
+        na tabela de lookalikes. Distinto da estrela amarela do
+        clicked (origem). Substitui o anterior se houver."""
+        ax = (
+            self._figure.axes[0] if self._figure.axes else None
+        )
+        if ax is None:
+            return
+        self._clear_lookalike_marker()
+
+        coord = self._coords[idx]
+        if self._n_components == 3:
+            self._lookalike_marker_artist = ax.scatter(
+                [coord[0]], [coord[1]], [coord[2]],
+                s=160, facecolors="none", edgecolors="#1976d2",
+                linewidths=2.5, marker="o", zorder=9,
+            )
+        else:
+            self._lookalike_marker_artist = ax.scatter(
+                [coord[0]], [coord[1]],
+                s=160, facecolors="none", edgecolors="#1976d2",
+                linewidths=2.5, marker="o", zorder=9,
+            )
+        self._canvas.draw_idle()
+
+    def _clear_lookalike_marker(self) -> None:
+        """Remove o círculo do lookalike selecionado (sem redraw —
+        caller decide se precisa)."""
+        if self._lookalike_marker_artist is not None:
+            try:
+                self._lookalike_marker_artist.remove()
+            except Exception:
+                pass
+            self._lookalike_marker_artist = None
 
     def _reset_lookalikes_panel(self) -> None:
         """Limpa header + tabela + thumb. Chamado em clear() e em
