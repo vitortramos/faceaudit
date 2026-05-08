@@ -22,6 +22,11 @@ dependencies = [
     "matplotlib",
     "seaborn",
     "statsmodels",  # required for plot_norm_vs_nk_lowess (LOWESS curve)
+    # Embedding visualization (t-SNE/UMAP scatter no audit dialog).
+    # Traz numba + pynndescent transitivamente — install demora ~1 min
+    # da primeira vez (JIT compile na primeira chamada também leva
+    # ~10s, depois cacheado).
+    "umap-learn",
     # PLDA backend
     "speechbrain",
     # UI (Strategy Manager V2 + all viewer dialogs)

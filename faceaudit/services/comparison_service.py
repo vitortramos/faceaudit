@@ -298,30 +298,44 @@ class ComparisonService:
         )
 
     def mine_hard_samples(
-        self, 
-        dataset: EmbeddingDataset, 
+        self,
+        dataset: EmbeddingDataset,
         top_n: int = 100,
-        logger_callback: Callable[[str], None] = print
+        impostor_threshold: float = 0.3,
+        genuine_threshold: float = 0.5,
+        logger_callback: Callable[[str], None] = print,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Mineração profunda vetorizada (Hard Negative & Hard Positive Mining).
-        
-        Calcula a similaridade da matriz completa N x N (Triângulo superior O(N²/2)) e 
-        extrai diretamente dos tensores NumPy os pares limítrofes, evitando a criação 
+
+        Calcula a similaridade da matriz completa N x N (Triângulo superior O(N²/2)) e
+        extrai diretamente dos tensores NumPy os pares limítrofes, evitando a criação
         massiva de objetos na memória RAM.
-        
+
         Ideal para diagnósticos rápidos de Overfitting em datasets enormes e geração de relatórios.
 
         Args:
             dataset (EmbeddingDataset): O dataset base que será cruzado contra si mesmo.
             top_n (int): A quantidade de "piores exemplos" a ser extraída para cada categoria.
+            impostor_threshold (float): Cosseno mínimo para um par de identidades
+                diferentes ser considerado *hard impostor* (FP potencial). Pares
+                abaixo disso são claramente impostores e NÃO geram risco de FP —
+                não interessam à auditoria. Default 0.3 (zona de decisão típica
+                de modelos como AdaFace SEPAEL).
+            genuine_threshold (float): Cosseno máximo para um par da mesma
+                identidade ser considerado *hard genuine* (FN potencial). Pares
+                acima disso já são bem reconhecidos. Default 0.5.
             logger_callback (Callable): Função para injeção de logs na UI.
 
         Returns:
-            Tuple[pd.DataFrame, pd.DataFrame]: 
+            Tuple[pd.DataFrame, pd.DataFrame]:
                 Uma tupla com dois DataFrames Pandas:
-                1. O Top N dos piores pares Genuínos (Mesma pessoa, pior cosseno).
-                2. O Top N dos piores pares Impostores (Pessoas diferentes, maior cosseno).
+                1. O Top N dos piores pares Genuínos (mesma pessoa, cosseno
+                   ≤ `genuine_threshold`).
+                2. O Top N dos piores pares Impostores (pessoas diferentes,
+                   cosseno ≥ `impostor_threshold`).
+                Quando nenhum par passa o threshold, o DataFrame correspondente
+                retorna vazio.
         """
         logger_callback(f"[{self.__class__.__name__}] Iniciando mineração vetorizada O(N²) para {len(dataset)} faces...")
         
@@ -348,50 +362,69 @@ class ComparisonService:
         gen_sims = sims[gen_mask]
         imp_sims = sims[imp_mask]
 
-        # Piores Genuínos (Busca do Menor para o Maior)
+        # Piores Genuínos (Busca do Menor para o Maior).
+        # Filtragem por threshold ANTES de tirar o top — pares com cosseno
+        # acima de `genuine_threshold` já estão bem reconhecidos e não são
+        # FN potenciais; não devem aparecer na auditoria.
         worst_gen_rows = []
         if len(gen_sims) > 0:
-            k_gen = min(top_n, len(gen_sims))
-            worst_gen_idx = np.argpartition(gen_sims, k_gen - 1)[:k_gen]
-            worst_gen_idx = worst_gen_idx[np.argsort(gen_sims[worst_gen_idx])]
-            
-            abs_gen_i = i_idx[gen_mask][worst_gen_idx]
-            abs_gen_j = j_idx[gen_mask][worst_gen_idx]
-            final_gen_sims = gen_sims[worst_gen_idx]
-            
-            for rank_idx in range(k_gen):
-                item_1, item_2 = items[abs_gen_i[rank_idx]], items[abs_gen_j[rank_idx]]
-                worst_gen_rows.append({
-                    "identity_1": getattr(item_1, "identity", "N/A"),
-                    "file_name_1": item_1.file_name or "N/A",
-                    "file_name_2": item_2.file_name or "N/A",
-                    "cosine_similarity": final_gen_sims[rank_idx],
-                    "image_path_1": item_1.image_path,
-                    "image_path_2": item_2.image_path
-                })
+            gen_risk_mask = gen_sims <= genuine_threshold
+            risky_gen_sims = gen_sims[gen_risk_mask]
+            if len(risky_gen_sims) > 0:
+                # Mapeia índices "risky" de volta pros índices originais do gen pool.
+                gen_risk_local_idx = np.flatnonzero(gen_risk_mask)
+                k_gen = min(top_n, len(risky_gen_sims))
+                worst_gen_local = np.argpartition(risky_gen_sims, k_gen - 1)[:k_gen]
+                worst_gen_local = worst_gen_local[np.argsort(risky_gen_sims[worst_gen_local])]
+                worst_gen_idx = gen_risk_local_idx[worst_gen_local]
 
-        # Piores Impostores (Busca do Maior para o Menor)
+                abs_gen_i = i_idx[gen_mask][worst_gen_idx]
+                abs_gen_j = j_idx[gen_mask][worst_gen_idx]
+                final_gen_sims = gen_sims[worst_gen_idx]
+
+                for rank_idx in range(k_gen):
+                    item_1, item_2 = items[abs_gen_i[rank_idx]], items[abs_gen_j[rank_idx]]
+                    worst_gen_rows.append({
+                        "identity_1": getattr(item_1, "identity", "N/A"),
+                        "file_name_1": item_1.file_name or "N/A",
+                        "file_name_2": item_2.file_name or "N/A",
+                        "cosine_similarity": final_gen_sims[rank_idx],
+                        "image_path_1": item_1.image_path,
+                        "image_path_2": item_2.image_path
+                    })
+
+        # Piores Impostores (Busca do Maior para o Menor).
+        # Filtra ANTES de tirar o top — pares com cosseno abaixo de
+        # `impostor_threshold` são claramente impostores e NÃO oferecem
+        # risco de FP, não interessam à auditoria forense (a "estética" de
+        # serem o topo dentro do dataset é irrelevante quando o cosseno
+        # deles está bem abaixo da zona de decisão).
         worst_imp_rows = []
         if len(imp_sims) > 0:
-            k_imp = min(top_n, len(imp_sims))
-            worst_imp_idx = np.argpartition(-imp_sims, k_imp - 1)[:k_imp]
-            worst_imp_idx = worst_imp_idx[np.argsort(-imp_sims[worst_imp_idx])]
-            
-            abs_imp_i = i_idx[imp_mask][worst_imp_idx]
-            abs_imp_j = j_idx[imp_mask][worst_imp_idx]
-            final_imp_sims = imp_sims[worst_imp_idx]
-            
-            for rank_idx in range(k_imp):
-                item_1, item_2 = items[abs_imp_i[rank_idx]], items[abs_imp_j[rank_idx]]
-                worst_imp_rows.append({
-                    "identity_1": getattr(item_1, "identity", "N/A"),
-                    "identity_2": getattr(item_2, "identity", "N/A"),
-                    "file_name_1": item_1.file_name or "N/A",
-                    "file_name_2": item_2.file_name or "N/A",
-                    "cosine_similarity": final_imp_sims[rank_idx],
-                    "image_path_1": item_1.image_path,
-                    "image_path_2": item_2.image_path
-                })
+            imp_risk_mask = imp_sims >= impostor_threshold
+            risky_imp_sims = imp_sims[imp_risk_mask]
+            if len(risky_imp_sims) > 0:
+                imp_risk_local_idx = np.flatnonzero(imp_risk_mask)
+                k_imp = min(top_n, len(risky_imp_sims))
+                worst_imp_local = np.argpartition(-risky_imp_sims, k_imp - 1)[:k_imp]
+                worst_imp_local = worst_imp_local[np.argsort(-risky_imp_sims[worst_imp_local])]
+                worst_imp_idx = imp_risk_local_idx[worst_imp_local]
+
+                abs_imp_i = i_idx[imp_mask][worst_imp_idx]
+                abs_imp_j = j_idx[imp_mask][worst_imp_idx]
+                final_imp_sims = imp_sims[worst_imp_idx]
+
+                for rank_idx in range(k_imp):
+                    item_1, item_2 = items[abs_imp_i[rank_idx]], items[abs_imp_j[rank_idx]]
+                    worst_imp_rows.append({
+                        "identity_1": getattr(item_1, "identity", "N/A"),
+                        "identity_2": getattr(item_2, "identity", "N/A"),
+                        "file_name_1": item_1.file_name or "N/A",
+                        "file_name_2": item_2.file_name or "N/A",
+                        "cosine_similarity": final_imp_sims[rank_idx],
+                        "image_path_1": item_1.image_path,
+                        "image_path_2": item_2.image_path
+                    })
 
         df_gen = pd.DataFrame(worst_gen_rows) if worst_gen_rows else pd.DataFrame()
         df_imp = pd.DataFrame(worst_imp_rows) if worst_imp_rows else pd.DataFrame()

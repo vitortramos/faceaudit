@@ -34,7 +34,7 @@ class BiometricAuditWorker(QtCore.QObject):
         self,
         dataset: FaceDataset,
         audit_service: DatasetAuditService,
-        duplicate_threshold: float = 0.85,
+        duplicate_threshold: float = 0.90,
         mixed_outlier_threshold: float = 0.4,
         mixed_min_samples: int = 3,
     ):
@@ -54,7 +54,7 @@ class BiometricAuditWorker(QtCore.QObject):
         try:
             findings: List[AuditFinding] = []
 
-            self.progress_update.emit("Identidades duplicadas — iniciando…", 0)
+            self.progress_update.emit("Pessoas com mais de um rótulo — iniciando…", 0)
             duplicate = self._audit_service.audit_duplicate_identities(
                 self._dataset,
                 threshold=self._duplicate_threshold,
@@ -65,7 +65,7 @@ class BiometricAuditWorker(QtCore.QObject):
                 return
             findings.append(duplicate)
 
-            self.progress_update.emit("Identidades misturadas — iniciando…", 50)
+            self.progress_update.emit("Faces com erro de identidade — iniciando…", 50)
             mixed = self._audit_service.audit_mixed_identities(
                 self._dataset,
                 outlier_threshold=self._mixed_outlier_threshold,

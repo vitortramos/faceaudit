@@ -1,7 +1,7 @@
 """Ribbon de operações sobre o conteúdo do dataset (PR Ribbon refactor).
 
 Botões: Enriquecer, Juntar, Dividir, Comparar (processamento) +
-Estatísticas, Analisar, Relatório, Custódia (análise) + Localizar,
+Estatísticas, Auditar, Relatório, Custódia (análise) + Localizar,
 Filtrar, Limpar, Coluna, Galeria (manipulação) + → Estratégia
 (exportação).
 """
@@ -41,7 +41,7 @@ class DatasetRibbon(QWidget):
         # ── Grupo: Análise ────────────────────────────────────────────
         self.btn_stats = ToolbarButton("Estatísticas", "📊")
         self.btn_analyze = ToolbarButton(
-            "Analisar", "🔎",
+            "Auditar", "🔎",
             tooltip="Auditoria interna de integridade e hard-mining biométrico",
         )
         self.btn_schema_report = ToolbarButton(

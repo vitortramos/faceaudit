@@ -15,13 +15,20 @@ class ToolbarButton(QPushButton):
         "warning": "QPushButton { background-color: #ffc107; color: black; font-weight: bold; border-radius: 4px; padding: 5px 12px; } QPushButton:hover { background-color: #e0a800; }"
     }
 
+    # Largura mínima padronizada — uniformiza a aparência dos botões da
+    # toolbar pra rótulos curtos (Abrir, Salvar, Auditar, etc.) sem
+    # cortar os mais longos (Salvar Como…, Estatísticas, Biblioteca):
+    # esses crescem além do mínimo via tamanho natural do conteúdo.
+    MIN_BUTTON_WIDTH = 110
+
     def __init__(self, text, icon_char="", style="default", tooltip=""):
         # Combina ícone (emoji/texto) e label se fornecido
         display_text = f"{icon_char} {text}" if icon_char else text
         super().__init__(display_text)
-        
+
         self.setToolTip(tooltip)
         self.setStyleSheet(self.STYLES.get(style, self.STYLES["default"]))
+        self.setMinimumWidth(self.MIN_BUTTON_WIDTH)
         self.style_type = style # Guarda o tipo para referência futura se precisar resetar
 
     def set_style(self, style_name):
