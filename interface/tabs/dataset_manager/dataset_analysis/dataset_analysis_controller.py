@@ -418,13 +418,19 @@ class DatasetAnalysisController(QtCore.QObject):
 
     def _on_umap_done(self, payload) -> None:
         """payload é List[AuditFinding] (1 finding) ou None
-        (cancelado/erro)."""
+        (cancelado/erro). Cada execução é appendada ao cache — vira
+        um item próprio na tree, permitindo comparar configurações
+        sem sobrescrever a anterior."""
         if not payload:
             self.view.btn_run_umap.setEnabled(True)
             return
-        self._umap_findings = list(payload)
+        # Append em vez de replace — cada finding tem audit_id único
+        # gerado pelo worker (uuid hex), então convivem na tree.
+        self._umap_findings.extend(payload)
         self.view.btn_run_umap.setEnabled(True)
-        self.view.btn_run_umap.setText("✅ UMAP concluído — reexecutar?")
+        self.view.btn_run_umap.setText(
+            f"🌌 UMAP (Embeddings) — +{len(self._umap_findings)} no histórico"
+        )
         self._rebuild_findings_view()
 
     def _on_umap_error(self, msg: str) -> None:

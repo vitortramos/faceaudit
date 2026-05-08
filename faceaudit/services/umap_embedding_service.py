@@ -54,41 +54,41 @@ class UmapEmbeddingService:
     ) -> UmapEmbeddingResult:
         """Roda UMAP no dataset e retorna `UmapEmbeddingResult`.
 
-        Subsample reproduzível via `numpy.random.default_rng(seed)` quando
-        `len(dataset) > config.max_samples`. UMAP é chamado com
-        `random_state` pra determinismo.
+        Dispatch por `config.mode`:
+          - "faces" (default): cada face = um ponto. Subsample
+            reproduzível quando `len(dataset) > config.max_samples`.
+          - "centroids": agrega faces por identidade num centroide
+            L2-normalizado. Cada identidade = um ponto. Habilita
+            click-to-lookalikes no widget (cosseno em 512D entre o
+            centroide clicado e os outros — matriz é anexada no
+            resultado via `attach_embeddings_matrix`).
         """
+        if config.mode == UmapConfig.MODE_CENTROIDS:
+            return self._compute_centroids(dataset, config, logger_callback)
+        return self._compute_faces(dataset, config, logger_callback)
+
+    # ── Modo "faces" ─────────────────────────────────────────────────
+
+    def _compute_faces(
+        self,
+        dataset: FaceDataset,
+        config: UmapConfig,
+        logger_callback: Optional[Callable[[str], None]],
+    ) -> UmapEmbeddingResult:
         log = logger_callback if logger_callback is not None else (lambda _msg: None)
         t_start = time.time()
 
         n_total = len(dataset.faces)
         if n_total == 0:
             log("Dataset vazio — nada a projetar.")
-            return UmapEmbeddingResult(
-                config=config,
-                samples=[],
-                n_total_in_dataset=0,
-                n_samples_used=0,
-                n_components=config.n_components,
-                fit_time_seconds=time.time() - t_start,
-                dataset_name=getattr(dataset, "name", "") or "",
-            )
+            return self._empty_result(config, n_total, t_start, dataset)
 
-        # 1. Subsample (índices na faixa do dataset original)
         log(f"Convertendo {n_total:,} faces para EmbeddingDataset…")
         emb_ds = dataset.to_embedding_dataset()
         items = emb_ds.items
         if not items:
             log("Sem embeddings — projeção UMAP inviável.")
-            return UmapEmbeddingResult(
-                config=config,
-                samples=[],
-                n_total_in_dataset=n_total,
-                n_samples_used=0,
-                n_components=config.n_components,
-                fit_time_seconds=time.time() - t_start,
-                dataset_name=getattr(dataset, "name", "") or "",
-            )
+            return self._empty_result(config, n_total, t_start, dataset)
 
         n_emb = len(items)
         if n_emb > config.max_samples:
@@ -103,11 +103,9 @@ class UmapEmbeddingService:
         else:
             indices = np.arange(n_emb)
 
-        # 2. Monta a matriz (subset)
         log(f"Montando matriz de embeddings ({len(indices):,} × D)…")
         matrix = emb_ds.matrix[indices].astype(np.float32, copy=False)
 
-        # 3. Roda UMAP
         log(
             f"Rodando UMAP (n_components={config.n_components}, "
             f"n_neighbors={config.n_neighbors}, min_dist={config.min_dist}, "
@@ -116,7 +114,6 @@ class UmapEmbeddingService:
         )
         coords = self._fit_umap(matrix, config)
 
-        # 4. Constrói samples — atributos vêm das FaceInfo correspondentes
         log("Empacotando samples…")
         samples = self._build_samples(
             dataset=dataset,
@@ -125,8 +122,6 @@ class UmapEmbeddingService:
             coords=coords,
             n_components=config.n_components,
         )
-
-        # 5. Auto-detecta atributos disponíveis (cobertura ≥ 50%)
         available = self._available_attributes(samples)
 
         elapsed = time.time() - t_start
@@ -141,6 +136,128 @@ class UmapEmbeddingService:
             fit_time_seconds=elapsed,
             dataset_name=getattr(dataset, "name", "") or "",
             available_attributes=available,
+        )
+
+    # ── Modo "centroids" ─────────────────────────────────────────────
+
+    def _compute_centroids(
+        self,
+        dataset: FaceDataset,
+        config: UmapConfig,
+        logger_callback: Optional[Callable[[str], None]],
+    ) -> UmapEmbeddingResult:
+        """Agrega faces por identidade em centroides L2-normalizados,
+        roda UMAP nos centroides. Cada sample no resultado representa
+        UMA identidade. Anexa a matriz K×D dos centroides ao resultado
+        pra o widget computar cosseno on-click."""
+        log = logger_callback if logger_callback is not None else (lambda _msg: None)
+        t_start = time.time()
+
+        n_total = len(dataset.faces)
+        if n_total == 0:
+            log("Dataset vazio — nada a projetar.")
+            return self._empty_result(config, n_total, t_start, dataset)
+
+        log(f"Convertendo {n_total:,} faces para EmbeddingDataset…")
+        emb_ds = dataset.to_embedding_dataset()
+        items = emb_ds.items
+        if not items:
+            log("Sem embeddings — projeção UMAP inviável.")
+            return self._empty_result(config, n_total, t_start, dataset)
+
+        # Agrupa índices por identidade — preserva ordem de aparição
+        log("Agregando embeddings por identidade…")
+        from collections import OrderedDict
+        identity_to_indices: "OrderedDict[str, list]" = OrderedDict()
+        for idx, item in enumerate(items):
+            ident = getattr(item, "identity", None)
+            if not ident:
+                continue
+            ident = str(ident)
+            identity_to_indices.setdefault(ident, []).append(idx)
+
+        n_identities = len(identity_to_indices)
+        if n_identities == 0:
+            log("Nenhuma identidade válida — projeção UMAP inviável.")
+            return self._empty_result(config, n_total, t_start, dataset)
+
+        # Centroide L2-normalizado por identidade. Aplica subsample
+        # quando há > max_samples identidades (raro, mas possível).
+        identities_in_use = list(identity_to_indices.keys())
+        if n_identities > config.max_samples:
+            log(
+                f"Subsample reproduzível de identidades: "
+                f"{n_identities:,} → {config.max_samples:,} "
+                f"(seed={config.subsample_seed})"
+            )
+            rng = np.random.default_rng(config.subsample_seed)
+            chosen = rng.choice(
+                n_identities, size=config.max_samples, replace=False,
+            )
+            chosen.sort()
+            identities_in_use = [identities_in_use[i] for i in chosen]
+
+        K = len(identities_in_use)
+        D = emb_ds.matrix.shape[1]
+        log(f"Computando {K:,} centroides L2-normalizados ({D}D)…")
+        centroids = np.empty((K, D), dtype=np.float32)
+        for i, ident in enumerate(identities_in_use):
+            idxs = identity_to_indices[ident]
+            mean = emb_ds.matrix[idxs].mean(axis=0)
+            n = float(np.linalg.norm(mean))
+            centroids[i] = (mean / n).astype(np.float32) if n > 0 else mean.astype(np.float32)
+
+        log(
+            f"Rodando UMAP em {K:,} centroides (n_components="
+            f"{config.n_components}, n_neighbors={config.n_neighbors}, "
+            f"min_dist={config.min_dist}, metric={config.metric})…"
+        )
+        coords = self._fit_umap(centroids, config)
+
+        log("Empacotando samples (uma identidade por sample)…")
+        samples = self._build_centroid_samples(
+            dataset=dataset,
+            embedding_items=items,
+            identity_to_indices=identity_to_indices,
+            identities_in_use=identities_in_use,
+            coords=coords,
+            n_components=config.n_components,
+        )
+        available = self._available_attributes(samples)
+
+        elapsed = time.time() - t_start
+        log(f"UMAP concluído em {elapsed:.1f}s. {K:,} identidades.")
+
+        result = UmapEmbeddingResult(
+            config=config,
+            samples=samples,
+            n_total_in_dataset=n_total,
+            n_samples_used=K,
+            n_components=config.n_components,
+            fit_time_seconds=elapsed,
+            dataset_name=getattr(dataset, "name", "") or "",
+            available_attributes=available,
+        )
+        # Anexa a matriz 512D pra click-to-lookalikes no widget
+        result.attach_embeddings_matrix(centroids)
+        return result
+
+    @staticmethod
+    def _empty_result(
+        config: UmapConfig,
+        n_total: int,
+        t_start: float,
+        dataset,
+    ) -> UmapEmbeddingResult:
+        """Resultado vazio — usado em early returns."""
+        return UmapEmbeddingResult(
+            config=config,
+            samples=[],
+            n_total_in_dataset=n_total,
+            n_samples_used=0,
+            n_components=config.n_components,
+            fit_time_seconds=time.time() - t_start,
+            dataset_name=getattr(dataset, "name", "") or "",
         )
 
     # ── Helpers internos ─────────────────────────────────────────────
@@ -219,6 +336,90 @@ class UmapEmbeddingService:
                 pitch=emb.pose.get("pitch") if emb.pose else None,
                 fiqa=float(fiqa_val) if fiqa_val is not None else None,
                 norm=norm_val,
+            ))
+        return samples
+
+    @staticmethod
+    def _build_centroid_samples(
+        dataset: FaceDataset,
+        embedding_items: List[Any],
+        identity_to_indices: dict,
+        identities_in_use: List[str],
+        coords: np.ndarray,
+        n_components: int,
+    ) -> List[UmapSampleInfo]:
+        """Pra cada identidade, monta UmapSampleInfo com:
+          - x/y/z = coord da identidade no espaço UMAP
+          - identity = a identidade
+          - image_path = primeira foto da identidade (representante)
+          - gender/ethnicity/origin/source = valor da primeira face
+            (todas faces da mesma pessoa devem compartilhar esses)
+          - yaw/pitch/fiqa = MÉDIA sobre as faces da identidade
+          - norm = norma média do centroide L2-norm = 1.0 (info pouco
+            útil em centroide; deixamos None)
+          - n_faces_in_identity = contagem de faces que entraram no
+            centroide (sinaliza confiabilidade do ponto)
+        """
+        samples: List[UmapSampleInfo] = []
+        n_faces = len(dataset.faces)
+
+        for i, ident in enumerate(identities_in_use):
+            face_indices = identity_to_indices[ident]
+            n_faces_id = len(face_indices)
+
+            # Primeira face — representante visual + atributos demográficos
+            first_idx = face_indices[0]
+            first_emb = embedding_items[first_idx]
+            first_face = (
+                dataset.faces[first_idx]
+                if 0 <= first_idx < n_faces else None
+            )
+
+            # Atributos contínuos: média sobre as faces da identidade
+            yaws: List[float] = []
+            pitches: List[float] = []
+            fiqas: List[float] = []
+            for fi in face_indices:
+                emb = embedding_items[fi]
+                if emb.pose:
+                    y_v = emb.pose.get("yaw")
+                    p_v = emb.pose.get("pitch")
+                    if y_v is not None:
+                        yaws.append(float(y_v))
+                    if p_v is not None:
+                        pitches.append(float(p_v))
+                q = emb.quality_scores or {}
+                f_v = q.get("fiqa")
+                if f_v is not None:
+                    fiqas.append(float(f_v))
+
+            yaw_mean = float(np.mean(yaws)) if yaws else None
+            pitch_mean = float(np.mean(pitches)) if pitches else None
+            fiqa_mean = float(np.mean(fiqas)) if fiqas else None
+
+            samples.append(UmapSampleInfo(
+                index=i,  # índice na matriz K×D dos centroides
+                x=float(coords[i, 0]),
+                y=float(coords[i, 1]),
+                z=float(coords[i, 2]) if n_components == 3 else None,
+                identity=ident,
+                image_path=getattr(first_emb, "image_path", None) or None,
+                file_name=getattr(first_emb, "file_name", None) or None,
+                gender=(
+                    str(getattr(first_face, "gender", "") or "") or None
+                    if first_face is not None else None
+                ),
+                ethnicity=(
+                    str(getattr(first_face, "ethnicity", "") or "") or None
+                    if first_face is not None else None
+                ),
+                origin=getattr(first_emb, "origin", None) or None,
+                source=getattr(first_emb, "source", None) or None,
+                yaw=yaw_mean,
+                pitch=pitch_mean,
+                fiqa=fiqa_mean,
+                norm=None,  # centroide L2-norm sempre = 1.0; pouco útil
+                n_faces_in_identity=int(n_faces_id),
             ))
         return samples
 

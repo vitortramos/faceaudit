@@ -53,6 +53,40 @@ class UmapConfigDialog(QtWidgets.QDialog):
         form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
         form.setSpacing(8)
 
+        # ── mode (radio): por face vs por identidade (centroides) ──
+        mode_widget = QtWidgets.QWidget()
+        mode_layout = QtWidgets.QVBoxLayout(mode_widget)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(2)
+        self.radio_faces = QtWidgets.QRadioButton(
+            "Por face (cada ponto = uma foto)"
+        )
+        self.radio_centroids = QtWidgets.QRadioButton(
+            "Por identidade (centroides) — habilita click pra ver lookalikes"
+        )
+        is_centroids = (cfg.mode == UmapConfig.MODE_CENTROIDS)
+        self.radio_faces.setChecked(not is_centroids)
+        self.radio_centroids.setChecked(is_centroids)
+        self.radio_faces.setToolTip(
+            "Modo padrão: cada foto vira um ponto no scatter. Útil pra "
+            "ver clusters por identidade, demografia, FIQA, etc. com a "
+            "granularidade máxima."
+        )
+        self.radio_centroids.setToolTip(
+            "Cada identidade é agregada num centroide L2-normalizado "
+            "(média dos embeddings). Cada ponto representa UMA pessoa. "
+            "Mais limpo visualmente e MUITO mais rápido. Habilita "
+            "click numa identidade pra ver as N mais parecidas no "
+            "espaço 512D (cosine)."
+        )
+        mode_layout.addWidget(self.radio_faces)
+        mode_layout.addWidget(self.radio_centroids)
+        form.addRow("Granularidade:", mode_widget)
+
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        form.addRow(sep)
+
         # ── n_components ──
         self.spin_n_components = QtWidgets.QSpinBox()
         self.spin_n_components.setRange(2, 3)
@@ -164,6 +198,11 @@ class UmapConfigDialog(QtWidgets.QDialog):
 
     def get_config(self) -> UmapConfig:
         """Retorna `UmapConfig` montado a partir dos widgets."""
+        mode = (
+            UmapConfig.MODE_CENTROIDS
+            if self.radio_centroids.isChecked()
+            else UmapConfig.MODE_FACES
+        )
         return UmapConfig(
             n_components=int(self.spin_n_components.value()),
             n_neighbors=int(self.spin_n_neighbors.value()),
@@ -172,6 +211,7 @@ class UmapConfigDialog(QtWidgets.QDialog):
             random_state=42,        # fixado pra determinismo
             max_samples=int(self.spin_max_samples.value()),
             subsample_seed=42,
+            mode=mode,
             color_attributes=None,  # auto-detect
         )
 

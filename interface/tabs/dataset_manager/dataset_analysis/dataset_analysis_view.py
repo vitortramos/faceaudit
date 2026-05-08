@@ -345,17 +345,19 @@ _AUDIT_HELP: Dict[str, str] = {
         "aceitável) e razão max/min (≤4 aceitável)."
     ),
     "umap_embeddings": (
-        "<b>UMAP — projeção 2D dos embeddings</b> — cada ponto é uma "
-        "face do dataset, posicionada de forma que faces similares "
-        "(em cosseno) fiquem próximas no plano. Use o dropdown "
-        "<b>Colorir por</b> pra trocar entre identidade, sexo, etnia, "
-        "origem, FIQA, norma, etc. <b>Clusters bem definidos</b> "
-        "indicam que o atributo é separável pelo embedding (ex: "
-        "gênero costuma formar 2 clusters distintos); clusters "
-        "sobrepostos indicam que o embedding não captura aquela "
-        "informação. <b>Distâncias relativas entre clusters</b> são "
+        "<b>UMAP — projeção 2D/3D dos embeddings</b> — visualização "
+        "interativa do espaço de embeddings. Em modo <b>por face</b>, "
+        "cada ponto é uma foto. Em modo <b>por identidade (centroides)</b>, "
+        "cada ponto é uma pessoa (centroide L2-normalizado das fotos "
+        "dela), e clicar num ponto abre o painel lateral com as N "
+        "identidades mais parecidas medidas por cosseno em 512D — "
+        "ferramenta forense pra encontrar lookalikes. Use o dropdown "
+        "<b>Colorir por</b> pra alternar entre identidade, sexo, etnia, "
+        "etc. — <b>distâncias relativas entre clusters</b> são "
         "razoavelmente confiáveis no UMAP (diferente de t-SNE), mas "
-        "magnitudes absolutas seguem sendo arbitrárias."
+        "magnitudes absolutas seguem sendo arbitrárias. Cada execução "
+        "vira um item próprio na tree — pode comparar configurações "
+        "sem perder anteriores."
     ),
     "hubness_tables": (
         "<b>Top hubs e anti-hubs (tabela)</b> — listagem das 50 faces "
@@ -390,6 +392,26 @@ _AUDIT_HELP: Dict[str, str] = {
         "pessoas diferentes que o sistema poderia confundir."
     ),
 }
+
+
+# Famílias de audit_id cujo prefixo serve pra lookup do help text —
+# usado por auditorias appendable que geram audit_ids únicos por
+# execução (ex: `umap_embeddings_<uuid>`).
+_AUDIT_HELP_PREFIXES = (
+    "umap_embeddings",  # cada execução de UMAP tem ID único
+)
+
+
+def _resolve_audit_help(audit_id: str) -> Optional[str]:
+    """Resolve o help text pra um audit_id. Match exato primeiro;
+    senão tenta prefixos registrados em `_AUDIT_HELP_PREFIXES`."""
+    txt = _AUDIT_HELP.get(audit_id)
+    if txt is not None:
+        return txt
+    for prefix in _AUDIT_HELP_PREFIXES:
+        if audit_id.startswith(prefix):
+            return _AUDIT_HELP.get(prefix)
+    return None
 
 
 class DatasetAnalysisView(QtWidgets.QDialog):
@@ -1050,7 +1072,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
 
         # Mostra/esconde a caixa de explicação conforme a auditoria
         # selecionada — só aparece pras que têm semântica não-óbvia.
-        help_text = _AUDIT_HELP.get(finding.audit_id)
+        help_text = _resolve_audit_help(finding.audit_id)
         if help_text:
             self.lbl_audit_help.setText(help_text)
             self.lbl_audit_help.show()
@@ -1076,7 +1098,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         if finding.audit_id == "hubness_tables":
             self._render_hubness_tables_finding(finding)
             return
-        if finding.audit_id == "umap_embeddings":
+        if finding.audit_id.startswith("umap_embeddings"):
+            # Cada execução de UMAP gera audit_id único
+            # (`umap_embeddings_<uuid>`); o prefix dispatcheia todas.
             self._render_umap_finding(finding)
             return
 

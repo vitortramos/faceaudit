@@ -12,6 +12,7 @@ pelo `WorkerProgressRunner`:
 from __future__ import annotations
 
 import traceback
+import uuid
 from typing import List, Optional
 
 from PyQt6 import QtCore
@@ -136,11 +137,29 @@ class UmapAuditWorker(QtCore.QObject):
             f"atributos disponíveis: {avail}"
         )
 
+        # Audit_id único por execução — cada run vira item próprio na
+        # tree, permitindo comparar configurações lado a lado (2D vs
+        # 3D, n_neighbors=15 vs 50, faces vs centroides) sem
+        # sobrescrever a anterior. O view dispatch usa
+        # `startswith("umap_embeddings")`.
+        unique_id = f"umap_embeddings_{uuid.uuid4().hex[:8]}"
+
+        # Label embute a config pra distinguir execuções na tree
+        cfg = result.config
+        mode_str = (
+            "centroides" if cfg.mode == "centroids" else "faces"
+        )
+        cfg_str = (
+            f"n={cfg.n_neighbors}, d={cfg.min_dist:.2f}, {cfg.metric}"
+        )
+        label = (
+            f"UMAP {result.n_components}D · {mode_str} · {cfg_str} · "
+            f"{n:,} pts"
+        )
+
         return AuditFinding(
-            audit_id="umap_embeddings",
-            audit_label=(
-                f"UMAP — projeção {result.n_components}D"
-            ),
+            audit_id=unique_id,
+            audit_label=label,
             category=CATEGORY_VISUALIZATION,
             severity=AuditSeverity.INFO,
             issues=(),

@@ -31,7 +31,16 @@ class UmapConfig(JSONSerializableMixin):
       - `max_samples=100_000`: UMAP aguenta ~100k em poucos minutos
         em CPU moderna. Acima disso, o subsample preserva a estrutura
         empírica e mantém o tempo gerenciável.
+      - `mode="faces"`: cada ponto = uma face. Alternativa
+        `"centroids"`: agrega faces por identidade num único centroide
+        L2-normalizado. Cada ponto = uma identidade. Habilita o
+        click-to-lookalikes no widget (cosseno em 512D entre o
+        centroide clicado e os outros).
     """
+    # Modos válidos pra `mode` (constantes pra evitar string-magic)
+    MODE_FACES = "faces"
+    MODE_CENTROIDS = "centroids"
+
     # Parâmetros UMAP
     n_components: int = 2  # 2 (default) ou 3
     n_neighbors: int = 15
@@ -39,9 +48,13 @@ class UmapConfig(JSONSerializableMixin):
     metric: str = "cosine"
     random_state: int = 42
 
-    # Subsampling
+    # Subsampling (aplicável em modo "faces" — em "centroids" raramente
+    # tem mais que ~50k identidades, então é praticamente ignorado)
     max_samples: int = 100_000
     subsample_seed: int = 42
+
+    # Granularidade — "faces" (default) ou "centroids"
+    mode: str = "faces"
 
     # Atributos pra coloração — None significa auto-detect (recomendado).
     # Quando explícito, o service só popula esses atributos no resultado;

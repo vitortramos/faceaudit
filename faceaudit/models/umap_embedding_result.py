@@ -24,9 +24,10 @@ T = TypeVar("T", bound="UmapEmbeddingResult")
 @dataclass(frozen=True)
 class UmapSampleInfo(JSONSerializableMixin):
     """Estado por sample no resultado do UMAP — uma linha do scatter
-    plot. `index` é o índice no dataset ORIGINAL (pre-subsample); útil
-    pra correlacionar com outras auditorias e pra o widget achar a
-    imagem ao clicar num ponto."""
+    plot. `index` é o índice no dataset ORIGINAL (em modo `faces`) ou
+    o índice da identidade na matriz de centroides (em modo
+    `centroids`); útil pra correlacionar com outras auditorias e pra
+    o widget achar a imagem ao clicar num ponto."""
     index: int
     x: float
     y: float
@@ -44,6 +45,10 @@ class UmapSampleInfo(JSONSerializableMixin):
     pitch: Optional[float] = None
     fiqa: Optional[float] = None
     norm: Optional[float] = None
+
+    # Em modo `centroids`, quantas faces da identidade contribuíram
+    # para esse centroide. Em modo `faces`, sempre None.
+    n_faces_in_identity: Optional[int] = None
 
 
 @dataclass
@@ -68,6 +73,25 @@ class UmapEmbeddingResult(JSONSerializableMixin):
     # cobertura). Útil pra UI popular dropdown "Colorir por" só com
     # atributos válidos pra esse dataset.
     available_attributes: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Atributo runtime — NÃO faz parte do dataclass (asdict ignora,
+        # to_dict do mixin não emite). Em modo `centroids` carrega a
+        # matriz K×D dos centroides L2-normalizados (np.ndarray) pro
+        # widget computar cosseno on-click. Em modo `faces` fica None.
+        self._embeddings_matrix = None  # type: ignore[attr-defined]
+
+    @property
+    def embeddings_matrix(self):
+        """Matriz K×D (np.ndarray) dos centroides L2-norm — só
+        populada em modo `centroids`. Atributo runtime, não persistido.
+        """
+        return getattr(self, "_embeddings_matrix", None)
+
+    def attach_embeddings_matrix(self, matrix) -> None:
+        """Anexa a matriz runtime após o fit. Chamada pelo
+        `UmapEmbeddingService` em modo centroids."""
+        self._embeddings_matrix = matrix  # type: ignore[attr-defined]
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> T:
