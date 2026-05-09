@@ -228,11 +228,24 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
         self.rebase_box.setVisible(is_rebase)
         # Em REBASE_PREFIX, o "destino" é o NOVO prefixo (a pasta onde
         # as imagens estão NESTA máquina), não uma pasta de saída
-        # autocontida. Renomeamos pra deixar a intenção clara.
+        # autocontida. Renomeamos pra deixar a intenção clara, e
+        # limpamos o campo se ainda estiver com o sugerido default
+        # (pasta autocontida de saída) — o usuário deve escolher uma
+        # pasta existente via Browse. Se o usuário já tinha digitado
+        # algo manualmente, preservamos.
+        suggested_str = str(self._suggested_target)
         if is_rebase:
             self.target_box.setTitle("Prefixo novo (pasta nesta máquina)")
+            if self.input_target.text().strip() == suggested_str:
+                self.input_target.clear()
+            self.input_target.setPlaceholderText(
+                "ex: /Users/perito/data/celeb — clique '📁 Escolher…'"
+            )
         else:
             self.target_box.setTitle("Pasta destino")
+            self.input_target.setPlaceholderText("")
+            if not self.input_target.text().strip():
+                self.input_target.setText(suggested_str)
 
     def _on_naming_changed(self, idx: int):
         naming = self.cmb_naming.currentData()
