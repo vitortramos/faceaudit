@@ -42,6 +42,7 @@ class LocalizeDatasetWorker(QtCore.QObject):
         mode: LocalizationMode,
         naming: NamingStrategy = NamingStrategy.PRESERVE,
         skip_existing: bool = True,
+        old_prefix: Optional[str] = None,
         ff_service=None,
     ):
         super().__init__()
@@ -50,8 +51,10 @@ class LocalizeDatasetWorker(QtCore.QObject):
         self.mode = mode
         self.naming = naming
         self.skip_existing = skip_existing
+        # Só relevante em REBASE_PREFIX (substituição de prefixo de path).
+        self.old_prefix = old_prefix
         # PR L3 — necessário pra COPY_ALIGNED. Aceita None pros outros
-        # modos (REWRITE_RELATIVE / COPY_ORIGINALS).
+        # modos (REWRITE_RELATIVE / COPY_ORIGINALS / REBASE_PREFIX).
         self.ff_service = ff_service
         self._is_running = True
 
@@ -69,6 +72,7 @@ class LocalizeDatasetWorker(QtCore.QObject):
                 mode=self.mode,
                 naming=self.naming,
                 skip_existing=self.skip_existing,
+                old_prefix=self.old_prefix,
                 progress_callback=self._on_progress,
             )
             if not self._is_running:

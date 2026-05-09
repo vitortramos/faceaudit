@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Optional
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtCore import QTimer, Qt
 from PyQt6.QtWidgets import QMessageBox, QFileDialog, QApplication
@@ -873,11 +874,20 @@ class DatasetManagerController(QtCore.QObject):
             base = Path(self._get_initial_dir() or os.getcwd())
         suggested = base / f"{self.dataset.name}__localized"
 
+        # Auto-detecta o prefixo comum dos image_paths atuais — só
+        # é útil pro modo REBASE_PREFIX, mas computar antes evita
+        # uma round-trip do dialog ao service.
+        from faceaudit.services.dataset_localization_service import (
+            DatasetLocalizationService,
+        )
+        detected = DatasetLocalizationService.detect_path_prefix(self.dataset)
+
         from .localize_dataset_dialog import LocalizeDatasetDialog
         dialog = LocalizeDatasetDialog(
             dataset_name=self.dataset.name,
             suggested_target_dir=suggested,
             parent=self.view,
+            detected_prefix=detected,
         )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
@@ -893,10 +903,16 @@ class DatasetManagerController(QtCore.QObject):
             mode=opts["mode"],
             naming=opts["naming"],
             skip_existing=opts["skip_existing"],
+            old_prefix=opts.get("old_prefix"),
         )
 
     def _iniciar_worker_localize(
-        self, target_dir: Path, mode, naming, skip_existing: bool,
+        self,
+        target_dir: Path,
+        mode,
+        naming,
+        skip_existing: bool,
+        old_prefix: Optional[str] = None,
     ):
         # PR L3 — passa ff_service do pipeline pra habilitar COPY_ALIGNED.
         # Quando o modo é REWRITE_RELATIVE / COPY_ORIGINALS o
@@ -909,6 +925,7 @@ class DatasetManagerController(QtCore.QObject):
             mode=mode,
             naming=naming,
             skip_existing=skip_existing,
+            old_prefix=old_prefix,
             ff_service=ff_svc,
         )
         # Guarda contexto pra usar no on_finished

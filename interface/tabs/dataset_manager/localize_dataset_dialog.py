@@ -35,6 +35,16 @@ _MODE_OPTIONS = [
      "Apenas reescreve os caminhos no parquet como relativos à pasta "
      "destino. Nenhuma imagem é copiada. Requer que TODAS as imagens "
      "já estejam dentro da pasta destino — caso contrário, falha."),
+    (LocalizationMode.REBASE_PREFIX,
+     "Atualizar prefixo de caminho (sem cópia)",
+     "Substitui um prefixo de path por outro em todas as faces. "
+     "Caso de uso típico: dataset criado em outra máquina com paths "
+     "absolutos do tipo <code>/home/colega/imgs/...</code> ou "
+     "<code>C:\\Users\\alguem\\imgs\\...</code>, e nesta máquina a "
+     "mesma estrutura existe em outro caminho (ex: "
+     "<code>/Users/eu/data/imgs/...</code>). Não copia nada — só "
+     "reescreve os paths. Sanity check: cada arquivo precisa existir "
+     "no novo caminho."),
     (LocalizationMode.COPY_ALIGNED,
      "Copiar faces alinhadas (PNG)",
      "Para cada face: detecta + alinha (via ForensicFace) e salva como "
@@ -68,14 +78,16 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
         dataset_name: str,
         suggested_target_dir: Path,
         parent: Optional[QtWidgets.QWidget] = None,
+        detected_prefix: Optional[str] = None,
     ):
         super().__init__(parent)
         self._dataset_name = dataset_name
         self._suggested_target = suggested_target_dir
+        self._detected_prefix = detected_prefix or ""
 
         self.setWindowTitle(f"Localizar Dataset — {dataset_name}")
         self.setModal(True)
-        self.resize(620, 480)
+        self.resize(640, 580)
         self._build_ui()
         self._on_mode_changed(0)  # estado inicial coerente
 
@@ -128,15 +140,46 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
         naming_layout.addRow("", self.lbl_naming_help)
         layout.addWidget(self.naming_box)
 
+        # ── Prefixo antigo (só em REBASE_PREFIX) ──
+        self.rebase_box = QtWidgets.QGroupBox("Prefixo antigo (a ser substituído)")
+        rebase_layout = QtWidgets.QVBoxLayout(self.rebase_box)
+        rebase_inner = QtWidgets.QHBoxLayout()
+        self.input_old_prefix = QtWidgets.QLineEdit(self._detected_prefix)
+        self.input_old_prefix.setPlaceholderText(
+            "ex: /home/colega/datasets/celeb"
+        )
+        rebase_inner.addWidget(self.input_old_prefix)
+        rebase_layout.addLayout(rebase_inner)
+        self.lbl_rebase_help = QtWidgets.QLabel()
+        self.lbl_rebase_help.setWordWrap(True)
+        self.lbl_rebase_help.setStyleSheet(
+            "color: #555; font-size: 11px; padding: 4px;"
+        )
+        if self._detected_prefix:
+            self.lbl_rebase_help.setText(
+                f"<i>Auto-detectado a partir dos paths atuais: "
+                f"<code>{self._detected_prefix}</code></i>. "
+                "Edite se necessário."
+            )
+        else:
+            self.lbl_rebase_help.setText(
+                "<i>Não foi possível auto-detectar — preencha "
+                "manualmente o prefixo comum dos paths originais.</i>"
+            )
+        rebase_layout.addWidget(self.lbl_rebase_help)
+        layout.addWidget(self.rebase_box)
+
         # ── Destino ──
-        target_box = QtWidgets.QGroupBox("Pasta destino")
-        target_layout = QtWidgets.QHBoxLayout(target_box)
+        # O label muda conforme o modo: em REBASE_PREFIX é "Prefixo
+        # novo (pasta nesta máquina)", nos demais é "Pasta destino".
+        self.target_box = QtWidgets.QGroupBox("Pasta destino")
+        target_layout = QtWidgets.QHBoxLayout(self.target_box)
         self.input_target = QtWidgets.QLineEdit(str(self._suggested_target))
         target_layout.addWidget(self.input_target)
         self.btn_browse = QtWidgets.QPushButton("📁 Escolher…")
         self.btn_browse.clicked.connect(self._on_browse)
         target_layout.addWidget(self.btn_browse)
-        layout.addWidget(target_box)
+        layout.addWidget(self.target_box)
 
         # ── Idempotência ──
         self.chk_skip_existing = QtWidgets.QCheckBox(
@@ -171,12 +214,25 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
             if m == mode:
                 self.lbl_mode_help.setText(h)
                 break
-        # Naming faz sentido nos dois modos de cópia (originais e alinhadas)
+        # Naming faz sentido nos dois modos de cópia (originais e alinhadas).
+        # Em REBASE_PREFIX e REWRITE_RELATIVE não há cópia, sem renomear.
         is_copy = mode in (
             LocalizationMode.COPY_ORIGINALS,
             LocalizationMode.COPY_ALIGNED,
         )
         self.naming_box.setEnabled(is_copy)
+        # Idempotência só faz sentido em modos de cópia.
+        self.chk_skip_existing.setEnabled(is_copy)
+        # Prefixo antigo só em REBASE_PREFIX.
+        is_rebase = mode == LocalizationMode.REBASE_PREFIX
+        self.rebase_box.setVisible(is_rebase)
+        # Em REBASE_PREFIX, o "destino" é o NOVO prefixo (a pasta onde
+        # as imagens estão NESTA máquina), não uma pasta de saída
+        # autocontida. Renomeamos pra deixar a intenção clara.
+        if is_rebase:
+            self.target_box.setTitle("Prefixo novo (pasta nesta máquina)")
+        else:
+            self.target_box.setTitle("Pasta destino")
 
     def _on_naming_changed(self, idx: int):
         naming = self.cmb_naming.currentData()
@@ -198,14 +254,25 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
     def get_options(self) -> dict:
         """Devolve as opções escolhidas. Chamar após `exec() == Accepted`.
 
-        Levanta ValueError se a pasta destino estiver vazia.
+        Levanta ValueError se a pasta destino estiver vazia, ou se o
+        modo é REBASE_PREFIX e o prefixo antigo está vazio.
         """
         target = self.input_target.text().strip()
         if not target:
             raise ValueError("Pasta destino não pode estar vazia.")
+        mode = self.cmb_mode.currentData()
+        old_prefix: Optional[str] = None
+        if mode == LocalizationMode.REBASE_PREFIX:
+            old_prefix = self.input_old_prefix.text().strip()
+            if not old_prefix:
+                raise ValueError(
+                    "Modo 'Atualizar prefixo' exige preencher o prefixo "
+                    "antigo (a pasta na máquina onde o dataset foi criado)."
+                )
         return {
-            "mode": self.cmb_mode.currentData(),
+            "mode": mode,
             "naming": self.cmb_naming.currentData(),
             "target_dir": Path(target),
             "skip_existing": self.chk_skip_existing.isChecked(),
+            "old_prefix": old_prefix,
         }

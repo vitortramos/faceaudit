@@ -61,6 +61,46 @@ class DatasetLocalizationService:
         # `faceaudit.services.ff_service`.
         self._ff_service = ff_service
 
+    @staticmethod
+    def detect_path_prefix(dataset: FaceDataset) -> Optional[str]:
+        """Auto-detecta o prefixo comum dos `image_path` do dataset.
+
+        Útil pro modo REBASE_PREFIX — quando todas as imagens vivem sob
+        um diretório raiz na máquina original, este método infere esse
+        diretório (longest common prefix por componente de path).
+
+        Retorna None se o dataset estiver vazio, se os paths divergirem
+        a partir do primeiro componente, ou se o dataset usa paths
+        relativos (rebase só faz sentido em paths absolutos).
+        """
+        paths = [
+            f.image_path for f in dataset.faces
+            if f.image_path
+        ]
+        if not paths:
+            return None
+
+        # Normaliza separadores antes de comparar (Win '\\' → '/').
+        norm = [p.replace("\\", "/") for p in paths]
+        # Rebase só faz sentido em paths absolutos. Se um deles é
+        # relativo, abortamos (caller deve usar outro modo).
+        if any(not (p.startswith("/") or (len(p) > 2 and p[1] == ":")) for p in norm):
+            return None
+
+        # Componentes do primeiro path como referência.
+        ref = norm[0].split("/")
+        common: list[str] = []
+        for i, comp in enumerate(ref):
+            if all(len(p.split("/")) > i and p.split("/")[i] == comp for p in norm):
+                common.append(comp)
+            else:
+                break
+
+        if len(common) <= 1:  # só "/" ou drive letter — sem utilidade
+            return None
+
+        return "/".join(common)
+
     def localize(
         self,
         dataset: FaceDataset,
@@ -69,6 +109,7 @@ class DatasetLocalizationService:
         mode: LocalizationMode,
         naming: NamingStrategy = NamingStrategy.PRESERVE,
         skip_existing: bool = True,
+        old_prefix: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> LocalizationResult:
         """Localiza um dataset.
@@ -97,6 +138,16 @@ class DatasetLocalizationService:
         elif mode == LocalizationMode.COPY_ORIGINALS:
             result = self._copy_originals(
                 dataset, target, naming, skip_existing, progress_callback,
+            )
+        elif mode == LocalizationMode.REBASE_PREFIX:
+            if not old_prefix:
+                raise ValueError(
+                    "REBASE_PREFIX exige `old_prefix` — use "
+                    "DatasetLocalizationService.detect_path_prefix(dataset) "
+                    "para auto-detectar."
+                )
+            result = self._rebase_prefix(
+                dataset, old_prefix, target, progress_callback,
             )
         elif mode == LocalizationMode.COPY_ALIGNED:
             if self._ff_service is None:
@@ -185,6 +236,92 @@ class DatasetLocalizationService:
             target_dir=target_dir,
             mode=LocalizationMode.REWRITE_RELATIVE,
             naming=NamingStrategy.PRESERVE,  # placeholder — não relevante
+            n_processed=n_processed,
+            n_copied=0,
+            n_skipped=0,
+            n_failed=len(failures),
+            failures=tuple(failures),
+        )
+
+    # ── REBASE_PREFIX ───────────────────────────────────────────────────────
+
+    def _rebase_prefix(
+        self,
+        dataset: FaceDataset,
+        old_prefix: str,
+        new_prefix: Path,
+        progress_callback: Optional[Callable[[int, int, str], None]],
+    ) -> LocalizationResult:
+        """Substitui `old_prefix` por `new_prefix` em todos os paths.
+
+        Caso de uso típico: dataset criado em outra máquina (Linux/Win)
+        onde as imagens estavam em `/home/colega/datasets/celeb/...` ou
+        `C:\\Users\\alguem\\imgs\\...`, e nesta máquina a mesma estrutura
+        existe em outro caminho (ex: `/Users/eu/data/celeb/...`).
+
+        Para cada face:
+          1. Verifica que `image_path` começa com `old_prefix`.
+          2. Substitui o prefixo por `new_prefix` (str manipulação,
+             sem touch no disco).
+          3. Verifica que o path resultante existe — registra como
+             failure caso contrário.
+
+        Não copia imagens. O dataset resultante usa `path_mode=ABSOLUTE`
+        com os novos paths abertos no destino.
+        """
+        # Normaliza prefixo antigo (slash unix; sem trailing slash).
+        old_norm = old_prefix.replace("\\", "/").rstrip("/")
+        new_str = str(new_prefix).rstrip("/").rstrip("\\")
+
+        new_faces: List[FaceInfo] = []
+        failures: List[Tuple[str, str]] = []
+        n_processed = 0
+
+        for idx, face in enumerate(dataset.faces):
+            n_processed += 1
+            if progress_callback:
+                progress_callback(idx, len(dataset), face.image_path or "")
+
+            old_path = (face.image_path or "").replace("\\", "/")
+            if not old_path:
+                failures.append(("<empty>", "image_path vazio"))
+                continue
+            if not old_path.startswith(old_norm + "/") and old_path != old_norm:
+                failures.append((
+                    old_path,
+                    f"não começa com prefixo '{old_norm}'",
+                ))
+                continue
+
+            # Calcula sufixo (parte depois do prefixo) e cola no novo.
+            suffix = old_path[len(old_norm):].lstrip("/")
+            new_path = f"{new_str}/{suffix}".replace("\\", "/")
+
+            # Sanity check — o arquivo precisa existir no destino.
+            if not Path(new_path).exists():
+                failures.append((new_path, "arquivo não encontrado no destino"))
+                continue
+
+            new_faces.append(self._clone_face_with_path(face, new_path))
+
+        # Mantém path_mode=ABSOLUTE (paths já estão prontos pra uso direto
+        # no destino). Salvar-como-novo via UI rebase + save segue padrão
+        # do dataset original.
+        new_dataset = FaceDataset(
+            name=dataset.name,
+            description=dataset.description,
+            faces=new_faces,
+            column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
+            path_mode=PathMode.ABSOLUTE,
+            path_root=None,
+        )
+        new_dataset.hash = None
+
+        return LocalizationResult(
+            dataset=new_dataset,
+            target_dir=Path(new_str),
+            mode=LocalizationMode.REBASE_PREFIX,
+            naming=NamingStrategy.PRESERVE,
             n_processed=n_processed,
             n_copied=0,
             n_skipped=0,
