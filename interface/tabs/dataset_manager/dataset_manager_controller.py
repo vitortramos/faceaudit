@@ -36,6 +36,7 @@ from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 
 # PR 25 (Tema 5.4) — audit log forense / chain of custody
 from faceaudit.enums.audit_operation import AuditOperation
+from faceaudit.enums.localization_mode import LocalizationMode
 from faceaudit.services.audit_log_service import AuditLogService
 from faceaudit.services.hash_service import HashService
 
@@ -988,33 +989,27 @@ class DatasetManagerController(QtCore.QObject):
         except Exception:
             pass  # audit é best-effort
 
-        # Substitui o dataset corrente pelo localizado e força Save As
-        # (paths e schema mudaram — current_path do original não vale).
+        # Substitui o dataset corrente pelo localizado.
+        # Em REBASE_PREFIX o arquivo conceitualmente é o mesmo (só os
+        # paths foram reescritos), então preservamos current_path —
+        # assim "Salvar" sobrescreve o parquet original e "Salvar Como"
+        # permite gravar como cópia. Nos demais modos (COPY_*, REWRITE),
+        # imagens foram movidas/transformadas e o original perde
+        # significado — current_path=None força Save As.
+        is_rebase = result.mode == LocalizationMode.REBASE_PREFIX
         self.dataset = result.dataset
         self.dataset_original = None
-        self.current_path = None
+        if not is_rebase:
+            self.current_path = None
         self.set_dirty(True)
-        self.carregar_dataset_na_tela(self.dataset, path=None)
+        self.carregar_dataset_na_tela(self.dataset, path=self.current_path)
 
         QMessageBox.information(
             self.view, "Localização concluída",
             f"Dataset localizado em memória.\n\n{result.summary()}{extra}\n\n"
-            f"Próximo passo: salvar o dataset (sugerido em "
-            f"{result.target_dir / (self.dataset.name + '.parquet')}).",
+            "Use 'Salvar' pra sobrescrever o arquivo original ou "
+            "'Salvar Como' pra gravar com outro nome.",
         )
-
-        # Sugere Save As com path pré-preenchido pra dentro do target_dir
-        suggested_save = result.target_dir / f"{self.dataset.name}.parquet"
-        path, _ = QFileDialog.getSaveFileName(
-            self.view, "Salvar dataset localizado",
-            str(suggested_save), "Parquet (*.parquet)",
-        )
-        if path:
-            self.dataset.name = Path(path).stem
-            self.dataset.to_parquet(path)
-            self.current_path = path
-            self.set_dirty(False)
-            self.carregar_dataset_na_tela(self.dataset, path)
 
     # =================================================================================
     # PR I2 — FLUXO DE EDITOR DE PIPELINE DE IMAGENS
