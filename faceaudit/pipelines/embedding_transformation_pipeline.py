@@ -27,6 +27,9 @@ from faceaudit.transformators.coral_transformation import CoralTransformation
 from faceaudit.transformators.identity_aggregation import IdentityAggregation
 from faceaudit.transformators.l2_normalization import L2Normalization
 from faceaudit.transformators.lda_transformation import LdaTransformation
+from faceaudit.transformators.radial_gaussianization_transformation import (
+    RadialGaussianizationTransformation,
+)
 from faceaudit.transformators.whitening_transformation import WhiteningTransformation
 
 
@@ -61,6 +64,7 @@ class EmbeddingTransformationPipeline(EmbeddingTransformationPipelineProtocol):
         TransformationType.IDENTITY_AGGREGATION: IdentityAggregation,
         TransformationType.LDA_TRANSFORMATION: LdaTransformation,
         TransformationType.CENTERING_TRANSFORMATION: CenteringTransformation,
+        TransformationType.RADIAL_GAUSSIANIZATION: RadialGaussianizationTransformation,
     }
 
     def __init__(

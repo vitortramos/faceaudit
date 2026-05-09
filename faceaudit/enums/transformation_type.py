@@ -10,6 +10,7 @@ from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.whitening_config import WhiteningConfig
 from faceaudit.models.lda_config import LDAConfig
 from faceaudit.models.coral_config import CoralConfig
+from faceaudit.models.radial_gaussianization_config import RadialGaussianizationConfig
 
 class TransformationType(Enum):
     """
@@ -92,16 +93,32 @@ class TransformationType(Enum):
     )
 
     IDENTITY_AGGREGATION = (
-        "IDENTITY_AGGREGATION", 
-        "Identity Aggregation", 
+        "IDENTITY_AGGREGATION",
+        "Identity Aggregation",
         "IdAvg",
         "Calcula o vetor médio (Template) por identidade.",
         "👥",
         False,
         StepType.AGGREGATION,
-        False, 
+        False,
         lambda p: "",
         AggregationConfig # <--- INJEÇÃO DO DTO
+    )
+
+    RADIAL_GAUSSIANIZATION = (
+        "RADIAL_GAUSSIANIZATION",
+        "Radial Gaussianization",
+        "RadialGauss",
+        "Mapeia a marginal radial dos embeddings para a chi-density "
+        "de uma gaussiana esférica. Remove dependências não-lineares "
+        "em fontes elipticamente simétricas (Lyu & Simoncelli 2009). "
+        "Use após Whitening.",
+        "🌀",
+        False,
+        StepType.RADIAL_GAUSSIANIZATION,
+        False,
+        lambda p: f"clip={p.get('eps_clip', 1e-6):.0e}",
+        RadialGaussianizationConfig # <--- INJEÇÃO DO DTO
     )
 
     def __new__(cls, value: str, label: str, summary_name: str, description: str, 

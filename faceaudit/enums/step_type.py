@@ -14,6 +14,7 @@ class StepType(Enum):
     L2_NORM     = "L2_NORM"
     CENTERING   = "CENTERING"
     AGGREGATION = "AGGREGATION"
+    RADIAL_GAUSSIANIZATION = "RADIAL_GAUSSIANIZATION"
     UNKNOWN     = "UNKNOWN"
 
     def __str__(self) -> str:
