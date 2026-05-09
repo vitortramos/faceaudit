@@ -5,6 +5,10 @@ class ToolbarButton(QPushButton):
     """
     Botão padronizado para a Toolbar.
     Aceita 'style_type' para definir cores predefinidas.
+
+    Suporta modo COMPACT (icon-only) ativado pelo ribbon pai quando a
+    largura disponível não comporta o texto. Tooltip preservado nos
+    dois modos — em compact, hover ainda mostra o rótulo completo.
     """
     # Estilos CSS centralizados
     STYLES = {
@@ -20,16 +24,49 @@ class ToolbarButton(QPushButton):
     # cortar os mais longos (Salvar Como…, Estatísticas, Biblioteca):
     # esses crescem além do mínimo via tamanho natural do conteúdo.
     MIN_BUTTON_WIDTH = 110
+    # Largura no modo compact — só o ícone/emoji. Quadrado, ~36px.
+    MIN_BUTTON_WIDTH_COMPACT = 38
 
     def __init__(self, text, icon_char="", style="default", tooltip=""):
-        # Combina ícone (emoji/texto) e label se fornecido
-        display_text = f"{icon_char} {text}" if icon_char else text
-        super().__init__(display_text)
+        super().__init__()
 
-        self.setToolTip(tooltip)
+        self._label_text = text
+        self._icon_char = icon_char
+        self._compact = False
+
+        # Tooltip — em compact ele assume o papel do rótulo. Se o caller
+        # não passou tooltip explícito, usa o texto como fallback pra que
+        # o usuário sempre consiga descobrir a função do botão por hover.
+        self.setToolTip(tooltip if tooltip else text)
         self.setStyleSheet(self.STYLES.get(style, self.STYLES["default"]))
         self.setMinimumWidth(self.MIN_BUTTON_WIDTH)
-        self.style_type = style # Guarda o tipo para referência futura se precisar resetar
+        self.style_type = style
+
+        self._refresh_display_text()
+
+    def _refresh_display_text(self):
+        """Atualiza o texto exibido conforme o modo (compact ou normal)."""
+        if self._compact:
+            display = self._icon_char if self._icon_char else self._label_text
+        else:
+            if self._icon_char:
+                display = f"{self._icon_char} {self._label_text}"
+            else:
+                display = self._label_text
+        self.setText(display)
+
+    def set_compact(self, compact: bool) -> None:
+        """Alterna entre modo full (icon + texto) e compact (só ícone)."""
+        if compact == self._compact:
+            return
+        self._compact = compact
+        if compact:
+            self.setMinimumWidth(self.MIN_BUTTON_WIDTH_COMPACT)
+            self.setMaximumWidth(self.MIN_BUTTON_WIDTH_COMPACT + 12)
+        else:
+            self.setMinimumWidth(self.MIN_BUTTON_WIDTH)
+            self.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
+        self._refresh_display_text()
 
     def set_style(self, style_name):
         self.setStyleSheet(self.STYLES.get(style_name, self.STYLES["default"]))

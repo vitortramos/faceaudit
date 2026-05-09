@@ -6,12 +6,13 @@ PR I4 — Editor ganha persistência (Salvar/Carregar).
 PR I5 — botão Processar (batch) habilitado.
 """
 
-from PyQt6.QtWidgets import QHBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout
 
 from ..toolbar_widgets import ToolbarButton
+from .responsive_ribbon import ResponsiveRibbon
 
 
-class ImagensRibbon(QWidget):
+class ImagensRibbon(ResponsiveRibbon):
     """Ribbon "Imagens" — placeholder pro pipeline de processamento."""
 
     def __init__(self, parent=None):
@@ -45,3 +46,5 @@ class ImagensRibbon(QWidget):
         layout.addWidget(self.btn_image_pipeline_editor)
         layout.addWidget(self.btn_image_pipeline_apply)
         layout.addStretch()
+
+        self._install_responsive_behavior()

@@ -4,12 +4,13 @@ Botões: Novo, Abrir, Salvar, Salvar Como, Salvar na Biblioteca,
 Fechar.
 """
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QHBoxLayout
 
 from ..toolbar_widgets import ToolbarButton, ToolbarSeparator
+from .responsive_ribbon import ResponsiveRibbon
 
 
-class ArquivoRibbon(QWidget):
+class ArquivoRibbon(ResponsiveRibbon):
     """Ribbon "Arquivo" — operações de I/O sobre o arquivo de dataset."""
 
     def __init__(self, parent=None):
@@ -51,3 +52,5 @@ class ArquivoRibbon(QWidget):
         layout.addWidget(self.btn_close)
 
         layout.addStretch()
+
+        self._install_responsive_behavior()

@@ -6,12 +6,13 @@ Filtrar, Limpar, Coluna, Galeria (manipulação) + → Estratégia
 (exportação).
 """
 
-from PyQt6.QtWidgets import QWidget, QHBoxLayout
+from PyQt6.QtWidgets import QHBoxLayout
 
 from ..toolbar_widgets import ToolbarButton, ToolbarSeparator
+from .responsive_ribbon import ResponsiveRibbon
 
 
-class DatasetRibbon(QWidget):
+class DatasetRibbon(ResponsiveRibbon):
     """Ribbon "Dataset" — operações que mexem no conteúdo do dataset."""
 
     def __init__(self, parent=None):
@@ -99,3 +100,7 @@ class DatasetRibbon(QWidget):
         layout.addWidget(self.btn_send_to_strategy)
 
         layout.addStretch()
+
+        # Ativa o comportamento responsivo (alterna full ↔ compact por
+        # largura). Tem que vir DEPOIS de montar o layout completo.
+        self._install_responsive_behavior()
