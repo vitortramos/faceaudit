@@ -130,7 +130,11 @@ class DatasetLocalizationService:
             `LocalizationResult` com o novo dataset + métricas.
         """
         target = Path(target_dir).resolve()
-        target.mkdir(parents=True, exist_ok=True)
+        # REBASE_PREFIX só reescreve paths — não cria diretório
+        # destino. Se a pasta nem existe, é sinal de prefix errado
+        # e mkdir mascararia o problema criando uma pasta vazia.
+        if mode != LocalizationMode.REBASE_PREFIX:
+            target.mkdir(parents=True, exist_ok=True)
 
         start = time.time()
         if mode == LocalizationMode.REWRITE_RELATIVE:
@@ -145,6 +149,12 @@ class DatasetLocalizationService:
                     "REBASE_PREFIX exige `old_prefix` — use "
                     "DatasetLocalizationService.detect_path_prefix(dataset) "
                     "para auto-detectar."
+                )
+            if not target.exists():
+                raise ValueError(
+                    f"REBASE_PREFIX: pasta destino '{target}' não existe. "
+                    f"Verifique se o caminho está correto e se as imagens "
+                    f"realmente estão nesse local."
                 )
             result = self._rebase_prefix(
                 dataset, old_prefix, target, progress_callback,
@@ -299,7 +309,16 @@ class DatasetLocalizationService:
 
             # Sanity check — o arquivo precisa existir no destino.
             if not Path(new_path).exists():
-                failures.append((new_path, "arquivo não encontrado no destino"))
+                # Mensagem inclui a substituição inteira pra o usuário
+                # ver onde o rebase apontou. Caso típico de 100% de
+                # falha: new_prefix selecionado não tem os arquivos
+                # — só mostrar o new_path é insuficiente pra diagnóstico.
+                failures.append((
+                    new_path,
+                    f"arquivo não encontrado no destino "
+                    f"(substituição: '{old_norm}' → '{new_str}'; "
+                    f"verifique se os arquivos estão realmente no destino)",
+                ))
                 continue
 
             new_faces.append(self._clone_face_with_path(face, new_path))
