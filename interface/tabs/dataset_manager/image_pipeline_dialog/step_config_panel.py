@@ -58,11 +58,12 @@ class StepConfigPanel(QtWidgets.QWidget):
     _BLUR_KINDS_AVAILABLE = [BlurKind.GAUSSIAN]
     _CROP_MODES_AVAILABLE = [CropMode.CENTERED, CropMode.FACE_DETECTED]
     # PR I7 — CIRCLE_BLACK + EYES/MOUTH adicionados.
-    # PR I6 — MASK_FACE adicionado.
+    # PR I6 — MASK_FACE adicionado. Default agora — usuário desenha
+    # diretamente em vez de configurar geometria abstrata.
     _OCCLUSION_KINDS_AVAILABLE = [
+        OcclusionKind.MASK_FACE,
         OcclusionKind.RECTANGLE_BLACK,
         OcclusionKind.CIRCLE_BLACK,
-        OcclusionKind.MASK_FACE,
     ]
     # Positions liberadas por kind (combos dinâmicos).
     # MASK_FACE não usa position (apenas a máscara desenhada).

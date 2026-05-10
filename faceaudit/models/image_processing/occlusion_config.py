@@ -41,7 +41,7 @@ class OcclusionConfig(ImageProcessingStepConfig):
     """Oclusão geométrica (I1 + I7) ou desenhada (I6)."""
 
     step_type: ImageProcessingStepType = ImageProcessingStepType.OCCLUSION
-    kind: OcclusionKind = OcclusionKind.RECTANGLE_BLACK
+    kind: OcclusionKind = OcclusionKind.MASK_FACE
     position: OcclusionPosition = OcclusionPosition.CENTER
     coverage_pct: float = 0.25  # PR I1 — RECTANGLE_BLACK em CENTER/RANDOM
     radius_pct: float = 0.10    # PR I7 — CIRCLE_BLACK em qualquer position
