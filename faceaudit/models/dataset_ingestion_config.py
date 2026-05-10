@@ -63,6 +63,23 @@ class DatasetIngestionConfig:
     # Default False — a maioria dos datasets é de fotos originais.
     is_aligned: bool = False
 
+    # 9. Alinhar faces DURANTE a criação — modo "originais → alinhar
+    # agora" em 1 passo. Quando True, após o FF rodar nos originais
+    # (detect+align+embed), os crops alinhados são salvos como PNG
+    # em `aligned_target_dir/images/` e o dataset resultante fica
+    # marcado com is_aligned=True, path_mode=RELATIVE, com paths
+    # apontando pros novos PNGs. Evita o re-trabalho de
+    # New Dataset (com FF) → Image Pipeline (ALIGNED_FACE) → Enrich,
+    # que rodaria detect+align 2× no mesmo dataset.
+    # Mutuamente exclusivo com is_aligned (face é OU alinhada-fonte
+    # OU vai-ser-alinhada).
+    align_during_ingestion: bool = False
+    # Pasta onde os PNGs alinhados + parquet vão. Estrutura:
+    #   <aligned_target_dir>/images/<file>.png
+    #   <aligned_target_dir>/<dataset_name>.parquet
+    # Obrigatório quando `align_during_ingestion=True`.
+    aligned_target_dir: Optional[Path] = None
+
     def __post_init__(self):
         # Garante que o path seja Path object
         if isinstance(self.input_path, str):

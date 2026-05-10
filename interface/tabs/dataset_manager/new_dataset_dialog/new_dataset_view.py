@@ -61,6 +61,43 @@ class NewDatasetView(QDialog):
         )
         self.form_input.addRow("", self.chk_is_aligned)
 
+        # Alinhar faces durante a criação — modo "originais → alinhar
+        # agora" em 1 passo. Mutuamente exclusivo com chk_is_aligned.
+        self.chk_align_during = QCheckBox(
+            "Alinhar faces durante a criação (salvar crops 112×112)"
+        )
+        self.chk_align_during.setChecked(False)
+        self.chk_align_during.setToolTip(
+            "Roda detect+align nos originais durante a ingestão e "
+            "salva os crops 112×112 como PNG numa pasta destino. "
+            "O dataset resultante já fica marcado is_aligned=True — "
+            "evita rodar detect+align 2× via 'New Dataset + Image "
+            "Pipeline'. Requer compute_ff habilitado."
+        )
+        self.form_input.addRow("", self.chk_align_during)
+
+        # Mutuamente exclusivos: uma face é OU já-alinhada OU vai-ser-
+        # alinhada — não as duas. Sinais bloqueados durante o set
+        # programático pra evitar feedback loop.
+        self.chk_is_aligned.toggled.connect(self._on_is_aligned_toggled)
+        self.chk_align_during.toggled.connect(self._on_align_during_toggled)
+
+        # Target dir pros PNGs alinhados (visível só quando
+        # chk_align_during=True).
+        self.row_align_target = QtWidgets.QWidget()
+        row_layout = QtWidgets.QHBoxLayout(self.row_align_target)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self.txt_align_target = QtWidgets.QLineEdit()
+        self.txt_align_target.setPlaceholderText(
+            "Pasta destino dos crops alinhados (PNG + parquet)"
+        )
+        self.btn_browse_align_target = QPushButton("...")
+        self.btn_browse_align_target.setFixedWidth(40)
+        row_layout.addWidget(self.txt_align_target, 1)
+        row_layout.addWidget(self.btn_browse_align_target)
+        self.row_align_target.setVisible(False)
+        self.form_input.addRow("Destino alinhados:", self.row_align_target)
+
         layout.addLayout(self.form_input)
 
         # --- SEÇÃO 2: ESTRATÉGIA (Stack para alternar visualização) ---
@@ -266,3 +303,18 @@ class NewDatasetView(QDialog):
 
     def get_serfiq_alpha(self) -> float:
         return float(self._serfiq_alpha_spin.value())
+
+    # ── Slots: mutual exclusion entre is_aligned e align_during ──────
+    def _on_is_aligned_toggled(self, checked: bool) -> None:
+        if checked and self.chk_align_during.isChecked():
+            self.chk_align_during.blockSignals(True)
+            self.chk_align_during.setChecked(False)
+            self.chk_align_during.blockSignals(False)
+            self.row_align_target.setVisible(False)
+
+    def _on_align_during_toggled(self, checked: bool) -> None:
+        if checked and self.chk_is_aligned.isChecked():
+            self.chk_is_aligned.blockSignals(True)
+            self.chk_is_aligned.setChecked(False)
+            self.chk_is_aligned.blockSignals(False)
+        self.row_align_target.setVisible(checked)

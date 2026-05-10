@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 
 # Imports do Domínio
+from faceaudit.enums.path_mode import PathMode
 from faceaudit.models import FaceDataset
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 from faceaudit.adapters.face_dataset_adapter import FaceDatasetAdapter
@@ -172,6 +173,19 @@ class FeatureExtractionPipeline:
                             (f, "ff", "nenhum embedding gerado "
                              "(face não detectada ou imagem ilegível)"),
                         )
+
+                # ── Modo "alinhar durante criação" ──
+                # Após FF rodar nos originais, salva os crops alinhados
+                # (que vivem em ff_info.aligned_face) como PNG no
+                # target_dir e reconfigura o dataset pra apontar pros
+                # PNGs em modo RELATIVE. Estágios OFIQ/SERFIQ subsequentes
+                # rodam nas faces ALINHADAS — sem precisar re-alinhar
+                # via Image Pipeline depois.
+                if config.align_during_ingestion and config.aligned_target_dir:
+                    self._materialize_aligned_crops(
+                        dataset, config.aligned_target_dir,
+                        progress_callback,
+                    )
                 current_stage_idx += 1
 
             # B. OFIQ (Qualidade ISO)
@@ -230,10 +244,17 @@ class FeatureExtractionPipeline:
             dataset, touched_face_ids, per_face_failures,
         )
 
-        # 5. Load: Persistência (Sobrescreve se existir)
+        # 5. Load: Persistência (Sobrescreve se existir).
+        # No modo "alinhar durante criação" o parquet vai pra
+        # aligned_target_dir (mesmo nível do `images/`), não pro
+        # storage_path da biblioteca global.
+        if config.align_during_ingestion and config.aligned_target_dir:
+            cache_file = (
+                Path(config.aligned_target_dir) / f"{dataset_name}.parquet"
+            )
         if progress_callback:
             progress_callback("Salvando arquivo Parquet...", 99)
-            
+
         try:
             print(f"💾 [Pipeline] Salvando dataset em: {cache_file}")
             dataset.to_parquet(cache_file)
@@ -575,6 +596,91 @@ class FeatureExtractionPipeline:
         )
         sub._parquet_dir = dataset._parquet_dir
         return sub
+
+    @staticmethod
+    def _materialize_aligned_crops(
+        dataset: FaceDataset,
+        aligned_target_dir: Path,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        """Salva os crops alinhados (ff_info.aligned_face, BGR 112×112)
+        como PNG em `aligned_target_dir/images/` e reconfigura o
+        dataset pra apontar pros PNGs em modo RELATIVE.
+
+        Pré-requisito: FFService.process_dataset já rodou — cada
+        face com `ff_info.aligned_face` populado vira PNG no destino.
+        Faces sem aligned_face (falha de detecção) ficam com o
+        image_path original e marcadas como erro pelo caller.
+
+        Side-effects:
+          - Cria `aligned_target_dir/images/` (mkdir parents=True).
+          - Salva 1 PNG por face com aligned_face.
+          - Muta cada face: image_path = nome_relativo, file_name =
+            basename, hash = SHA256 do PNG, ff_info.aligned_face = None
+            (libera memória — embedding já foi extraído).
+          - Muta dataset: path_mode=RELATIVE, path_root='images',
+            _parquet_dir=aligned_target_dir, is_aligned=True.
+        """
+        import cv2
+        from faceaudit.services.hash_service import HashService
+
+        aligned_target_dir = Path(aligned_target_dir).resolve()
+        images_dir = aligned_target_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        hash_service = HashService()
+        used_names: set = set()
+
+        n = len(dataset.faces)
+        print(
+            f"📐 [Pipeline] Materializando {n} face(s) alinhada(s) em "
+            f"{images_dir}"
+        )
+        for idx, face in enumerate(dataset.faces):
+            if (
+                face.ff_info is None
+                or face.ff_info.aligned_face is None
+            ):
+                # Face falhou no FF — sem crop alinhado pra salvar.
+                # Mantém path original; caller já marca como erro.
+                continue
+
+            bgr = face.ff_info.aligned_face
+            # Nome do PNG: usa o file_name original (sanitizado) com
+            # extensão .png forçada. Sufixa em caso de colisão.
+            base = face.file_name or Path(face.image_path).name or f"face_{idx}"
+            stem = Path(base).stem
+            rel_name = f"{stem}.png"
+            i = 1
+            while rel_name in used_names:
+                rel_name = f"{stem}_{i}.png"
+                i += 1
+            used_names.add(rel_name)
+            dst = images_dir / rel_name
+
+            ok = cv2.imwrite(str(dst), bgr)
+            if not ok:
+                print(f"⚠️  [Pipeline] cv2.imwrite falhou: {dst}")
+                continue
+
+            # Atualiza FaceInfo pra apontar pro PNG (relativo).
+            face.image_path = rel_name
+            face.file_name = rel_name
+            face.hash = hash_service.calculate_file_hash(dst)
+            # Libera memória — embedding e demais campos já estão em
+            # ff_info; aligned_face foi persistido em disco.
+            face.ff_info.aligned_face = None
+
+            if progress_callback and (idx % 50 == 0 or idx + 1 == n):
+                progress_callback(
+                    f"Materializando crops alinhados ({idx + 1}/{n})…",
+                    95 + int((idx + 1) / n * 4),  # 95..99% slot
+                )
+
+        # Reconfigura o dataset pra modo RELATIVE apontando pros PNGs.
+        dataset.path_mode = PathMode.RELATIVE
+        dataset.path_root = "images"
+        dataset._parquet_dir = aligned_target_dir
+        dataset.is_aligned = True
 
     @staticmethod
     def _apply_error_marks_to_dataset(

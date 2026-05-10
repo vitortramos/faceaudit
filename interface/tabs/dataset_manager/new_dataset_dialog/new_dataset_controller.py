@@ -46,13 +46,23 @@ class NewDatasetController(QtCore.QObject):
         # Conexões da View
         self.view.btn_browse.clicked.connect(self._browse_folder)
         self.view.chk_recursive.toggled.connect(self._on_recursive_toggled)
-        
+        self.view.btn_browse_align_target.clicked.connect(
+            self._browse_align_target,
+        )
+
         # Conexão dos botões de diálogo (OK/Cancel)
         self.view.buttons.accepted.connect(self._on_accept)
         self.view.buttons.rejected.connect(self.view.reject)
-        
+
         # --- AÇÃO: ABRIR O CRIADOR DE TEMPLATE ---
         self.view.btn_new_template.clicked.connect(self._abrir_criador_template)
+
+    def _browse_align_target(self):
+        path = QFileDialog.getExistingDirectory(
+            self.view, "Pasta destino dos crops alinhados",
+        )
+        if path:
+            self.view.txt_align_target.setText(path)
 
     def _abrir_criador_template(self):
         """
@@ -123,6 +133,24 @@ class NewDatasetController(QtCore.QObject):
                 QMessageBox.warning(self.view, "Erro", "No modo não-recursivo, a 'Identidade' é obrigatória.")
                 return
 
+        # "Alinhar agora" requer FF habilitado (sem FF não tem como
+        # alinhar) + pasta destino válida.
+        if self.view.chk_align_during.isChecked():
+            if not self.view.chk_ff.isChecked():
+                QMessageBox.warning(
+                    self.view, "Erro",
+                    "Alinhar faces durante a criação requer "
+                    "Forensic Face habilitado (necessário pro "
+                    "detect+align).",
+                )
+                return
+            if not self.view.txt_align_target.text().strip():
+                QMessageBox.warning(
+                    self.view, "Erro",
+                    "Selecione a pasta destino dos crops alinhados.",
+                )
+                return
+
         self.view.accept()
 
     def get_config(self) -> DatasetIngestionConfig:
@@ -187,5 +215,14 @@ class NewDatasetController(QtCore.QObject):
             # Flag: as imagens fonte já são faces alinhadas 112×112.
             # Propagado pra FaceDataset.is_aligned no ingestion service.
             is_aligned=self.view.chk_is_aligned.isChecked(),
+
+            # Modo "alinhar agora": detect+align+save em 1 passo.
+            align_during_ingestion=self.view.chk_align_during.isChecked(),
+            aligned_target_dir=(
+                Path(self.view.txt_align_target.text().strip())
+                if self.view.chk_align_during.isChecked()
+                and self.view.txt_align_target.text().strip()
+                else None
+            ),
         )
         return config
