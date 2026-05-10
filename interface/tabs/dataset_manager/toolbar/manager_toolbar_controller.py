@@ -95,11 +95,11 @@ class ManagerToolbarController(QtCore.QObject):
 
     # --- Métodos Públicos chamados pelo Pai ---
 
-    def set_dataset_loaded_state(self, loaded: bool, status_text: str):
+    def set_dataset_loaded_state(self, loaded: bool, status_text: str, tooltip: str = ""):
         """Atualiza a toolbar inteira baseado se há dataset ou não."""
         self.view.set_dataset_actions_enabled(loaded)
-        self.view.set_status_text(status_text, is_filtered=False)
+        self.view.set_status_text(status_text, is_filtered=False, tooltip=tooltip)
 
-    def update_filter_status(self, status_text: str, is_filtered: bool):
+    def update_filter_status(self, status_text: str, is_filtered: bool, tooltip: str = ""):
         """Atualiza especificamente o estado de filtro."""
-        self.view.set_status_text(status_text, is_filtered=is_filtered)
+        self.view.set_status_text(status_text, is_filtered=is_filtered, tooltip=tooltip)

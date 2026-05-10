@@ -392,11 +392,8 @@ class DatasetManagerController(QtCore.QObject):
 
         self.set_dirty(False)
         
-        qtd_imgs = len(self.dataset)
-        qtd_ids = self.dataset.number_of_identities
-        nome = self.dataset.name if self.dataset.name else "Sem Nome"
-        status_txt = f"📂 <b>{nome}</b> | 🖼️ {qtd_imgs} Imagens | 👤 {qtd_ids} IDs"
-        self.toolbar_ctrl.set_dataset_loaded_state(True, status_txt)
+        text, tooltip = self._build_dataset_status(filtered=False)
+        self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
 
     def sync_changes_from_table(self):
         if not self.dataset: return
@@ -441,12 +438,149 @@ class DatasetManagerController(QtCore.QObject):
     def set_dirty(self, state: bool):
         self._is_dirty = state
         if self.dataset:
-            qtd_imgs = len(self.dataset)
-            qtd_ids = self.dataset.number_of_identities
-            nome = self.dataset.name if self.dataset.name else "Sem Nome"
-            asterisco = "*" if state else ""
-            status_txt = f"📂 <b>{nome}{asterisco}</b> | 🖼️ {qtd_imgs} Imagens | 👤 {qtd_ids} IDs"
-            self.toolbar_ctrl.set_dataset_loaded_state(True, status_txt)
+            text, tooltip = self._build_dataset_status(filtered=False)
+            self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
+
+    # ── Status bar: linha principal + tooltip rico ───────────────────
+    def _build_dataset_status(
+        self, *, filtered: bool = False,
+    ) -> tuple[str, str]:
+        """Constrói (texto-HTML, tooltip-HTML) pra status bar.
+
+        Linha principal compacta:
+          📂 nome★ | 🖼️ N Imagens | 👤 N IDs | 🎯 alinhado |
+          🧬 N FF · 📐 N OFIQ · 🎲 N SER-FIQ | ⚖ verdict (min–max/id) |
+          ⚠️ N erros
+
+        Badges omitidos quando 0 ou inaplicáveis. ★ aparece se dirty.
+
+        Tooltip rich-text detalha: path do parquet, descrição,
+        path_mode, hash, mtime, cobertura de enriquecimento e métricas
+        de balanceamento (CV, ratio, min/max/mean/median).
+        """
+        if self.dataset is None:
+            return ("Nenhum dataset carregado.", "")
+        ds = self.dataset
+        n_imgs = len(ds)
+        n_ids = ds.number_of_identities
+        nome = ds.name or "Sem Nome"
+        star = "*" if self._is_dirty else ""
+        suffix = " (Filtrado)" if filtered else ""
+
+        parts: list[str] = [
+            f"📂 <b>{nome}{star}</b>",
+            f"🖼️ {n_imgs} Imagens",
+            f"👤 {n_ids} IDs",
+        ]
+
+        # is_aligned — só mostra quando True (a maioria é "originais").
+        if getattr(ds, "is_aligned", False):
+            parts.append("🎯 alinhado")
+
+        # Coberturas de enriquecimento (count com *_info populado).
+        n_ff = sum(1 for f in ds.faces if f.ff_info is not None)
+        n_ofiq = sum(1 for f in ds.faces if f.ofiq_info is not None)
+        n_serfiq = sum(1 for f in ds.faces if f.serfiq_info is not None)
+        enrich_badges = []
+        if n_ff:
+            enrich_badges.append(f"🧬 {n_ff} FF")
+        if n_ofiq:
+            enrich_badges.append(f"📐 {n_ofiq} OFIQ")
+        if n_serfiq:
+            enrich_badges.append(f"🎲 {n_serfiq} SER-FIQ")
+        if enrich_badges:
+            parts.append(" · ".join(enrich_badges))
+
+        # Balanceamento — usa BalanceMetrics consistente com o resto
+        # do app (CV + imbalance ratio, worst-of-two).
+        balance_main, balance_detail = self._compute_balance_for_status(ds)
+        if balance_main:
+            parts.append(balance_main)
+
+        # Erros (do tracking de creation/enrich).
+        n_err = sum(1 for f in ds.faces if getattr(f, "error", False))
+        if n_err:
+            parts.append(f"⚠️ {n_err} erro(s)")
+
+        text = " | ".join(parts) + suffix
+
+        # ── Tooltip rich-text ──
+        tooltip_lines: list[str] = []
+        if self.current_path:
+            tooltip_lines.append(f"<b>Path:</b> {self.current_path}")
+        if ds.description:
+            tooltip_lines.append(f"<b>Descrição:</b> {ds.description}")
+        tooltip_lines.append(
+            f"<b>Modo de path:</b> {ds.path_mode.value}"
+            + (f" (root={ds.path_root})" if ds.path_root else "")
+        )
+        if getattr(ds, "is_aligned", False):
+            tooltip_lines.append("<b>Conteúdo:</b> faces alinhadas 112×112")
+        # Coverage % por estágio (mais informativo que count).
+        if n_imgs > 0:
+            tooltip_lines.append(
+                f"<b>Enriquecimento:</b> "
+                f"FF {n_ff}/{n_imgs} ({100*n_ff//n_imgs}%), "
+                f"OFIQ {n_ofiq}/{n_imgs} ({100*n_ofiq//n_imgs}%), "
+                f"SER-FIQ {n_serfiq}/{n_imgs} ({100*n_serfiq//n_imgs}%)"
+            )
+        if balance_detail:
+            tooltip_lines.append(f"<b>Balanceamento:</b> {balance_detail}")
+        if n_err:
+            tooltip_lines.append(
+                f"<b>Erros:</b> {n_err} face(s) marcadas — "
+                f"filtre por <code>error=True</code> na tabela."
+            )
+        # File stats — best effort (parquet pode não existir em
+        # datasets em memória).
+        if self.current_path:
+            try:
+                p = Path(self.current_path)
+                if p.exists():
+                    from datetime import datetime
+                    size_mb = p.stat().st_size / (1024 * 1024)
+                    mtime = datetime.fromtimestamp(
+                        p.stat().st_mtime,
+                    ).strftime("%Y-%m-%d %H:%M")
+                    tooltip_lines.append(
+                        f"<b>Tamanho:</b> {size_mb:.1f} MB · "
+                        f"<b>Modificado:</b> {mtime}"
+                    )
+            except Exception:
+                pass
+
+        tooltip = "<br>".join(tooltip_lines)
+        return (text, tooltip)
+
+    @staticmethod
+    def _compute_balance_for_status(ds) -> tuple[str, str]:
+        """Calcula verdict de balanceamento + detalhe.
+        Retorna ("", "") quando inaplicável (≤1 identidade).
+        """
+        from collections import Counter
+        from faceaudit.models.dataset_stats import DatasetStats
+        ids = [f.identity for f in ds.faces if f.identity]
+        counts = Counter(ids)
+        if len(counts) < 2:
+            return ("", "")
+        # Reusa a lógica de BalanceMetrics via DatasetStats inline.
+        stub = DatasetStats(
+            n_imgs=len(ds), n_ids=len(counts),
+            samples_per_identity=dict(counts),
+        )
+        bm = stub.balance_metrics
+        if bm is None:
+            return ("", "")
+        main = (
+            f"{bm.verdict} ({bm.min_samples}–{bm.max_samples}/id)"
+        )
+        detail = (
+            f"{bm.verdict} · "
+            f"CV={bm.cv:.2f} · max/min={bm.imbalance_ratio:.1f}:1 · "
+            f"min={bm.min_samples}, max={bm.max_samples}, "
+            f"mean={bm.mean_samples:.1f}, median={bm.median_samples:.0f}"
+        )
+        return (main, detail)
 
     def fluxo_abrir_dataset(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1470,11 +1604,10 @@ class DatasetManagerController(QtCore.QObject):
             if len(filtered_ds) > 0:
                 self.dataset = filtered_ds
                 self.table_ctrl.load_dataframe(self.dataset.to_pandas())
-                qtd_imgs = len(self.dataset)
-                qtd_ids = self.dataset.number_of_identities
-                nome = self.dataset.name if self.dataset.name else "Sem Nome"
-                status_txt = f"📂 <b>{nome}</b> | 🖼️ {qtd_imgs} Imagens | 👤 {qtd_ids} IDs (Filtrado)"
-                self.toolbar_ctrl.update_filter_status(status_txt, is_filtered=True)
+                text, tooltip = self._build_dataset_status(filtered=True)
+                self.toolbar_ctrl.update_filter_status(
+                    text, is_filtered=True, tooltip=tooltip,
+                )
             else:
                 QMessageBox.warning(self.view, "Filtro", "Nenhum resultado encontrado com estes critérios.")
         except Exception as e:
@@ -1487,11 +1620,10 @@ class DatasetManagerController(QtCore.QObject):
             self.current_filter_config = FilterConfig() 
             self.carregar_dataset_na_tela(self.dataset, self.current_path)
             
-            qtd_imgs = len(self.dataset)
-            qtd_ids = self.dataset.number_of_identities
-            nome = self.dataset.name
-            status_txt = f"📂 <b>{nome}</b> | 🖼️ {qtd_imgs} Imagens | 👤 {qtd_ids} IDs"
-            self.toolbar_ctrl.update_filter_status(status_txt, is_filtered=False)
+            text, tooltip = self._build_dataset_status(filtered=False)
+            self.toolbar_ctrl.update_filter_status(
+                text, is_filtered=False, tooltip=tooltip,
+            )
 
     def fluxo_enriquecer(self):
         if not self.dataset: return

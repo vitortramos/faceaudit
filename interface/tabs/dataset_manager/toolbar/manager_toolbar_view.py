@@ -147,9 +147,16 @@ class ManagerToolbarView(QFrame):
         if not enabled:
             self.btn_clear_filter.setEnabled(False)
 
-    def set_status_text(self, text: str, is_filtered: bool = False):
-        """Atualiza o texto de status e o estado do botão de filtro."""
+    def set_status_text(self, text: str, is_filtered: bool = False, tooltip: str = ""):
+        """Atualiza o texto de status e o estado do botão de filtro.
+
+        Tooltip rich-text (HTML) detalha metadados extras (path, hash,
+        descrição, coverage de enriquecimento, métricas detalhadas de
+        balanceamento). Hover no status mostra essas infos sem poluir
+        a linha principal.
+        """
         self.lbl_status.setText(text)
+        self.lbl_status.setToolTip(tooltip or text)
 
         if is_filtered:
             self.btn_clear_filter.setEnabled(True)
