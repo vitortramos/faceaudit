@@ -482,7 +482,19 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         return self._df
 
     def load_dataframe(self, df):
-        """Método helper para trocar o DF inteiro."""
+        """Método helper para trocar o DF inteiro.
+
+        Quando `df is None` (fluxo de fechar dataset), também zera
+        `visible_columns` e `_column_specs` — sem isso, os headers das
+        colunas continuavam visíveis apesar das linhas vazias, dando
+        impressão visual de que o dataset ainda está aberto.
+        """
         self.beginResetModel()
-        self._df = df if df is not None else pd.DataFrame()
+        if df is None:
+            self._df = pd.DataFrame()
+            self._column_specs = {}
+            self.visible_columns = []
+            self._dataset = None
+        else:
+            self._df = df
         self.endResetModel()
