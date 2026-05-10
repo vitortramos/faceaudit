@@ -36,6 +36,21 @@ class FaceInfo:
     identity: Optional[str] = None
     gender: Optional[str] = None
 
+    # --- Rastreamento de erros (criação + enriquecimento) ---
+    # Marcado quando a face falhou em algum estágio da última execução
+    # de ingestion/enrich. False/None quando passou em tudo. Permite
+    # ao perito filtrar `error=True` na tabela pra inspecionar falhas
+    # sem precisar de um parquet separado. Re-run de enriquecimento
+    # com sucesso limpa essas colunas.
+    error: Optional[bool] = None
+    # Estágio(s) que falharam, ex: "ff" ou "ff,ofiq" (vírgula-separado
+    # quando múltiplos). Mantido como string pra facilitar filtro via
+    # `str.contains("ff")` na UI da tabela.
+    error_stage: Optional[str] = None
+    # Mensagens concatenadas em formato legível, ex:
+    # "[ff] nenhuma face detectada | [ofiq] timeout".
+    error_message: Optional[str] = None
+
     # PR 21 (Tema 4.2) — captura colunas custom adicionadas via UI ou
     # presentes em parquets com `column_specs` que não pertencem ao
     # mapeamento canônico de FaceInfo. Mantém valores escalares (str,
@@ -226,6 +241,20 @@ class FaceInfo:
             'identity': self.identity,
             'gender': self.gender
         })
+
+        # 4b. Erro (rastreamento de criação/enriquecimento). Só emite
+        # as colunas quando algum dos 3 está populado — preserva
+        # schema enxuto pra datasets que nunca passaram por essa
+        # marcação. Cada coluna entra independente pra que a UI possa
+        # filtrar individualmente.
+        if (
+            self.error is not None
+            or self.error_stage is not None
+            or self.error_message is not None
+        ):
+            row['error'] = self.error
+            row['error_stage'] = self.error_stage
+            row['error_message'] = self.error_message
 
         # 5. Custom columns capturadas via UI (PR 21). Aplicadas por último
         # para que sobrescrevam qualquer chave canônica eventual com mesmo

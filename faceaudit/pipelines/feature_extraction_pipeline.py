@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Any, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable
 
 # Imports do Domínio
 from faceaudit.models import FaceDataset
@@ -133,6 +133,12 @@ class FeatureExtractionPipeline:
         total_stages = len(active_stages)
         current_stage_idx = 0
 
+        # Tracking de falhas por face — em process_dataset (criação) o
+        # `dataset` inteiro é enviado a cada estágio, então todas as
+        # faces são tocadas. Mesma semântica do enrich.
+        per_face_failures: List[tuple] = []
+        touched_face_ids: set = {id(f) for f in dataset.faces}
+
         try:
             # A. ForensicFace (Embeddings, Detecção, Pose, Idade)
             if config.compute_ff:
@@ -154,6 +160,12 @@ class FeatureExtractionPipeline:
                     progress_callback=ff_callback,
                     models=wanted_models,
                 )
+                for f in dataset.faces:
+                    if f.ff_info is None:
+                        per_face_failures.append(
+                            (f, "ff", "nenhum embedding gerado "
+                             "(face não detectada ou imagem ilegível)"),
+                        )
                 current_stage_idx += 1
 
             # B. OFIQ (Qualidade ISO)
@@ -167,6 +179,11 @@ class FeatureExtractionPipeline:
                     msg, base_pct, next_pct, len(dataset), progress_callback
                 )
                 self.ofiq_service.process_dataset(dataset, callback=ofiq_tick)
+                for f in dataset.faces:
+                    if f.ofiq_info is None:
+                        per_face_failures.append(
+                            (f, "ofiq", "OFIQ não produziu resultado"),
+                        )
                 current_stage_idx += 1
 
             # C. SER-FIQ (Qualidade Estocástica)
@@ -185,19 +202,30 @@ class FeatureExtractionPipeline:
                     t=config.serfiq_t,
                     alpha=config.serfiq_alpha,
                 )
+                for f in dataset.faces:
+                    if f.serfiq_info is None:
+                        per_face_failures.append(
+                            (f, "serfiq", "SER-FIQ não produziu score"),
+                        )
                 current_stage_idx += 1
 
         except InterruptedError:
             print("\n🛑 [Pipeline] Processamento interrompido pelo usuário.")
             print("   ⚠️ Salvando estado parcial do dataset...")
             # Não relançamos o erro aqui para permitir que o bloco de persistência abaixo seja executado.
-            
+
         except Exception as e:
             self.logger.error(f"Erro inesperado durante a execução do pipeline: {e}", exc_info=True)
             raise e # Erros não previstos devem ser tratados pelo Worker/Controller.
 
+        # Consolida marcas de erro nas colunas error/error_stage/
+        # error_message das faces (mesma lógica do enrich).
+        self._apply_error_marks_to_dataset(
+            dataset, touched_face_ids, per_face_failures,
+        )
+
         # 5. Load: Persistência (Sobrescreve se existir)
-        if progress_callback: 
+        if progress_callback:
             progress_callback("Salvando arquivo Parquet...", 99)
             
         try:
@@ -328,6 +356,17 @@ class FeatureExtractionPipeline:
             print("⚠️ [Pipeline] Nenhum processamento foi selecionado para enriquecimento.")
             return dataset
 
+        # Rastreamento de falhas por face — preenchido após cada estágio
+        # comparando quem foi enviado pro service (`target.faces`) vs.
+        # quem ficou com o `*_info` esperado. Cada entrada é
+        # `(face, stage_name, message)`. As marcas são consolidadas na
+        # face via `_apply_error_marks_to_dataset` antes do save.
+        per_face_failures: List[tuple] = []
+        # IDs (via id()) das faces tocadas em algum estágio nesta
+        # execução — usadas pra limpar as colunas de erro quando todas
+        # as fases passaram (re-run convergente).
+        touched_face_ids: set = set()
+
         try:
             if config.compute_ff:
                 base_pct = self._calc_pct(current_stage_idx, total_stages)
@@ -348,6 +387,8 @@ class FeatureExtractionPipeline:
                     force=config.force_reprocess,
                 )
                 if target is not None:
+                    for f in target.faces:
+                        touched_face_ids.add(id(f))
                     ff_svc.process_dataset(
                         target,
                         progress_callback=ff_callback,
@@ -356,6 +397,15 @@ class FeatureExtractionPipeline:
                     self._log_stage_summary(
                         "FF", target, lambda f: f.ff_info is not None,
                     )
+                    # Coleta falhas: face foi enviada mas ff_info ficou None
+                    # (provável falha de leitura/detecção — service já loga
+                    # o motivo via `_safe_read_image`).
+                    for f in target.faces:
+                        if f.ff_info is None:
+                            per_face_failures.append(
+                                (f, "ff", "nenhum embedding gerado "
+                                 "(face não detectada ou imagem ilegível)"),
+                            )
                 current_stage_idx += 1
 
             if config.compute_ofiq:
@@ -371,6 +421,8 @@ class FeatureExtractionPipeline:
                     force=config.force_reprocess,
                 )
                 if target is not None:
+                    for f in target.faces:
+                        touched_face_ids.add(id(f))
                     ofiq_tick = self._make_noarg_stage_callback(
                         msg, base_pct, next_pct, len(target), progress_callback
                     )
@@ -378,6 +430,12 @@ class FeatureExtractionPipeline:
                     self._log_stage_summary(
                         "OFIQ", target, lambda f: f.ofiq_info is not None,
                     )
+                    for f in target.faces:
+                        if f.ofiq_info is None:
+                            per_face_failures.append(
+                                (f, "ofiq", "OFIQ não produziu resultado "
+                                 "(verifique se o executável está OK)"),
+                            )
                 current_stage_idx += 1
 
             if config.compute_serfiq:
@@ -393,6 +451,8 @@ class FeatureExtractionPipeline:
                     force=config.force_reprocess,
                 )
                 if target is not None:
+                    for f in target.faces:
+                        touched_face_ids.add(id(f))
                     serfiq_tick = self._make_noarg_stage_callback(
                         msg, base_pct, next_pct, len(target), progress_callback
                     )
@@ -405,6 +465,11 @@ class FeatureExtractionPipeline:
                     self._log_stage_summary(
                         "SER-FIQ", target, lambda f: f.serfiq_info is not None,
                     )
+                    for f in target.faces:
+                        if f.serfiq_info is None:
+                            per_face_failures.append(
+                                (f, "serfiq", "SER-FIQ não produziu score"),
+                            )
                 current_stage_idx += 1
 
         except InterruptedError:
@@ -413,6 +478,13 @@ class FeatureExtractionPipeline:
         except Exception as e:
             self.logger.error(f"Erro ao enriquecer dataset: {e}", exc_info=True)
             raise e
+
+        # Aplica marcas de erro nas faces tocadas nesta execução
+        # (semantic: a coluna `error*` reflete o resultado da última
+        # run; re-run convergente limpa as falhas anteriores).
+        self._apply_error_marks_to_dataset(
+            dataset, touched_face_ids, per_face_failures,
+        )
 
         # Persistência. Prefere o diretório original do dataset
         # (`_parquet_dir`, set por `from_parquet`) — sem isso, datasets
@@ -497,6 +569,51 @@ class FeatureExtractionPipeline:
         )
         sub._parquet_dir = dataset._parquet_dir
         return sub
+
+    @staticmethod
+    def _apply_error_marks_to_dataset(
+        dataset: FaceDataset,
+        touched_face_ids: set,
+        failures: list,
+    ) -> None:
+        """Consolida as falhas por face nas colunas `error/error_stage/
+        error_message` do FaceInfo.
+
+        Semântica:
+          - Faces TOCADAS nesta execução (algum estágio rodou) têm
+            suas colunas RESETADAS: se passaram em tudo → error=False;
+            se falharam em algum estágio → error=True com stage/msg
+            consolidados.
+          - Faces NÃO TOCADAS (idempotência pulou, force=False e já
+            tinham o enrichment) mantêm os valores anteriores
+            inalterados.
+
+        Múltiplas falhas na mesma face são concatenadas com `,` em
+        `error_stage` e `|` em `error_message` (formato legível e
+        fácil de filtrar via str.contains).
+        """
+        # Indexa falhas por id(face) — listas de (stage, message)
+        by_face: Dict[int, List[tuple]] = {}
+        for face, stage, msg in failures:
+            by_face.setdefault(id(face), []).append((stage, msg))
+
+        for face in dataset.faces:
+            fid = id(face)
+            if fid not in touched_face_ids:
+                continue  # não tocada → preserva estado anterior
+            entries = by_face.get(fid)
+            if not entries:
+                # Passou em todos os estágios desta run — limpa marca.
+                face.error = False
+                face.error_stage = None
+                face.error_message = None
+                continue
+            # Pelo menos um estágio falhou — consolida.
+            stages = ",".join(s for s, _ in entries)
+            messages = " | ".join(f"[{s}] {m}" for s, m in entries)
+            face.error = True
+            face.error_stage = stages
+            face.error_message = messages
 
     @staticmethod
     def _log_stage_summary(

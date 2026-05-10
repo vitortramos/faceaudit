@@ -27,6 +27,8 @@ _CANONICAL_FACE_COLUMNS = frozenset({
     # FaceInfo metadata
     "image_path", "file_name", "hash", "origin", "source",
     "ethnicity", "identity", "gender",
+    # Rastreamento de erros (criação/enriquecimento)
+    "error", "error_stage", "error_message",
     # FFInfo (exclude_heavy=True) + renomeados em to_flat_dict
     "ipd", "fiqa_score", "det_score", "gender_est", "age_est",
     "yaw", "pitch", "roll",
@@ -459,6 +461,16 @@ class FaceDataset:
                 return None if pd.isna(val) or val == "" else val
 
             # A. FaceInfo Básico
+            # Erro: lê bool com cuidado — pandas pode retornar np.bool_
+            # ou strings "True"/"False" em casos de coerção. Normaliza.
+            raw_error = clean(row.get('error'))
+            if raw_error is None:
+                error_val: Optional[bool] = None
+            elif isinstance(raw_error, str):
+                error_val = raw_error.strip().lower() in ("true", "1", "yes")
+            else:
+                error_val = bool(raw_error)
+
             face = FaceInfo(
                 image_path=str(row.get('image_path', '')),
                 file_name=clean(row.get('file_name')),
@@ -466,7 +478,10 @@ class FaceDataset:
                 ethnicity=clean(row.get('ethnicity')),
                 gender=clean(row.get('gender')),
                 origin=clean(row.get('origin', row.get('source', 'Local'))),
-                hash=clean(row.get('hash'))
+                hash=clean(row.get('hash')),
+                error=error_val,
+                error_stage=clean(row.get('error_stage')),
+                error_message=clean(row.get('error_message')),
             )
             
             # B. Embedding e FFInfo

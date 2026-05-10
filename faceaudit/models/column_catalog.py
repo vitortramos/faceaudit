@@ -239,6 +239,7 @@ CATEGORY_OFIQ_DIMENSIONS = "OFIQ — Dimensões"
 CATEGORY_OFIQ_DIMENSIONS_RAW = "OFIQ — Dimensões (raw)"
 CATEGORY_OFIQ_METADATA = "OFIQ — Metadados"
 CATEGORY_SERFIQ = "SER-FIQ"
+CATEGORY_ERROR = "Erros (criação/enriquecimento)"
 CATEGORY_CUSTOM = "Customizado"
 
 
@@ -559,6 +560,45 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         editable=False, visible_default=False, category=CATEGORY_SERFIQ,
         dim=None,  # depende da arquitetura SER-FIQ subjacente
         model_name="serfiq_mean",
+    )
+
+    # ---------- Rastreamento de erros ----------
+    # Populadas por `process_dataset` (criação) e `enrich_existing_dataset`
+    # (enriquecimento) quando alguma face falha em algum estágio. Permite
+    # ao perito filtrar `error=True` na tabela pra ver as falhas e
+    # planejar reanálise sem precisar de parquet separado. As 3 colunas
+    # vêm visible_default=True só quando algum face tem error setado —
+    # mas o spec aqui marca True (caso default não filtra "vazias").
+    specs["error"] = ColumnSpec(
+        name="error", label="Erro",
+        role=ColumnRole.METADATA, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.BOOL,
+        editable=False, visible_default=True, category=CATEGORY_ERROR,
+        description=(
+            "True quando a face falhou em algum estágio da última "
+            "execução de criação/enriquecimento. Veja error_stage e "
+            "error_message para detalhes."
+        ),
+    )
+    specs["error_stage"] = ColumnSpec(
+        name="error_stage", label="Estágio do Erro",
+        role=ColumnRole.METADATA, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=True, category=CATEGORY_ERROR,
+        description=(
+            "Estágio(s) onde a falha ocorreu: 'scan' (load), 'ff', "
+            "'ofiq', 'serfiq'. Múltiplos estágios separados por vírgula."
+        ),
+    )
+    specs["error_message"] = ColumnSpec(
+        name="error_message", label="Mensagem do Erro",
+        role=ColumnRole.METADATA, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=True, category=CATEGORY_ERROR,
+        description=(
+            "Mensagem(ns) detalhada(s) do que falhou em cada estágio. "
+            "Formato: '[estágio] mensagem | [estágio] mensagem'."
+        ),
     )
 
     return specs
