@@ -80,6 +80,13 @@ class FaceDataset:
     # `faceaudit/services/image_path_resolver.py` para a resolução.
     path_mode: PathMode = PathMode.ABSOLUTE
     path_root: Optional[str] = None
+    # True quando `image_path` aponta pra faces JÁ alinhadas (112×112
+    # crop pós-FF.align_face_only) — caso típico: dataset gerado pelo
+    # Image Pipeline com `input_source=ALIGNED_FACE`. Quando True, o
+    # FFService usa `process_face_aligned` (pula detect+align, vai
+    # direto pro embedding extraction). Persistido em
+    # `faceaudit:is_aligned` na metadata do parquet.
+    is_aligned: bool = False
     # Runtime — diretório do parquet de origem, set por `from_parquet`.
     # Não persiste; não entra em comparações; não aparece em repr.
     _parquet_dir: Optional[Path] = field(
@@ -628,12 +635,19 @@ class FaceDataset:
             from faceaudit.services.image_path_resolver import normalize_stored_path
             path_root = normalize_stored_path(path_root)
 
+        # is_aligned: bool persistido como string "true"/"false" em
+        # parquet metadata. Default False preserva comportamento legado
+        # pra parquets pré-feature (criados antes deste flag).
+        is_aligned_raw = meta.get("faceaudit:is_aligned") or ""
+        is_aligned = is_aligned_raw.strip().lower() in ("true", "1", "yes")
+
         df = table.to_pandas()
         ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
         ds.description = ds_description
         ds.column_specs = column_specs
         ds.path_mode = path_mode
         ds.path_root = path_root
+        ds.is_aligned = is_aligned
         # Set _parquet_dir runtime — usado por resolve_image_path em modo
         # RELATIVE pra ancorar paths.
         ds._parquet_dir = path_obj.parent.resolve()
@@ -696,6 +710,8 @@ class FaceDataset:
             if self.path_mode == PathMode.RELATIVE and self.path_root:
                 from faceaudit.services.image_path_resolver import normalize_stored_path
                 empty_meta["faceaudit:path_root"] = normalize_stored_path(self.path_root)
+            if self.is_aligned:
+                empty_meta["faceaudit:is_aligned"] = "true"
             empty_table = pa.Table.from_pandas(df, preserve_index=False)
             empty_table = empty_table.replace_schema_metadata(
                 _build_metadata_bytes(empty_meta),
@@ -761,6 +777,11 @@ class FaceDataset:
         if self.path_mode == PathMode.RELATIVE and self.path_root:
             from faceaudit.services.image_path_resolver import normalize_stored_path
             meta_payload["faceaudit:path_root"] = normalize_stored_path(self.path_root)
+
+        # is_aligned só entra na metadata quando True — enxuto pra
+        # datasets de fotos originais (a maioria).
+        if self.is_aligned:
+            meta_payload["faceaudit:is_aligned"] = "true"
 
         try:
             table = pa.Table.from_pandas(df, preserve_index=False)

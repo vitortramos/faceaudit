@@ -147,6 +147,15 @@ class ImagePipelineBatchService:
                 dataset.name, pipeline_config.name,
             )
         )
+        # is_aligned propaga quando o pipeline foi configurado com
+        # input_source=ALIGNED_FACE: o batch service aplica
+        # detect+align nas imagens fontes antes dos steps, então o
+        # output é sempre faces alinhadas 112×112. Sem essa marca, o
+        # FFService re-detectaria a face dentro do crop alinhado no
+        # próximo enrich (degrada qualidade do embedding).
+        derived_is_aligned = (
+            pipeline_config.input_source == ImageInputSource.ALIGNED_FACE
+        )
         new_dataset = FaceDataset(
             name=output_stem,
             description=(
@@ -156,6 +165,7 @@ class ImagePipelineBatchService:
             faces=new_faces,
             path_mode=PathMode.RELATIVE,
             path_root=_IMAGES_SUBDIR,
+            is_aligned=derived_is_aligned,
         )
 
         # Salva parquet

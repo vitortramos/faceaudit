@@ -183,5 +183,9 @@ class NewDatasetController(QtCore.QObject):
             ff_extended=self.view.get_ff_extended(),
             serfiq_t=self.view.get_serfiq_t(),
             serfiq_alpha=self.view.get_serfiq_alpha(),
+
+            # Flag: as imagens fonte já são faces alinhadas 112×112.
+            # Propagado pra FaceDataset.is_aligned no ingestion service.
+            is_aligned=self.view.chk_is_aligned.isChecked(),
         )
         return config

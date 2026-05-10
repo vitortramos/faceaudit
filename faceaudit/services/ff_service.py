@@ -546,12 +546,29 @@ class FFService:
         )
 
         # 1. Extração biométrica (até 95% do progresso)
-        # PR L1b — propaga `dataset` pra `process_face` resolver paths
+        # PR L1b — propaga `dataset` pra `process_face*` resolver paths
         # corretamente quando o dataset estiver em modo RELATIVE.
+        # Quando `dataset.is_aligned=True` (ex: output do Image Pipeline
+        # com input_source=ALIGNED_FACE), usa `process_face_aligned` que
+        # pula detect+norm_crop — mais rápido e correto (evita
+        # re-detectar a face dentro do crop 112×112 já alinhado).
+        is_aligned = bool(getattr(dataset, "is_aligned", False))
+        if is_aligned:
+            print(
+                "🔄 [FFService] Dataset marcado como is_aligned — usando "
+                "process_face_aligned (pula detect+align)."
+            )
         for idx, face in enumerate(
             tqdm(dataset, desc=f"Processando {dataset.name}", unit="face")
         ):
-            self.process_face(face, model=model, models=models, dataset=dataset)
+            if is_aligned:
+                self.process_face_aligned(
+                    face, model=model, models=models, dataset=dataset,
+                )
+            else:
+                self.process_face(
+                    face, model=model, models=models, dataset=dataset,
+                )
 
             if progress_callback:
                 pct = int(((idx + 1) / total_faces) * 95)

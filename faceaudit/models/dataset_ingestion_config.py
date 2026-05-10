@@ -56,6 +56,13 @@ class DatasetIngestionConfig:
     # de tudo, sobrescrevendo os campos *_info existentes.
     force_reprocess: bool = False
 
+    # 8. Marca o dataset como contendo faces já alinhadas (112×112).
+    # Quando True, o FaceDataset criado/enriquecido recebe
+    # `is_aligned=True` e o FFService usa `process_face_aligned`
+    # (pula detect+norm_crop, vai direto pro embedding extraction).
+    # Default False — a maioria dos datasets é de fotos originais.
+    is_aligned: bool = False
+
     def __post_init__(self):
         # Garante que o path seja Path object
         if isinstance(self.input_path, str):

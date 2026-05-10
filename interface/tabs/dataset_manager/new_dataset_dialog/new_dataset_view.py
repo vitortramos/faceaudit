@@ -43,7 +43,24 @@ class NewDatasetView(QDialog):
         self.chk_recursive = QCheckBox("Buscar em subpastas (Recursivo)")
         self.chk_recursive.setChecked(True)
         self.form_input.addRow("", self.chk_recursive)
-        
+
+        # Marca o dataset como contendo faces JÁ alinhadas (112×112).
+        # Sem isso, o FFService re-detectaria a face dentro do crop
+        # alinhado durante o enrich, degradando o embedding. Default
+        # False — a maioria dos datasets é de fotos originais.
+        self.chk_is_aligned = QCheckBox(
+            "Estas imagens são faces já alinhadas (112×112)"
+        )
+        self.chk_is_aligned.setChecked(False)
+        self.chk_is_aligned.setToolTip(
+            "Marque quando o diretório contém crops 112×112 pós-"
+            "ForensicFace align (ex: BFW alinhado, output do Image "
+            "Pipeline com Origem=Face alinhada). O FFService usa "
+            "process_face_aligned (pula detect+align), ~50% mais "
+            "rápido e mais correto."
+        )
+        self.form_input.addRow("", self.chk_is_aligned)
+
         layout.addLayout(self.form_input)
 
         # --- SEÇÃO 2: ESTRATÉGIA (Stack para alternar visualização) ---

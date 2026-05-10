@@ -110,7 +110,13 @@ class FeatureExtractionPipeline:
             origin=config.origin,
             callback=progress_callback
         )
-        
+
+        # Propaga flag is_aligned do config pro dataset criado.
+        # FFService.process_dataset usa esse flag pra decidir entre
+        # process_face (foto inteira) e process_face_aligned (crop
+        # 112×112 já alinhado).
+        dataset.is_aligned = bool(getattr(config, "is_aligned", False))
+
         if len(dataset) == 0:
             print("⚠️ [Pipeline] Dataset vazio ou nenhuma face encontrada.")
             return dataset
