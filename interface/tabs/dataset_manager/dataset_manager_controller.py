@@ -401,6 +401,14 @@ class DatasetManagerController(QtCore.QObject):
         # dialog e na próxima save (parquet metadata).
         if self.dataset.column_specs:
             dataset_visual_atualizado.column_specs = dict(self.dataset.column_specs)
+        # `from_dataframe` também não restaura path_mode/path_root/
+        # _parquet_dir — sem isso, datasets RELATIVE viravam ABSOLUTE
+        # silenciosamente e enrich falhava (cv2.imread em paths
+        # relativos contra CWD), gravando metadata corrompida no save
+        # subsequente.
+        dataset_visual_atualizado.path_mode = self.dataset.path_mode
+        dataset_visual_atualizado.path_root = self.dataset.path_root
+        dataset_visual_atualizado._parquet_dir = self.dataset._parquet_dir
         self.dataset = dataset_visual_atualizado
 
         if self.dataset_original:
