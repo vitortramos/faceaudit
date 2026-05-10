@@ -1471,10 +1471,17 @@ class DatasetManagerController(QtCore.QObject):
 
     def _on_enrich_concluido(self, dataset):
         if dataset:
-            self.dataset = dataset
-            self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+            # Reusa `carregar_dataset_na_tela` pra refresh completo:
+            # propaga column_specs atualizados (que agora incluem
+            # embedding_v2/fiqa_score/ofiq_*/serfiq_score) pro table
+            # model + delegates, repopula gallery, e propaga o dataset
+            # pros widgets que resolvem paths em modo RELATIVE. Sem
+            # isso, o "Mostrar/Ocultar Colunas" ficava cego pras
+            # colunas adicionadas pelo enrichment.
+            self.carregar_dataset_na_tela(dataset, self.current_path)
             # PR 25 (Tema 5.4) — registra ENRICH (sem hash; o parquet
-            # ainda não foi resalvo, o save subsequente fecha o ciclo).
+            # já foi resalvo pelo enrich_existing_dataset, mas a próxima
+            # save manual rehasha).
             self._audit(
                 AuditOperation.ENRICH,
                 f"Enriquecimento aplicado em '{dataset.name}'.",

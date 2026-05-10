@@ -693,27 +693,31 @@ class FaceDataset:
         if "embedding" in df.columns and "embedding_v2" in df.columns:
             df = df.drop(columns=["embedding"])
 
-        # Constrói column_specs: usa self.column_specs se populado (caso já
-        # tenha sido lido de um parquet novo ou customizado pela UI); caso
-        # contrário, deriva do catálogo built-in filtrado pelas colunas
-        # presentes.
+        # Constrói column_specs: começa com self.column_specs se populado
+        # (caso já tenha sido lido de um parquet novo ou customizado pela
+        # UI), e completa com defaults do catálogo pra colunas novas que
+        # apareceram via enrichment (ff_info → embedding_v2/fiqa_score/
+        # det_score/age_est/...; ofiq_info → ofiq_*; serfiq_info →
+        # serfiq_score). Sem esse complemento, `to_parquet` salvava só
+        # os specs originais e o "Mostrar/Ocultar Colunas" da UI ficava
+        # cego pras novas colunas.
+        defaults = get_default_specs(DatasetType.FACE)
+        specs_to_persist: Dict[str, Any] = {}
         if self.column_specs:
             # PR 23 (Tema 4.3) — colunas computadas não têm coluna real no
             # df (valor é avaliado on-the-fly), mas o spec com `computed_expr`
             # precisa ser persistido pra que a fórmula sobreviva ao
             # save/reload.
-            specs_to_persist = {
-                name: spec for name, spec in self.column_specs.items()
-                if name in df.columns or getattr(spec, "computed_expr", None)
-            }
-        else:
-            defaults = get_default_specs(DatasetType.FACE)
-            specs_to_persist = {
-                name: spec for name, spec in defaults.items()
-                if name in df.columns
-            }
-            # Atualiza self.column_specs em memória (consistência pós-save)
-            self.column_specs = dict(specs_to_persist)
+            for name, spec in self.column_specs.items():
+                if name in df.columns or getattr(spec, "computed_expr", None):
+                    specs_to_persist[name] = spec
+        # Adiciona defaults pra colunas presentes no df mas sem spec.
+        for name, spec in defaults.items():
+            if name in df.columns and name not in specs_to_persist:
+                specs_to_persist[name] = spec
+        # Atualiza self.column_specs em memória — consistência pós-save
+        # garante que a UI veja os novos specs sem reabrir o parquet.
+        self.column_specs = dict(specs_to_persist)
 
         # Computa column_coverage + samples_per_identity via o serviço
         stats_service = DatasetStatsService()
