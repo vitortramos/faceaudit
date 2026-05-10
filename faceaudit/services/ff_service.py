@@ -762,10 +762,20 @@ class FFService:
             print(f"✅ Gênero estimado unificado para {count_updated} identidades.")
 
     def _safe_read_image(self, path: str) -> Optional[np.ndarray]:
-        """Lê imagens do disco lidando com caracteres especiais no caminho."""
+        """Lê imagens do disco lidando com caracteres especiais no caminho.
+
+        Failure NÃO é silenciosa: imprime path + razão. Retorna None pra
+        manter contrato com `process_face`, mas o operador vê no terminal
+        que aquela face não pôde ser lida (path quebrado, arquivo
+        corrompido, permissão, etc.).
+        """
         try:
             with open(path, "rb") as f:
                 file_bytes = f.read()
-            return cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
-        except Exception:
+            img = cv2.imdecode(np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                print(f"⚠️ [FFService] cv2.imdecode falhou: {path}")
+            return img
+        except Exception as e:
+            print(f"⚠️ [FFService] _safe_read_image falhou ({type(e).__name__}): {path} — {e}")
             return None

@@ -1,6 +1,6 @@
 import logging
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 # Imports do Domínio
 from faceaudit.models import FaceDataset
@@ -353,6 +353,9 @@ class FeatureExtractionPipeline:
                         progress_callback=ff_callback,
                         models=wanted_models,
                     )
+                    self._log_stage_summary(
+                        "FF", target, lambda f: f.ff_info is not None,
+                    )
                 current_stage_idx += 1
 
             if config.compute_ofiq:
@@ -372,6 +375,9 @@ class FeatureExtractionPipeline:
                         msg, base_pct, next_pct, len(target), progress_callback
                     )
                     self.ofiq_service.process_dataset(target, callback=ofiq_tick)
+                    self._log_stage_summary(
+                        "OFIQ", target, lambda f: f.ofiq_info is not None,
+                    )
                 current_stage_idx += 1
 
             if config.compute_serfiq:
@@ -395,6 +401,9 @@ class FeatureExtractionPipeline:
                         callback=serfiq_tick,
                         t=config.serfiq_t,
                         alpha=config.serfiq_alpha,
+                    )
+                    self._log_stage_summary(
+                        "SER-FIQ", target, lambda f: f.serfiq_info is not None,
                     )
                 current_stage_idx += 1
 
@@ -488,6 +497,38 @@ class FeatureExtractionPipeline:
         )
         sub._parquet_dir = dataset._parquet_dir
         return sub
+
+    @staticmethod
+    def _log_stage_summary(
+        stage_label: str,
+        target: FaceDataset,
+        has_enrichment: Callable[[Any], bool],
+    ) -> None:
+        """Conta quantas faces do `target` ficaram com o enrichment
+        populado e loga no terminal. Quando 0/N, marca FALHA TOTAL —
+        sintoma típico de path resolution quebrado, modelo não-carregado
+        ou exe externo (OFIQ) ausente. Sem esse sumário, falhas
+        per-face engolidas pelos services ficavam invisíveis e o
+        usuário só percebia que "as colunas não apareceram" sem
+        nenhuma pista no terminal.
+        """
+        total = len(target)
+        if total == 0:
+            return
+        ok = sum(1 for f in target if has_enrichment(f))
+        if ok == 0:
+            print(
+                f"❌ [Pipeline] {stage_label}: 0/{total} faces enriquecidas — "
+                f"FALHA TOTAL. Verifique paths das imagens (logs ⚠️ acima) "
+                f"e dependências do serviço."
+            )
+        elif ok < total:
+            print(
+                f"⚠️ [Pipeline] {stage_label}: {ok}/{total} faces "
+                f"enriquecidas ({total - ok} falharam — ver logs ⚠️ acima)."
+            )
+        else:
+            print(f"✅ [Pipeline] {stage_label}: {ok}/{total} faces enriquecidas.")
 
     @staticmethod
     def _faces_needing_ff(dataset: FaceDataset, wanted_models: list) -> list:
