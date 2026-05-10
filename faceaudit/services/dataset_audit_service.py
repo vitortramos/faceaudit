@@ -100,15 +100,21 @@ class DatasetAuditService:
         n_orphan = 0
         issues: List[AuditIssue] = []
         for idx, face in enumerate(dataset.faces):
-            path = getattr(face, "image_path", None)
-            if not path:
+            raw = getattr(face, "image_path", None)
+            if not raw:
                 n_empty_paths += 1
                 continue
-            if not self._path_exists(path):
+            # Resolve via dataset — em modo RELATIVE o `face.image_path`
+            # é só o nome do arquivo (ex: "0010_01.png") e precisa ser
+            # ancorado em `_parquet_dir/path_root` pra checar
+            # existência. Sem isso, datasets do Image Pipeline
+            # apareciam com 100% das linhas marcadas como órfãs.
+            resolved = str(dataset.resolve_image_path(face))
+            if not self._path_exists(resolved):
                 n_orphan += 1
                 issues.append(AuditIssue(
-                    locators=(path,),
-                    description=f"Arquivo não encontrado: {path}",
+                    locators=(resolved,),
+                    description=f"Arquivo não encontrado: {resolved}",
                     row_indices=(idx,),
                     metadata={"identity": getattr(face, "identity", None)},
                 ))
