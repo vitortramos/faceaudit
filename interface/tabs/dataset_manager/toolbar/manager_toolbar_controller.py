@@ -15,6 +15,7 @@ class ManagerToolbarController(QtCore.QObject):
     
     # Sinais de Ferramentas
     action_enrich = QtCore.pyqtSignal()
+    action_balance = QtCore.pyqtSignal()  # Balanceamento por identidade
     action_merge = QtCore.pyqtSignal()
     action_split = QtCore.pyqtSignal()
     action_compare = QtCore.pyqtSignal()
@@ -62,6 +63,7 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_save_as.clicked.connect(self.action_save_as.emit)
         
         self.view.btn_enrich.clicked.connect(self.action_enrich.emit)
+        self.view.btn_balance.clicked.connect(self.action_balance.emit)
         self.view.btn_merge.clicked.connect(self.action_merge.emit)
         self.view.btn_split.clicked.connect(self.action_split.emit)
         self.view.btn_compare.clicked.connect(self.action_compare.emit)

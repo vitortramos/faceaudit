@@ -26,6 +26,11 @@ class DatasetRibbon(ResponsiveRibbon):
             "Enriquecer", "💎",
             tooltip="Adicionar métricas (OFIQ, SER-FIQ) a um dataset existente",
         )
+        self.btn_balance = ToolbarButton(
+            "Balancear", "⚖",
+            tooltip="Balancear amostras por identidade (cap, floor+cap "
+                    "ou auto-min) com critério aleatório ou por qualidade",
+        )
         self.btn_merge = ToolbarButton("Juntar", "🔗")
         self.btn_split = ToolbarButton("Dividir", "✂️")
         self.btn_compare = ToolbarButton(
@@ -34,6 +39,7 @@ class DatasetRibbon(ResponsiveRibbon):
         )
 
         layout.addWidget(self.btn_enrich)
+        layout.addWidget(self.btn_balance)
         layout.addWidget(self.btn_merge)
         layout.addWidget(self.btn_split)
         layout.addWidget(self.btn_compare)

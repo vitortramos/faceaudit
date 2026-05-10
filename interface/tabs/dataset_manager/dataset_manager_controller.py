@@ -165,6 +165,9 @@ class DatasetManagerController(QtCore.QObject):
         if hasattr(self.toolbar_ctrl, 'action_enrich'):
             self.toolbar_ctrl.action_enrich.connect(self.fluxo_enriquecer)
 
+        if hasattr(self.toolbar_ctrl, 'action_balance'):
+            self.toolbar_ctrl.action_balance.connect(self.fluxo_balancear)
+
     def _on_table_data_changed(self, *_args):
         if self.dataset is not None:
             self.set_dirty(True)
@@ -1682,3 +1685,96 @@ class DatasetManagerController(QtCore.QObject):
             self.set_dirty(True)
         else:
             QMessageBox.warning(self.view, "Cancelado", "Operação cancelada ou finalizada sem dados.")
+
+    # ── Balanceamento por identidade (botão "Balancear" da toolbar) ──
+    def fluxo_balancear(self):
+        if not self.dataset:
+            return
+        self.sync_changes_from_table()
+
+        from .balance_dataset_dialog import BalanceDatasetDialog
+        dialog = BalanceDatasetDialog(
+            dataset_name=self.dataset.name or "Sem Nome",
+            parent=self.view,
+        )
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        from .workers.balance_dataset_worker import BalanceDatasetWorker
+        worker = BalanceDatasetWorker(
+            dataset=self.dataset,
+            mode=dialog.mode(),
+            target_n=dialog.target_n(),
+            selection=dialog.selection(),
+            random_seed=dialog.random_seed(),
+            quality_metric=dialog.quality_metric(),
+            output_name=None,  # service usa default <name>_Balanced
+        )
+        self._balance_replace_current = dialog.replace_current()
+        self._run_worker(
+            worker,
+            label="Balanceando dataset…",
+            allow_cancel=True,
+            determinate=False,
+            use_log_dialog=False,
+            on_finished=self._on_balance_concluido,
+        )
+
+    def _on_balance_concluido(self, result):
+        if result is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "Balanceamento cancelado ou finalizado sem resultado.",
+            )
+            return
+
+        # `result` é um DatasetBalancingResult; `.dataset` é o
+        # FaceDataset balanceado.
+        balanced = result.dataset
+        summary_extra = []
+        if result.discarded_identities > 0:
+            summary_extra.append(
+                f"{result.discarded_identities} ID(s) descartada(s) "
+                f"(FLOOR_AND_CAP)"
+            )
+        if result.quality_fallback_count > 0:
+            summary_extra.append(
+                f"{result.quality_fallback_count} sample(s) sem métrica "
+                "(usados em ordem original)"
+            )
+        extra_msg = (
+            "\n\n⚠ " + " · ".join(summary_extra) if summary_extra else ""
+        )
+
+        replace = getattr(self, "_balance_replace_current", False)
+        try:
+            self._balance_replace_current = False
+            if replace:
+                # Substitui o dataset atual pelo balanceado, marcando
+                # dirty (perito decide se Salva ou Salva Como).
+                self.carregar_dataset_na_tela(
+                    balanced, path=None,
+                )
+                self.set_dirty(True)
+                QMessageBox.information(
+                    self.view, "Balanceamento aplicado",
+                    f"Dataset substituído pelo balanceado.\n\n"
+                    f"{result.summary()}{extra_msg}\n\n"
+                    f"Use 'Salvar Como' pra gravar como novo parquet "
+                    f"(o original em disco continua intacto)."
+                )
+            else:
+                # Modo "manter atual": só mostra o resumo, não muta a
+                # tela. Útil pra ver o impacto sem comprometer o
+                # dataset corrente.
+                QMessageBox.information(
+                    self.view, "Pré-visualização de balanceamento",
+                    f"Balanceamento simulado (não aplicado ao dataset "
+                    f"corrente):\n\n{result.summary()}{extra_msg}\n\n"
+                    f"Marque 'Substituir o dataset corrente' no "
+                    f"diálogo se quiser aplicar.",
+                )
+        except Exception as e:
+            QMessageBox.critical(
+                self.view, "Erro ao aplicar balanceamento", str(e),
+            )

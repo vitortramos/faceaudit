@@ -98,6 +98,7 @@ class ManagerToolbarView(QFrame):
 
         # Dataset
         self.btn_enrich = self.dataset_ribbon.btn_enrich
+        self.btn_balance = self.dataset_ribbon.btn_balance
         self.btn_merge = self.dataset_ribbon.btn_merge
         self.btn_split = self.dataset_ribbon.btn_split
         self.btn_compare = self.dataset_ribbon.btn_compare
@@ -128,7 +129,7 @@ class ManagerToolbarView(QFrame):
             self.btn_close, self.btn_save, self.btn_save_as,
             self.btn_save_to_library,
             # Dataset
-            self.btn_enrich,
+            self.btn_enrich, self.btn_balance,
             self.btn_merge, self.btn_split, self.btn_compare,
             self.btn_stats, self.btn_analyze,
             self.btn_schema_report, self.btn_audit_log,
