@@ -104,12 +104,34 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
         # ── Destino ──
         target_box = QtWidgets.QGroupBox("Pasta destino")
-        target_layout = QtWidgets.QHBoxLayout(target_box)
+        target_outer = QtWidgets.QVBoxLayout(target_box)
+
+        target_row = QtWidgets.QHBoxLayout()
         self.input_target = QtWidgets.QLineEdit()
-        target_layout.addWidget(self.input_target, 1)
+        target_row.addWidget(self.input_target, 1)
         self.btn_browse = QtWidgets.QPushButton("📁 Escolher…")
         self.btn_browse.clicked.connect(self._on_browse)
-        target_layout.addWidget(self.btn_browse)
+        target_row.addWidget(self.btn_browse)
+        target_outer.addLayout(target_row)
+
+        # Nome do arquivo (sem extensão)
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.addWidget(QtWidgets.QLabel("Nome do arquivo:"))
+        self.input_filename = QtWidgets.QLineEdit()
+        self.input_filename.setPlaceholderText("dataset__pipeline")
+        name_row.addWidget(self.input_filename, 1)
+        name_row.addWidget(QtWidgets.QLabel(".parquet"))
+        target_outer.addLayout(name_row)
+
+        target_help = QtWidgets.QLabel(
+            "Em caso de falhas, um arquivo <code>&lt;nome&gt;__errors."
+            "parquet</code> também é gerado com 1 linha por face que "
+            "falhou + coluna <code>error_message</code>."
+        )
+        target_help.setWordWrap(True)
+        target_help.setStyleSheet("color: #666; font-size: 10px;")
+        target_outer.addWidget(target_help)
+
         layout.addWidget(target_box)
 
         # ── Idempotência ──
@@ -119,6 +141,30 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         )
         self.chk_skip.setChecked(True)
         layout.addWidget(self.chk_skip)
+
+        # ── Após processar ──
+        after_box = QtWidgets.QGroupBox("Após processar")
+        after_layout = QtWidgets.QVBoxLayout(after_box)
+        self.rbn_keep_current = QtWidgets.QRadioButton(
+            "Manter dataset atual aberto"
+        )
+        self.rbn_keep_current.setToolTip(
+            "O novo dataset fica salvo em disco; o atual continua "
+            "aberto na tela. Você abre o derivado depois via 'Abrir "
+            "Dataset' se quiser."
+        )
+        self.rbn_keep_current.setChecked(True)
+        self.rbn_open_new = QtWidgets.QRadioButton(
+            "Abrir o novo dataset (fecha o atual)"
+        )
+        self.rbn_open_new.setToolTip(
+            "Após o processamento, fecha o dataset atual e abre o "
+            "derivado automaticamente. Se houver alterações não "
+            "salvas, você será perguntado se quer salvar antes."
+        )
+        after_layout.addWidget(self.rbn_keep_current)
+        after_layout.addWidget(self.rbn_open_new)
+        layout.addWidget(after_box)
 
         layout.addStretch()
 
@@ -200,18 +246,21 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         self._refresh_target_default()
 
     def _refresh_target_default(self):
-        """Sugere `<parent>/<dataset>__<pipeline>/`."""
+        """Sugere `<parent>/<dataset>__<pipeline>/` + filename default."""
         cfg = self.selected_pipeline()
         if cfg is None:
             self.input_target.setText("")
+            self.input_filename.setText("")
             return
         # Sanitização básica (igual do service)
         safe_ds = self._safe_name(self._dataset_name)
         safe_pipe = self._safe_name(cfg.name)
-        target = (
-            self._suggested_target_parent / f"{safe_ds}__{safe_pipe}"
-        )
+        stem = f"{safe_ds}__{safe_pipe}"
+        target = self._suggested_target_parent / stem
         self.input_target.setText(str(target))
+        # Default do nome — usuário pode editar livremente. O service
+        # sanitiza/garante o `.parquet` na hora de salvar.
+        self.input_filename.setText(stem)
 
     @staticmethod
     def _safe_name(raw: str) -> str:
@@ -244,3 +293,20 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
     def skip_existing(self) -> bool:
         return self.chk_skip.isChecked()
+
+    def output_filename(self) -> str:
+        """Stem do arquivo de saída (sem extensão). Sanitizado contra
+        caracteres ruins de filesystem. Quando vazio, cai pro default
+        do service."""
+        raw = self.input_filename.text().strip()
+        if not raw:
+            return ""
+        # Remove `.parquet` redundante caso o usuário tenha digitado.
+        if raw.lower().endswith(".parquet"):
+            raw = raw[:-len(".parquet")]
+        return self._safe_name(raw)
+
+    def open_new_after(self) -> bool:
+        """True quando o usuário escolheu abrir o derivado e fechar o
+        atual; False mantém o estado atual."""
+        return self.rbn_open_new.isChecked()

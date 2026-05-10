@@ -1134,12 +1134,35 @@ class DatasetManagerController(QtCore.QObject):
             return
 
         skip_existing = dialog.skip_existing()
+        output_filename = dialog.output_filename()
+        open_new_after = dialog.open_new_after()
+
+        # Se o usuário quer abrir o derivado e o dataset atual está
+        # dirty, oferece salvar antes (mesmo padrão do close).
+        if open_new_after and self._is_dirty:
+            res = QMessageBox.question(
+                self.view, "Salvar antes?",
+                "O dataset atual tem alterações não salvas. "
+                "Deseja salvar antes de abrir o derivado?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if res == QMessageBox.StandardButton.Cancel:
+                return
+            if res == QMessageBox.StandardButton.Save:
+                self.fluxo_salvar()
+                if self._is_dirty:
+                    return  # save falhou
+
         self._iniciar_worker_aplicar_image_pipeline(
             pipeline_cfg, target_dir, skip_existing,
+            output_filename, open_new_after,
         )
 
     def _iniciar_worker_aplicar_image_pipeline(
         self, pipeline_cfg, target_dir, skip_existing: bool,
+        output_filename: str, open_new_after: bool,
     ):
         from .workers.apply_image_pipeline_worker import (
             ApplyImagePipelineWorker,
@@ -1157,10 +1180,12 @@ class DatasetManagerController(QtCore.QObject):
             target_dir=Path(target_dir),
             ff_service=ff_svc,
             skip_existing=skip_existing,
+            output_filename=output_filename or None,
         )
         # Guarda contexto pra usar no on_finished
         self._batch_target_dir = Path(target_dir)
         self._batch_pipeline_name = pipeline_cfg.name
+        self._batch_open_new_after = open_new_after
         self._run_worker(
             worker,
             label=(
@@ -1218,12 +1243,49 @@ class DatasetManagerController(QtCore.QObject):
         else:
             extra = ""
 
+        error_line = ""
+        if result.error_parquet_path is not None:
+            error_line = (
+                f"\nDataset de erros: {result.error_parquet_path}\n"
+                f"  → abra como dataset normal pra inspecionar a "
+                f"coluna `error_message`."
+            )
+
         QMessageBox.information(
             self.view, "Pipeline aplicado",
             f"{result.summary()}{extra}\n\n"
             f"Dataset derivado: {result.parquet_path}\n"
-            f"Manifest forense: {result.target_dir / 'manifest.json'}",
+            f"Manifest forense: {result.target_dir / 'manifest.json'}"
+            f"{error_line}",
         )
+
+        # Abre o derivado quando o usuário pediu. Fecha o atual sem
+        # prompt (já tratamos dirty antes de iniciar o worker).
+        if getattr(self, "_batch_open_new_after", False):
+            try:
+                # Reusa o caminho normal de open — fluxo idêntico a
+                # clicar Abrir Dataset apontando pro novo parquet.
+                self._run_worker(
+                    LoadDatasetWorker(str(result.parquet_path)),
+                    label="Abrindo dataset derivado…",
+                    allow_cancel=False,
+                    determinate=False,
+                    wait_cursor=True,
+                    on_finished=(
+                        lambda ds: self._on_load_success(
+                            ds, str(result.parquet_path),
+                        )
+                    ),
+                )
+            except Exception as e:
+                QMessageBox.warning(
+                    self.view, "Não foi possível abrir",
+                    f"O derivado foi salvo, mas falhou abrir: {e}\n"
+                    f"Use 'Abrir Dataset' apontando pra "
+                    f"{result.parquet_path}.",
+                )
+            finally:
+                self._batch_open_new_after = False
 
     # =================================================================================
     # [NOVO] FLUXO DE ANÁLISE DO DATASET (AUDITORIA E MINERAÇÃO BIOMÉTRICA)

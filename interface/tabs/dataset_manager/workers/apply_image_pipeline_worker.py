@@ -37,6 +37,7 @@ class ApplyImagePipelineWorker(QtCore.QObject):
         target_dir: Path,
         ff_service=None,
         skip_existing: bool = True,
+        output_filename: Optional[str] = None,
     ):
         super().__init__()
         self.dataset = dataset
@@ -44,6 +45,7 @@ class ApplyImagePipelineWorker(QtCore.QObject):
         self.target_dir = target_dir
         self.ff_service = ff_service
         self.skip_existing = skip_existing
+        self.output_filename = output_filename
         self._is_running = True
 
     def run(self):
@@ -59,6 +61,7 @@ class ApplyImagePipelineWorker(QtCore.QObject):
                 self.target_dir,
                 ff_service=self.ff_service,
                 skip_existing=self.skip_existing,
+                output_filename=self.output_filename,
                 progress_callback=self._on_progress,
             )
             if not self._is_running:

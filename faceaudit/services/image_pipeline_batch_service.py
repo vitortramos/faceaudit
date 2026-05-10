@@ -68,6 +68,7 @@ class ImagePipelineBatchService:
         *,
         ff_service=None,
         skip_existing: bool = True,
+        output_filename: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> BatchProcessingResult:
         """Aplica pipeline em todo dataset.
@@ -77,12 +78,17 @@ class ImagePipelineBatchService:
             pipeline_config: configuração do pipeline a aplicar.
             target_dir: pasta destino. Será criada se não existir.
                 Imagens em `target_dir/images/`, parquet em
-                `target_dir/<name>__<pipeline>.parquet`, manifest em
+                `target_dir/<output_filename>.parquet` (ou
+                `target_dir/<name>__<pipeline>.parquet` quando
+                `output_filename` é None), manifest em
                 `target_dir/manifest.json`.
             ff_service: necessário se `input_source=ALIGNED_FACE` ou
                 algum step usa FFService (ex: CropMode.FACE_DETECTED).
             skip_existing: idempotência — PNGs já existentes com mesmo
                 hash são pulados.
+            output_filename: stem do parquet de saída (sem extensão).
+                Default = `<dataset>__<pipeline>` (compat). Falhas vão
+                pra `<stem>__errors.parquet`.
             progress_callback: chamado por face com `(idx, total, msg)`.
 
         Returns:
@@ -135,11 +141,14 @@ class ImagePipelineBatchService:
                 used_names.add(result["rel_name"])
 
         # Cria FaceDataset enxuto (sem ff_info/ofiq_info/serfiq_info)
-        derived_name = self._build_derived_name(
-            dataset.name, pipeline_config.name,
+        output_stem = (
+            output_filename.strip() if output_filename
+            else self._build_derived_name(
+                dataset.name, pipeline_config.name,
+            )
         )
         new_dataset = FaceDataset(
-            name=derived_name,
+            name=output_stem,
             description=(
                 f"Derivado de '{dataset.name}' via pipeline "
                 f"'{pipeline_config.name}'."
@@ -150,8 +159,20 @@ class ImagePipelineBatchService:
         )
 
         # Salva parquet
-        parquet_path = target_dir / f"{derived_name}.parquet"
+        parquet_path = target_dir / f"{output_stem}.parquet"
         new_dataset.to_parquet(parquet_path)
+
+        # Salva parquet de erros quando houver — mesmo schema do
+        # dataset original (image_path/identity/file_name/hash) +
+        # coluna `error_message`. Permite ao perito abrir esse arquivo
+        # como dataset normal pra inspecionar/exportar/reanálisar as
+        # falhas.
+        error_parquet_path: Optional[Path] = None
+        if failures:
+            error_parquet_path = target_dir / f"{output_stem}__errors.parquet"
+            self._save_error_parquet(
+                dataset, failures, error_parquet_path, output_stem,
+            )
 
         duration = time.time() - start_time
 
@@ -188,6 +209,7 @@ class ImagePipelineBatchService:
             n_failed=len(failures),
             failures=tuple(failures),
             duration_seconds=duration,
+            error_parquet_path=error_parquet_path,
         )
 
     # ── Per-face ───────────────────────────────────────────────────────────
@@ -304,3 +326,81 @@ class ImagePipelineBatchService:
             ds = ds.replace(ch, "_")
             pn = pn.replace(ch, "_")
         return f"{ds}__{pn}"
+
+    @staticmethod
+    def _save_error_parquet(
+        source_dataset: FaceDataset,
+        failures: List[Tuple[str, str]],
+        error_parquet_path: Path,
+        output_stem: str,
+    ) -> None:
+        """Salva parquet com 1 linha por face que falhou + coluna
+        `error_message`. Schema mínimo (image_path/identity/file_name/
+        hash/error_message) — perito abre como dataset normal pra
+        ordenar/filtrar/inspecionar e gerar lista pra reanálise.
+
+        Os paths apontam pra IMAGEM-FONTE (não pro PNG, que não
+        chegou a ser gerado), com `path_mode=ABSOLUTE` herdado do
+        dataset original quando aplicável.
+        """
+        # Indexa o dataset-fonte por image_path pra resgatar identity/
+        # file_name/hash de cada falha.
+        by_path = {f.image_path: f for f in source_dataset.faces}
+        error_faces: List[FaceInfo] = []
+        # Vai guardar a mensagem pra cada índice — injetada via
+        # column_specs do FaceDataset.to_parquet não é trivial, então
+        # depois do save patchamos o parquet adicionando a coluna.
+        messages: List[str] = []
+        for img_path, msg in failures:
+            src = by_path.get(img_path)
+            if src is None:
+                # Falha de path desconhecido (ex: <empty>) — cria
+                # face placeholder pra preservar a linha.
+                error_faces.append(FaceInfo(image_path=img_path))
+            else:
+                # Clone enxuto preservando metadata da fonte.
+                error_faces.append(FaceInfo(
+                    image_path=src.image_path,
+                    file_name=src.file_name,
+                    identity=src.identity,
+                    hash=src.hash,
+                    origin=src.origin,
+                    ethnicity=src.ethnicity,
+                    gender=src.gender,
+                ))
+            messages.append(msg)
+
+        error_ds = FaceDataset(
+            name=f"{output_stem}__errors",
+            description=(
+                f"Falhas do pipeline em '{source_dataset.name}'. "
+                f"Coluna `error_message` traz a razão de cada falha."
+            ),
+            faces=error_faces,
+            # Paths apontam pra fonte (absolutos do dataset original)
+            # — preserva path_mode/path_root pra que se abra correto.
+            path_mode=source_dataset.path_mode,
+            path_root=source_dataset.path_root,
+        )
+        error_ds.to_parquet(error_parquet_path)
+
+        # Injeta coluna `error_message` no parquet recém-escrito.
+        # Não dá pra passar via FaceInfo (modelo não tem o campo),
+        # então re-escreve com a coluna extra preservando a metadata.
+        try:
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            table = pq.read_table(error_parquet_path)
+            # Garante mesmo length (defensivo).
+            if table.num_rows == len(messages):
+                meta = table.schema.metadata or {}
+                table = table.append_column(
+                    "error_message", pa.array(messages, type=pa.string()),
+                )
+                table = table.replace_schema_metadata(meta)
+                pq.write_table(table, error_parquet_path)
+        except Exception:
+            # Best-effort — sem a coluna, o parquet de erros ainda
+            # lista os paths das falhas; o motivo pode ser inferido
+            # do manifest.json (que registra os totals).
+            pass

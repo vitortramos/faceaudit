@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,9 @@ class BatchProcessingResult:
     n_failed: int
     failures: Tuple[Tuple[str, str], ...] = field(default_factory=tuple)
     duration_seconds: float = 0.0
+    # Path do parquet de erros (com 1 linha por falha + coluna
+    # `error_message`). None quando não houve falhas.
+    error_parquet_path: Optional[Path] = None
 
     @property
     def succeeded(self) -> bool:
