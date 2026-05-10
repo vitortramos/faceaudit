@@ -1,6 +1,8 @@
 import os
+from typing import Optional
 import pandas as pd
 from PyQt6 import QtCore, QtGui
+from faceaudit.models.face_dataset import FaceDataset
 from .detail_panel_view import DetailPanelView
 
 class DetailPanelController(QtCore.QObject):
@@ -8,12 +10,16 @@ class DetailPanelController(QtCore.QObject):
     Controlador do Painel de Detalhes.
     Faz a ponte entre os dados brutos (Pandas Series) e a View.
     """
-    
+
     def __init__(self, parent_layout=None):
         super().__init__()
         # O Controller é dono da View
         self.view = DetailPanelView()
-        
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE.
+        # Setado por `set_dataset` quando o dataset_manager_controller
+        # carrega/troca de dataset.
+        self._dataset: Optional[FaceDataset] = None
+
         # Facilita a integração: se passar um layout, já se anexa
         if parent_layout:
             parent_layout.addWidget(self.view)
@@ -21,6 +27,15 @@ class DetailPanelController(QtCore.QObject):
     def get_widget(self):
         """Retorna a view para ser adicionada a layouts externos manualmente."""
         return self.view
+
+    def set_dataset(self, dataset: Optional[FaceDataset]) -> None:
+        """Recebe referência ao dataset corrente pra que paths em modo
+        RELATIVE possam ser resolvidos contra `_parquet_dir/path_root`.
+        Sem isso, datasets do Image Pipeline (que usam `image_path` tipo
+        `0005_01.png`) caem em "Imagem não encontrada" porque
+        `os.path.exists` checa contra o CWD do processo.
+        """
+        self._dataset = dataset
 
     def load_face_data(self, face_data: pd.Series):
         """
@@ -33,10 +48,18 @@ class DetailPanelController(QtCore.QObject):
             self.view.clear_quality_metrics()
             return
 
-        # 1. Lógica de Imagem (Verificação de Disco)
-        path = face_data.get('image_path')
-        if path and os.path.exists(path):
-            pixmap = QtGui.QPixmap(path)
+        # 1. Lógica de Imagem (Verificação de Disco). Resolve via dataset
+        # quando disponível (suporta path_mode=RELATIVE); fallback pro
+        # path raw quando o dataset não foi setado (compat com chamadas
+        # diretas).
+        raw_path = face_data.get('image_path')
+        resolved = (
+            str(self._dataset.resolve_image_path(raw_path))
+            if self._dataset is not None and raw_path
+            else raw_path
+        )
+        if resolved and os.path.exists(resolved):
+            pixmap = QtGui.QPixmap(resolved)
             self.view.set_image(pixmap)
         else:
             self.view.reset_image_placeholder("Imagem não encontrada")

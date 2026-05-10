@@ -357,6 +357,10 @@ class DatasetManagerController(QtCore.QObject):
     def carregar_dataset_na_tela(self, dataset, path=None):
         self.dataset = dataset
         self.current_path = path
+        # Propaga referência pro detail panel resolver paths em modo
+        # RELATIVE (sem isso, datasets do Image Pipeline mostram
+        # "Imagem não encontrada" no preview lateral).
+        self.detail_ctrl.set_dataset(dataset)
 
         # Schema-by-role (PR 6): se o FaceDataset trouxe column_specs (parquet
         # pós-PR 3), o table_ctrl propaga pra model + instala delegates de
