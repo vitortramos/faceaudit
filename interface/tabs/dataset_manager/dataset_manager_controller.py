@@ -234,6 +234,7 @@ class DatasetManagerController(QtCore.QObject):
             face_a=face_a, face_b=face_b,
             comparison_service=comp_svc,
             parent_view=self.view,
+            dataset=self.dataset,
         )
         cmp_ctrl.exec()
 
@@ -357,10 +358,14 @@ class DatasetManagerController(QtCore.QObject):
     def carregar_dataset_na_tela(self, dataset, path=None):
         self.dataset = dataset
         self.current_path = path
-        # Propaga referência pro detail panel resolver paths em modo
-        # RELATIVE (sem isso, datasets do Image Pipeline mostram
-        # "Imagem não encontrada" no preview lateral).
+        # Propaga referência pra todos os widgets que precisam resolver
+        # paths em modo RELATIVE (sem isso, datasets do Image Pipeline
+        # mostram "Imagem não encontrada" / thumbnails vazias).
         self.detail_ctrl.set_dataset(dataset)
+        if hasattr(self.gallery_widget, "set_dataset"):
+            self.gallery_widget.set_dataset(dataset)
+        if hasattr(self.table_ctrl, "set_dataset"):
+            self.table_ctrl.set_dataset(dataset)
 
         # Schema-by-role (PR 6): se o FaceDataset trouxe column_specs (parquet
         # pós-PR 3), o table_ctrl propaga pra model + instala delegates de

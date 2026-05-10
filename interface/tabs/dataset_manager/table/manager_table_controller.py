@@ -60,6 +60,13 @@ class ManagerTableController(QtCore.QObject):
 
         self._connect_signals()
 
+    def set_dataset(self, dataset):
+        """Propaga dataset pro model — necessário pra resolver paths
+        em modo RELATIVE antes do hover-tooltip carregar a thumbnail.
+        """
+        if hasattr(self.model, "set_dataset"):
+            self.model.set_dataset(dataset)
+
     def apply_column_specs(self, specs):
         """Hook chamado pelo controller pai quando um dataset com specs
         é carregado. Atualiza o model + instala os delegates de vocabulário.

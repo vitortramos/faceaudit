@@ -106,6 +106,11 @@ class DatasetAnalysisController(QtCore.QObject):
             dataset_name=dataset.name or "Dataset",
             parent=parent_view,
         )
+        # Propaga dataset pros widgets que carregam thumbnails
+        # — sem isso, datasets em modo RELATIVE (Image Pipeline)
+        # mostram thumbnails vazias em todos os painéis de análise.
+        if hasattr(self.view, "set_dataset"):
+            self.view.set_dataset(dataset)
         self.view.delete_issues_requested.connect(self._on_delete_issues)
         self.view.rerun_requested.connect(self._run_quick_audits)
         self.view.run_heavy_mining_requested.connect(self._run_heavy_mining)

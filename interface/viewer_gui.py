@@ -163,8 +163,17 @@ class FaceDetailPanel(QWidget):
         lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.form_general.addRow(f"<b>{label}:</b>", lbl)
 
+    def set_dataset(self, dataset):
+        """Recebe dataset corrente pra resolver paths em modo RELATIVE."""
+        self._dataset = dataset
+
     def load_face(self, face_data: pd.Series):
-        path = face_data.get('image_path')
+        raw = face_data.get('image_path')
+        path = (
+            str(self._dataset.resolve_image_path(raw))
+            if getattr(self, "_dataset", None) is not None and raw
+            else raw
+        )
         if path and os.path.exists(path):
             pixmap = QtGui.QPixmap(path)
             if not pixmap.isNull():
@@ -319,6 +328,9 @@ class DatasetViewerWidget(QWidget):
     def carregar_dataset_objeto(self, dataset):
         """Carrega um objeto FaceDataset diretamente"""
         self.dataset = dataset
+        # Propaga pro detail panel resolver paths em modo RELATIVE.
+        if hasattr(self.detail_panel, "set_dataset"):
+            self.detail_panel.set_dataset(dataset)
         self.model = FaceTableModel(self.dataset.to_pandas())
         self.table_view.setModel(self.model)
         

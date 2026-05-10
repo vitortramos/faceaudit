@@ -21,7 +21,7 @@ Reuso esperado em PR 13/14: dialog de identidades duplicadas/misturadas
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -162,6 +162,9 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         # Cache: path → QPixmap (já carregado). Pixmaps "null" também são
         # armazenados pra evitar re-tentativa de leitura de paths quebrados.
         self._cache: Dict[str, QtGui.QPixmap] = {}
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE.
+        # Setado por `set_dataset` antes de `set_paths`/`set_paired_groups`.
+        self._dataset: Optional[Any] = None
         # Cells "vivas" no momento — usado pra seleção multi-cell e pra
         # limpar seleção ao trocar de issue. Reset a cada `set_paths` /
         # `set_paired_groups`.
@@ -580,15 +583,32 @@ class IssuePreviewWidget(QtWidgets.QWidget):
 
         self.selection_changed.emit()
 
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        """Recebe dataset corrente — usado pra resolver paths em modo
+        RELATIVE antes de carregar QPixmap. Cache anterior é dropado
+        porque chaves (paths absolutos) mudam entre datasets."""
+        self._dataset = dataset
+        self._cache.clear()
+
     def _load_pixmap(self, path: str) -> Optional[QtGui.QPixmap]:
-        """Carrega QPixmap com cache. Retorna None se path falhar."""
+        """Carrega QPixmap com cache. Retorna None se path falhar.
+
+        `path` pode ser relativo (modo RELATIVE) — resolve via dataset
+        antes da leitura. Cache key é o path RAW pra que `_deleted_paths`
+        e `_renamed_paths` sigam usando o mesmo identificador lógico.
+        """
         if not path:
             return None
         cached = self._cache.get(path)
         if cached is not None:
             return cached if not cached.isNull() else None
 
-        pix = QtGui.QPixmap(path)
+        resolved = (
+            str(self._dataset.resolve_image_path(path))
+            if self._dataset is not None
+            else path
+        )
+        pix = QtGui.QPixmap(resolved)
         # Cacheia mesmo o null pra evitar re-tentativa
         self._cache[path] = pix
         return pix if not pix.isNull() else None

@@ -41,7 +41,15 @@ class ComparePairView(QtWidgets.QDialog):
         self.setWindowTitle("Comparação de Faces")
         self.setModal(True)
         self.resize(900, 660)
+        self._dataset: Optional[Any] = None
         self._build_ui()
+
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        """Recebe dataset corrente pra resolver paths em modo RELATIVE
+        (Image Pipeline output). Propaga pros 2 painéis internos."""
+        self._dataset = dataset
+        self.panel_left.set_dataset(dataset)
+        self.panel_right.set_dataset(dataset)
 
     # ── UI ────────────────────────────────────────────────────────────
 
@@ -114,7 +122,11 @@ class _FacePanel(QtWidgets.QFrame):
             "QFrame { background: #fafafa; border: 1px solid #ddd; "
             "border-radius: 6px; }"
         )
+        self._dataset: Optional[Any] = None
         self._build_ui()
+
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        self._dataset = dataset
 
     def _build_ui(self) -> None:
         v = QtWidgets.QVBoxLayout(self)
@@ -162,8 +174,13 @@ class _FacePanel(QtWidgets.QFrame):
 
     def set_face(self, face: Any) -> None:
         """Recarrega o painel com os dados de uma FaceInfo."""
-        # Imagem
-        path = getattr(face, "image_path", "") or ""
+        # Imagem — resolve via dataset em modo RELATIVE.
+        raw = getattr(face, "image_path", "") or ""
+        path = (
+            str(self._dataset.resolve_image_path(face))
+            if self._dataset is not None and raw
+            else raw
+        )
         pix = QtGui.QPixmap(path) if path else QtGui.QPixmap()
         if not pix.isNull():
             scaled = pix.scaled(

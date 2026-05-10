@@ -791,6 +791,18 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         controller após cada delete/rename/merge/undo."""
         self.preview.set_active_marks(deleted, renamed)
 
+    def set_dataset(self, dataset) -> None:
+        """Propaga referência ao dataset corrente pros 4 widgets que
+        carregam thumbnails — em modo RELATIVE (Image Pipeline output)
+        os paths precisam ser resolvidos contra `_parquet_dir/path_root`
+        antes do QPixmap. Sem isso, miniaturas/previews ficam vazios."""
+        for w in (
+            self.preview, self._histogram_widget,
+            self._hubness_tables_widget, self._umap_scatter_widget,
+        ):
+            if hasattr(w, "set_dataset"):
+                w.set_dataset(dataset)
+
     def set_audit_settings(self, settings: dict) -> None:
         """Atualiza o cache local de thresholds — chamado pelo controller
         após resolver os defaults (e após cada Save do diálogo). Faz

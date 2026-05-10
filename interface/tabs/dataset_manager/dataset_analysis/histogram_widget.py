@@ -12,7 +12,7 @@ top-10 cauda direita — pra inspeção visual rápida das faces extremas.
 
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 import numpy as np
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -99,6 +99,9 @@ class HistogramWidget(QtWidgets.QWidget):
         self._figure = Figure(figsize=(6, 4), tight_layout=True)
         self._canvas = FigureCanvas(self._figure)
         self._toolbar = NavigationToolbar(self._canvas, self)
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE
+        # antes de carregar thumbnails das caudas.
+        self._dataset: Optional[Any] = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -111,6 +114,10 @@ class HistogramWidget(QtWidgets.QWidget):
         self._tails_widget = self._build_tails_widget()
         self._tails_widget.hide()
         layout.addWidget(self._tails_widget)
+
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        """Recebe dataset corrente pra resolver paths em modo RELATIVE."""
+        self._dataset = dataset
 
     def _build_tails_widget(self) -> QtWidgets.QWidget:
         """Constrói o container das duas faixas (esquerda/direita) com
@@ -278,9 +285,17 @@ class HistogramWidget(QtWidgets.QWidget):
         left_idx = order[:k]
         right_idx = order[-k:][::-1]  # maiores primeiro
 
-        left_paths = [paths[i] for i in left_idx]
+        # Resolve paths via dataset em modo RELATIVE (Image Pipeline).
+        # _TailThumb consome path direto pra QPixmap, então o resolve
+        # acontece aqui antes de criar os widgets.
+        def _resolve(p: str) -> str:
+            if not p or self._dataset is None:
+                return p
+            return str(self._dataset.resolve_image_path(p))
+
+        left_paths = [_resolve(paths[i]) for i in left_idx]
         left_vals = [float(values[i]) for i in left_idx]
-        right_paths = [paths[i] for i in right_idx]
+        right_paths = [_resolve(paths[i]) for i in right_idx]
         right_vals = [float(values[i]) for i in right_idx]
 
         left_captions = (

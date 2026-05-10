@@ -23,6 +23,11 @@ class HubnessTablesWidget(QtWidgets.QWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
 
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE
+        # antes de armazenar no UserRole das células (consumido pelo
+        # `_load_preview` ao clicar). Set por `set_dataset`.
+        self._dataset = None
+
         # Splitter vertical externo: tabelas em cima (lado a lado),
         # preview embaixo. Splitter horizontal interno divide as duas
         # tabelas — usuário pode arrastar pra ajustar.
@@ -132,6 +137,12 @@ class HubnessTablesWidget(QtWidgets.QWidget):
             t.setColumnWidth(col, width)
         return t
 
+    def set_dataset(self, dataset) -> None:
+        """Recebe dataset corrente — resolve paths antes de armazenar
+        no UserRole das células das tabelas. Sem isso, o preview
+        carrega `0005_01.png` direto e falha em modo RELATIVE."""
+        self._dataset = dataset
+
     def render_data(
         self,
         hubs: List[dict],
@@ -156,29 +167,36 @@ class HubnessTablesWidget(QtWidgets.QWidget):
 
     # ── Internal helpers ─────────────────────────────────────────────
 
-    @staticmethod
-    def _populate_table(t: QtWidgets.QTableWidget, rows: List[dict]) -> None:
+    def _populate_table(self, t: QtWidgets.QTableWidget, rows: List[dict]) -> None:
         t.setUpdatesEnabled(False)
         t.blockSignals(True)
         try:
             t.setRowCount(len(rows))
             for r, row in enumerate(rows):
                 ident = str(row.get("identity") or "?")
-                path = str(row.get("image_path") or "")
+                raw_path = str(row.get("image_path") or "")
+                # Resolve via dataset em modo RELATIVE (Image Pipeline);
+                # armazena no UserRole pra que `_load_preview` consuma
+                # path absoluto.
+                resolved_path = (
+                    str(self._dataset.resolve_image_path(raw_path))
+                    if self._dataset is not None and raw_path
+                    else raw_path
+                )
                 # Foto = basename pra leitura rápida; tooltip tem path completo
                 from os.path import basename
-                file_name = basename(path) if path else "(sem path)"
+                file_name = basename(raw_path) if raw_path else "(sem path)"
                 fiqa = row.get("fiqa")
                 norm = row.get("norm")
                 nk = row.get("nk")
 
                 # Coluna 0 — Identidade (carrega o path no UserRole pro preview)
                 cell0 = QtWidgets.QTableWidgetItem(ident)
-                cell0.setData(QtCore.Qt.ItemDataRole.UserRole, path)
+                cell0.setData(QtCore.Qt.ItemDataRole.UserRole, resolved_path)
                 t.setItem(r, 0, cell0)
 
                 cell1 = QtWidgets.QTableWidgetItem(file_name)
-                cell1.setToolTip(path)
+                cell1.setToolTip(resolved_path)
                 t.setItem(r, 1, cell1)
 
                 cell2 = QtWidgets.QTableWidgetItem(

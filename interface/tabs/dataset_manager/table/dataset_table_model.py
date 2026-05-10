@@ -76,6 +76,18 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         # PR 15.1: cache opcional pra hover-thumb tooltip. Quando None,
         # os tooltips são strings normais (path completo).
         self._tooltip_cache = tooltip_cache
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE
+        # antes de consultar o tooltip_cache (sem isso, datasets do
+        # Image Pipeline mostram tooltip vazio porque o path é relativo).
+        self._dataset: Optional[Any] = None
+
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        """Recebe referência ao dataset corrente. Cache de tooltip
+        precisa ser invalidado porque as chaves (paths absolutos)
+        mudam entre datasets diferentes."""
+        self._dataset = dataset
+        if self._tooltip_cache is not None:
+            self._tooltip_cache.clear()
 
     def set_column_specs(self, specs: Dict[str, Any]) -> None:
         """Atualiza a lista de colunas visíveis a partir do dict de specs.
@@ -377,8 +389,15 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
             if not path or pd.isna(path):
                 return None
             path_str = str(path)
+            # Resolve via dataset em modo RELATIVE (Image Pipeline
+            # output). Em ABSOLUTE/sem dataset, passa o path direto.
+            resolved = (
+                str(self._dataset.resolve_image_path(path_str))
+                if self._dataset is not None
+                else path_str
+            )
             if self._tooltip_cache is not None:
-                html = self._tooltip_cache.get_html(path_str)
+                html = self._tooltip_cache.get_html(resolved)
                 if html:
                     return html
             # Fallback: quando o cache falha (path quebrado) ou não foi

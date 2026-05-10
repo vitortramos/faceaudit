@@ -60,6 +60,9 @@ class UmapScatterWidget(QtWidgets.QWidget):
         # Marker do lookalike selecionado na tabela — círculo azul,
         # distinto da estrela amarela do clicked.
         self._lookalike_marker_artist = None
+        # Dataset corrente — usado pra resolver paths relativos
+        # (Image Pipeline output) antes de carregar thumb do lookalike.
+        self._dataset = None
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(2, 2, 2, 2)
@@ -180,6 +183,12 @@ class UmapScatterWidget(QtWidgets.QWidget):
         return pane
 
     # ── API pública ──────────────────────────────────────────────────
+
+    def set_dataset(self, dataset) -> None:
+        """Recebe dataset corrente — usado pra resolver paths relativos
+        (Image Pipeline output) antes de armazenar nos cells da tabela
+        de lookalikes. Chame antes de `render_result`."""
+        self._dataset = dataset
 
     def render_result(self, result) -> None:
         """Recebe `UmapEmbeddingResult`, popula combobox + plota
@@ -562,9 +571,18 @@ class UmapScatterWidget(QtWidgets.QWidget):
                 cell0.setData(
                     QtCore.Qt.ItemDataRole.UserRole, idx,
                 )
+                # Resolve via dataset em modo RELATIVE — sem isso, o
+                # thumb do lookalike (carregado on-click) falha porque
+                # o path stored é relativo (`0005_01.png`).
+                raw_path = sample.image_path or ""
+                stored_path = (
+                    str(self._dataset.resolve_image_path(raw_path))
+                    if self._dataset is not None and raw_path
+                    else raw_path
+                )
                 cell0.setData(
                     QtCore.Qt.ItemDataRole.UserRole + 1,
-                    sample.image_path or "",
+                    stored_path,
                 )
                 self._lookalikes_table.setItem(row, 0, cell0)
 

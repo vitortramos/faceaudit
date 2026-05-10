@@ -20,7 +20,7 @@ das thumbnails, mitigado pelo batching.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -47,6 +47,9 @@ class GalleryWidget(QtWidgets.QWidget):
         self._pixmap_cache: Dict[str, QtGui.QPixmap] = {}
         self._faces_ref: List = []  # faces atuais (para lookup por idx)
         self._pending_load: List[int] = []  # face_idx pendentes
+        # Dataset corrente — usado pra resolver paths em modo RELATIVE.
+        # Setado por `set_dataset` antes de cada `populate`.
+        self._dataset: Optional[Any] = None
         self._build_ui()
 
         # Timer batched pra carregar thumbs em background sem freezar UI.
@@ -154,6 +157,14 @@ class GalleryWidget(QtWidgets.QWidget):
         excluídas ou o dataset trocou)."""
         self._pixmap_cache.clear()
 
+    def set_dataset(self, dataset: Optional[Any]) -> None:
+        """Recebe o dataset corrente pra resolver paths em modo RELATIVE.
+        Chame antes de `populate(...)` quando o dataset trocar.
+        """
+        self._dataset = dataset
+        # Cache anterior pode ter chaves de outro dataset — invalida.
+        self._pixmap_cache.clear()
+
     # ── Lazy load ─────────────────────────────────────────────────────
 
     def _load_next_batch(self) -> None:
@@ -172,10 +183,15 @@ class GalleryWidget(QtWidgets.QWidget):
             face = self._faces_ref[idx] if idx < len(self._faces_ref) else None
             if face is None:
                 continue
-            path = getattr(face, "image_path", None)
-            if not path:
+            raw = getattr(face, "image_path", None)
+            if not raw:
                 continue
-            pix = self._get_or_load_pixmap(path)
+            resolved = (
+                str(self._dataset.resolve_image_path(face))
+                if self._dataset is not None
+                else raw
+            )
+            pix = self._get_or_load_pixmap(resolved)
             if pix is not None and not pix.isNull():
                 item = self.list_widget.item(idx)
                 if item is not None:
@@ -185,6 +201,8 @@ class GalleryWidget(QtWidgets.QWidget):
             self._load_timer.stop()
 
     def _get_or_load_pixmap(self, path: str) -> Optional[QtGui.QPixmap]:
+        """Carrega QPixmap com cache. `path` deve ser absoluto (caller
+        resolve via `dataset.resolve_image_path` em modo RELATIVE)."""
         cached = self._pixmap_cache.get(path)
         if cached is not None:
             return cached if not cached.isNull() else None

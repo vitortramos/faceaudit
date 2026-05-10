@@ -34,6 +34,7 @@ class ComparePairController(QtCore.QObject):
         face_b: Any,
         comparison_service: Optional[Any] = None,
         parent_view: Optional[QtWidgets.QWidget] = None,
+        dataset: Optional[Any] = None,
     ):
         super().__init__(parent_view)
         self._face_a = face_a
@@ -41,6 +42,10 @@ class ComparePairController(QtCore.QObject):
         self._comparison = comparison_service
 
         self.view = ComparePairView(parent=parent_view)
+        # Propaga dataset pra view resolver paths em modo RELATIVE
+        # antes de carregar as thumbnails (Image Pipeline output).
+        if dataset is not None and hasattr(self.view, "set_dataset"):
+            self.view.set_dataset(dataset)
 
         # Identifica a face mais à esquerda como "a" — pra ordem ser
         # determinística no preview (embora o usuário não veja diferença).
