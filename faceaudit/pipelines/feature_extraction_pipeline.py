@@ -405,9 +405,14 @@ class FeatureExtractionPipeline:
             self.logger.error(f"Erro ao enriquecer dataset: {e}", exc_info=True)
             raise e
 
-        # Persistência
+        # Persistência. Prefere o diretório original do dataset
+        # (`_parquet_dir`, set por `from_parquet`) — sem isso, datasets
+        # criados pelo Image Pipeline em subdir do projeto seriam
+        # regravados na raiz da biblioteca global, separados das suas
+        # `images/` e invisíveis pro usuário que abriu a versão do subdir.
         if dataset.name:
-            cache_file = self.storage_path / f"{dataset.name}.parquet"
+            base_dir = dataset._parquet_dir or self.storage_path
+            cache_file = Path(base_dir) / f"{dataset.name}.parquet"
             if progress_callback: progress_callback("Salvando alterações...", 99)
             try:
                 print(f"💾 [Pipeline] Salvando dataset enriquecido em: {cache_file}")
