@@ -475,10 +475,14 @@ class FeatureExtractionPipeline:
             f"➡ [Pipeline] {stage_label}: processando {n_missing} de {total} faces "
             f"(pulando {n_skipped} já enriquecidas)."
         )
-        return FaceDataset(
+        sub = FaceDataset(
             name=f"{dataset.name}_subset",
             faces=missing_faces,
+            path_mode=dataset.path_mode,
+            path_root=dataset.path_root,
         )
+        sub._parquet_dir = dataset._parquet_dir
+        return sub
 
     @staticmethod
     def _faces_needing_ff(dataset: FaceDataset, wanted_models: list) -> list:
