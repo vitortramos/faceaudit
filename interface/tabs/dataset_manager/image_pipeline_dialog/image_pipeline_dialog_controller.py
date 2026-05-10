@@ -110,6 +110,14 @@ class ImagePipelineDialogController:
         # referências fortes pra evitar GC durante a execução.
         self._quality_thread: Optional[QtCore.QThread] = None
         self._quality_worker: Optional[QualityScoresWorker] = None
+        # Threads ainda rodando que foram "canceladas" (resultado
+        # ignorado). Precisam continuar com referência Python viva
+        # até `thread.finished` disparar — caso contrário, o sip
+        # wrapper destrói o QThread ainda em execução e o Qt aborta
+        # com qFatal("QThread: Destroyed while thread is still running").
+        self._pending_quality_threads: List[
+            tuple[QtCore.QThread, QualityScoresWorker]
+        ] = []
 
         # View
         self.view = ImagePipelineDialogView(parent=parent)
@@ -739,26 +747,65 @@ class ImagePipelineDialogController:
 
     def _cancel_quality_worker(self):
         """Cancela worker em andamento. Não tem ponto de cancelamento
-        granular — apenas detacha referência e ignora o resultado
-        quando emitir."""
+        granular — desconecta as callbacks (resultado fica ignorado)
+        e move thread+worker pra lista de pendentes pra continuar
+        viva até terminar naturalmente. Sem isso, o sip wrapper
+        destruiria o QThread em execução."""
+        if self._quality_worker is None and self._quality_thread is None:
+            return
         if self._quality_worker is not None:
             try:
                 self._quality_worker.finished.disconnect(self._on_quality_finished)
                 self._quality_worker.error.disconnect(self._on_quality_error)
             except (TypeError, RuntimeError):
                 pass  # já desconectado ou worker GC'd
+        if self._quality_thread is not None:
+            thread = self._quality_thread
+            worker = self._quality_worker
+            entry = (thread, worker)
+            self._pending_quality_threads.append(entry)
+            thread.finished.connect(
+                lambda e=entry: self._discard_pending_thread(e)
+            )
         self._quality_worker = None
         self._quality_thread = None
+
+    def _discard_pending_thread(self, entry):
+        """Remove uma entrada (thread, worker) da lista de pendentes
+        após `thread.finished` — a partir daqui a thread já não está
+        rodando, então é seguro deixar o GC limpar."""
+        try:
+            self._pending_quality_threads.remove(entry)
+        except ValueError:
+            pass
 
     def _on_quality_finished(self, result):
         """Resultado do worker chegou — atualiza panel."""
         self.view.quality_scores.show_results(result)
-        self._quality_worker = None
-        self._quality_thread = None
+        self._move_current_quality_to_pending()
 
     def _on_quality_error(self, msg: str):
         """Worker falhou — mostra erro no panel."""
         self.view.quality_scores.show_error(msg)
+        self._move_current_quality_to_pending()
+
+    def _move_current_quality_to_pending(self):
+        """Move o (thread, worker) corrente pra lista de pendentes
+        quando o resultado chega — `worker.finished` ainda tem slots
+        `thread.quit` e `worker.deleteLater` pendentes na fila do
+        event loop, então a thread C++ ainda está rodando seu event
+        loop nesse instante. Dropar `self._quality_thread = None`
+        agora destruiria o sip wrapper → `~QThread()` em thread
+        ainda rodando → qFatal."""
+        if self._quality_thread is None:
+            return
+        thread = self._quality_thread
+        worker = self._quality_worker
+        entry = (thread, worker)
+        self._pending_quality_threads.append(entry)
+        thread.finished.connect(
+            lambda e=entry: self._discard_pending_thread(e)
+        )
         self._quality_worker = None
         self._quality_thread = None
 
