@@ -6,11 +6,15 @@ Define qual transformação será aplicada ao dataset:
     `target_dir`.
   - COPY_ORIGINALS: copia imagens pra `target_dir/images/`; paths
     viram relativos a essa subpasta. Caminho mais portátil.
-  - COPY_ALIGNED: detecta + alinha + salva PNG (requer FFService).
   - REBASE_PREFIX: substitui um prefixo de path por outro (sem cópia).
     Caso de uso: dataset criado em outra máquina com paths absolutos
     do tipo `/home/colega/...` ou `C:\\Users\\...`, e a mesma estrutura
     de pasta existe nesta máquina em outro caminho.
+
+Histórico: COPY_ALIGNED foi removido — não era path management,
+é transformação de conteúdo. Pra alinhar faces, use o Editor de
+Pipeline de Imagens com `Origem = Face alinhada (112×112)` e
+zero steps.
 """
 
 from __future__ import annotations
@@ -21,5 +25,4 @@ from enum import Enum
 class LocalizationMode(str, Enum):
     REWRITE_RELATIVE = "rewrite_relative"
     COPY_ORIGINALS = "copy_originals"
-    COPY_ALIGNED = "copy_aligned"  # PR L3 — exige FFService injetado no service
     REBASE_PREFIX = "rebase_prefix"

@@ -47,19 +47,14 @@ _COPY_SUBDIR = "images"
 class DatasetLocalizationService:
     """Stateless. Use uma instância por chamada ou compartilhe.
 
-    PR L3 — quando o constructor recebe um `ff_service`, o modo
-    COPY_ALIGNED fica disponível: o service usa
-    `ff_service.align_face_only` por face pra extrair a face alinhada
-    e salvar como PNG (lossless). Sem `ff_service`, COPY_ALIGNED
-    levanta `ValueError`.
+    Lida exclusivamente com path management — REWRITE_RELATIVE,
+    COPY_ORIGINALS, REBASE_PREFIX. Para alinhamento de faces (que
+    é transformação de conteúdo), use o Editor de Pipeline de
+    Imagens com `Origem = Face alinhada (112×112)` e zero steps.
     """
 
-    def __init__(self, ff_service=None):
-        # `ff_service` é um `FFService` (ou compatível com o protocolo
-        # `align_face_only(face, *, dataset, model)`). Tipado fraco
-        # pra evitar import circular — o service vive em
-        # `faceaudit.services.ff_service`.
-        self._ff_service = ff_service
+    def __init__(self):
+        pass
 
     @staticmethod
     def detect_path_prefix(dataset: FaceDataset) -> Optional[str]:
@@ -158,16 +153,6 @@ class DatasetLocalizationService:
                 )
             result = self._rebase_prefix(
                 dataset, old_prefix, target, progress_callback,
-            )
-        elif mode == LocalizationMode.COPY_ALIGNED:
-            if self._ff_service is None:
-                raise ValueError(
-                    "COPY_ALIGNED requer FFService injetado no constructor "
-                    "do DatasetLocalizationService. "
-                    "Ex: DatasetLocalizationService(ff_service=pipeline.ff_service)."
-                )
-            result = self._copy_aligned(
-                dataset, target, naming, skip_existing, progress_callback,
             )
         else:
             raise ValueError(f"Modo não suportado: {mode}")
@@ -443,150 +428,6 @@ class DatasetLocalizationService:
             n_failed=len(failures),
             failures=tuple(failures),
         )
-
-    # ── COPY_ALIGNED (PR L3) ───────────────────────────────────────────────
-
-    def _copy_aligned(
-        self,
-        dataset: FaceDataset,
-        target_dir: Path,
-        naming: NamingStrategy,
-        skip_existing: bool,
-        progress_callback: Optional[Callable[[int, int, str], None]],
-    ) -> LocalizationResult:
-        """Salva a face JÁ alinhada (via `ff_service.align_face_only`)
-        como PNG em `target_dir/images/`. Sempre PNG (lossless — face
-        alinhada é input de modelo, não tolera artefatos de JPEG).
-
-        Pipeline por face: resolve src → `align_face_only` (detect +
-        norm_crop) → `cv2.imwrite` PNG no destino → recalcula hash do
-        PNG (hash do conteúdo mudou — não é mais o do arquivo
-        original).
-
-        Idempotência via `skip_existing=True`: se o PNG destino já
-        existe, pula. Diferente de `_copy_originals` aqui não
-        comparamos hash (o conteúdo é determinístico dado a mesma
-        imagem-fonte + modelo, então existir → bate). Se conteúdo
-        mudou, perito apaga o destino e roda de novo.
-        """
-        import cv2
-        from faceaudit.services.hash_service import HashService
-
-        images_dir = target_dir / _COPY_SUBDIR
-        images_dir.mkdir(parents=True, exist_ok=True)
-
-        new_faces: List[FaceInfo] = []
-        failures: List[Tuple[str, str]] = []
-        n_copied = 0
-        n_skipped = 0
-        n_processed = 0
-        used_names: set[str] = set()
-        hash_service = HashService()
-
-        for idx, face in enumerate(dataset.faces):
-            n_processed += 1
-            if progress_callback:
-                progress_callback(idx, len(dataset), face.image_path or "")
-
-            try:
-                src = self._resolve_absolute(dataset, face)
-            except Exception as e:
-                failures.append((face.image_path or "<empty>", f"resolve: {e}"))
-                continue
-
-            if not src.exists():
-                failures.append((str(src), "arquivo não encontrado"))
-                continue
-
-            # Determina o nome de destino — sempre força extensão .png
-            try:
-                rel_dest = self._build_dest_name(face, src, naming, used_names)
-                # Force PNG (face alinhada precisa de lossless)
-                rel_dest = self._with_png_extension(rel_dest)
-            except Exception as e:
-                failures.append((str(src), f"naming: {e}"))
-                continue
-
-            dst = images_dir / rel_dest
-            dst.parent.mkdir(parents=True, exist_ok=True)
-
-            # Idempotência simples: PNG existe → pula. Não comparamos
-            # hash byte-a-byte pra evitar custo de recomputar
-            # alinhamento só pra checar.
-            if skip_existing and dst.exists():
-                n_skipped += 1
-                used_names.add(rel_dest)
-                # Hash do PNG existente pra propagar no FaceInfo
-                file_hash = hash_service.calculate_file_hash(dst)
-                clone = self._clone_face_with_path(face, rel_dest)
-                clone.hash = file_hash
-                clone.file_name = Path(rel_dest).name
-                new_faces.append(clone)
-                continue
-
-            # Roda align_face_only — detect + norm_crop, sem embedding.
-            try:
-                bgr_aligned = self._ff_service.align_face_only(
-                    face, dataset=dataset,
-                )
-            except Exception as e:
-                failures.append((str(src), f"align: {e}"))
-                continue
-
-            if bgr_aligned is None:
-                failures.append((str(src), "nenhuma face detectada"))
-                continue
-
-            # Salva PNG. cv2.imwrite recebe BGR e produz PNG correto.
-            try:
-                ok = cv2.imwrite(str(dst), bgr_aligned)
-                if not ok:
-                    failures.append((str(src), "cv2.imwrite retornou False"))
-                    continue
-            except Exception as e:
-                failures.append((str(src), f"imwrite: {e}"))
-                continue
-
-            n_copied += 1
-            used_names.add(rel_dest)
-
-            # Recalcula hash (conteúdo mudou — agora é o PNG da face
-            # alinhada, não mais o arquivo original).
-            file_hash = hash_service.calculate_file_hash(dst)
-            clone = self._clone_face_with_path(face, rel_dest)
-            clone.hash = file_hash
-            clone.file_name = Path(rel_dest).name
-            new_faces.append(clone)
-
-        new_dataset = FaceDataset(
-            name=dataset.name,
-            description=dataset.description,
-            faces=new_faces,
-            column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
-            path_mode=PathMode.RELATIVE,
-            path_root=_COPY_SUBDIR,
-        )
-        new_dataset.hash = None
-
-        return LocalizationResult(
-            dataset=new_dataset,
-            target_dir=target_dir,
-            mode=LocalizationMode.COPY_ALIGNED,
-            naming=naming,
-            n_processed=n_processed,
-            n_copied=n_copied,
-            n_skipped=n_skipped,
-            n_failed=len(failures),
-            failures=tuple(failures),
-        )
-
-    @staticmethod
-    def _with_png_extension(rel_dest: str) -> str:
-        """Força a extensão `.png` no path relativo. PRESERVE pode ter
-        chegado com `.jpg`/`.heic`/etc. — face alinhada vai sempre
-        como PNG lossless."""
-        p = PurePosixPath(rel_dest)
-        return p.with_suffix(".png").as_posix()
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

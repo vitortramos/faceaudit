@@ -45,14 +45,11 @@ _MODE_OPTIONS = [
      "<code>/Users/eu/data/imgs/...</code>). Não copia nada — só "
      "reescreve os paths. Sanity check: cada arquivo precisa existir "
      "no novo caminho."),
-    (LocalizationMode.COPY_ALIGNED,
-     "Copiar faces alinhadas (PNG)",
-     "Para cada face: detecta + alinha (via ForensicFace) e salva como "
-     "PNG (lossless) em <pasta destino>/images/. Resultado: dataset "
-     "enxuto com APENAS as faces (já no input do modelo, 112×112). "
-     "Operação custosa (~80-150 ms por face) — datasets grandes podem "
-     "levar dezenas de minutos. Idempotente: re-execução pula PNGs já "
-     "criados. Requer ForensicFace instalado."),
+    # COPY_ALIGNED foi removido daqui — não é operação de path
+    # management (escopo do Localize), é transformação de conteúdo.
+    # Pra alinhar faces, use o Editor de Pipeline de Imagens com
+    # `Origem = Face alinhada (112×112)` e zero steps — produz dataset
+    # com APENAS faces alinhadas como PNG.
 ]
 
 _NAMING_OPTIONS = [
@@ -214,12 +211,9 @@ class LocalizeDatasetDialog(QtWidgets.QDialog):
             if m == mode:
                 self.lbl_mode_help.setText(h)
                 break
-        # Naming faz sentido nos dois modos de cópia (originais e alinhadas).
+        # Naming faz sentido em modo de cópia (originais).
         # Em REBASE_PREFIX e REWRITE_RELATIVE não há cópia, sem renomear.
-        is_copy = mode in (
-            LocalizationMode.COPY_ORIGINALS,
-            LocalizationMode.COPY_ALIGNED,
-        )
+        is_copy = mode == LocalizationMode.COPY_ORIGINALS
         self.naming_box.setEnabled(is_copy)
         # Idempotência só faz sentido em modos de cópia.
         self.chk_skip_existing.setEnabled(is_copy)

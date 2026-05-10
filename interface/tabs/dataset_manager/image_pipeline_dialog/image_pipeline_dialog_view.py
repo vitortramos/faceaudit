@@ -77,12 +77,33 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.cmb_input_source = QtWidgets.QComboBox()
         for src in ImageInputSource:
             self.cmb_input_source.addItem(src.label_pt, userData=src)
+        self.cmb_input_source.setToolTip(
+            "<b>Imagem original</b>: pipeline opera na foto inteira "
+            "(face com background, pose variada). Útil pra simular "
+            "degradação no upload/captura (compressão JPEG, blur, etc.).<br><br>"
+            "<b>Face alinhada (112×112)</b>: o ForensicFace detecta e "
+            "alinha a face ANTES de qualquer step rodar. Useful pra "
+            "degradar exatamente o que o modelo vê. <b>Truque</b>: "
+            "selecionar esta opção + zero steps = pipeline produz "
+            "dataset com APENAS as faces alinhadas como PNG "
+            "(substitui o antigo 'Copiar Faces Alinhadas' do "
+            "Localizar Dataset)."
+        )
         self.cmb_input_source.currentIndexChanged.connect(
             lambda _i: self.input_source_changed.emit(
                 self.cmb_input_source.currentData()
             )
         )
         top_row.addWidget(self.cmb_input_source)
+
+        # Help text dinâmico: muda conforme a origem selecionada.
+        # Cinza pequeno, abaixo do dropdown. Critical pra que o usuário
+        # entenda o efeito sem ter que descobrir empiricamente.
+        self.lbl_input_source_help = QtWidgets.QLabel()
+        self.lbl_input_source_help.setStyleSheet(
+            "color: #666; font-size: 10px; padding: 0 4px;"
+        )
+        self.lbl_input_source_help.setWordWrap(True)
 
         top_row.addWidget(QtWidgets.QLabel("Seed:"))
         self.spn_seed = QtWidgets.QSpinBox()
@@ -112,6 +133,13 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         top_row.addWidget(self.btn_save)
 
         main.addLayout(top_row)
+        main.addWidget(self.lbl_input_source_help)
+        # Texto inicial — atualizado dinamicamente em set_pipeline_meta
+        # e quando o usuário troca o dropdown.
+        self.cmb_input_source.currentIndexChanged.connect(
+            lambda _i: self._update_input_source_help()
+        )
+        self._update_input_source_help()
 
         # ── Splitter: esquerda (lista + config) | direita (preview) ──
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
@@ -164,6 +192,25 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         bottom_row.addWidget(self.btn_close)
         main.addLayout(bottom_row)
 
+    def _update_input_source_help(self) -> None:
+        """Texto cinza embaixo do dropdown — descreve o efeito da
+        opção corrente. Permite o usuário entender que zero steps
+        + Face alinhada produz dataset de faces alinhadas."""
+        src = self.cmb_input_source.currentData()
+        if src == ImageInputSource.ALIGNED_FACE:
+            self.lbl_input_source_help.setText(
+                "ℹ Detect + align rodam <b>antes</b> dos steps. "
+                "Pipeline com zero steps salva apenas a face alinhada "
+                "como PNG (substitui 'Copiar Faces Alinhadas' do "
+                "Localizar Dataset)."
+            )
+        else:
+            self.lbl_input_source_help.setText(
+                "ℹ Steps operam na foto inteira — útil pra simular "
+                "degradação no upload/captura (compressão, blur, "
+                "oclusão, etc.)."
+            )
+
     # ── Setters de estado ──────────────────────────────────────────────────
 
     def set_pipeline_meta(
@@ -183,6 +230,7 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
                 self.cmb_input_source.setCurrentIndex(i)
                 break
         self.cmb_input_source.blockSignals(False)
+        self._update_input_source_help()
 
         self.spn_seed.blockSignals(True)
         self.spn_seed.setValue(int(seed))

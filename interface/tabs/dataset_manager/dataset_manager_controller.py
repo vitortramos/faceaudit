@@ -932,11 +932,6 @@ class DatasetManagerController(QtCore.QObject):
         skip_existing: bool,
         old_prefix: Optional[str] = None,
     ):
-        # PR L3 — passa ff_service do pipeline pra habilitar COPY_ALIGNED.
-        # Quando o modo é REWRITE_RELATIVE / COPY_ORIGINALS o
-        # ff_service é ignorado pelo service. Pra COPY_ALIGNED, é
-        # necessário (caso contrário service levanta ValueError).
-        ff_svc = getattr(self.pipeline, "ff_service", None) if self.pipeline else None
         worker = LocalizeDatasetWorker(
             dataset=self.dataset,
             target_dir=target_dir,
@@ -944,7 +939,6 @@ class DatasetManagerController(QtCore.QObject):
             naming=naming,
             skip_existing=skip_existing,
             old_prefix=old_prefix,
-            ff_service=ff_svc,
         )
         # Guarda contexto pra usar no on_finished
         self._localize_target_dir = target_dir
