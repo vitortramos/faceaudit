@@ -300,9 +300,15 @@ class DatasetBalancingService:
             ds._parquet_dir = getattr(input_dataset, "_parquet_dir", None)
             return ds
         if isinstance(input_dataset, EmbeddingDataset):
-            return EmbeddingDataset(
+            ds = EmbeddingDataset(
                 name=new_name,
                 description=new_desc,
                 items=kept_items,
             )
+            # Preserva metadados se a classe expuser (paridade com o
+            # comportamento do executor original).
+            loaded_md = getattr(input_dataset, "loaded_metadata", None)
+            if isinstance(loaded_md, dict):
+                ds.loaded_metadata = loaded_md.copy()
+            return ds
         return kept_items
