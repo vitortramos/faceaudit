@@ -209,7 +209,7 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
         transformed_resource = StrategyResource(
             resource_id=output_resource_id,
             name=output_resource_id,
-            resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+            resource_type=StrategyResourceType.DATASET,
             payload=transformed_dataset,
             artifact_ref=None,
         )
@@ -281,14 +281,14 @@ class PipelineApplicationInstructionExecutor(StrategyInstructionExecutorBase):
         transformed_source_resource = StrategyResource(
             resource_id=source_output_id,
             name=source_output_id,
-            resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+            resource_type=StrategyResourceType.DATASET,
             payload=transformed_source_dataset,
             artifact_ref=None,
         )
         transformed_target_resource = StrategyResource(
             resource_id=target_output_id,
             name=target_output_id,
-            resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+            resource_type=StrategyResourceType.DATASET,
             payload=transformed_target_dataset,
             artifact_ref=None,
         )

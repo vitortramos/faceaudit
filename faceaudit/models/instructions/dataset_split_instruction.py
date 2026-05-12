@@ -205,8 +205,8 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
         return specs
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
-        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        DS = (StrategyResourceType.DATASET,)
+        OUT = (StrategyResourceType.DATASET,)
 
         # Labels dinâmicos por modo, deixando claro qual dataset recebe o quê.
         # Convenção do executor:

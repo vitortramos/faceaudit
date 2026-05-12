@@ -390,6 +390,88 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return results
 
+    # Subpastas escaneadas em busca de arquivos órfãos. Mantemos apenas as pastas
+    # cujos arquivos são tipicamente referenciados via StrategyArtifactReference.
+    # GRAPHICS/REPORTS/CHECKPOINTS são produzidos por executores mas não entram em
+    # `artifact_ref` (snapshots, exports, estados intermediários — todos derivativos).
+    # DEFINITIONS é a fonte das próprias referências, MODELS é varrido pelo
+    # repositório de modelos treinados, IMAGES contém cópias originais referenciadas
+    # por FaceInfo (não por artifact_ref).
+    _ORPHAN_SCAN_FOLDERS = (
+        ProjectFolder.DATASETS,
+        ProjectFolder.PIPELINES,
+        ProjectFolder.SPLIT_CONFIGS,
+        ProjectFolder.MINING_CONFIGS,
+        ProjectFolder.ARTIFACTS,
+    )
+
+    # Sidecars produzidos pelo sistema (sempre derivados de um artefato principal).
+    # Não são órfãos verdadeiros — se o artefato principal for órfão, o sidecar
+    # vira lixo junto, mas reportá-lo separado polui a auditoria.
+    _SIDECAR_SUFFIXES = (
+        "_stats.json",
+        "_dist.json",
+        "_metrics.json",
+        "_scores_stats.json",
+    )
+
+    def scan_orphans(
+        self,
+        referenced_paths: List[str],
+    ) -> List[ArtifactIntegrityResult]:
+        """
+        Lista arquivos presentes em subpastas auditadas mas não referenciados.
+
+        Para cada arquivo encontrado em `_ORPHAN_SCAN_FOLDERS` cujo caminho relativo
+        (normalizado para forward-slash) não conste em `referenced_paths`, retorna
+        um `ArtifactIntegrityResult` com status ORPHAN. Sidecars conhecidos
+        (`_stats.json`, `_dist.json`, etc.) são ignorados.
+
+        Args:
+            referenced_paths: Lista de paths relativos (forward-slash) declarados
+                              em `StrategyArtifactReference.path` por alguma
+                              estratégia do projeto.
+
+        Returns:
+            Lista de `ArtifactIntegrityResult` com `status=ORPHAN`, uma entrada
+            por arquivo órfão. `artifact_ref` é sintético (artifact_type=UNKNOWN,
+            hash=None) e carrega o path relativo do órfão.
+        """
+        normalized_refs = {p.replace("\\", "/") for p in referenced_paths if p}
+        results: List[ArtifactIntegrityResult] = []
+
+        for folder in self._ORPHAN_SCAN_FOLDERS:
+            folder_path = self._root / folder.value
+            if not folder_path.exists():
+                continue
+
+            for file_path in folder_path.rglob("*"):
+                if not file_path.is_file():
+                    continue
+
+                rel_path = file_path.relative_to(self._root).as_posix()
+
+                if any(rel_path.endswith(suffix) for suffix in self._SIDECAR_SUFFIXES):
+                    continue
+
+                if rel_path in normalized_refs:
+                    continue
+
+                synthetic_ref = StrategyArtifactReference(
+                    artifact_type=StrategyArtifactType.UNKNOWN,
+                    path=rel_path,
+                    hash=None,
+                )
+                results.append(ArtifactIntegrityResult(
+                    artifact_ref=synthetic_ref,
+                    status=ArtifactIntegrityStatus.ORPHAN,
+                    expected_hash=None,
+                    actual_hash=None,
+                    abs_path=file_path,
+                ))
+
+        return results
+
     # =========================================================================
     # AUXILIARES
     # =========================================================================

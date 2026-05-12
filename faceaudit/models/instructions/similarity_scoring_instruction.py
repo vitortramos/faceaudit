@@ -87,7 +87,7 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
         self._sync_declared_io()
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        DS = (StrategyResourceType.DATASET,)
         TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
         OUT = (StrategyResourceType.SIMILARITY_SCORES,)
         return [

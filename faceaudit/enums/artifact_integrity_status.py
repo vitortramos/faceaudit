@@ -24,6 +24,9 @@ class ArtifactIntegrityStatus(Enum):
     HASH_UNAVAILABLE = "HASH_UNAVAILABLE"
     """Arquivo presente, mas a referência não contém hash para comparar (gravado sem hash)."""
 
+    ORPHAN = "ORPHAN"
+    """Arquivo presente em subpasta auditada, mas não referenciado por nenhuma estratégia do projeto."""
+
     def __str__(self) -> str:
         return self.value
 

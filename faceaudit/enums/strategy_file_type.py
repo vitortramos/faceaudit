@@ -56,7 +56,10 @@ class StrategyFileType(Enum):
     )
 
     # --- DATASETS ---
-    INTERMEDIATE_DATASET = (
+    # Path físico pra DATASETs DERIVADOS (produzidos por instrução).
+    # Distinto de SOURCE_DATASET (cópia do dataset importado, nome
+    # escolhido pelo usuário) — ver mapping em `for_artifact`.
+    DERIVED_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
         "{strategy_id}_{resource_id}",
@@ -254,7 +257,7 @@ class StrategyFileType(Enum):
             StrategyArtifactType.TRAINED_PIPELINE:          cls.TRAINED_PIPELINE,
             StrategyArtifactType.TRAINED_SIMILARITY_MODEL:  cls.TRAINED_SIMILARITY_MODEL,
             StrategyArtifactType.TRAINED_CALIBRATION_MODEL: cls.TRAINED_CALIBRATION_MODEL,
-            StrategyArtifactType.INTERMEDIATE_DATASET:      cls.INTERMEDIATE_DATASET,
+            StrategyArtifactType.DERIVED_DATASET:           cls.DERIVED_DATASET,
             StrategyArtifactType.TRANSFORMED_DATASET:       cls.TRANSFORMED_DATASET,
             StrategyArtifactType.SPLIT_RESULT:              cls.SPLIT_RESULT,
             StrategyArtifactType.MERGE_RESULT:              cls.MERGE_RESULT,

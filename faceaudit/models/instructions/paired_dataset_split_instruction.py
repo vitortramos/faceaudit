@@ -140,8 +140,8 @@ class PairedDatasetSplitInstruction(StrategyInstructionDefinition):
         ]
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
-        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        DS = (StrategyResourceType.DATASET,)
+        OUT = (StrategyResourceType.DATASET,)
         return [
             ResourceFieldSpec("primary_dataset_resource_id",   "Primary Dataset", DS),
             ResourceFieldSpec("secondary_dataset_resource_id", "Secondary Dataset", DS),

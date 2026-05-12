@@ -69,4 +69,7 @@ class ArtifactIntegrityResult:
         if self.status == ArtifactIntegrityStatus.HASH_UNAVAILABLE:
             return f"[SEM HASH] {self.relative_path} — arquivo presente, hash não registrado"
 
+        if self.status == ArtifactIntegrityStatus.ORPHAN:
+            return f"[ÓRFÃO] {self.relative_path} — arquivo presente, sem estratégia que o referencie"
+
         return f"[{self.status}] {self.relative_path}"

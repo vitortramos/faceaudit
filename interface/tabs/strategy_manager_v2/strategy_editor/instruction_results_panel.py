@@ -95,28 +95,44 @@ class _PngSnapshotWidget(QtWidgets.QWidget):
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
-        # Aceita qualquer tamanho dado pelo layout; sizeHint pequeno
-        # garante que o widget NÃO empurra o pai a crescer.
-        self.setSizePolicy(
+        # Largura: expande pra preencher a coluna. Altura: derivada do
+        # aspect ratio do pixmap via heightForWidth (ver método abaixo).
+        policy = QtWidgets.QSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Preferred,
         )
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
         self.setMinimumSize(1, 1)
 
-        # Pixmap original em resolução cheia. paintEvent escala on-demand
-        # mantendo aspecto. Sem manter o original, sucessivos resizes
-        # acumulariam perda de qualidade.
+        # Pixmap original em resolução cheia. paintEvent escala on-demand.
+        # Sem manter o original, sucessivos resizes acumulariam perda de
+        # qualidade.
         self._full_pixmap: Optional[QtGui.QPixmap] = None
         self._placeholder_text: str = "Execute para gerar visualização"
 
+    def hasHeightForWidth(self) -> bool:  # noqa: N802 — Qt API
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt API
+        """Altura pedida pra uma dada largura — derivada do aspect ratio
+        do PNG carregado. Permite que o layout dê espaço vertical suficiente
+        pra exibir a imagem cheia sem padding lateral."""
+        if self._full_pixmap is None or self._full_pixmap.width() <= 0:
+            return 200  # placeholder default
+        aspect_h_w = self._full_pixmap.height() / self._full_pixmap.width()
+        return max(120, int(width * aspect_h_w))
+
     def sizeHint(self) -> QtCore.QSize:  # noqa: N802 — Qt API
-        # Pequeno e fixo — independente do pixmap. Sem isso, mostrar uma
-        # imagem grande fazia o widget pedir muito espaço e crescer.
-        return QtCore.QSize(120, 80)
+        # Largura intencionalmente pequena pra deixar o layout decidir
+        # (Expanding); altura derivada do aspect quando há imagem.
+        w = 320
+        return QtCore.QSize(w, self.heightForWidth(w))
 
     def show_placeholder(self, text: str) -> None:
         self._full_pixmap = None
         self._placeholder_text = text or ""
+        self.updateGeometry()
         self.update()
 
     def show_image(self, png_path) -> bool:
@@ -130,6 +146,10 @@ class _PngSnapshotWidget(QtWidgets.QWidget):
             return False
         self._full_pixmap = pixmap
         self._placeholder_text = ""
+        # updateGeometry sinaliza ao layout que sizeHint/heightForWidth
+        # mudaram — sem isso a coluna não recalcula a altura ao trocar
+        # de imagem.
+        self.updateGeometry()
         self.update()
         return True
 
@@ -138,17 +158,18 @@ class _PngSnapshotWidget(QtWidgets.QWidget):
         rect = self.rect()
 
         if self._full_pixmap is not None:
-            # Scale on-demand mantendo aspecto. Custo da operação a cada
-            # repaint é trivial (escala raster), e o sizing do widget
-            # NÃO depende do tamanho do pixmap escalado — quebra o loop.
-            scaled = self._full_pixmap.scaled(
-                rect.size(),
-                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            # Escala pela LARGURA — preenche toda a largura disponível.
+            # Altura segue o aspect ratio do PNG. heightForWidth garante
+            # que o layout dê altura compatível, então não cropamos.
+            scaled = self._full_pixmap.scaledToWidth(
+                rect.width(),
                 QtCore.Qt.TransformationMode.SmoothTransformation,
             )
-            x = (rect.width() - scaled.width()) // 2
-            y = (rect.height() - scaled.height()) // 2
-            painter.drawPixmap(x, y, scaled)
+            # Centraliza verticalmente caso o widget receba altura > pedida
+            # (raro, mas pode acontecer com stretch maior). Largura sempre
+            # encosta nas duas bordas.
+            y = max(0, (rect.height() - scaled.height()) // 2)
+            painter.drawPixmap(0, y, scaled)
             return
 
         if self._placeholder_text:
@@ -521,7 +542,36 @@ class _ResultsCard(QtWidgets.QWidget):
             )
 
         if self._plot_widget is not None:
-            pp_layout.addWidget(self._plot_widget, 1)
+            # Wrap em "card" branco padronizado pra que todos os tipos de
+            # plot inline (snapshot PNG simples, tabbed PNG, ScoreDistribution
+            # vivo, Hubness) tenham a mesma moldura visual. Sem isso, plots
+            # baseados em _PngSnapshotWidget puro ficavam direto no fundo
+            # cinza-escuro do painel, enquanto STRATEGY_EVALUATION (QTabWidget)
+            # já trazia branco da Qt default — daí a inconsistência.
+            plot_card = QtWidgets.QFrame()
+            plot_card.setObjectName("plot_card")
+            plot_card.setStyleSheet(
+                "QFrame#plot_card {"
+                "  background-color: white;"
+                "  border: 1px solid #d0d8e0;"
+                "  border-radius: 4px;"
+                "}"
+            )
+            # Largura: expande pra preencher a coluna. Altura: derivada do
+            # heightForWidth do plot widget interno (que escala o PNG pela
+            # largura preservando aspect ratio). Mínimo pra placeholder.
+            card_policy = QtWidgets.QSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Expanding,
+                QtWidgets.QSizePolicy.Policy.Preferred,
+            )
+            card_policy.setHeightForWidth(True)
+            plot_card.setSizePolicy(card_policy)
+            plot_card.setMinimumHeight(140)
+            card_layout = QtWidgets.QVBoxLayout(plot_card)
+            card_layout.setContentsMargins(0, 0, 0, 0)
+            card_layout.setSpacing(0)
+            card_layout.addWidget(self._plot_widget, 1)
+            pp_layout.addWidget(plot_card, 1)
 
         self._plot_stack.addWidget(plot_page)  # index 1
 

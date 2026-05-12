@@ -165,7 +165,7 @@ class PairedDatasetSplitInstructionExecutor(StrategyInstructionExecutorBase):
                 context.set_resource(StrategyResource(
                     resource_id=oid,
                     name=oid,
-                    resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                    resource_type=StrategyResourceType.DATASET,
                     payload=ds,
                     artifact_ref=None,
                 ))

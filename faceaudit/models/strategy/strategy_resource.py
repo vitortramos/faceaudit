@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar, Any
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
 
@@ -54,6 +55,17 @@ class StrategyResource(JSONSerializableMixin):
     artifact_ref: Optional[StrategyArtifactReference] = field(
         default=None,
         metadata={"help": "Referência opcional ao artefato físico persistido."}
+    )
+    category: ResourceCategory = field(
+        default=ResourceCategory.DERIVED,
+        metadata={
+            "help": (
+                "Origem do recurso: PRIMARY se foi importado pelo usuário "
+                "via 'Adicionar Recurso', DERIVED se foi produzido por "
+                "execução de instrução. Default DERIVED — os fluxos de "
+                "importação setam PRIMARY explicitamente."
+            ),
+        },
     )
 
     @property
@@ -108,8 +120,22 @@ class StrategyResource(JSONSerializableMixin):
             "name": self.name,
             "resource_type": resource_type_data,
             "artifact_ref": artifact_ref_data,
+            "category": self.category.value,
             # payload é runtime-only, intencionalmente omitido.
         }
+
+    def to_artifact_type(self):
+        """Tipo de artefato físico pra persistência, ciente da categoria.
+
+        Recursos PRIMARY não são re-persistidos pelo executor (já vivem
+        em disco — foram importados; substituir destruiria o original).
+        Pra DERIVED, delega ao `StrategyResourceType.to_artifact_type()`.
+
+        Retorna None pra (PRIMARY) ou tipos sem mapeamento de artefato.
+        """
+        if self.category == ResourceCategory.PRIMARY:
+            return None
+        return self.resource_type.to_artifact_type()
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -128,6 +154,13 @@ class StrategyResource(JSONSerializableMixin):
 
         processed_data = data.copy()
 
+        # Captura a string original ANTES da normalização — usada pra
+        # detectar JSONs legados onde `resource_type="INTERMEDIATE_DATASET"`
+        # (tipo extinto, agora é DATASET + category=DERIVED).
+        raw_resource_type = (
+            processed_data.get("resource_type") or ""
+        ).upper().strip()
+
         if "resource_type" in processed_data and processed_data["resource_type"]:
             processed_data["resource_type"] = StrategyResourceType.from_str(
                 processed_data["resource_type"]
@@ -137,6 +170,34 @@ class StrategyResource(JSONSerializableMixin):
             processed_data["artifact_ref"] = StrategyArtifactReference.from_dict(
                 processed_data["artifact_ref"]
             )
+
+        # Migração de categoria: JSONs antigos não tinham o campo. Infere
+        # a partir do `resource_type` original e dos defaults conhecidos:
+        #   - "INTERMEDIATE_DATASET" legado → DATASET + DERIVED
+        #   - "DATASET" legado → assumimos PRIMARY (era usado só pra
+        #     datasets importados pelo usuário antes da unificação)
+        #   - Demais tipos → DERIVED (default sensato; trained models,
+        #     scores, validation_result etc. nunca são primários)
+        if "category" in processed_data and processed_data["category"]:
+            processed_data["category"] = ResourceCategory.from_str(
+                processed_data["category"]
+            )
+        else:
+            if raw_resource_type == "INTERMEDIATE_DATASET":
+                processed_data["category"] = ResourceCategory.DERIVED
+            elif raw_resource_type == "DATASET":
+                processed_data["category"] = ResourceCategory.PRIMARY
+            else:
+                # Configs primários (PIPELINE_CONFIG/SPLIT_CONFIG/MINING_CONFIG)
+                # — tudo importado via "Adicionar Recurso". Demais derivados.
+                if raw_resource_type in {
+                    "PIPELINE_CONFIG", "SPLIT_CONFIG", "MINING_CONFIG",
+                    "MERGE_CONFIG", "SIMILARITY_MODEL_CONFIG",
+                    "CALIBRATION_MODEL_CONFIG",
+                }:
+                    processed_data["category"] = ResourceCategory.PRIMARY
+                else:
+                    processed_data["category"] = ResourceCategory.DERIVED
 
         # Retrocompat: campo removido — embedding_type agora vive na LRStrategyDefinition
         processed_data.pop("embedding_column", None)

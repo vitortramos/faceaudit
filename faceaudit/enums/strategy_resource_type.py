@@ -15,8 +15,13 @@ class StrategyResourceType(Enum):
     """
 
     # --- DADOS ---
+    # DATASET cobre tanto datasets importados pelo usuário ("primários")
+    # quanto datasets produzidos por execução de instrução ("derivados").
+    # A distinção fica no campo `category` (ResourceCategory) do
+    # StrategyResource. Antes existia INTERMEDIATE_DATASET separado pra
+    # marcar a versão derivada — mas isso cindia artificialmente um único
+    # conceito (FaceDataset/EmbeddingDataset) por provenância.
     DATASET = "DATASET"
-    INTERMEDIATE_DATASET = "INTERMEDIATE_DATASET"
 
     # --- CONFIGURAÇÕES ---
     PIPELINE_CONFIG = "PIPELINE_CONFIG"
@@ -69,7 +74,12 @@ class StrategyResourceType(Enum):
             StrategyResourceType.TRAINED_PIPELINE:          StrategyArtifactType.TRAINED_PIPELINE,
             StrategyResourceType.TRAINED_SIMILARITY_MODEL:  StrategyArtifactType.TRAINED_SIMILARITY_MODEL,
             StrategyResourceType.TRAINED_CALIBRATION_MODEL: StrategyArtifactType.TRAINED_CALIBRATION_MODEL,
-            StrategyResourceType.INTERMEDIATE_DATASET:      StrategyArtifactType.INTERMEDIATE_DATASET,
+            # DATASET (derivado) usa o tipo físico DERIVED_DATASET — path
+            # `{strategy_id}_{resource_id}.parquet` em `datasets/`.
+            # Primários nunca chegam aqui: `StrategyResource.to_artifact_type`
+            # (ciente da `category`) retorna None pra PRIMARY, fazendo
+            # `persist_produced_resource` pular.
+            StrategyResourceType.DATASET:                   StrategyArtifactType.DERIVED_DATASET,
             StrategyResourceType.TRAJECTORY_DATA:           StrategyArtifactType.TRAJECTORY_DATA,
             StrategyResourceType.SIMILARITY_SCORES:         StrategyArtifactType.SIMILARITY_SCORES,
             StrategyResourceType.CALIBRATED_SCORES:         StrategyArtifactType.CALIBRATED_SCORES,
@@ -87,8 +97,17 @@ class StrategyResourceType(Enum):
     def from_str(cls, value: str) -> StrategyResourceType:
         """
         Reconstrói o enum a partir de string com fallback seguro.
+
+        Legacy shim: `"INTERMEDIATE_DATASET"` (tipo extinto) mapeia pra
+        `DATASET` — a provenância (derivado) é capturada pela `category`
+        no `StrategyResource.from_dict`. JSONs antigos abrem normalmente.
         """
+        if not value:
+            return cls.UNKNOWN
+        normalized = value.upper().strip()
+        if normalized == "INTERMEDIATE_DATASET":
+            return cls.DATASET
         try:
-            return cls(value.upper() if value else "")
+            return cls(normalized)
         except ValueError:
             return cls.UNKNOWN

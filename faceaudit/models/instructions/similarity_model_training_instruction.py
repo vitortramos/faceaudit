@@ -83,7 +83,7 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         ]
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        DS = (StrategyResourceType.DATASET,)
         TS = (StrategyResourceType.TRAINED_SIMILARITY_MODEL,)
         specs: list[ResourceFieldSpec] = []
         # Dataset só aparece para PLDA — COSINE é stateless e não precisa de

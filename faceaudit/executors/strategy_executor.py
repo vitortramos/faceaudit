@@ -333,12 +333,23 @@ class StrategyExecutor:
                     from faceaudit.models.validation_result_plot import (
                         render_validation_pngs,
                         validation_result_png_paths,
+                        write_validation_metrics_sidecar,
                     )
                     if isinstance(resource.payload, StrategyValidationResult):
                         paths = validation_result_png_paths(
                             project_root, strategy_id, resource.resource_id,
                         )
                         render_validation_pngs(resource.payload, paths)
+                        # Sidecar de métricas escalares — sobrevive ao
+                        # drop do payload em memória quando o usuário troca
+                        # de estratégia. Sem ele a tabela do painel de
+                        # resultados ficava em branco até reexecutar.
+                        if ref.path:
+                            from pathlib import Path as _Path
+                            pickle_abs = _Path(project_root) / ref.path
+                            write_validation_metrics_sidecar(
+                                pickle_abs, resource.payload,
+                            )
             except Exception:
                 pass  # best-effort; perda de PNG não invalida o parquet
 
@@ -369,7 +380,7 @@ class StrategyExecutor:
         for resource in strategy_definition.resources:
             if resource.resource_type not in (
                 StrategyResourceType.DATASET,
-                StrategyResourceType.INTERMEDIATE_DATASET,
+                StrategyResourceType.DATASET,
             ):
                 continue
             payload = getattr(resource, "payload", None)

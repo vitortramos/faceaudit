@@ -15,7 +15,7 @@ gera os 4 PNGs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 from matplotlib.figure import Figure
@@ -278,6 +278,91 @@ def render_validation_pngs(
         except Exception:
             out[key] = False
     return out
+
+
+# =========================================================================
+# Sidecar de métricas escalares — sobrevive ao drop do payload
+# =========================================================================
+
+
+def validation_metrics_sidecar_path(pickle_path: Union[str, Path]) -> Path:
+    """Path do sidecar `<stem>_metrics.json` ao lado do pickle do
+    StrategyValidationResult. Carrega instantâneo (~200 bytes JSON) —
+    usado pelo painel de resultados pra mostrar a tabela de métricas
+    sem precisar hidratar o pickle completo após o usuário trocar de
+    estratégia (payload é dropped da memória)."""
+    p = Path(pickle_path)
+    return p.with_name(p.stem + "_metrics.json")
+
+
+def write_validation_metrics_sidecar(
+    pickle_path: Union[str, Path],
+    result: Any,
+) -> bool:
+    """Grava o sidecar JSON com métricas escalares + contagens.
+
+    Schema (key=valor, todos float/int):
+        n_genuines, n_impostors,
+        eer, eer_threshold, auc, cllr, cllr_min, cal_loss
+
+    `cal_loss` é derivado (cllr − cllr_min, com floor 0) pra evitar que
+    o consumidor tenha que recalcular. Falha silenciosa retorna False.
+    """
+    import json
+    try:
+        metrics = getattr(result, "metrics", None)
+        if metrics is None:
+            return False
+        cllr = getattr(metrics, "cllr", None)
+        cllr_min = getattr(metrics, "cllr_min", None)
+        cal_loss = None
+        if cllr is not None and cllr_min is not None:
+            cal_loss = max(0.0, float(cllr) - float(cllr_min))
+
+        payload = {
+            "schema_version": 1,
+            "n_genuines": int(getattr(result, "n_genuines", 0) or 0),
+            "n_impostors": int(getattr(result, "n_impostors", 0) or 0),
+            "eer": float(getattr(metrics, "eer", 0.0) or 0.0),
+            "eer_threshold": float(getattr(metrics, "eer_threshold", 0.0) or 0.0),
+            "auc": float(getattr(metrics, "auc", 0.0) or 0.0),
+            "cllr": float(cllr) if cllr is not None else None,
+            "cllr_min": float(cllr_min) if cllr_min is not None else None,
+            "cal_loss": cal_loss,
+        }
+        sidecar = validation_metrics_sidecar_path(pickle_path)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def try_load_validation_metrics_sidecar(
+    pickle_path: Union[str, Path],
+) -> Optional[Dict[str, Any]]:
+    """Tenta ler `<stem>_metrics.json` do disco. Retorna dict ou None.
+
+    Stale-check via mtime: se o pickle foi modificado depois do sidecar
+    (+1s de folga pra clock skew), invalida — força quem chamou a
+    hidratar o payload e reescrever o sidecar.
+    """
+    import json
+    try:
+        p = Path(pickle_path)
+        sidecar = validation_metrics_sidecar_path(p)
+        if not sidecar.exists():
+            return None
+        if p.exists() and p.stat().st_mtime > sidecar.stat().st_mtime + 1.0:
+            return None
+        data = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception:
+        return None
 
 
 def validation_result_png_paths(

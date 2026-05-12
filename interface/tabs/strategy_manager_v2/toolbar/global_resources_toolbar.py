@@ -28,7 +28,7 @@ class GlobalResourcesToolbar(QtWidgets.QToolBar):
         self._build()
 
     def _build(self) -> None:
-        label = QtWidgets.QLabel("  Biblioteca Global:  ")
+        label = QtWidgets.QLabel("  Biblioteca de Configurações:  ")
         label.setStyleSheet("font-size: 11px; color: #555; font-weight: bold;")
         self.addWidget(label)
 

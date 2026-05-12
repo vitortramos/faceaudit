@@ -86,14 +86,14 @@ class DatasetSplitInstructionExecutor(StrategyInstructionExecutorBase):
             resource_a = StrategyResource(
                 resource_id=resource_a_id,
                 name=resource_a_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=dataset_a,
                 artifact_ref=None,
             )
             resource_b = StrategyResource(
                 resource_id=resource_b_id,
                 name=resource_b_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=dataset_b,
                 artifact_ref=None,
             )

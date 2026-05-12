@@ -74,7 +74,7 @@ class HubnessAnalysisInstruction(StrategyInstructionDefinition):
         self._sync_declared_io()
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        IN = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        IN = (StrategyResourceType.DATASET,)
         OUT = (StrategyResourceType.HUBNESS_REPORT,)
         return [
             ResourceFieldSpec("dataset_resource_id", "Dataset", IN),

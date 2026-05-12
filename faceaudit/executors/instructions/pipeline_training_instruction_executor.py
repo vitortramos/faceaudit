@@ -341,7 +341,7 @@ class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
             context.set_resource(StrategyResource(
                 resource_id=output_id,
                 name=output_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=transformed,
                 artifact_ref=None,
             ))
@@ -378,14 +378,14 @@ class PipelineTrainingInstructionExecutor(StrategyInstructionExecutorBase):
             context.set_resource(StrategyResource(
                 resource_id=source_id,
                 name=source_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=transformed_source,
                 artifact_ref=None,
             ))
             context.set_resource(StrategyResource(
                 resource_id=target_id,
                 name=target_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=transformed_target,
                 artifact_ref=None,
             ))

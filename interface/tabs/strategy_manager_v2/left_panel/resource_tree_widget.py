@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-from PyQt6 import QtWidgets, QtCore
+from PyQt6 import QtCore, QtWidgets
 
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 
 
+# Rótulos legíveis por tipo. DATASET cobre tanto primário ("Datasets")
+# quanto derivado ("Datasets") — a aba já cinde a categoria, então o
+# rótulo pode ser o mesmo nas duas abas.
 _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.DATASET: "Datasets",
-    StrategyResourceType.INTERMEDIATE_DATASET: "Datasets Intermediários",
     StrategyResourceType.SIMILARITY_SCORES: "Scores de Similaridade",
     StrategyResourceType.CALIBRATED_SCORES: "Scores Calibrados",
     StrategyResourceType.VALIDATION_RESULT: "Resultados de Validação",
@@ -27,38 +30,70 @@ _TYPE_LABELS: Dict[StrategyResourceType, str] = {
     StrategyResourceType.MERGE_CONFIG: "Configs de Merge",
     StrategyResourceType.SIMILARITY_MODEL_CONFIG: "Configs de Similaridade",
     StrategyResourceType.CALIBRATION_MODEL_CONFIG: "Configs de Calibração",
+    StrategyResourceType.HUBNESS_REPORT: "Relatórios de Hubness",
+    StrategyResourceType.HUBNESS_ABLATION_RESULT: "Ablações de Hubness",
     StrategyResourceType.DATASET_STATS: "Estatísticas de Dataset",
     StrategyResourceType.ARTIFACT: "Artefatos",
 }
 
 
-# Tipos de recurso "produzidos" por instruções de estratégia — exibidos com
-# sub-agrupamento por estratégia na árvore. Recursos de input (DATASET,
-# *_CONFIG) ficam como lista plana porque podem ser compartilhados entre
-# múltiplas estratégias.
-_PRODUCED_TYPES = {
-    StrategyResourceType.INTERMEDIATE_DATASET,
-    StrategyResourceType.SIMILARITY_SCORES,
-    StrategyResourceType.CALIBRATED_SCORES,
-    StrategyResourceType.TRAINED_PIPELINE,
-    StrategyResourceType.TRAINED_SIMILARITY_MODEL,
-    StrategyResourceType.TRAINED_CALIBRATION_MODEL,
-    StrategyResourceType.TRAJECTORY_DATA,
-    StrategyResourceType.VALIDATION_RESULT,
-    StrategyResourceType.CASEWORK_VISUALIZATION,
-}
+_TREE_STYLESHEET = """
+    QTreeWidget {
+        font-size: 11px;
+        border: none;
+        background: white;
+    }
+    QTreeWidget::item:selected {
+        background: #cfe7fa;
+        color: inherit;
+    }
+    QTreeWidget::item:selected:!active {
+        background: #cfe7fa;
+        color: inherit;
+    }
+    QTreeWidget::item:hover:!selected {
+        background: #f0f4f8;
+    }
+    QHeaderView::section {
+        font-weight: bold;
+        font-size: 12px;
+        color: #2c3e50;
+        background: #eef2f7;
+        border: none;
+        border-bottom: 1px solid #c0c8d0;
+        padding: 5px 8px;
+    }
+"""
 
 
 class ResourceTreeWidget(QtWidgets.QWidget):
     """
-    Árvore de recursos do projeto, agrupados por StrategyResourceType.
+    Painel de recursos do projeto com 2 abas (Primários / Derivados).
 
-    Sinais:
+    - Aba **Primários**: recursos importados pelo usuário via
+      "Adicionar Recurso" — datasets, pipeline/split/mining configs.
+      Lista plana (compartilhados entre estratégias).
+    - Aba **Derivados**: recursos produzidos por execução de instrução —
+      datasets derivados, scores, modelos treinados, validation results,
+      casework visualizations, hubness reports/ablations, trajetórias.
+      Sub-agrupados por estratégia.
+
+    `category` (PRIMARY/DERIVED) no `StrategyResource` decide em qual aba
+    o recurso aparece — o eixo "tipo" (DATASET, TRAINED_PIPELINE, …) é
+    secundário e fica como agrupamento dentro de cada aba.
+
+    O botão "Adicionar Recurso" só aparece quando a aba Primários está
+    ativa — não há como "adicionar" um recurso derivado, eles só nascem
+    como output de uma instrução.
+
+    Sinais (preservados — controller V2 já está conectado a eles):
         resource_selected(StrategyResource)
+        resource_deselected()
         add_dataset_requested
         add_split_config_requested
         add_mining_config_requested
         add_pipeline_config_requested
+        remove_resource_requested(StrategyResource)
     """
 
     resource_selected = QtCore.pyqtSignal(object)
@@ -67,11 +102,11 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     add_split_config_requested = QtCore.pyqtSignal()
     add_mining_config_requested = QtCore.pyqtSignal()
     add_pipeline_config_requested = QtCore.pyqtSignal()
-    remove_resource_requested = QtCore.pyqtSignal(object)  # StrategyResource
+    remove_resource_requested = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._current_resource = None
+        self._current_resource: Optional[StrategyResource] = None
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -79,44 +114,25 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self.tree = QtWidgets.QTreeWidget()
-        self.tree.setHeaderLabels(["Recursos do Projeto"])
-        self.tree.setAlternatingRowColors(True)
-        # Padrão de seleção idêntico ao usado em StrategyListWidget e
-        # InstructionListWidget: fundo azul claro #cfe7fa + texto preservado
-        # (color: inherit). Mantém o highlight quando a janela perde foco
-        # via :!active. Garantimos consistência visual em toda a UI.
-        self.tree.setStyleSheet("""
-            QTreeWidget {
-                font-size: 11px;
-                border: none;
-                background: white;
-            }
-            QTreeWidget::item:selected {
-                background: #cfe7fa;
-                color: inherit;
-            }
-            QTreeWidget::item:selected:!active {
-                background: #cfe7fa;
-                color: inherit;
-            }
-            QTreeWidget::item:hover:!selected {
-                background: #f0f4f8;
-            }
-            QHeaderView::section {
-                font-weight: bold;
-                font-size: 12px;
-                color: #2c3e50;
-                background: #eef2f7;
-                border: none;
-                border-bottom: 1px solid #c0c8d0;
-                padding: 5px 8px;
-            }
-        """)
-        self.tree.itemClicked.connect(self._on_item_clicked)
-        layout.addWidget(self.tree)
+        self._tabs = QtWidgets.QTabWidget()
+        self._tabs.setStyleSheet(
+            "QTabBar::tab { padding: 6px 14px; font-size: 11px; }"
+            "QTabBar::tab:selected { background: white; font-weight: bold; }"
+        )
+        # NÃO conectar `currentChanged` aqui — `addTab` dispara o sinal
+        # quando o índice muda de -1 pra 0, e nesse ponto `btn_add` ainda
+        # não foi criado. A conexão é feita no fim do `_init_ui`, depois
+        # que todos os widgets que o slot referencia já existem.
+        self.tree_primary = self._build_tree()
+        self.tree_derived = self._build_tree()
+        self._tabs.addTab(self.tree_primary, "Primários")
+        self._tabs.addTab(self.tree_derived, "Derivados")
+        layout.addWidget(self._tabs)
 
-        # Botão "Adicionar Recurso" com dropdown
+        # ── Botões "Adicionar"/"Remover" ──
+        # Não vão ao layout — posicionados externamente pelo left_panel
+        # (compat com a estrutura existente). `btn_add` é escondido
+        # quando o usuário troca pra aba Derivados.
         self.btn_add = QtWidgets.QToolButton()
         self.btn_add.setText("Adicionar Recurso")
         self.btn_add.setToolTip("Importar recurso para o projeto")
@@ -169,26 +185,85 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         """)
         self.btn_remove.clicked.connect(self._on_remove_clicked)
 
-        # Botões NÃO são adicionados ao layout aqui — são posicionados
-        # externamente pelo left_panel_widget como rodapé do frame de recursos.
+        # Conexão tardia — `btn_add` já existe nesse ponto, então o slot
+        # pode acessá-lo sem AttributeError quando o sinal disparar.
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        # Estado inicial: aba Primários ativa → btn_add visível. O sinal
+        # `currentChanged` não dispara em runtime quando o widget aparece
+        # (já está no índice 0); sincroniza explicitamente.
+        self._on_tab_changed(self._tabs.currentIndex())
+
+    def _build_tree(self) -> QtWidgets.QTreeWidget:
+        tree = QtWidgets.QTreeWidget()
+        tree.setHeaderLabels(["Recursos"])
+        tree.setAlternatingRowColors(True)
+        tree.setStyleSheet(_TREE_STYLESHEET)
+        tree.itemClicked.connect(self._on_item_clicked)
+        return tree
 
     # ── Public API ────────────────────────────────────────────────────────────
 
     def populate(
         self,
         resources: List[StrategyResource],
-        resource_to_strategy: Optional[Dict[str, str]] = None,
+        resource_to_strategy: Optional[Dict[int, str]] = None,
     ) -> None:
         """
-        Repopula a árvore agrupando recursos por tipo.
-
-        Para tipos em `_PRODUCED_TYPES` e quando `resource_to_strategy` é
-        fornecido, cria um nível intermediário de sub-agrupamento por
-        estratégia (ex: `Datasets Intermediários (5) / ▼ PLDA / item1`).
+        Distribui os recursos entre as 2 abas pela `category`:
+          - Primários: lista plana `<tipo> / <recurso>`.
+          - Derivados: aninhamento `<estratégia> / <tipo> / <recurso>`
+            (quando `resource_to_strategy` é fornecido).
         """
-        self.tree.clear()
+        self.tree_primary.clear()
+        self.tree_derived.clear()
         resource_to_strategy = resource_to_strategy or {}
 
+        primary = [r for r in resources if r.category == ResourceCategory.PRIMARY]
+        derived = [r for r in resources if r.category == ResourceCategory.DERIVED]
+
+        self._populate_tree(
+            self.tree_primary, primary,
+            resource_to_strategy={},  # primários não agrupam por estratégia
+            group_by_strategy=False,
+        )
+        self._populate_tree(
+            self.tree_derived, derived,
+            resource_to_strategy=resource_to_strategy,
+            group_by_strategy=True,
+        )
+
+        # Atualiza contadores nas abas pra o usuário ver quantidade de cada lado.
+        self._tabs.setTabText(0, f"Primários ({len(primary)})")
+        self._tabs.setTabText(1, f"Derivados ({len(derived)})")
+
+    def clear(self) -> None:
+        self.tree_primary.clear()
+        self.tree_derived.clear()
+        self._current_resource = None
+        self.btn_remove.setEnabled(False)
+        self._tabs.setTabText(0, "Primários")
+        self._tabs.setTabText(1, "Derivados")
+
+    # ── Internal ──────────────────────────────────────────────────────────────
+
+    def _populate_tree(
+        self,
+        tree: QtWidgets.QTreeWidget,
+        resources: List[StrategyResource],
+        resource_to_strategy: Dict[int, str],
+        group_by_strategy: bool,
+    ) -> None:
+        if group_by_strategy and resource_to_strategy:
+            # Derivados: estrutura `<estratégia> / <tipo> / <recurso>` —
+            # cada estratégia é seu próprio "container" e a árvore se
+            # parece com o que o usuário vê na lista de estratégias.
+            self._populate_tree_by_strategy_first(
+                tree, resources, resource_to_strategy,
+            )
+            return
+
+        # Primários: lista plana `<tipo> / <recurso>` — recursos
+        # compartilhados entre estratégias, sem nível intermediário.
         grouped: Dict[StrategyResourceType, List[StrategyResource]] = {}
         for res in resources:
             grouped.setdefault(res.resource_type, []).append(res)
@@ -198,47 +273,68 @@ class ResourceTreeWidget(QtWidgets.QWidget):
             if not group_resources:
                 continue
 
-            root_item = QtWidgets.QTreeWidgetItem([f"{label} ({len(group_resources)})"])
+            root_item = QtWidgets.QTreeWidgetItem(
+                [f"{label} ({len(group_resources)})"]
+            )
             root_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
-            self.tree.addTopLevelItem(root_item)
+            tree.addTopLevelItem(root_item)
 
-            if res_type in _PRODUCED_TYPES and resource_to_strategy:
-                self._add_grouped_by_strategy(
-                    parent_item=root_item,
-                    resources=group_resources,
-                    resource_to_strategy=resource_to_strategy,
-                )
-            else:
-                for res in group_resources:
-                    self._add_resource_child(root_item, res)
+            for res in group_resources:
+                self._add_resource_child(root_item, res)
 
             root_item.setExpanded(True)
 
-    def _add_grouped_by_strategy(
+    def _populate_tree_by_strategy_first(
         self,
-        parent_item: QtWidgets.QTreeWidgetItem,
+        tree: QtWidgets.QTreeWidget,
         resources: List[StrategyResource],
-        resource_to_strategy: Dict[str, str],
+        resource_to_strategy: Dict[int, str],
     ) -> None:
+        """Layout `<estratégia> / <tipo> / <recurso>` pra a aba Derivados.
+
+        Dois passos: primeiro indexa por estratégia → tipo → list[res];
+        depois renderiza, mantendo a ordem dos tipos consistente com
+        `_TYPE_LABELS` pra que tipos apareçam na mesma ordem dentro de
+        cada estratégia.
+
+        Lookup do owner via `id(res)` (não por `resource_id`-string) —
+        duplicação de estratégia via deep copy gera instâncias distintas
+        com o mesmo `resource_id`, e cada uma pertence a uma estratégia
+        diferente. A identidade Python (`id`) é o único discriminador
+        garantido pós-duplicação.
         """
-        Adiciona um nível intermediário 'Estratégia: <nome>' agrupando os
-        recursos pela estratégia que os produziu.
-        """
-        by_strategy: Dict[str, List[StrategyResource]] = {}
+        by_strategy: Dict[str, Dict[StrategyResourceType, List[StrategyResource]]] = {}
         for res in resources:
-            strategy_name = resource_to_strategy.get(res.resource_id, "(sem estratégia)")
-            by_strategy.setdefault(strategy_name, []).append(res)
+            strategy_name = resource_to_strategy.get(
+                id(res), "(sem estratégia)",
+            )
+            by_strategy.setdefault(strategy_name, {}).setdefault(
+                res.resource_type, [],
+            ).append(res)
 
         for strategy_name in sorted(by_strategy.keys()):
-            strategy_resources = by_strategy[strategy_name]
+            types_dict = by_strategy[strategy_name]
+            total = sum(len(v) for v in types_dict.values())
             strategy_item = QtWidgets.QTreeWidgetItem(
-                [f"📋 {strategy_name} ({len(strategy_resources)})"]
+                [f"📋 {strategy_name} ({total})"]
             )
             strategy_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
-            parent_item.addChild(strategy_item)
+            tree.addTopLevelItem(strategy_item)
 
-            for res in strategy_resources:
-                self._add_resource_child(strategy_item, res)
+            # Itera tipos na ordem de `_TYPE_LABELS` pra consistência visual
+            # entre estratégias (ex: Datasets sempre antes de Scores etc.).
+            for res_type, label in _TYPE_LABELS.items():
+                type_resources = types_dict.get(res_type, [])
+                if not type_resources:
+                    continue
+                type_item = QtWidgets.QTreeWidgetItem(
+                    [f"{label} ({len(type_resources)})"]
+                )
+                type_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
+                strategy_item.addChild(type_item)
+                for res in type_resources:
+                    self._add_resource_child(type_item, res)
+                type_item.setExpanded(True)
 
             strategy_item.setExpanded(True)
 
@@ -247,7 +343,6 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         parent_item: QtWidgets.QTreeWidgetItem,
         res: StrategyResource,
     ) -> None:
-        """Adiciona um item folha representando um recurso à árvore."""
         path_str = res.artifact_ref.path if res.artifact_ref else "(sem arquivo)"
         display_name = res.name if res.name else res.resource_id
         child = QtWidgets.QTreeWidgetItem([display_name])
@@ -255,14 +350,15 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         child.setToolTip(0, f"ID: {res.resource_id}\nPath: {path_str}")
         parent_item.addChild(child)
 
-    def clear(self) -> None:
-        self.tree.clear()
-        self._current_resource = None
-        self.btn_remove.setEnabled(False)
-
-    # ── Internal ──────────────────────────────────────────────────────────────
-
     def _on_item_clicked(self, item: QtWidgets.QTreeWidgetItem, _col: int) -> None:
+        # Limpa seleção na OUTRA árvore — Qt não desincroniza automaticamente
+        # quando o usuário clica numa árvore enquanto a outra tem item
+        # selecionado, e isso causa ambiguidade no `_current_resource`.
+        active_tree = self.sender()
+        for tree in (self.tree_primary, self.tree_derived):
+            if tree is not active_tree:
+                tree.clearSelection()
+
         res = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
         if res is not None:
             self._current_resource = res
@@ -277,3 +373,13 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     def _on_remove_clicked(self) -> None:
         if self._current_resource is not None:
             self.remove_resource_requested.emit(self._current_resource)
+
+    def _on_tab_changed(self, index: int) -> None:
+        """Esconde btn_add quando o usuário troca pra aba Derivados —
+        não há como adicionar manualmente um recurso derivado."""
+        # Defensivo: o sinal pode disparar durante o setup do QTabWidget
+        # (addTab muda o índice de -1 pra 0 antes de `btn_add` existir).
+        btn_add = getattr(self, "btn_add", None)
+        if btn_add is None:
+            return
+        btn_add.setVisible(index == 0)

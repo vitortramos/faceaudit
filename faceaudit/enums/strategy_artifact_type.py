@@ -21,8 +21,15 @@ class StrategyArtifactType(Enum):
     TRAINED_CALIBRATION_MODEL = "trained_calibration_model"
 
     # --- DADOS DERIVADOS ---
+    # Datasets produzidos por execução de instrução (PIPELINE_APPLICATION,
+    # DATASET_SPLIT, BALANCING, MERGE, PAIRED_SPLIT). Path no disco:
+    # `<project>/datasets/{strategy_id}_{resource_id}.parquet`.
+    # Distinto do GLOBAL_DATASET (importado pelo usuário, path
+    # `{dataset_id}.parquet`) — o tipo lógico é o mesmo
+    # (`StrategyResourceType.DATASET`), mas a provenância (capturada na
+    # `ResourceCategory`) e o path físico diferem.
     TRANSFORMED_DATASET = "transformed_dataset"
-    INTERMEDIATE_DATASET = "intermediate_dataset"
+    DERIVED_DATASET = "derived_dataset"
     SPLIT_RESULT = "split_result"
     MERGE_RESULT = "merge_result"
 
@@ -65,8 +72,17 @@ class StrategyArtifactType(Enum):
     def from_str(cls, value: str) -> StrategyArtifactType:
         """
         Reconstrói o enum a partir de string com fallback seguro.
+
+        Legacy shim: `"intermediate_dataset"` (valor extinto) mapeia pra
+        `DERIVED_DATASET` — JSONs de `StrategyArtifactReference` antigos
+        carregam sem erro.
         """
+        if not value:
+            return cls.UNKNOWN
+        normalized = value.lower().strip()
+        if normalized == "intermediate_dataset":
+            return cls.DERIVED_DATASET
         try:
-            return cls(value.lower() if value else "")
+            return cls(normalized)
         except ValueError:
             return cls.UNKNOWN

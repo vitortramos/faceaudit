@@ -41,49 +41,87 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._init_ui()
         self.clear()
 
+    def _add_section_header(
+        self,
+        layout: QtWidgets.QVBoxLayout,
+        text: str,
+    ) -> None:
+        """Adiciona separador HLine + título bold ao layout da seção.
+
+        No-op em modo compact — em embeddings (3ª coluna do editor) o tipo
+        do recurso já é evidente pelo chip `[TYPE]` no header do row, então
+        repetir "Detalhes do ..." apenas polui visualmente.
+        """
+        if self._compact:
+            return
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
+        sep.setStyleSheet("color: #ddd;")
+        layout.addWidget(sep)
+        header = QtWidgets.QLabel(text)
+        header.setStyleSheet(
+            "font-weight: bold; font-size: 11px; color: #444;"
+        )
+        layout.addWidget(header)
+
     def _init_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # ── QTabWidget com 2 abas ────────────────────────────────────
-        self.tabs = QtWidgets.QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane {
-                border: none;
-                border-top: 1px solid #d0d8e0;
-                background: white;
-            }
-            QTabBar::tab {
-                padding: 4px 10px;
-                font-size: 11px;
-                background: transparent;
-                border: none;
-                border-bottom: 2px solid transparent;
-                margin-right: 2px;
-                color: #666;
-            }
-            QTabBar::tab:selected {
-                color: #2c3e50;
-                font-weight: bold;
-                border-bottom: 2px solid #4a90d9;
-            }
-            QTabBar::tab:hover:!selected {
-                color: #333;
-                border-bottom: 2px solid #ccc;
-            }
-        """)
+        # ── QTabWidget (somente modo não-compact) ────────────────────
+        # Em compact (embedado no OutputRowWidget) não criamos tabs/scroll:
+        # QScrollArea com setWidgetResizable(True) força o inner widget a
+        # esticar verticalmente pra preencher o viewport, gerando "espaço
+        # vazio" perceptível no card. Sem scroll area, o props_container
+        # respeita seu sizeHint natural.
+        if not self._compact:
+            self.tabs = QtWidgets.QTabWidget()
+            self.tabs.setDocumentMode(True)
+            self.tabs.setStyleSheet("""
+                QTabWidget::pane {
+                    border: none;
+                    border-top: 1px solid #d0d8e0;
+                    background: white;
+                }
+                QTabBar::tab {
+                    padding: 4px 10px;
+                    font-size: 11px;
+                    background: transparent;
+                    border: none;
+                    border-bottom: 2px solid transparent;
+                    margin-right: 2px;
+                    color: #666;
+                }
+                QTabBar::tab:selected {
+                    color: #2c3e50;
+                    font-weight: bold;
+                    border-bottom: 2px solid #4a90d9;
+                }
+                QTabBar::tab:hover:!selected {
+                    color: #333;
+                    border-bottom: 2px solid #ccc;
+                }
+            """)
 
-        # ── Tab 1: Propriedades ──────────────────────────────────────
-        props_scroll = QtWidgets.QScrollArea()
-        props_scroll.setWidgetResizable(True)
-        props_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-
+        # ── Container das Propriedades (sempre criado) ───────────────
         props_container = QtWidgets.QWidget()
         props_layout = QtWidgets.QVBoxLayout(props_container)
         props_layout.setContentsMargins(8, 8, 8, 8)
         props_layout.setSpacing(6)
+
+        # Placeholder mostrado quando não há recurso selecionado — evita
+        # que o usuário veja uma fileira de "—" nos campos da Propriedades.
+        # Toggle de visibilidade controlado por `show_resource`/`clear`.
+        self._empty_placeholder = QtWidgets.QLabel(
+            "Selecione um recurso para ver as propriedades."
+        )
+        self._empty_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._empty_placeholder.setWordWrap(True)
+        self._empty_placeholder.setStyleSheet(
+            "color: #888; font-style: italic; font-size: 12px; padding: 16px;"
+        )
+        props_layout.addWidget(self._empty_placeholder)
 
         # Metadados em grade
         form = QtWidgets.QFormLayout()
@@ -102,43 +140,35 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
 
         _lbl_style = "font-size: 11px; color: #666; font-weight: bold;"
-        for text, value_lbl in [
-            ("ID:", self.lbl_id),
+        # Em modo compact a linha do ID é omitida — o ID já aparece como
+        # nome do recurso no header do OutputRowWidget que embarca este widget.
+        rows = [
             ("Tipo:", self.lbl_type),
             ("Path:", self.lbl_path),
             ("Hash:", self.lbl_hash),
             ("Tamanho:", self.lbl_size),
-        ]:
+        ]
+        if not self._compact:
+            rows.insert(0, ("ID:", self.lbl_id))
+        for text, value_lbl in rows:
             lbl = QtWidgets.QLabel(text)
             lbl.setStyleSheet(_lbl_style)
             form.addRow(lbl, value_lbl)
 
-        # Encapsula o form em um widget próprio para que possa ser ocultado
-        # em modo compact (a 3ª coluna do editor já mostra ID/Tipo na linha
-        # do nome do recurso e Path/Hash/Tamanho são pouco úteis lá).
         self._basic_info_section = QtWidgets.QWidget()
         basic_layout = QtWidgets.QVBoxLayout(self._basic_info_section)
         basic_layout.setContentsMargins(0, 0, 0, 0)
         basic_layout.setSpacing(0)
         basic_layout.addLayout(form)
         props_layout.addWidget(self._basic_info_section)
-        if self._compact:
-            self._basic_info_section.setVisible(False)
 
         # Estatísticas do dataset (visível apenas para DATASET)
         self._stats_section = QtWidgets.QWidget()
         stats_layout = QtWidgets.QVBoxLayout(self._stats_section)
-        stats_layout.setContentsMargins(0, 4, 0, 0)
+        stats_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         stats_layout.setSpacing(4)
 
-        stats_sep = QtWidgets.QFrame()
-        stats_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        stats_sep.setStyleSheet("color: #ddd;")
-        stats_layout.addWidget(stats_sep)
-
-        stats_header = QtWidgets.QLabel("Estatísticas do Dataset")
-        stats_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        stats_layout.addWidget(stats_header)
+        self._add_section_header(stats_layout, "Estatísticas do Dataset")
 
         stats_form = QtWidgets.QFormLayout()
         stats_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -183,17 +213,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Detalhes do pipeline (visível apenas para PIPELINE_CONFIG)
         self._pipeline_section = QtWidgets.QWidget()
         pipe_layout = QtWidgets.QVBoxLayout(self._pipeline_section)
-        pipe_layout.setContentsMargins(0, 4, 0, 0)
+        pipe_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         pipe_layout.setSpacing(4)
 
-        pipe_sep = QtWidgets.QFrame()
-        pipe_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        pipe_sep.setStyleSheet("color: #ddd;")
-        pipe_layout.addWidget(pipe_sep)
-
-        pipe_header = QtWidgets.QLabel("Detalhes do Pipeline")
-        pipe_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        pipe_layout.addWidget(pipe_header)
+        self._add_section_header(pipe_layout, "Detalhes do Pipeline")
 
         pipe_form = QtWidgets.QFormLayout()
         pipe_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -223,17 +246,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # TRAINED_SIMILARITY_MODEL)
         self._sim_model_section = QtWidgets.QWidget()
         sim_layout = QtWidgets.QVBoxLayout(self._sim_model_section)
-        sim_layout.setContentsMargins(0, 4, 0, 0)
+        sim_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         sim_layout.setSpacing(4)
 
-        sim_sep = QtWidgets.QFrame()
-        sim_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sim_sep.setStyleSheet("color: #ddd;")
-        sim_layout.addWidget(sim_sep)
-
-        sim_header = QtWidgets.QLabel("Detalhes do Modelo de Similaridade")
-        sim_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        sim_layout.addWidget(sim_header)
+        self._add_section_header(sim_layout, "Detalhes do Modelo de Similaridade")
 
         sim_form = QtWidgets.QFormLayout()
         sim_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -266,17 +282,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # TRAINED_CALIBRATION_MODEL)
         self._calib_model_section = QtWidgets.QWidget()
         calib_layout = QtWidgets.QVBoxLayout(self._calib_model_section)
-        calib_layout.setContentsMargins(0, 4, 0, 0)
+        calib_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         calib_layout.setSpacing(4)
 
-        calib_sep = QtWidgets.QFrame()
-        calib_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        calib_sep.setStyleSheet("color: #ddd;")
-        calib_layout.addWidget(calib_sep)
-
-        calib_header = QtWidgets.QLabel("Detalhes do Modelo de Calibração")
-        calib_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        calib_layout.addWidget(calib_header)
+        self._add_section_header(calib_layout, "Detalhes do Modelo de Calibração")
 
         calib_form = QtWidgets.QFormLayout()
         calib_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -310,17 +319,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # CALIBRATED_SCORES)
         self._scores_section = QtWidgets.QWidget()
         scores_layout = QtWidgets.QVBoxLayout(self._scores_section)
-        scores_layout.setContentsMargins(0, 4, 0, 0)
+        scores_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         scores_layout.setSpacing(4)
 
-        scores_sep = QtWidgets.QFrame()
-        scores_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        scores_sep.setStyleSheet("color: #ddd;")
-        scores_layout.addWidget(scores_sep)
-
-        scores_header = QtWidgets.QLabel("Detalhes do Score Dataset")
-        scores_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        scores_layout.addWidget(scores_header)
+        self._add_section_header(scores_layout, "Detalhes do Score Dataset")
 
         scores_form = QtWidgets.QFormLayout()
         scores_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -354,17 +356,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Detalhes de Pipeline TREINADO (visível para TRAINED_PIPELINE)
         self._pipeline_trained_section = QtWidgets.QWidget()
         pt_layout = QtWidgets.QVBoxLayout(self._pipeline_trained_section)
-        pt_layout.setContentsMargins(0, 4, 0, 0)
+        pt_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         pt_layout.setSpacing(4)
 
-        pt_sep = QtWidgets.QFrame()
-        pt_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        pt_sep.setStyleSheet("color: #ddd;")
-        pt_layout.addWidget(pt_sep)
-
-        pt_header = QtWidgets.QLabel("Detalhes do Pipeline Treinado")
-        pt_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        pt_layout.addWidget(pt_header)
+        self._add_section_header(pt_layout, "Detalhes do Pipeline Treinado")
 
         pt_form = QtWidgets.QFormLayout()
         pt_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -394,17 +389,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Detalhes de Hubness Report (visível para HUBNESS_REPORT)
         self._hubness_report_section = QtWidgets.QWidget()
         hr_layout = QtWidgets.QVBoxLayout(self._hubness_report_section)
-        hr_layout.setContentsMargins(0, 4, 0, 0)
+        hr_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         hr_layout.setSpacing(4)
 
-        hr_sep = QtWidgets.QFrame()
-        hr_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        hr_sep.setStyleSheet("color: #ddd;")
-        hr_layout.addWidget(hr_sep)
-
-        hr_header = QtWidgets.QLabel("Detalhes do Relatório de Hubness")
-        hr_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        hr_layout.addWidget(hr_header)
+        self._add_section_header(hr_layout, "Detalhes do Relatório de Hubness")
 
         hr_form = QtWidgets.QFormLayout()
         hr_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -434,17 +422,10 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Detalhes de Hubness Ablation (visível para HUBNESS_ABLATION_RESULT)
         self._hubness_ablation_section = QtWidgets.QWidget()
         ha_layout = QtWidgets.QVBoxLayout(self._hubness_ablation_section)
-        ha_layout.setContentsMargins(0, 4, 0, 0)
+        ha_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         ha_layout.setSpacing(4)
 
-        ha_sep = QtWidgets.QFrame()
-        ha_sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        ha_sep.setStyleSheet("color: #ddd;")
-        ha_layout.addWidget(ha_sep)
-
-        ha_header = QtWidgets.QLabel("Detalhes da Ablação")
-        ha_header.setStyleSheet("font-weight: bold; font-size: 11px; color: #444;")
-        ha_layout.addWidget(ha_header)
+        self._add_section_header(ha_layout, "Detalhes da Ablação")
 
         ha_form = QtWidgets.QFormLayout()
         ha_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -469,46 +450,58 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         ha_layout.addLayout(ha_form)
         props_layout.addWidget(self._hubness_ablation_section)
 
-        # `addStretch()` empurra o conteúdo pro topo do scroll. No modo
-        # padrão (painel lateral) o scroll é alto e isso fica natural; em
-        # modo compact (embedded num OutputRowWidget) ele cria uma faixa
-        # de espaço vazio embaixo do conteúdo, que o usuário percebe como
-        # "espaço sobrando" no card.
-        if not self._compact:
-            props_layout.addStretch()
+        # Detalhes do Resultado de Validação (visível para VALIDATION_RESULT)
+        self._validation_result_section = QtWidgets.QWidget()
+        vr_layout = QtWidgets.QVBoxLayout(self._validation_result_section)
+        vr_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
+        vr_layout.setSpacing(4)
 
-        props_scroll.setWidget(props_container)
-        self.tabs.addTab(props_scroll, "Propriedades")
+        self._add_section_header(vr_layout, "Detalhes do Resultado de Validação")
 
-        # ── Tab 2: Utilização ────────────────────────────────────────
-        # Em modo compact, a aba "Utilização" não é adicionada — quem
-        # embeda esse widget na 3ª coluna do editor não precisa dessa
-        # informação (e ela exigiria as definitions do projeto, que o
-        # caller compact não passa).
-        usage_container = QtWidgets.QWidget()
-        usage_layout = QtWidgets.QVBoxLayout(usage_container)
-        usage_layout.setContentsMargins(8, 8, 8, 8)
-        usage_layout.setSpacing(4)
+        vr_form = QtWidgets.QFormLayout()
+        vr_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        vr_form.setSpacing(4)
 
-        self.usage_list = QtWidgets.QListWidget()
-        self.usage_list.setStyleSheet(
-            "font-size: 11px; border: none; background: white;"
-        )
-        self.usage_list.setAlternatingRowColors(True)
-        usage_layout.addWidget(self.usage_list)
+        self.lbl_vr_n_genuines = QtWidgets.QLabel("—")
+        self.lbl_vr_n_impostors = QtWidgets.QLabel("—")
+        self.lbl_vr_eer = QtWidgets.QLabel("—")
+        self.lbl_vr_eer_threshold = QtWidgets.QLabel("—")
+        self.lbl_vr_auc = QtWidgets.QLabel("—")
+        self.lbl_vr_cllr = QtWidgets.QLabel("—")
+        self.lbl_vr_cllr_min = QtWidgets.QLabel("—")
+        self.lbl_vr_cal_loss = QtWidgets.QLabel("—")
+        for lbl in (
+            self.lbl_vr_n_genuines, self.lbl_vr_n_impostors,
+            self.lbl_vr_eer, self.lbl_vr_eer_threshold, self.lbl_vr_auc,
+            self.lbl_vr_cllr, self.lbl_vr_cllr_min, self.lbl_vr_cal_loss,
+        ):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
 
-        if not self._compact:
-            self.tabs.addTab(usage_container, "Utilização")
-        else:
-            # Esconde a barra de abas (sobra só o conteúdo da aba 0).
-            self.tabs.tabBar().setVisible(False)
-            # Em compact, o widget é embedado em um OutputRowWidget pequeno.
-            # Limita o crescimento vertical do scroll/tabs ao conteúdo real.
-            props_scroll.setSizePolicy(
-                QtWidgets.QSizePolicy.Policy.Preferred,
-                QtWidgets.QSizePolicy.Policy.Maximum,
-            )
-            self.tabs.setSizePolicy(
+        for text, value_lbl in [
+            ("Genuínos:", self.lbl_vr_n_genuines),
+            ("Impostores:", self.lbl_vr_n_impostors),
+            ("EER:", self.lbl_vr_eer),
+            ("EER threshold:", self.lbl_vr_eer_threshold),
+            ("AUC:", self.lbl_vr_auc),
+            ("Cllr:", self.lbl_vr_cllr),
+            ("Cllr_min:", self.lbl_vr_cllr_min),
+            ("cal_loss:", self.lbl_vr_cal_loss),
+        ]:
+            lbl = QtWidgets.QLabel(text)
+            lbl.setStyleSheet(_lbl_style)
+            vr_form.addRow(lbl, value_lbl)
+
+        vr_layout.addLayout(vr_form)
+        props_layout.addWidget(self._validation_result_section)
+
+        if self._compact:
+            # Embeda direto no layout principal — sem QScrollArea, sem
+            # QTabWidget, sem addStretch. Cada seção (basic_info, stats,
+            # etc.) já tem sizePolicy default (Preferred), o que faria o
+            # layout esticar; setamos Maximum no props_container para que
+            # ele respeite o sizeHint natural (soma das seções visíveis +
+            # spacings) e o card pare exatamente ali.
+            props_container.setSizePolicy(
                 QtWidgets.QSizePolicy.Policy.Preferred,
                 QtWidgets.QSizePolicy.Policy.Maximum,
             )
@@ -516,8 +509,32 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 QtWidgets.QSizePolicy.Policy.Preferred,
                 QtWidgets.QSizePolicy.Policy.Maximum,
             )
+            layout.addWidget(props_container)
+        else:
+            props_layout.addStretch()
 
-        layout.addWidget(self.tabs)
+            props_scroll = QtWidgets.QScrollArea()
+            props_scroll.setWidgetResizable(True)
+            props_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            props_scroll.setWidget(props_container)
+            self.tabs.addTab(props_scroll, "Propriedades")
+
+            # Aba Utilização — só faz sentido com `definitions` passadas
+            # pelo left panel principal.
+            usage_container = QtWidgets.QWidget()
+            usage_layout = QtWidgets.QVBoxLayout(usage_container)
+            usage_layout.setContentsMargins(8, 8, 8, 8)
+            usage_layout.setSpacing(4)
+
+            self.usage_list = QtWidgets.QListWidget()
+            self.usage_list.setStyleSheet(
+                "font-size: 11px; border: none; background: white;"
+            )
+            self.usage_list.setAlternatingRowColors(True)
+            usage_layout.addWidget(self.usage_list)
+
+            self.tabs.addTab(usage_container, "Utilização")
+            layout.addWidget(self.tabs)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -528,6 +545,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         definitions: Optional[List[LRStrategyDefinition]] = None,
         embedding_dimensions: Optional[int] = None,
     ) -> None:
+        # Esconde o placeholder e mostra a seção básica (Tipo/Path/Hash/
+        # Tamanho — ID é só no modo não-compact).
+        self._empty_placeholder.setVisible(False)
+        self._basic_info_section.setVisible(True)
+
         # Metadados
         type_label = resource.resource_type.value
         self.lbl_id.setText(resource.resource_id)
@@ -565,7 +587,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # demanda na primeira seleção).
         is_dataset = resource.resource_type in (
             StrategyResourceType.DATASET,
-            StrategyResourceType.INTERMEDIATE_DATASET,
+            StrategyResourceType.DATASET,
         )
         self._stats_section.setVisible(is_dataset)
         if is_dataset and abs_path:
@@ -632,6 +654,16 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_hubness_ablation()
 
+        # Detalhes do resultado de validação (VALIDATION_RESULT)
+        is_validation_result = (
+            resource.resource_type == StrategyResourceType.VALIDATION_RESULT
+        )
+        self._validation_result_section.setVisible(is_validation_result)
+        if is_validation_result:
+            self._load_validation_result_details(resource, abs_path)
+        else:
+            self._clear_validation_result()
+
         # Uso nas estratégias — só aplicável quando a aba Utilização existe
         # (modo não-compact, embedado no left panel principal).
         if not self._compact:
@@ -660,6 +692,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 self.tabs.setTabText(1, f"Utilização ({usage_count})")
 
     def clear(self) -> None:
+        # Mostra o placeholder e esconde TODAS as seções de conteúdo —
+        # estado "sem recurso selecionado". Usuário vê uma mensagem
+        # única em vez de uma fileira de "—" nos campos.
+        self._empty_placeholder.setVisible(True)
+        self._basic_info_section.setVisible(False)
+
         for lbl in (self.lbl_id, self.lbl_type, self.lbl_path, self.lbl_hash, self.lbl_size):
             lbl.setText("—")
         self._clear_stats()
@@ -675,9 +713,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._pipeline_trained_section.setVisible(False)
         self._hubness_report_section.setVisible(False)
         self._hubness_ablation_section.setVisible(False)
+        self._validation_result_section.setVisible(False)
         self._clear_pipeline_trained()
         self._clear_hubness_report()
         self._clear_hubness_ablation()
+        self._clear_validation_result()
         # Em modo compact a aba "Utilização" não foi adicionada, então o
         # usage_list é um widget órfão e pode já ter sido GC'd pelo Qt.
         if not self._compact:
@@ -966,26 +1006,55 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self.lbl_sim_input_dim.setText("—")
 
-        # latent_dim só existe no PLDA; em outros modelos fica oculto.
+        # Detalhes específicos por variante de PLDA. TWO_COVARIANCE não faz
+        # redução (B e W são full-rank D×D) e não usa EM/plda_mode/latent_dim;
+        # mostrar esses campos confundiria o usuário.
         cfg = getattr(payload, "config", None)
-        latent_dim = getattr(cfg, "latent_dim", None) if cfg is not None else None
-        if latent_dim is not None:
-            self.lbl_sim_latent_dim.setText(f"{int(latent_dim)}D")
+        plda_variant = getattr(cfg, "plda_variant", None) if cfg is not None else None
+        variant_value = getattr(plda_variant, "value", None)
+        is_two_cov = variant_value == "TWO_COVARIANCE"
+        is_simple_plda = variant_value == "SIMPLE"
+
+        if is_two_cov:
+            # Em duas covariâncias o "latente" coincide com a entrada (sem
+            # redução); mostrar D explícito ajuda a deixar isso claro.
+            d_in = getattr(payload, "input_dimension", None) or getattr(
+                payload, "trained_dim", None
+            )
+            if d_in is not None:
+                self.lbl_sim_latent_dim.setText(f"{int(d_in)}D (sem redução)")
+            else:
+                self.lbl_sim_latent_dim.setText("n/a")
+        elif is_simple_plda:
+            latent_dim = getattr(cfg, "latent_dim", None)
+            if latent_dim is not None:
+                self.lbl_sim_latent_dim.setText(f"{int(latent_dim)}D")
+            else:
+                self.lbl_sim_latent_dim.setText("n/a")
         else:
+            # Modelos não-PLDA (ex: CosineSimilarityModel) não têm latente.
             self.lbl_sim_latent_dim.setText("n/a")
 
-        # Linha extra: nº de iterações EM (PLDA), nº de amostras vistas
-        # (Cosine), modo PLDA, etc — varia por implementação.
-        extras = []
-        em_iters = getattr(cfg, "em_iterations", None) if cfg is not None else None
-        if em_iters is not None:
-            extras.append(f"EM iters={em_iters}")
-        plda_mode = getattr(cfg, "plda_mode", None) if cfg is not None else None
-        if plda_mode is not None:
-            mode_str = (
-                plda_mode.value if hasattr(plda_mode, "value") else str(plda_mode)
-            )
-            extras.append(f"modo={mode_str}")
+        extras: list[str] = []
+        if is_two_cov:
+            extras.append("variante=TWO_COVARIANCE")
+            reg = getattr(cfg, "regularization", None)
+            if reg is not None:
+                extras.append(f"regularização={float(reg):g}")
+            seed = getattr(cfg, "random_seed", None)
+            if seed is not None:
+                extras.append(f"seed={int(seed)}")
+        elif is_simple_plda:
+            em_iters = getattr(cfg, "em_iterations", None)
+            if em_iters is not None:
+                extras.append(f"EM iters={em_iters}")
+            plda_mode = getattr(cfg, "plda_mode", None)
+            if plda_mode is not None:
+                mode_str = (
+                    plda_mode.value if hasattr(plda_mode, "value") else str(plda_mode)
+                )
+                extras.append(f"modo={mode_str}")
+
         n_seen = getattr(payload, "n_samples_seen", None)
         if n_seen is not None:
             extras.append(f"N treino={n_seen:,}".replace(",", "."))
@@ -1564,6 +1633,90 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_ha_n_scenarios.setText("—")
         self.lbl_ha_k.setText("—")
         self.lbl_ha_scenarios.setText("—")
+
+    def _load_validation_result_details(
+        self, resource: StrategyResource, abs_path: Optional[Path]
+    ) -> None:
+        """Popula as labels do `_validation_result_section` a partir do
+        payload (StrategyValidationResult) ou, se ele estiver ausente,
+        do sidecar `<stem>_metrics.json` gravado pelo executor.
+
+        Métricas mostradas: contagens (n_genuines, n_impostors), EER,
+        EER threshold, AUC, Cllr, Cllr_min e cal_loss (derivada).
+        """
+        metrics = self._extract_validation_metrics_dict(resource, abs_path)
+        if metrics is None:
+            self._clear_validation_result()
+            return
+
+        def _fmt_int(v) -> str:
+            return f"{int(v):,}".replace(",", ".") if v is not None else "—"
+
+        def _fmt_float(v, fmt: str) -> str:
+            return fmt.format(float(v)) if v is not None else "—"
+
+        self.lbl_vr_n_genuines.setText(_fmt_int(metrics.get("n_genuines")))
+        self.lbl_vr_n_impostors.setText(_fmt_int(metrics.get("n_impostors")))
+        self.lbl_vr_eer.setText(_fmt_float(metrics.get("eer"), "{:.2%}"))
+        self.lbl_vr_eer_threshold.setText(
+            _fmt_float(metrics.get("eer_threshold"), "{:.4f}")
+        )
+        self.lbl_vr_auc.setText(_fmt_float(metrics.get("auc"), "{:.4f}"))
+        self.lbl_vr_cllr.setText(_fmt_float(metrics.get("cllr"), "{:.4f}"))
+        self.lbl_vr_cllr_min.setText(_fmt_float(metrics.get("cllr_min"), "{:.4f}"))
+        self.lbl_vr_cal_loss.setText(_fmt_float(metrics.get("cal_loss"), "{:.4f}"))
+
+    @staticmethod
+    def _extract_validation_metrics_dict(
+        resource: StrategyResource, abs_path: Optional[Path]
+    ) -> Optional[dict]:
+        """Devolve métricas como dict. Prioridade: payload em memória >
+        sidecar `_metrics.json`. Retorna None se nenhuma fonte estiver
+        disponível.
+        """
+        payload = resource.payload
+        if payload is not None:
+            try:
+                m = getattr(payload, "metrics", None)
+                if m is not None:
+                    cllr = getattr(m, "cllr", None)
+                    cllr_min = getattr(m, "cllr_min", None)
+                    cal_loss = (
+                        max(0.0, float(cllr) - float(cllr_min))
+                        if cllr is not None and cllr_min is not None
+                        else None
+                    )
+                    return {
+                        "n_genuines": int(getattr(payload, "n_genuines", 0) or 0),
+                        "n_impostors": int(getattr(payload, "n_impostors", 0) or 0),
+                        "eer": getattr(m, "eer", None),
+                        "eer_threshold": getattr(m, "eer_threshold", None),
+                        "auc": getattr(m, "auc", None),
+                        "cllr": cllr,
+                        "cllr_min": cllr_min,
+                        "cal_loss": cal_loss,
+                    }
+            except Exception:
+                pass
+
+        # Fallback pro sidecar — escrito pelo executor no persist.
+        if abs_path is None or not abs_path.exists():
+            return None
+        try:
+            from faceaudit.models.validation_result_plot import (
+                try_load_validation_metrics_sidecar,
+            )
+            return try_load_validation_metrics_sidecar(abs_path)
+        except Exception:
+            return None
+
+    def _clear_validation_result(self) -> None:
+        for lbl in (
+            self.lbl_vr_n_genuines, self.lbl_vr_n_impostors,
+            self.lbl_vr_eer, self.lbl_vr_eer_threshold, self.lbl_vr_auc,
+            self.lbl_vr_cllr, self.lbl_vr_cllr_min, self.lbl_vr_cal_loss,
+        ):
+            lbl.setText("—")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:

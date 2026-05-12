@@ -127,7 +127,11 @@ class FaceAuditProject:
                 if resource.artifact_ref is not None:
                     refs.append(resource.artifact_ref)
 
-        self._integrity_results = self._storage.verify_integrity(refs)
+        results = self._storage.verify_integrity(refs)
+        results.extend(
+            self._storage.scan_orphans([ref.path for ref in refs])
+        )
+        self._integrity_results = results
         return self._integrity_results
 
     # =========================================================================

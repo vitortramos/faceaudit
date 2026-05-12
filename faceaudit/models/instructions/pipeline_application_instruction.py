@@ -126,9 +126,9 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
         ]
 
     def get_resource_field_specs(self) -> list[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
+        DS = (StrategyResourceType.DATASET,)
         TP = (StrategyResourceType.TRAINED_PIPELINE,)
-        ID = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        ID = (StrategyResourceType.DATASET,)
         TRAJ = (StrategyResourceType.TRAJECTORY_DATA,)
 
         if self.is_linear:

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import uuid
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
+from faceaudit.enums.artifact_integrity_status import ArtifactIntegrityStatus
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.factories.strategy_executor_factory import StrategyExecutorFactory
@@ -38,6 +41,15 @@ from interface.tabs.strategy_manager.log_progress_dialog.log_progress_dialog imp
 from interface.tabs.strategy_manager.pipeline_creator.pipeline_creator_controller import PipelineCreatorController
 from interface.tabs.strategy_manager.new_mining_config_dialog.new_mining_config_dialog_controller import NewMiningConfigDialogController
 from interface.tabs.strategy_manager.new_split_config_dialog.new_split_config_dialog_controller import NewSplitConfigDialogController
+
+
+# UUID v4 no início do stem + `_` → marca de arquivo produzido pelo
+# executor via convenção `{strategy_id}_{resource_id}`. Usado em
+# `_collect_project_resources` pra distinguir derivados (incluindo
+# órfãos de estratégias removidas) de primários no scan do `datasets/`.
+_UUID_PREFIX_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_"
+)
 
 
 class StrategyManagerV2Controller(QtCore.QObject):
@@ -116,6 +128,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.save_project_requested.connect(self.save_project)
         self._project_toolbar.close_project_requested.connect(self.close_project)
         self._project_toolbar.seal_project_requested.connect(self.seal_project)  # PR L2.b
+        self._project_toolbar.add_resources_requested.connect(
+            self._on_add_resources_from_library
+        )
         self._project_toolbar.pipeline_requested.connect(self._on_pipeline)
         self._project_toolbar.mining_requested.connect(self._on_mining)
         self._project_toolbar.split_requested.connect(self._on_split)
@@ -164,6 +179,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         )
         self._strategy_editor.instruction_applied.connect(
             self._on_instruction_applied
+        )
+        self._strategy_editor.instruction_removed.connect(
+            self._on_instruction_removed
         )
         self._strategy_editor.hydrate_resource_requested.connect(
             self._on_hydrate_resource_requested
@@ -239,19 +257,115 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         self._set_project(project)
 
-        # Avisa sobre problemas de integridade, mas não bloqueia
-        if project.has_integrity_problems:
-            problems = [
-                r.describe()
-                for r in (project.integrity_results or [])
-                if r.is_problem
-            ]
+        # Trata problemas de integridade em duas categorias:
+        #   MISSING — refs apontando pra arquivos inexistentes.
+        #     Auto-limpáveis: zerar artifact_ref/payload da definition.
+        #   MODIFIED — arquivo presente mas hash mudou.
+        #     Não auto-limpa (pode ser legítimo); apenas avisa.
+        results = project.integrity_results or []
+        missing_results = [
+            r for r in results
+            if r.status == ArtifactIntegrityStatus.MISSING
+        ]
+        modified_results = [
+            r for r in results
+            if r.status == ArtifactIntegrityStatus.MODIFIED
+        ]
+
+        if missing_results:
+            self._handle_missing_artifact_refs(missing_results)
+
+        if modified_results:
+            details = "\n".join(r.describe() for r in modified_results)
             QtWidgets.QMessageBox.warning(
                 self._view,
-                "Problemas de integridade",
-                "Projeto aberto, mas foram encontrados problemas:\n\n"
-                + "\n".join(problems),
+                "Arquivos modificados",
+                "Os seguintes arquivos têm hash diferente do registrado "
+                "(possível adulteração ou substituição):\n\n" + details,
             )
+
+    def _handle_missing_artifact_refs(self, missing_results: list) -> None:
+        """Pergunta ao usuário se quer limpar refs cujos arquivos sumiram.
+
+        Caso afirmativo, zera `artifact_ref`/`payload` de cada `StrategyResource`
+        cujo path consta em `missing_results`, salva as definitions tocadas
+        e atualiza a UI (instruções afetadas perdem o ✅).
+        """
+        n = len(missing_results)
+        # Mostra primeiros 10 paths como amostra; lista completa fica longa
+        # demais pra um diálogo.
+        sample_lines = [r.describe() for r in missing_results[:10]]
+        sample = "\n".join(sample_lines)
+        more = f"\n... e mais {n - 10}" if n > 10 else ""
+
+        reply = QtWidgets.QMessageBox.question(
+            self._view,
+            "Referências quebradas",
+            f"O projeto tem {n} referência(s) a arquivos que não existem "
+            "no disco. Pode ter sido limpeza manual ou um salvamento que "
+            "falhou em sessão anterior.\n\n"
+            f"Exemplos:\n{sample}{more}\n\n"
+            "Deseja limpar essas referências? As instruções correspondentes "
+            "perderão o ✅ verde e precisarão ser re-executadas para "
+            "produzir os arquivos novamente.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.Yes,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        cleaned = self._clear_missing_artifact_refs(missing_results)
+        if cleaned == 0:
+            return
+
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Referências limpas",
+            f"{cleaned} referência(s) zerada(s) nas definitions. "
+            "Re-execute as instruções afetadas pra gerar os arquivos.",
+        )
+        # Refresh UI: árvore esquerda, dropdowns, estados das instruções.
+        # Estados dependem do current_definition; recém abertos não têm
+        # uma estratégia ativa, então essas atualizações ficam pra quando
+        # o usuário selecionar uma estratégia.
+        self._refresh_left_panel()
+
+    def _clear_missing_artifact_refs(self, missing_results: list) -> int:
+        """Zera `artifact_ref` e `payload` de cada recurso cujo path aparece
+        em `missing_results`. Salva as definitions tocadas no repositório.
+
+        Retorna o número de refs zeradas.
+        """
+        if not self._project:
+            return 0
+
+        missing_paths: Set[str] = {
+            r.artifact_ref.path
+            for r in missing_results
+            if r.artifact_ref and r.artifact_ref.path
+        }
+        if not missing_paths:
+            return 0
+
+        cleaned_count = 0
+        touched_strategy_ids: Set[str] = set()
+        for defn in self._definitions:
+            for res in defn.resources:
+                if res.artifact_ref and res.artifact_ref.path in missing_paths:
+                    res.artifact_ref = None
+                    res.payload = None
+                    cleaned_count += 1
+                    touched_strategy_ids.add(defn.strategy_id)
+
+        for defn in self._definitions:
+            if defn.strategy_id in touched_strategy_ids:
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception:
+                    pass
+
+        return cleaned_count
 
     def save_project(self) -> None:
         if not self._project:
@@ -994,45 +1108,43 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _collect_editor_resources(self, current_definition) -> List[StrategyResource]:
         """
         Lista de recursos disponíveis aos dropdowns do editor para a estratégia
-        atualmente aberta:
+        atualmente aberta, filtrada por `ResourceCategory`:
 
-        - Recursos globais (DATASET, PIPELINE_CONFIG, SPLIT_CONFIG, MINING_CONFIG,
-          MERGE_CONFIG, SIMILARITY_MODEL_CONFIG, CALIBRATION_MODEL_CONFIG, ARTIFACT)
-          — visíveis a qualquer estratégia, vindos de _collect_project_resources
-          (definições + disk-scan).
-        - Recursos produzidos (INTERMEDIATE_DATASET, TRAINED_PIPELINE,
-          TRAINED_SIMILARITY_MODEL, TRAINED_CALIBRATION_MODEL, SIMILARITY_SCORES,
-          TRAJECTORY_DATA, etc) — APENAS os declarados pela própria estratégia
-          atual. Recursos produzidos por outras estratégias ficam invisíveis aqui.
+        - **PRIMÁRIOS** (category=PRIMARY): visíveis em qualquer estratégia
+          — vêm do disk-scan ou de declarações em qualquer definição
+          (datasets importados, pipeline/split/mining configs).
+        - **DERIVADOS** (category=DERIVED): visíveis SOMENTE quando declarados
+          na própria estratégia atual. Datasets transformados, scores, modelos
+          treinados etc. produzidos por OUTRAS estratégias ficam invisíveis.
+
+        Regra deriva da semântica: derivados pertencem ao pipeline da
+        estratégia que os produziu — usá-los cross-strategy quebraria
+        rastreabilidade e poderia trazer artefatos incompatíveis
+        (dim/coluna/escala/etc.).
 
         Sem `current_definition` (nenhuma estratégia aberta) retorna lista vazia.
         """
         if current_definition is None:
             return []
 
-        _GLOBAL_TYPES = {
-            StrategyResourceType.DATASET,
-            StrategyResourceType.PIPELINE_CONFIG,
-            StrategyResourceType.SPLIT_CONFIG,
-            StrategyResourceType.MINING_CONFIG,
-            StrategyResourceType.MERGE_CONFIG,
-            StrategyResourceType.SIMILARITY_MODEL_CONFIG,
-            StrategyResourceType.CALIBRATION_MODEL_CONFIG,
-            StrategyResourceType.ARTIFACT,
-        }
-
         seen_ids: set = set()
         resources: List[StrategyResource] = []
 
-        # 1. Globais (vindos de qualquer estratégia ou do disk-scan).
+        # 1. PRIMÁRIOS — qualquer estratégia ou disk-scan.
         for r in self._collect_project_resources():
-            if r.resource_type in _GLOBAL_TYPES and r.resource_id not in seen_ids:
+            if (
+                r.category == ResourceCategory.PRIMARY
+                and r.resource_id not in seen_ids
+            ):
                 seen_ids.add(r.resource_id)
                 resources.append(r)
 
-        # 2. Produzidos: somente os da estratégia atual.
+        # 2. DERIVADOS — somente os da estratégia atual.
         for r in current_definition.resources:
-            if r.resource_type not in _GLOBAL_TYPES and r.resource_id not in seen_ids:
+            if (
+                r.category == ResourceCategory.DERIVED
+                and r.resource_id not in seen_ids
+            ):
                 seen_ids.add(r.resource_id)
                 resources.append(r)
 
@@ -1040,17 +1152,23 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
     def _build_resource_to_strategy_map(self) -> dict:
         """
-        Mapeia resource_id → nome da estratégia que o produziu/declara.
+        Mapeia `id(resource) → nome da estratégia que o declara`.
 
-        Usado pela árvore de recursos para sub-agrupar por estratégia os
-        recursos produzidos por instruções (INTERMEDIATE_DATASET,
-        TRAINED_PIPELINE, etc).
+        Key é a **identidade do objeto Python** (`id()`), não o
+        `resource_id`-string. Necessário porque duplicar estratégia
+        (`copy.deepcopy`) preserva os mesmos `resource_id`s do original,
+        mas cria instâncias distintas — cada instância pertence à sua
+        estratégia owner. Sem isso, derivados da cópia ficavam mapeados
+        à estratégia original (primeira ocorrência vencia).
+
+        Usado pela árvore de recursos pra sub-agrupar derivados por
+        estratégia. Caller deve passar a MESMA lista de instâncias
+        retornada por `_collect_project_resources` (não cópias).
         """
         mapping: dict = {}
         for defn in self._definitions:
             for res in defn.resources:
-                if res.resource_id not in mapping:
-                    mapping[res.resource_id] = defn.name
+                mapping[id(res)] = defn.name
         return mapping
 
     def _infer_embedding_dimensions(self, definition) -> Optional[int]:
@@ -1069,7 +1187,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         for resource in (definition.resources or []):
             if resource.resource_type not in (
                 StrategyResourceType.DATASET,
-                StrategyResourceType.INTERMEDIATE_DATASET,
+                StrategyResourceType.DATASET,
             ):
                 continue
             payload = getattr(resource, "payload", None)
@@ -1093,7 +1211,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         for resource in self._collect_project_resources():
             if resource.resource_type not in (
                 StrategyResourceType.DATASET,
-                StrategyResourceType.INTERMEDIATE_DATASET,
+                StrategyResourceType.DATASET,
             ):
                 continue
 
@@ -1163,24 +1281,40 @@ class StrategyManagerV2Controller(QtCore.QObject):
         1. Recursos declarados nas definições de estratégia.
         2. Arquivos importados em disco mas ainda não referenciados em nenhuma definição.
 
-        A deduplicação entre (1) e (2) é feita por **path do artefato** — a
-        pasta `datasets/` contém tanto datasets globais importados quanto
-        intermediários produzidos por instruções; sem dedup por path, os
-        intermediários aparecem em duplicidade (uma vez como DATASET via
-        disk scan e outra como INTERMEDIATE_DATASET via definição).
+        **Dedup**:
+        - PRIMÁRIOS: deduplicados por `resource_id` (o mesmo dataset BFW
+          referenciado por 2 estratégias é a mesma coisa — não duplica).
+        - DERIVADOS: NÃO deduplicados. Após `Duplicar estratégia`, a cópia
+          carrega derivados com os MESMOS `resource_id` da original
+          (deep copy), mas são **instâncias distintas pertencentes a
+          estratégias distintas** — devem aparecer ambas no painel.
         """
-        seen_ids: set = set()
-        seen_paths: set = set()
+        seen_primary_ids: set = set()
+        seen_primary_paths: set = set()
+        seen_derived_paths: set = set()
         resources: List[StrategyResource] = []
 
         # 1. Recursos declarados nas definições
         for defn in self._definitions:
             for res in defn.resources:
-                if res.resource_id in seen_ids:
-                    continue
-                seen_ids.add(res.resource_id)
-                if res.artifact_ref and res.artifact_ref.path:
-                    seen_paths.add(res.artifact_ref.path)
+                if res.category == ResourceCategory.PRIMARY:
+                    if res.resource_id in seen_primary_ids:
+                        continue
+                    seen_primary_ids.add(res.resource_id)
+                    if res.artifact_ref and res.artifact_ref.path:
+                        seen_primary_paths.add(res.artifact_ref.path)
+                else:
+                    # Rastreia paths de derivados declarados pra evitar que
+                    # o disk-scan os redescubra como "primários soltos".
+                    # Sem isso, um dataset produzido por DATASET_SPLIT (que
+                    # vive em `datasets/{strategy_id}_{rid}.parquet`)
+                    # aparecia duas vezes: uma vez DERIVED (passo 1, da
+                    # definition) e uma vez PRIMARY (passo 2, varrendo o
+                    # disco).
+                    if res.artifact_ref and res.artifact_ref.path:
+                        seen_derived_paths.add(res.artifact_ref.path)
+                # DERIVADOS sempre são adicionados — pertencem à estratégia
+                # que os declara, sem dedup cross-strategy.
                 resources.append(res)
 
         # 2. Arquivos importados no disco (não vinculados a nenhuma definição ainda)
@@ -1192,26 +1326,52 @@ class StrategyManagerV2Controller(QtCore.QObject):
         ]
         for artifact_type, resource_type in _import_scan:
             for ref in self._project.storage.list_artifacts(artifact_type):
-                # Skip se o arquivo já está declarado como recurso de alguma estratégia.
-                if ref.path in seen_paths:
+                # Skip se o arquivo já está declarado como primário ou
+                # derivado de alguma estratégia (ambos os casos cobertos
+                # pelas duas estruturas).
+                if ref.path in seen_primary_paths:
+                    continue
+                if ref.path in seen_derived_paths:
                     continue
                 resource_id = Path(ref.path).stem
-                if resource_id in seen_ids:
+                if resource_id in seen_primary_ids:
                     continue
 
-                # Heurística defensiva: arquivos cujo stem contém algum
-                # resource_id já declarado (ex: prefixo "{strategy_id}_") são
-                # considerados órfãos de uma versão anterior do recurso e
-                # não devem aparecer novamente como "Datasets" soltos.
-                if any(rid and rid in resource_id for rid in seen_ids):
-                    continue
+                # Filtragem defensiva de derivados em pastas que compartilham
+                # extensão com primários. Aplica-se SÓ a GLOBAL_DATASET
+                # (datasets/*.parquet acomoda tanto SOURCE quanto DERIVED).
+                # Configs (pipeline/mining/split) não compartilham folder
+                # com derivados, então a checagem aqui pegaria falso-positivos
+                # (ex: criar `pipe_v2` com `pipe` já declarado descartaria
+                # silenciosamente o novo).
+                if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
+                    # (1) Stem começa com UUID de strategy_id seguido de
+                    # `_` → arquivo produzido pela convenção do executor
+                    # (`{strategy_id}_{resource_id}.parquet`). É derivado
+                    # por construção, mesmo que a strategy original tenha
+                    # sido removida (arquivo órfão).
+                    if _UUID_PREFIX_RE.match(resource_id):
+                        continue
+                    # (2) Stem começa com `{primary_id}_` — match por
+                    # PREFIXO + `_` (não substring solto, pra não pegar
+                    # nomes onde o id aparece no meio).
+                    if any(
+                        rid and resource_id.startswith(f"{rid}_")
+                        for rid in seen_primary_ids
+                    ):
+                        continue
 
-                seen_ids.add(resource_id)
+                seen_primary_ids.add(resource_id)
+                # category=PRIMARY: tudo que vem de `_import_scan` foi
+                # importado pelo usuário via "Adicionar Recurso" e vive
+                # nas pastas globais do projeto (datasets/, pipelines/,
+                # split_configs/, mining_configs/).
                 resources.append(StrategyResource(
                     resource_id=resource_id,
                     name=resource_id,
                     resource_type=resource_type,
                     artifact_ref=ref,
+                    category=ResourceCategory.PRIMARY,
                 ))
 
         return resources
@@ -1308,27 +1468,130 @@ class StrategyManagerV2Controller(QtCore.QObject):
             )
 
     def _on_remove_strategy(self, definition: LRStrategyDefinition) -> None:
+        """Remove a estratégia e TODOS os seus artefatos derivados em disco.
+
+        Limpeza em 4 frentes (todas best-effort — falha em uma não aborta
+        as outras):
+          1. Recursos derivados declarados em `definition.resources` —
+             apaga `artifact_ref.path` + sidecars conhecidos
+             (`_stats.json`, `_dist.json`, `_metrics.json`).
+          2. Pasta `<project>/graphics/<strategy_id>/` inteira — onde
+             vivem os PNGs gerados pelos persists (distribution, casework,
+             validation_result com 4 PNGs).
+          3. Pickle do `LRStrategyTrainedModel` (Run All produz isso).
+          4. JSON da definição em `definitions/`.
+
+        Recursos PRIMARY (datasets/configs importados pelo usuário) NÃO
+        são tocados — eles vivem na biblioteca do projeto, compartilhados
+        entre estratégias. O filtro `category=DERIVED` na varredura
+        garante isso.
+        """
         if not self._project:
             return
         reply = QtWidgets.QMessageBox.question(
             self._view,
             "Remover estratégia",
-            f"Remover a estratégia '{definition.name}'?\nEssa ação não pode ser desfeita.",
+            f"Remover a estratégia '{definition.name}'?\n"
+            f"Todos os recursos derivados (datasets transformados, scores, "
+            f"modelos treinados, resultados, gráficos) serão apagados do "
+            f"disco. Recursos importados (datasets, configs) permanecem.\n"
+            f"Essa ação não pode ser desfeita.",
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
         )
         if reply != QtWidgets.QMessageBox.StandardButton.Yes:
             return
+
+        import shutil
+        from faceaudit.enums.project_folder import ProjectFolder
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType as SAT
+        from faceaudit.enums.strategy_file_type import StrategyFileType
+        from faceaudit.models.similarity.distribution_plot import _sanitize_name
+        from faceaudit.models.storage.strategy_artifact_reference import (
+            StrategyArtifactReference,
+        )
+
+        project_root = self._project.storage.project_root
+        strategy_id = definition.strategy_id
+        safe_strategy = _sanitize_name(strategy_id)
+        sidecar_suffixes = ("_stats.json", "_dist.json", "_metrics.json")
+
         try:
-            # O repositório não tem delete_definition — remove o arquivo via storage
-            from faceaudit.enums.strategy_file_type import StrategyFileType
-            from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
-            from faceaudit.enums.strategy_artifact_type import StrategyArtifactType as SAT
-            rel = StrategyFileType.STRATEGY_DEFINITION.build_path(strategy_id=definition.strategy_id)
-            ref = StrategyArtifactReference(artifact_type=SAT.STRATEGY_DEFINITION, path=str(rel), hash=None)
+            # 1. Arquivos dos recursos derivados declarados.
+            for res in definition.resources:
+                if res.category != ResourceCategory.DERIVED:
+                    continue
+                if res.artifact_ref is None or not res.artifact_ref.path:
+                    continue
+                try:
+                    abs_path = project_root / res.artifact_ref.path
+                    if abs_path.exists():
+                        abs_path.unlink()
+                    # Sidecars convencionais ao lado do artefato.
+                    stem = abs_path.stem
+                    for suffix in sidecar_suffixes:
+                        sc = abs_path.parent / (stem + suffix)
+                        if sc.exists():
+                            sc.unlink()
+                except Exception:
+                    pass  # individual file failure não aborta a varredura
+
+            # 2. Pasta de gráficos da estratégia (recursiva).
+            graphics_dir = (
+                project_root / ProjectFolder.GRAPHICS.value / safe_strategy
+            )
+            if graphics_dir.exists():
+                shutil.rmtree(graphics_dir, ignore_errors=True)
+
+            # 3. Pickle do LRStrategyTrainedModel (output de Run All).
+            try:
+                model_rel = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(
+                    strategy_id=strategy_id,
+                )
+                model_abs = project_root / model_rel
+                if model_abs.exists():
+                    model_abs.unlink()
+            except Exception:
+                pass
+
+            # Sweep defensivo: pega órfãos com prefixo `<strategy_id>_`
+            # em pastas conhecidas de outputs. Cobre arquivos que ficaram
+            # fora de `definition.resources` por inconsistência (ex:
+            # output cuja referência foi limpa por Apply Alterações mas
+            # o file ficou no disco).
+            sweep_folders = (
+                ProjectFolder.DATASETS,
+                ProjectFolder.MODELS,
+                ProjectFolder.CHECKPOINTS,
+                ProjectFolder.ARTIFACTS,
+            )
+            for folder in sweep_folders:
+                fp = project_root / folder.value
+                if not fp.exists():
+                    continue
+                for p in fp.iterdir():
+                    if not p.is_file():
+                        continue
+                    if p.name.startswith(safe_strategy + "_"):
+                        try:
+                            p.unlink()
+                        except Exception:
+                            pass
+
+            # 4. JSON da definição.
+            rel = StrategyFileType.STRATEGY_DEFINITION.build_path(
+                strategy_id=strategy_id,
+            )
+            ref = StrategyArtifactReference(
+                artifact_type=SAT.STRATEGY_DEFINITION, path=str(rel), hash=None,
+            )
             abs_path = self._project.storage.resolve_artifact(ref)
             if abs_path and abs_path.exists():
                 abs_path.unlink()
-            if self._current_definition and self._current_definition.strategy_id == definition.strategy_id:
+
+            if (
+                self._current_definition
+                and self._current_definition.strategy_id == strategy_id
+            ):
                 self._current_definition = None
                 self._strategy_editor.show_empty()
                 self._left_panel.set_strategy_actions_enabled(False)
@@ -1362,6 +1625,198 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._executor = None
         self._refresh_instruction_states()
 
+    def _delete_instruction_output_files(
+        self,
+        instruction: StrategyInstructionDefinition,
+        definition: Optional[LRStrategyDefinition] = None,
+    ) -> List[str]:
+        """Apaga arquivos físicos de TODOS os outputs declarados pela
+        instrução: artefato principal + `_stats.json` / `_dist.json` /
+        `_metrics.json` sidecars + PNG(s) em `<project>/graphics/`.
+
+        NÃO mexe em `definition.resources` nem no contexto — só toca disco.
+        Caller decide se mantém placeholders (Apply Alterações) ou se
+        remove tudo (remoção da instrução).
+
+        `definition` opcional — quando None usa `self._current_definition`.
+        Necessário pra invalidação em cascata cross-strategy (edição de
+        config compartilhada via ✎ pode atingir instruções de OUTRAS
+        estratégias que não são a atualmente selecionada).
+
+        Retorna a lista de `output_resource_id` encontrados na instrução
+        (independente de terem arquivo no disco) — útil pra o caller saber
+        em quais placeholders mexer.
+        """
+        if definition is None:
+            definition = self._current_definition
+        if not self._project or definition is None or instruction is None:
+            return []
+
+        try:
+            specs = instruction.get_resource_field_specs()
+        except Exception:
+            return []
+
+        project_root = self._project.storage.project_root
+        strategy_id = definition.strategy_id
+        touched: List[str] = []
+
+        for spec in specs:
+            if not spec.is_output:
+                continue
+            output_id = getattr(instruction, spec.field_name, None)
+            if not output_id:
+                continue
+            touched.append(output_id)
+
+            existing = definition.get_resource_by_id(output_id)
+            if existing is None:
+                continue
+            old_ref = existing.artifact_ref
+            if old_ref is None or not old_ref.path:
+                continue
+
+            try:
+                abs_path = project_root / old_ref.path
+                if abs_path.exists():
+                    abs_path.unlink()
+                # Sidecars genéricos ao lado do artefato.
+                stem = abs_path.stem
+                parent = abs_path.parent
+                for suffix in ("_stats.json", "_dist.json", "_metrics.json"):
+                    sc = parent / (stem + suffix)
+                    if sc.exists():
+                        sc.unlink()
+
+                # PNGs em `<project>/graphics/<strategy_id>/...` — gating
+                # por resource_type, mesmo padrão que o executor usa pra
+                # gravar.
+                if existing.resource_type in (
+                    StrategyResourceType.SIMILARITY_SCORES,
+                    StrategyResourceType.CALIBRATED_SCORES,
+                ):
+                    from faceaudit.models.similarity.distribution_plot import (
+                        score_distribution_png_path,
+                    )
+                    png_path = score_distribution_png_path(
+                        project_root, strategy_id, output_id,
+                        calibrated=(
+                            existing.resource_type
+                            == StrategyResourceType.CALIBRATED_SCORES
+                        ),
+                    )
+                    if png_path.exists():
+                        png_path.unlink()
+                elif (
+                    existing.resource_type
+                    == StrategyResourceType.CASEWORK_VISUALIZATION
+                ):
+                    from faceaudit.models.casework_visualization_plot import (
+                        casework_visualization_png_path,
+                    )
+                    png_path = casework_visualization_png_path(
+                        project_root, strategy_id, output_id,
+                    )
+                    if png_path.exists():
+                        png_path.unlink()
+                elif (
+                    existing.resource_type
+                    == StrategyResourceType.VALIDATION_RESULT
+                ):
+                    from faceaudit.models.validation_result_plot import (
+                        validation_result_png_paths,
+                    )
+                    for png in validation_result_png_paths(
+                        project_root, strategy_id, output_id,
+                    ).values():
+                        if png.exists():
+                            png.unlink()
+            except Exception:
+                pass  # falha individual não aborta a varredura
+
+        return touched
+
+    def _invalidate_dependents_of(self, root_resource_id: str) -> None:
+        """Invalida em cascata todas as instruções (em qualquer estratégia
+        do projeto) que dependem direta ou transitivamente do recurso
+        editado.
+
+        Algoritmo BFS sobre o grafo de dependência: começa com {root},
+        encontra instruções cujos `input_resource_ids` tocam o conjunto
+        dirty, invalida seus outputs (apaga arquivos + zera artifact_ref/
+        payload), adiciona esses outputs ao dirty, repete até estabilizar.
+
+        Usado pelo `_persist_edited_config_resource` após edição inline
+        via ✎ — sem isso, modelos/datasets produzidos com versões antigas
+        da config ficariam marcados como ✅ apesar de estarem desatualizados.
+        """
+        if not self._project or not root_resource_id:
+            return
+
+        dirty: Set[str] = {root_resource_id}
+        processed: Set[str] = set()
+        any_invalidated = False
+        touched_strategy_ids: Set[str] = set()
+
+        while True:
+            to_process = dirty - processed
+            if not to_process:
+                break
+            processed |= to_process
+
+            for defn in self._definitions:
+                for instr in defn.instructions:
+                    inputs = set(getattr(instr, "input_resource_ids", []) or [])
+                    if not (inputs & to_process):
+                        continue
+
+                    # Apaga arquivos físicos + descobre os output_ids.
+                    output_ids = self._delete_instruction_output_files(
+                        instr, definition=defn,
+                    )
+                    if not output_ids:
+                        continue
+
+                    for output_id in output_ids:
+                        existing = defn.get_resource_by_id(output_id)
+                        if existing is None:
+                            continue
+                        existing.artifact_ref = None
+                        existing.payload = None
+                        any_invalidated = True
+                        dirty.add(output_id)
+
+                        # Remove do contexto vivo apenas quando a definition
+                        # invalidada é a atual (contexto é por estratégia).
+                        if (
+                            defn is self._current_definition
+                            and self._execution_context is not None
+                            and self._execution_context.has_resource(output_id)
+                        ):
+                            try:
+                                self._execution_context.remove_resource(output_id)
+                            except Exception:
+                                pass
+
+                    self._executed_instruction_ids.discard(instr.instruction_id)
+                    touched_strategy_ids.add(defn.strategy_id)
+
+        if not any_invalidated:
+            return
+
+        # Persiste todas as definitions afetadas.
+        for defn in self._definitions:
+            if defn.strategy_id in touched_strategy_ids:
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception:
+                    pass
+
+        # Refresh visual: gates 🔒/✅ + painel de produced resources + árvore.
+        self._refresh_instruction_states()
+        self._refresh_produced_resources()
+        self._refresh_left_panel()
+
     def _on_instruction_applied(self, instruction: StrategyInstructionDefinition) -> None:
         """
         Disparado quando o usuário clica "Aplicar alterações" numa instrução.
@@ -1372,101 +1827,23 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not self._project or not self._current_definition or instruction is None:
             return
 
-        try:
-            specs = instruction.get_resource_field_specs()
-        except Exception:
-            specs = []
+        output_ids = self._delete_instruction_output_files(instruction)
+        if not output_ids:
+            return
 
         any_invalidated = False
-        for spec in specs:
-            if not spec.is_output:
-                continue
-            output_id = getattr(instruction, spec.field_name, None)
-            if not output_id:
-                continue
-
+        for output_id in output_ids:
             existing = self._current_definition.get_resource_by_id(output_id)
             if existing is None:
                 continue
-
-            old_ref = existing.artifact_ref
+            # Limpa placeholder em memória — instrução PODE ser reexecutada
+            # e produzir o output de novo; mantém o resource pra que o
+            # `_sync_all_output_placeholders` não tente recriar.
             existing.artifact_ref = None
             existing.payload = None
             any_invalidated = True
 
-            # Apaga arquivo do disco — o output anterior está stale relativo
-            # à nova configuração e não deve continuar sendo claimed como o
-            # output da instrução.
-            if old_ref is not None and old_ref.path:
-                try:
-                    abs_path = self._project.storage.project_root / old_ref.path
-                    if abs_path.exists():
-                        abs_path.unlink()
-                    # Stats JSON paralelo, se existir.
-                    stats_path = abs_path.parent / (abs_path.stem + "_stats.json")
-                    if stats_path.exists():
-                        stats_path.unlink()
-                    # Sidecar de distribuição (_dist.json) e snapshot PNG
-                    # (em `<project>/graphics/`) — só relevantes pra
-                    # SIMILARITY_SCORES / CALIBRATED_SCORES. Apaga ambos
-                    # silenciosamente; ausência não é erro.
-                    dist_sidecar = abs_path.parent / (abs_path.stem + "_dist.json")
-                    if dist_sidecar.exists():
-                        dist_sidecar.unlink()
-                    if existing.resource_type in (
-                        StrategyResourceType.SIMILARITY_SCORES,
-                        StrategyResourceType.CALIBRATED_SCORES,
-                    ):
-                        # Subfolder distinto por tipo — flag `calibrated`
-                        # diferencia `similarity_scores/` de
-                        # `calibrated_scores/` no path resolver.
-                        from faceaudit.models.similarity.distribution_plot import (
-                            score_distribution_png_path,
-                        )
-                        png_path = score_distribution_png_path(
-                            self._project.storage.project_root,
-                            self._current_definition.strategy_id,
-                            output_id,
-                            calibrated=(
-                                existing.resource_type
-                                == StrategyResourceType.CALIBRATED_SCORES
-                            ),
-                        )
-                        if png_path.exists():
-                            png_path.unlink()
-                    elif (
-                        existing.resource_type
-                        == StrategyResourceType.CASEWORK_VISUALIZATION
-                    ):
-                        from faceaudit.models.casework_visualization_plot import (
-                            casework_visualization_png_path,
-                        )
-                        png_path = casework_visualization_png_path(
-                            self._project.storage.project_root,
-                            self._current_definition.strategy_id,
-                            output_id,
-                        )
-                        if png_path.exists():
-                            png_path.unlink()
-                    elif (
-                        existing.resource_type
-                        == StrategyResourceType.VALIDATION_RESULT
-                    ):
-                        from faceaudit.models.validation_result_plot import (
-                            validation_result_png_paths,
-                        )
-                        png_paths = validation_result_png_paths(
-                            self._project.storage.project_root,
-                            self._current_definition.strategy_id,
-                            output_id,
-                        )
-                        for png in png_paths.values():
-                            if png.exists():
-                                png.unlink()
-                except Exception:
-                    pass
-
-            # Remove também do contexto vivo se estiver lá — força nova execução.
+            # Remove do contexto vivo — força nova execução pra repopular.
             if (
                 self._execution_context is not None
                 and self._execution_context.has_resource(output_id)
@@ -1477,7 +1854,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     pass
 
         if any_invalidated:
-            # Marca a instrução como não-executada e salva.
             self._executed_instruction_ids.discard(instruction.instruction_id)
             self._save_current_definition()
             # Recursos foram invalidados — instruções DOWNSTREAM que dependem
@@ -1485,6 +1861,45 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._refresh_instruction_states()
             self._refresh_produced_resources()
             self._refresh_left_panel()
+
+    def _on_instruction_removed(self, instruction: StrategyInstructionDefinition) -> None:
+        """Disparado pelo editor ANTES da instrução sumir do phase_list.
+
+        Diferente de Apply Alterações (que invalida outputs mas mantém os
+        placeholders na expectativa de reexecução), aqui a instrução
+        deixa de existir — então também removemos os placeholders dos
+        recursos produzidos de `definition.resources`. Senão eles ficariam
+        órfãos na árvore, sem instrução pai pra reproduzí-los.
+        """
+        if not self._project or not self._current_definition or instruction is None:
+            return
+
+        output_ids = self._delete_instruction_output_files(instruction)
+        if not output_ids:
+            return
+
+        # Remove placeholders dos outputs de `definition.resources`.
+        output_id_set = set(output_ids)
+        self._current_definition.resources = [
+            r for r in self._current_definition.resources
+            if r.resource_id not in output_id_set
+        ]
+
+        # Remove também do contexto vivo (se existirem).
+        for output_id in output_ids:
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(output_id)
+            ):
+                try:
+                    self._execution_context.remove_resource(output_id)
+                except Exception:
+                    pass
+
+        self._executed_instruction_ids.discard(instruction.instruction_id)
+        # NÃO chamamos `_save_current_definition()` aqui — o save virá em
+        # seguida via `_on_strategy_modified` (emitido pelo widget logo
+        # depois desse signal). Salvar duas vezes seria redundante.
 
     def _compute_executed_ids_from_disk(self) -> set:
         """
@@ -2203,10 +2618,22 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 except Exception:
                     pass
 
+        # Invalida em cascata qualquer instrução que dependa do recurso
+        # editado — em qualquer estratégia do projeto. Sem isso, modelos
+        # treinados / datasets transformados com a versão ANTIGA do
+        # pipeline/mining ficariam marcados como ✅ apesar de estarem
+        # desatualizados. Cascade também atinge outputs derivados que
+        # virem inputs de outras instruções (transitivo).
+        self._invalidate_dependents_of(resource_id)
+
         # Re-renderiza a árvore esquerda SEM recarregar definitions do disco
         # (o que descartaria seleções pendentes nos dropdowns do editor).
         # O payload/artifact_ref já foram atualizados in-place na lista
         # `self._definitions` em memória — só precisamos refletir isso na UI.
+        # OBS: _invalidate_dependents_of já chama _refresh_left_panel, então
+        # este bloco vira no-op quando houve invalidação. Mantemos como
+        # fallback pro caso de nenhum dependente ter sido encontrado (edit
+        # que não afetou estado executado).
         try:
             all_resources = self._collect_project_resources()
             resource_to_strategy = self._build_resource_to_strategy_map()
@@ -2678,7 +3105,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_pipeline(self) -> None:
         ctrl = PipelineCreatorController(parent=self._view)
         config = ctrl.run()
-        self._save_config_to_global_library(
+        self._save_config_with_destination(
             config=config,
             artifact_type=StrategyArtifactType.PIPELINE_CONFIG,
             label="pipeline",
@@ -2688,7 +3115,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         ctrl = NewMiningConfigDialogController(parent=self._view)
         if ctrl.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return  # usuário cancelou — sem feedback (esperado)
-        self._save_config_to_global_library(
+        self._save_config_with_destination(
             config=ctrl.get_config(),
             artifact_type=StrategyArtifactType.MINING_CONFIG,
             label="mining",
@@ -2697,82 +3124,173 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_split(self) -> None:
         ctrl = NewSplitConfigDialogController(parent=self._view)
         config = ctrl.exec()  # retorna SplitConfig em sucesso, None se cancelou
-        self._save_config_to_global_library(
+        self._save_config_with_destination(
             config=config,
             artifact_type=StrategyArtifactType.SPLIT_CONFIG,
             label="split",
         )
 
-    def _save_config_to_global_library(
+    def _choose_config_destination(self, label: str) -> Optional[str]:
+        """Diálogo perguntando onde salvar a config recém-criada.
+
+        Retorna 'global', 'project', 'both' ou None se o usuário cancelar.
+        Quando não há projeto aberto, força 'global' (única opção viável)
+        sem mostrar diálogo — sem projeto não há para onde mais salvar.
+        """
+        has_project = self._project is not None
+        if not has_project:
+            # Sem projeto aberto → biblioteca é o único destino possível.
+            # Não vale a pena mostrar diálogo com uma opção só.
+            return "global"
+
+        dlg = QtWidgets.QDialog(self._view)
+        dlg.setWindowTitle(f"Salvar configuração de {label}")
+        dlg.setMinimumWidth(420)
+        layout = QtWidgets.QVBoxLayout(dlg)
+        layout.setContentsMargins(16, 16, 16, 12)
+        layout.setSpacing(8)
+
+        prompt = QtWidgets.QLabel(
+            f"Onde salvar a configuração de <b>{label}</b>?"
+        )
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+
+        rb_both = QtWidgets.QRadioButton(
+            "Biblioteca de configurações e pasta do projeto"
+        )
+        rb_global = QtWidgets.QRadioButton(
+            "Apenas biblioteca de configurações"
+        )
+        rb_project = QtWidgets.QRadioButton(
+            "Apenas pasta do projeto"
+        )
+        rb_both.setChecked(True)  # default conservador: tudo
+
+        for rb in (rb_both, rb_global, rb_project):
+            rb.setStyleSheet("padding: 4px 0;")
+            layout.addWidget(rb)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        layout.addWidget(btns)
+
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        if rb_both.isChecked():
+            return "both"
+        if rb_global.isChecked():
+            return "global"
+        return "project"
+
+    def _save_config_with_destination(
         self,
         config,
         artifact_type: StrategyArtifactType,
         label: str,
     ) -> None:
         """
-        Helper compartilhado pelos 3 botões da GlobalResourcesToolbar
-        (Pipeline / Mining / Split).
+        Persiste uma config recém criada (Pipeline / Mining / Split) no
+        destino escolhido pelo usuário: biblioteca de configurações, pasta
+        do projeto, ou ambos.
 
-        Comportamento:
-        - `config is None` → usuário cancelou o dialog. Sai silencioso (UX
-          esperada: sem mensagens incomodando).
-        - `_global_storage is None` → biblioteca não disponível. Mostra warning
-          claro com instruções (mesmo padrão do save_as_template).
-        - `config_id` derivado de `config.name` (sanitizado para filename) —
-          em vez do UUID aleatório truncado que tornava os arquivos
-          impossíveis de identificar na pasta global. Fallback para UUID
-          curto somente se o config não tem name ou está vazio.
-        - Erro de IO → critical message com a exceção real.
-        - Sucesso → information message com o path completo do arquivo.
+        - `config is None` → cancelamento no dialog de criação. Sai silencioso.
+        - Sem projeto aberto → vai direto pra biblioteca (sem mostrar chooser).
+        - Falha de IO num dos dois destinos → critical message com a exceção;
+          aborta sem tentar o segundo destino (UX: explícito sobre o que
+          aconteceu).
+        - Sucesso → information message listando os locais persistidos.
         """
         if config is None:
-            # Cancelado pelo usuário — não atrapalha com mensagens.
             return
 
-        if not self._global_storage:
-            QtWidgets.QMessageBox.warning(
-                self._view,
-                "Biblioteca global indisponível",
-                "Não foi possível acessar a biblioteca global para salvar a "
-                f"configuração de {label}.\n\nPossíveis causas:\n"
-                "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
-                "verifique permissões.\n"
-                "• Você definiu paths.library no config.json com um caminho "
-                "inválido — corrija ou remova essa entrada para usar o padrão.\n\n"
-                "A configuração que você acabou de criar NÃO foi persistida.",
-            )
-            return
+        destination = self._choose_config_destination(label)
+        if destination is None:
+            return  # cancelado no chooser
 
         config_id = self._derive_config_id(config)
+        save_global = destination in ("global", "both")
+        save_project = destination in ("project", "both")
 
-        try:
-            ref = self._global_storage.save_artifact(
-                artifact_type,
-                config,
-                config_id=config_id,
-            )
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view,
-                "Erro ao salvar configuração",
-                f"Falha ao salvar a configuração de {label} na biblioteca global:\n{exc}",
-            )
-            return
+        saved_locations: List[str] = []
 
-        library_root = getattr(self._global_storage, "library_root", None)
-        location = (
-            f"\n\nLocal: {library_root}/{ref.path}"
-            if library_root else ""
-        )
+        if save_global:
+            if not self._global_storage:
+                QtWidgets.QMessageBox.warning(
+                    self._view,
+                    "Biblioteca de configurações indisponível",
+                    "Não foi possível acessar a biblioteca para salvar a "
+                    f"configuração de {label}.\n\nPossíveis causas:\n"
+                    "• A pasta padrão (~/.faceaudit/library) não pôde ser criada — "
+                    "verifique permissões.\n"
+                    "• Você definiu paths.library no config.json com um caminho "
+                    "inválido — corrija ou remova essa entrada para usar o padrão.\n\n"
+                    "A configuração NÃO foi persistida.",
+                )
+                return
+            try:
+                ref = self._global_storage.save_artifact(
+                    artifact_type, config, config_id=config_id,
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    self._view,
+                    "Erro ao salvar configuração",
+                    f"Falha ao salvar a configuração de {label} na "
+                    f"biblioteca:\n{exc}",
+                )
+                return
+            library_root = getattr(self._global_storage, "library_root", None)
+            if library_root:
+                saved_locations.append(
+                    f"• Biblioteca: {library_root}/{ref.path}"
+                )
+            else:
+                saved_locations.append(f"• Biblioteca: {ref.path}")
+
+        if save_project:
+            if not self._project:
+                # Não deveria acontecer (chooser bloqueia esse caso), mas
+                # protegemos defensivamente.
+                QtWidgets.QMessageBox.warning(
+                    self._view,
+                    "Projeto não disponível",
+                    "Nenhum projeto aberto — não foi possível salvar na "
+                    "pasta do projeto.",
+                )
+                return
+            try:
+                ref = self._project.storage.save_artifact(
+                    artifact_type, config, config_id=config_id,
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    self._view,
+                    "Erro ao salvar configuração",
+                    f"Falha ao salvar a configuração de {label} na pasta do "
+                    f"projeto:\n{exc}",
+                )
+                return
+            project_root = self._project.storage.project_root
+            saved_locations.append(f"• Projeto: {project_root}/{ref.path}")
+
+        # Atualiza ANTES do messagebox pra que a árvore/dropdowns já
+        # mostrem a nova config quando o usuário ler a confirmação.
+        # `_refresh_left_panel` recarrega `_definitions` do disco e
+        # repopula tanto a árvore esquerda quanto os dropdowns do editor
+        # (via `_strategy_editor.update_available_resources`).
+        self._refresh_left_panel()
+
         QtWidgets.QMessageBox.information(
             self._view,
             f"Configuração de {label} salva",
-            f"'{config_id}' salvo na biblioteca global.{location}",
+            f"'{config_id}' persistido em:\n\n"
+            + "\n".join(saved_locations),
         )
-
-        # Atualiza dropdowns/árvore esquerda — a nova config deve aparecer
-        # imediatamente nos dropdowns das instruções.
-        self._refresh_left_panel()
 
     @staticmethod
     def _derive_config_id(config) -> str:
@@ -2800,6 +3318,174 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_manage_library(self) -> None:
         ctrl = ManageLibraryController(parent=self._view, global_storage=self._global_storage)
         ctrl.exec()
+
+    def _on_add_resources_from_library(self) -> None:
+        """Adição em lote de recursos da biblioteca de configurações pro
+        projeto atual.
+
+        Abre um diálogo com 4 abas (Datasets / Splits / Minings / Pipelines),
+        cada uma listando os recursos disponíveis na biblioteca. O usuário
+        seleciona um ou mais em qualquer combinação de abas e confirma.
+
+        Conflitos: se o resource_id (derivado do stem do arquivo na biblioteca)
+        já existe no projeto, o item é **pulado** e listado no resumo
+        final — não sobrescreve sem aviso.
+        """
+        from .dialogs.add_resources_from_library import (
+            AddResourcesFromLibraryView,
+        )
+
+        if not self._project:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Projeto não disponível",
+                "Abra um projeto antes de adicionar recursos da biblioteca.",
+            )
+            return
+        if not self._global_storage:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Biblioteca indisponível",
+                "Não foi possível acessar a biblioteca de configurações.",
+            )
+            return
+
+        try:
+            datasets = self._global_storage.list_artifacts(
+                StrategyArtifactType.GLOBAL_DATASET
+            )
+            splits = self._global_storage.list_artifacts(
+                StrategyArtifactType.SPLIT_CONFIG
+            )
+            minings = self._global_storage.list_artifacts(
+                StrategyArtifactType.MINING_CONFIG
+            )
+            pipelines = self._global_storage.list_artifacts(
+                StrategyArtifactType.PIPELINE_CONFIG
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao listar biblioteca",
+                f"Falha ao consultar a biblioteca de configurações:\n{exc}",
+            )
+            return
+
+        if not (datasets or splits or minings or pipelines):
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Biblioteca vazia",
+                "Não há recursos na biblioteca de configurações para "
+                "adicionar. Crie pipelines, mining ou split configs primeiro.",
+            )
+            return
+
+        dlg = AddResourcesFromLibraryView(parent=self._view)
+        dlg.populate(
+            datasets=datasets,
+            splits=splits,
+            minings=minings,
+            pipelines=pipelines,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        selections = dlg.selected_refs()
+        # Mapeia chave do dialog → tipo de artefato + kwarg do template
+        spec_by_key = {
+            "datasets":  (StrategyArtifactType.GLOBAL_DATASET,  "dataset_id"),
+            "splits":    (StrategyArtifactType.SPLIT_CONFIG,    "config_id"),
+            "minings":   (StrategyArtifactType.MINING_CONFIG,   "config_id"),
+            "pipelines": (StrategyArtifactType.PIPELINE_CONFIG, "config_id"),
+        }
+
+        lib_root = getattr(self._global_storage, "library_root", None)
+        added: List[str] = []
+        skipped_conflicts: List[str] = []
+        failed: List[str] = []
+
+        for key, refs in selections.items():
+            if not refs:
+                continue
+            artifact_type, id_kwarg = spec_by_key[key]
+            for ref in refs:
+                resource_id = Path(ref.path).stem
+                source_path = (lib_root / ref.path) if lib_root else None
+                if source_path is None or not source_path.exists():
+                    failed.append(f"{resource_id} (arquivo de origem ausente)")
+                    continue
+
+                # Detecta conflito: destino calculado pelo template do tipo
+                # mapeado pro projeto. Se já existe, pula sem sobrescrever.
+                try:
+                    from faceaudit.enums.strategy_file_type import (
+                        StrategyFileType,
+                    )
+                    dest_file_type = StrategyFileType.for_artifact(artifact_type)
+                    dest_rel = dest_file_type.build_path(**{id_kwarg: resource_id})
+                    dest_abs = self._project.storage.project_root / dest_rel
+                except Exception:
+                    dest_abs = None
+
+                if dest_abs is not None and dest_abs.exists():
+                    skipped_conflicts.append(resource_id)
+                    continue
+
+                try:
+                    if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
+                        # Reusa o caminho específico de dataset (lida com
+                        # path_mode RELATIVE → ABSOLUTE quando precisa).
+                        self._project.storage.import_dataset(
+                            source_path=source_path,
+                            dataset_id=resource_id,
+                        )
+                        # Sidecar de stats também é útil pra dataset.
+                        self._compute_and_save_dataset_stats(
+                            self._project.storage.project_root
+                            / dest_rel
+                        )
+                    else:
+                        self._project.storage.copy_artifact_to_project(
+                            source_path=source_path,
+                            artifact_type=artifact_type,
+                            **{id_kwarg: resource_id},
+                        )
+                    added.append(resource_id)
+                except Exception as exc:
+                    failed.append(f"{resource_id} ({exc})")
+
+        # Refresh ANTES do summary pra que árvore/dropdowns já reflitam
+        # os novos recursos quando o usuário ler a mensagem.
+        if added:
+            self._refresh_left_panel()
+
+        # Resumo final
+        parts: List[str] = []
+        if added:
+            parts.append(f"✓ {len(added)} adicionado(s): {', '.join(added)}")
+        if skipped_conflicts:
+            parts.append(
+                f"⚠ {len(skipped_conflicts)} pulado(s) (já existem no "
+                f"projeto): {', '.join(skipped_conflicts)}"
+            )
+        if failed:
+            parts.append(
+                f"✗ {len(failed)} falharam: {', '.join(failed)}"
+            )
+
+        if not parts:
+            return  # nada a reportar
+
+        icon = (
+            QtWidgets.QMessageBox.Icon.Warning
+            if (skipped_conflicts or failed)
+            else QtWidgets.QMessageBox.Icon.Information
+        )
+        msg = QtWidgets.QMessageBox(self._view)
+        msg.setIcon(icon)
+        msg.setWindowTitle("Adicionar Recursos — Resumo")
+        msg.setText("\n\n".join(parts))
+        msg.exec()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

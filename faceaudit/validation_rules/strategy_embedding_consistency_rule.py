@@ -187,7 +187,7 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
 
         dataset_types = (
             StrategyResourceType.DATASET,
-            StrategyResourceType.INTERMEDIATE_DATASET,
+            StrategyResourceType.DATASET,
         )
 
         for instr in getattr(strategy_definition, "instructions", []):

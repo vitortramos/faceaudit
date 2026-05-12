@@ -56,6 +56,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     hydrate_resource_requested = QtCore.pyqtSignal(object, str)
     resource_edit_requested = QtCore.pyqtSignal(str)
     instruction_applied = QtCore.pyqtSignal(object)
+    # Disparado quando o usuário remove uma instrução da lista — o
+    # controller usa pra apagar arquivos dos recursos produzidos antes
+    # da instrução sumir.
+    instruction_removed = QtCore.pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -222,7 +226,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         available_resources: Optional[List[StrategyResource]] = None,
     ) -> None:
         self._definition = definition
-        self.lbl_strategy_name.setText(f"Estratégia: {definition.name}")
+        self._refresh_header_label()
 
         for phase_key, _ in _PHASES:
             instr_list, config_panel, results_panel = self._phase_widgets[phase_key]
@@ -259,7 +263,26 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         self.stack.setCurrentIndex(1)
 
     def set_strategy_name(self, name: str) -> None:
-        self.lbl_strategy_name.setText(f"Estratégia: {name}")
+        if self._definition is not None:
+            self._definition.name = name
+        self._refresh_header_label()
+
+    def _refresh_header_label(self) -> None:
+        """Renderiza o header do editor com nome + id entre parênteses.
+
+        O id na header é útil pra distinguir estratégias com nomes
+        iguais (ex: "PLDA 2" / "PLDA 2") e pra confirmar visualmente
+        qual estratégia está aberta antes de ações destrutivas (remover,
+        selar, etc.). Single fonte: ambos `load_strategy` e
+        `set_strategy_name` delegam aqui.
+        """
+        if self._definition is None:
+            self.lbl_strategy_name.setText("Estratégia: —")
+            return
+        self.lbl_strategy_name.setText(
+            f"Estratégia: {self._definition.name} "
+            f"({self._definition.strategy_id})"
+        )
 
     def update_available_resources(self, resources: List[StrategyResource]) -> None:
         for _, (_, config_panel, _) in self._phase_widgets.items():
@@ -371,8 +394,18 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     def _on_remove_instruction(self, instr: StrategyInstructionDefinition, phase_key: str) -> None:
         if not self._definition:
             return
+        # Remove do phase_list ANTES de emitir os signals — qualquer
+        # save disparado por `_on_instruction_removed` ou
+        # `_on_strategy_modified` no controller vê a definition já no
+        # estado pós-remoção.
         phase_list = self._definition._get_phase_list(phase_key)
         phase_list[:] = [i for i in phase_list if i.instruction_id != instr.instruction_id]
+
+        # `instruction_removed` carrega o `instr` object (passado por
+        # referência) — controller usa pra saber quais outputs apagar
+        # do disco e dos placeholders. NÃO depende de phase_list.
+        self.instruction_removed.emit(instr)
+
         instr_list, config_panel, results_panel = self._phase_widgets[phase_key]
         instr_list.load_strategy(phase_list)
         config_panel.show_empty()

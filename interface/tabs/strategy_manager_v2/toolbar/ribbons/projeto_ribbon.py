@@ -49,6 +49,15 @@ class ProjetoRibbon(ResponsiveRibbon):
         layout.addWidget(self.btn_save)
         layout.addWidget(ToolbarSeparator())
 
+        # Adição em lote de recursos da biblioteca
+        self.btn_add_resources = ToolbarButton(
+            "Adicionar Recursos", "📥",
+            tooltip="Adicionar recursos da biblioteca de configurações ao "
+                    "projeto em lote (datasets, splits, mining, pipelines).",
+        )
+        layout.addWidget(self.btn_add_resources)
+        layout.addWidget(ToolbarSeparator())
+
         # Empacotamento forense
         self.btn_seal = ToolbarButton(
             "Selar", "🔒",

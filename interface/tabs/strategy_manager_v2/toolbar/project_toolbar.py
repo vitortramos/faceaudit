@@ -47,6 +47,7 @@ class ProjectToolbar(QFrame):
     save_project_requested = QtCore.pyqtSignal()
     close_project_requested = QtCore.pyqtSignal()
     seal_project_requested = QtCore.pyqtSignal()  # PR L2.b — selar projeto
+    add_resources_requested = QtCore.pyqtSignal()  # bulk import da biblioteca
     pipeline_requested = QtCore.pyqtSignal()
     mining_requested = QtCore.pyqtSignal()
     split_requested = QtCore.pyqtSignal()
@@ -124,7 +125,7 @@ class ProjectToolbar(QFrame):
         self.biblioteca_ribbon = BibliotecaRibbon()
 
         self.tabs.addTab(self.projeto_ribbon, "Projeto")
-        self.tabs.addTab(self.biblioteca_ribbon, "Biblioteca Global")
+        self.tabs.addTab(self.biblioteca_ribbon, "Biblioteca de Configurações")
         self.tabs.setCurrentIndex(0)
 
         # Botão de toggle do painel — corner widget da QTabBar.
@@ -160,6 +161,7 @@ class ProjectToolbar(QFrame):
         self.btn_save = self.projeto_ribbon.btn_save
         self.btn_close = self.projeto_ribbon.btn_close
         self.btn_seal = self.projeto_ribbon.btn_seal
+        self.btn_add_resources = self.projeto_ribbon.btn_add_resources
         # Biblioteca
         self.btn_pipeline = self.biblioteca_ribbon.btn_pipeline
         self.btn_mining = self.biblioteca_ribbon.btn_mining
@@ -174,6 +176,7 @@ class ProjectToolbar(QFrame):
         self.btn_save.clicked.connect(self.save_project_requested)
         self.btn_close.clicked.connect(self.close_project_requested)
         self.btn_seal.clicked.connect(self.seal_project_requested)
+        self.btn_add_resources.clicked.connect(self.add_resources_requested)
         self.btn_pipeline.clicked.connect(self.pipeline_requested)
         self.btn_mining.clicked.connect(self.mining_requested)
         self.btn_split.clicked.connect(self.split_requested)
@@ -197,3 +200,4 @@ class ProjectToolbar(QFrame):
         self.btn_save.setEnabled(is_open)
         self.btn_close.setEnabled(is_open)
         self.btn_seal.setEnabled(is_open)  # PR L2.b
+        self.btn_add_resources.setEnabled(is_open)

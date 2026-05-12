@@ -70,7 +70,7 @@ class DatasetMergeInstructionExecutor(StrategyInstructionExecutorBase):
             output_resource = StrategyResource(
                 resource_id=output_resource_id,
                 name=output_resource_id,
-                resource_type=StrategyResourceType.INTERMEDIATE_DATASET,
+                resource_type=StrategyResourceType.DATASET,
                 payload=merged_dataset,
                 artifact_ref=None,
             )

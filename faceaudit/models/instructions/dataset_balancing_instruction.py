@@ -231,8 +231,8 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
         return specs
 
     def get_resource_field_specs(self) -> List[ResourceFieldSpec]:
-        DS = (StrategyResourceType.DATASET, StrategyResourceType.INTERMEDIATE_DATASET)
-        OUT = (StrategyResourceType.INTERMEDIATE_DATASET,)
+        DS = (StrategyResourceType.DATASET,)
+        OUT = (StrategyResourceType.DATASET,)
 
         return [
             # triggers_rebuild=True: a métrica de qualidade é filtrada

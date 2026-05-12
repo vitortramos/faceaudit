@@ -135,7 +135,7 @@ class StrategyResourceLoaderService:
         if resource_type == StrategyResourceType.DATASET:
             return self._load_dataset(path, embedding_column=embedding_column)
 
-        if resource_type == StrategyResourceType.INTERMEDIATE_DATASET:
+        if resource_type == StrategyResourceType.DATASET:
             # Datasets intermediários produzidos por instruções anteriores —
             # mesmo formato parquet do DATASET.
             return self._load_dataset(path, embedding_column=embedding_column)
