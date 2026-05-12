@@ -63,6 +63,15 @@ class GlobalLibraryFileType(Enum):
         "{config_id}",
     )
 
+    # FilterConfig polimórfico — uma lista de ColumnFilter aplicada via
+    # `DatasetFilterService.apply(...)`. Salvo via diálogo de Filtro do
+    # Dataset Manager (botão Salvar / Salvar Como).
+    FILTER_CONFIG = (
+        ".json",
+        GlobalLibraryFolder.FILTER_CONFIGS,
+        "{config_id}",
+    )
+
     def __init__(self, extension: str, folder: GlobalLibraryFolder, name_template: str):
         self.extension = extension
         self.folder = folder
@@ -142,5 +151,6 @@ class GlobalLibraryFileType(Enum):
             StrategyArtifactType.MINING_CONFIG:          cls.MINING_CONFIG,
             StrategyArtifactType.PIPELINE_CONFIG:        cls.PIPELINE_CONFIG,
             StrategyArtifactType.IMAGE_PIPELINE_CONFIG:  cls.IMAGE_PIPELINE_CONFIG,
+            StrategyArtifactType.FILTER_CONFIG:          cls.FILTER_CONFIG,
             StrategyArtifactType.STRATEGY_TEMPLATE:      cls.STRATEGY_TEMPLATE,
         }

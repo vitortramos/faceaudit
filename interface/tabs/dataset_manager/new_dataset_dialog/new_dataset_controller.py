@@ -147,7 +147,8 @@ class NewDatasetController(QtCore.QObject):
             if not self.view.txt_align_target.text().strip():
                 QMessageBox.warning(
                     self.view, "Erro",
-                    "Selecione a pasta destino dos crops alinhados.",
+                    "Selecione a pasta destino dos PNGs alinhados "
+                    "(o parquet do dataset vai pra biblioteca global).",
                 )
                 return
 

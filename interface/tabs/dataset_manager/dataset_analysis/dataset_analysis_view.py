@@ -470,7 +470,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         outer.addWidget(self.lbl_header)
 
         # ── Toolbar (topo) ──
-        # Ordem: Configurações, Reanalisar, Auditoria de IDs, Mineração Biométrica.
+        # Ordem: Configurações, Reanalisar, Comparar Centroids, Comparar
+        # Embeddings, Hubness, UMAP (Embeddings). Todos com mesma largura
+        # mínima (calculada após criação) pra alinhar visualmente.
         toolbar = QtWidgets.QHBoxLayout()
         toolbar.setSpacing(6)
 
@@ -502,7 +504,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.btn_rerun.clicked.connect(self.rerun_requested.emit)
 
-        self.btn_run_biometric = QtWidgets.QPushButton("🔬 Auditoria de IDs (pesada)")
+        self.btn_run_biometric = QtWidgets.QPushButton("🔬 Comparar Centroids")
         self.btn_run_biometric.setToolTip(
             "Detecta identidades duplicadas (mesma pessoa em 2+ labels) e "
             "identidades misturadas (label cobrindo 2+ pessoas). Usa "
@@ -510,7 +512,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.btn_run_biometric.clicked.connect(self.run_biometric_audit_requested.emit)
 
-        self.btn_run_mining = QtWidgets.QPushButton("🔍 Mineração Biométrica (pesada)")
+        self.btn_run_mining = QtWidgets.QPushButton("🔍 Comparar Embeddings")
         self.btn_run_mining.setToolTip(
             "Roda hard mining O(N²) — pares de mesma identidade com baixa "
             "similaridade e pares de identidades distintas com alta similaridade. "
@@ -518,7 +520,7 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         )
         self.btn_run_mining.clicked.connect(self.run_heavy_mining_requested.emit)
 
-        self.btn_run_hubness = QtWidgets.QPushButton("🌐 Hubness (pesada)")
+        self.btn_run_hubness = QtWidgets.QPushButton("🌐 Hubness")
         self.btn_run_hubness.setToolTip(
             "Análise de hubness: KNN exaustivo O(N²·D) que computa, "
             "para cada face, quantas vezes ela aparece como vizinha "
@@ -537,6 +539,17 @@ class DatasetAnalysisView(QtWidgets.QDialog):
             "Pode levar segundos a minutos dependendo do dataset."
         )
         self.btn_run_umap.clicked.connect(self.run_umap_audit_requested.emit)
+
+        # Mesmo tamanho pra todos os botões da toolbar — alinha visualmente
+        # e evita o efeito "labels de tamanhos diferentes empurram um o outro".
+        # Calcula a partir do maior sizeHint pra cobrir o conteúdo de todos.
+        _audit_buttons = [
+            self.btn_settings, self.btn_rerun, self.btn_run_biometric,
+            self.btn_run_mining, self.btn_run_hubness, self.btn_run_umap,
+        ]
+        _max_w = max(b.sizeHint().width() for b in _audit_buttons)
+        for _b in _audit_buttons:
+            _b.setMinimumWidth(_max_w)
 
         toolbar.addWidget(self.btn_settings)
         toolbar.addWidget(self.btn_rerun)

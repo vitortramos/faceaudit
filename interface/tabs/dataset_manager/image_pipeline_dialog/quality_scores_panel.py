@@ -55,10 +55,18 @@ class QualityScoresPanel(QtWidgets.QWidget):
         )
         self.table.setShowGrid(True)
         self.table.setAlternatingRowColors(True)
-        # Altura compacta — 3 rows + header
-        header_h = self.table.horizontalHeader().height()
-        row_h = 22
-        self.table.setFixedHeight(header_h + row_h * 3 + 6)
+        # Altura: 3 rows + header + buffer.
+        # `horizontalHeader().height()` retorna a altura de layout — no
+        # construtor (widget ainda não mostrado) isso era um valor mínimo
+        # e o `setFixedHeight` resultante cabia só 2 linhas, forçando
+        # scroll vertical pra ver a terceira (Cosine sim.). `sizeHint()`
+        # é determinístico fora do paint cycle.
+        row_h = 26
+        self.table.verticalHeader().setDefaultSectionSize(row_h)
+        header_h = self.table.horizontalHeader().sizeHint().height()
+        # +2 px por row pra acomodar grid lines + 8 px de margem
+        # geral (frame border + arredondamento de pixel).
+        self.table.setFixedHeight(header_h + row_h * 3 + 8)
         # Larguras de coluna
         self.table.setColumnWidth(0, 130)
         self.table.setColumnWidth(1, 100)

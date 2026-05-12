@@ -13,7 +13,7 @@ from .ofiq_info import OFIQInfo
 from .serfiq_info import SERFIQInfo
 from .embedding_dataset import EmbeddingDataset
 from .embedding_info import EmbeddingInfo
-from .filter_config import FilterConfig
+from faceaudit.models.filter import FilterConfig
 from faceaudit.enums.embedding_type import EmbeddingType
 from faceaudit.enums.quality_score_type import QualityScoreType
 from faceaudit.enums.path_mode import PathMode
@@ -164,149 +164,35 @@ class FaceDataset:
     # MÉTODOS DE FILTRAGEM (BACKEND)
     # =========================================================================
 
-    def apply_filter(self, config: FilterConfig, callback: Optional[Callable[[int], None]] = None) -> 'FaceDataset':
+    def apply_filter(
+        self,
+        config: 'FilterConfig',
+        callback: Optional[Callable[[int], None]] = None,
+    ) -> 'FaceDataset':
         """
-        Gera um novo FaceDataset contendo apenas as faces que satisfazem os critérios de filtro.
+        Gera um novo FaceDataset contendo apenas as faces que satisfazem
+        os critérios do `FilterConfig` (lista polimórfica de
+        `ColumnFilter`). Combinação entre filters é AND.
+
+        Delega ao `DatasetFilterService` — toda a lógica de matching
+        vive lá. Filtros inválidos (coluna ausente) são silenciosamente
+        ignorados; caller deve usar `DatasetFilterService.validate(...)`
+        antes de aplicar pra avisar o usuário sobre filters quebrados.
 
         Args:
-            config (FilterConfig): Objeto contendo os ranges e critérios de aceitação.
-            callback (Optional[Callable]): Função para reportar progresso (0-100).
+            config: `FilterConfig` com a lista de `ColumnFilter`.
+            callback: progresso (0–100), chamado a cada 5%.
 
         Returns:
-            FaceDataset: Uma nova instância (deep copy) com os dados filtrados.
+            FaceDataset: nova instância com as faces filtradas
+            (referências compartilhadas, não deep-copy).
         """
-        filtered_faces = []
-        total = len(self.faces)
-
-        for i, face in enumerate(self.faces):
-            if self._face_matches_config(face, config):
-                filtered_faces.append(copy.deepcopy(face))
-            
-            if callback and total > 0 and i % 100 == 0: 
-                callback(int((i / total) * 100))
-
-        if callback: callback(100)
-        
-        new_name = f"{self.name}_filtered"
-        return FaceDataset(name=new_name, faces=filtered_faces, description=f"Filtro baseado em: {config.name}")
-    
-
-    def _face_matches_config(self, face: FaceInfo, config: FilterConfig) -> bool:
-        """
-        Valida se uma única face atende a todos os critérios definidos no FilterConfig.
-        Verifica faixas numéricas (qualidade, pose) e correspondências categóricas (gênero, etnia).
-        """
-        # 1. MAPEAMENTO NUMÉRICO (Valor Atual, Alvo Exato, Min, Max, Usar Modulo Absoluto)
-        numeric_map = [
-            (face.ff_info.fiqa_score if face.ff_info else None, config.fiqa_score, config.min_fiqa_score, config.max_fiqa_score, config.abs_fiqa_score),
-            (face.ofiq_info.unified_quality_score_scalar if face.ofiq_info else None, config.ofiq_score, config.min_ofiq_score, config.max_ofiq_score, config.abs_ofiq_score),
-            (face.serfiq_info.score if face.serfiq_info else None, None, config.min_serfiq_score, config.max_serfiq_score, config.abs_serfiq_score),
-            
-            # Poses OFIQ
-            (face.ofiq_info.head_pose_yaw_raw if face.ofiq_info else None, config.ofiq_yaw, config.min_ofiq_yaw, config.max_ofiq_yaw, config.abs_ofiq_yaw),
-            (face.ofiq_info.head_pose_pitch_raw if face.ofiq_info else None, config.ofiq_pitch, config.min_ofiq_pitch, config.max_ofiq_pitch, config.abs_ofiq_pitch),
-            (face.ofiq_info.head_pose_roll_raw if face.ofiq_info else None, config.ofiq_roll, config.min_ofiq_roll, config.max_ofiq_roll, config.abs_ofiq_roll),
-            
-            # Poses ForensicFace
-            (face.ff_info.yaw if face.ff_info else None, config.ff_yaw, config.min_ff_yaw, config.max_ff_yaw, config.abs_ff_yaw),
-            (face.ff_info.pitch if face.ff_info else None, config.ff_pitch, config.min_ff_pitch, config.max_ff_pitch, config.abs_ff_pitch),
-            (face.ff_info.roll if face.ff_info else None, config.ff_roll, config.min_ff_roll, config.max_ff_roll, config.abs_ff_roll),
-            
-            # Outros — `age`/`ipd` (sem prefixo) não são fields dataclass
-            # do FilterConfig, só são criados quando a UI faz setattr. Lemos
-            # via getattr pra suportar uso programático (testes e código
-            # que não passa pela UI).
-            (face.ff_info.age if face.ff_info else None, getattr(config, "age", None), config.min_age, config.max_age, config.abs_age),
-            (face.ff_info.ipd if face.ff_info else None, getattr(config, "ipd", None), config.min_ipd, config.max_ipd, config.abs_ipd),
-        ]
-
-        for val, target, c_min, c_max, use_abs in numeric_map:
-            # Se o filtro não foi configurado para este atributo, ignora
-            if target is None and c_min is None and c_max is None:
-                continue
-            
-            # Se o filtro existe, mas o dado na face é nulo, reprova
-            if val is None:
-                return False
-
-            compare_val = abs(float(val)) if use_abs else float(val)
-
-            # Verificação de Alvo Exato (com tolerância float)
-            if target is not None:
-                if not (target - 0.001 <= compare_val <= target + 0.001):
-                    return False
-            
-            # Verificação de Range
-            if c_min is not None and compare_val < c_min:
-                return False
-            if c_max is not None and compare_val > c_max:
-                return False
-
-        # 2. MAPEAMENTO CATEGÓRICO
-        categorical_map = [
-            (face.gender, config.gender, config.gender_list),
-            (face.ethnicity, config.ethnicity, config.ethnicity_list),
-            (face.identity, config.identity, config.identity_list),
-            (face.origin, config.source, config.source_list),
-        ]
-
-        for val, search_str, inclusion_list in categorical_map:
-            if not search_str and not inclusion_list:
-                continue
-
-            val_str = str(val).strip() if val is not None else ""
-
-            # Verificação de Lista (Multi-seleção)
-            if inclusion_list:
-                if val_str not in inclusion_list:
-                    return False
-
-            # Verificação de String Única (Combobox/Texto)
-            elif search_str:
-                if search_str.lower() != val_str.lower():
-                    return False
-
-        # 3. FILTROS GENÉRICOS POR COLUNA CUSTOM (PR 21 — Tema 4.2)
-        # Lê valores de `face.extra_data` (custom columns) e compara com
-        # `config.column_filters`. Mesmas semânticas dos canônicos:
-        #   value → match exato (case-insensitive p/ string, ±0.001 p/ num)
-        #   list  → multi-select inclusion
-        #   min/max + abs → range numérico (com módulo opcional)
-        if config.column_filters:
-            for col_name, spec in config.column_filters.items():
-                if not spec:
-                    continue
-                val = face.extra_data.get(col_name) if face.extra_data else None
-                target_value = spec.get("value")
-                target_list = spec.get("list") or []
-                c_min = spec.get("min")
-                c_max = spec.get("max")
-                use_abs = bool(spec.get("abs"))
-
-                # Categórico: value/list
-                if target_list:
-                    val_str = str(val).strip() if val is not None else ""
-                    if val_str not in target_list:
-                        return False
-                elif target_value not in (None, ""):
-                    val_str = str(val).strip().lower() if val is not None else ""
-                    if str(target_value).strip().lower() != val_str:
-                        return False
-
-                # Numérico: min/max
-                if c_min is not None or c_max is not None:
-                    if val is None:
-                        return False
-                    try:
-                        num = abs(float(val)) if use_abs else float(val)
-                    except (TypeError, ValueError):
-                        return False
-                    if c_min is not None and num < c_min:
-                        return False
-                    if c_max is not None and num > c_max:
-                        return False
-
-        return True
+        from faceaudit.services.dataset_filter_service import (
+            DatasetFilterService,
+        )
+        return DatasetFilterService.apply(
+            self, config, progress_callback=callback,
+        )
 
     # =========================================================================
     # MÉTODOS DE CONCATENAÇÃO E ESTATÍSTICAS
@@ -492,11 +378,28 @@ class FaceDataset:
             )
             
             # B. Embedding e FFInfo
+            # Primário (sepaelv2, geralmente "embedding"/"embedding_v2"/etc).
             emb_array = None
             if col_emb and isinstance(row[col_emb], (list, np.ndarray)):
                  emb_array = np.array(row[col_emb], dtype=np.float32)
 
-            if pd.notna(row.get('fiqa_score')) or emb_array is not None:
+            # Sepael V4 — coluna independente, NÃO entra em col_emb. Sem
+            # essa leitura, o `embedding_v4` do parquet era silenciosamente
+            # dropado no load e `face.ff_info.embedding_sepaelv4` ficava
+            # None pra todas as faces — a auditoria de "Faces sem Sepael V4"
+            # reportava 100% de faltantes mesmo quando a coluna existia
+            # com dados.
+            emb_v4_array = None
+            if 'embedding_v4' in df.columns:
+                v4_val = row['embedding_v4']
+                if isinstance(v4_val, (list, np.ndarray)):
+                    emb_v4_array = np.array(v4_val, dtype=np.float32)
+
+            if (
+                pd.notna(row.get('fiqa_score'))
+                or emb_array is not None
+                or emb_v4_array is not None
+            ):
                 face.ff_info = FFInfo(
                     fiqa_score=clean(row.get('fiqa_score')),
                     yaw=clean(row.get('yaw')),
@@ -505,7 +408,8 @@ class FaceDataset:
                     age=clean(row.get('age_est')),
                     gender=clean(row.get('gender_est')),
                     ipd=clean(row.get('ipd')),
-                    embedding_sepaelv2=emb_array 
+                    embedding_sepaelv2=emb_array,
+                    embedding_sepaelv4=emb_v4_array,
                 )
             
             # C. OFIQInfo

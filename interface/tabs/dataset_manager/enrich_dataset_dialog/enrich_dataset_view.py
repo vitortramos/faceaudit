@@ -47,6 +47,7 @@ class EnrichDatasetView(QDialog):
         self._ff_model_checks: dict = {}
         self._ff_det_size_spin: QSpinBox | None = None
         self._ff_extended_chk: QCheckBox | None = None
+        self._ff_is_aligned_chk: QCheckBox | None = None
         self._serfiq_t_spin: QSpinBox | None = None
         self._serfiq_alpha_spin: QDoubleSpinBox | None = None
 
@@ -270,6 +271,31 @@ class EnrichDatasetView(QDialog):
         ext_help.setStyleSheet("font-size: 10px; color: #888;")
         layout.addWidget(ext_help)
 
+        # is_aligned — override. Pré-preenchido pelo controller com o
+        # valor atual do dataset; o usuário só toca pra corrigir datasets
+        # cuja metadata está errada (ex: parquets legados sem o flag).
+        # Sem esse override, FF tenta detect+align num crop 112×112 já
+        # alinhado → falha na detecção ou gera embedding lixo
+        # silenciosamente.
+        self._ff_is_aligned_chk = QCheckBox(
+            "Imagens são faces já alinhadas 112×112"
+        )
+        self._ff_is_aligned_chk.setChecked(False)
+        self._ff_is_aligned_chk.setToolTip(
+            "Marque se as imagens já são crops alinhados 112×112 (não fotos "
+            "originais). FF usa process_face_aligned (pula detect+align, "
+            "~50% mais rápido). Pré-preenchido com o valor atual do "
+            "dataset — só altere pra corrigir metadata errada."
+        )
+        layout.addWidget(self._ff_is_aligned_chk)
+        aligned_help = QLabel(
+            "<i>Aplica-se ao dataset todo. Após enriquecer, o flag fica "
+            "persistido na metadata do parquet.</i>"
+        )
+        aligned_help.setWordWrap(True)
+        aligned_help.setStyleSheet("font-size: 10px; color: #888;")
+        layout.addWidget(aligned_help)
+
         return panel
 
     def _build_serfiq_advanced_panel(self) -> QWidget:
@@ -345,6 +371,13 @@ class EnrichDatasetView(QDialog):
 
     def get_ff_extended(self) -> bool:
         return bool(self._ff_extended_chk.isChecked()) if self._ff_extended_chk else True
+
+    def get_ff_is_aligned(self) -> bool:
+        return bool(self._ff_is_aligned_chk.isChecked()) if self._ff_is_aligned_chk else False
+
+    def set_ff_is_aligned(self, value: bool) -> None:
+        if self._ff_is_aligned_chk is not None:
+            self._ff_is_aligned_chk.setChecked(bool(value))
 
     def get_serfiq_t(self) -> int:
         return int(self._serfiq_t_spin.value()) if self._serfiq_t_spin else 10

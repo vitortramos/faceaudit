@@ -17,7 +17,7 @@ from .models.embedding_info import EmbeddingInfo
 from .models.face_dataset import FaceDataset
 from .models.face_info import FaceInfo
 from .models.ff_info import FFInfo
-from .models.filter_config import FilterConfig
+from .models.filter import FilterConfig
 from .models.kde_config import KDEConfig
 from .models.kde_training_artifacts import KDETrainingArtifacts
 from .models.kde_validation_input import KDEValidationInput

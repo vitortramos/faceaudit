@@ -102,8 +102,8 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
         layout.addWidget(pipeline_box)
 
-        # ── Destino ──
-        target_box = QtWidgets.QGroupBox("Pasta destino")
+        # ── Destino das imagens ──
+        target_box = QtWidgets.QGroupBox("Pasta das imagens")
         target_outer = QtWidgets.QVBoxLayout(target_box)
 
         target_row = QtWidgets.QHBoxLayout()
@@ -124,9 +124,12 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         target_outer.addLayout(name_row)
 
         target_help = QtWidgets.QLabel(
-            "Em caso de falhas, um arquivo <code>&lt;nome&gt;__errors."
-            "parquet</code> também é gerado com 1 linha por face que "
-            "falhou + coluna <code>error_message</code>."
+            "A pasta escolhida recebe os PNGs processados + "
+            "<code>manifest.json</code>. O parquet do dataset derivado "
+            "vai pra biblioteca global de datasets. Em caso de falhas, "
+            "<code>&lt;nome&gt;__errors.parquet</code> também é gerado "
+            "na biblioteca global, com 1 linha por face que falhou + "
+            "coluna <code>error_message</code>."
         )
         target_help.setWordWrap(True)
         target_help.setStyleSheet("color: #666; font-size: 10px;")

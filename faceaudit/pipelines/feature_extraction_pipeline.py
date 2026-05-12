@@ -245,13 +245,9 @@ class FeatureExtractionPipeline:
         )
 
         # 5. Load: Persistência (Sobrescreve se existir).
-        # No modo "alinhar durante criação" o parquet vai pra
-        # aligned_target_dir (mesmo nível do `images/`), não pro
-        # storage_path da biblioteca global.
-        if config.align_during_ingestion and config.aligned_target_dir:
-            cache_file = (
-                Path(config.aligned_target_dir) / f"{dataset_name}.parquet"
-            )
+        # O parquet sempre vai pra `storage_path` da biblioteca global de
+        # datasets, independente de `align_during_ingestion` — o
+        # `aligned_target_dir` é destino apenas dos PNGs alinhados.
         if progress_callback:
             progress_callback("Salvando arquivo Parquet...", 99)
 
@@ -370,6 +366,15 @@ class FeatureExtractionPipeline:
         ignora o filtro e processa tudo (sobrescreve os *_info existentes).
         """
         print(f"🚀 [Pipeline] Iniciando enriquecimento do dataset: {dataset.name}")
+
+        # Propaga o override de `is_aligned` do config pro dataset antes
+        # do FF rodar. Esse override existe pra corrigir datasets cuja
+        # metadata está errada (parquets legados, gerados por scripts
+        # externos, etc.) — sem isso, FF rodaria detect+align num crop
+        # 112×112 e produziria embedding lixo silenciosamente.
+        # O flag persiste no `dataset` em memória e vai pra metadata no
+        # próximo save.
+        dataset.is_aligned = bool(getattr(config, "is_aligned", False))
 
         active_stages = []
         if config.compute_ff: active_stages.append("Biometria (ForensicFace)")
@@ -603,37 +608,56 @@ class FeatureExtractionPipeline:
         aligned_target_dir: Path,
         progress_callback: Optional[Callable[[str, int], None]] = None,
     ) -> None:
-        """Salva os crops alinhados (ff_info.aligned_face, BGR 112×112)
-        como PNG em `aligned_target_dir/images/` e reconfigura o
-        dataset pra apontar pros PNGs em modo RELATIVE.
+        """Salva os crops alinhados (ff_info.aligned_face, RGB 112×112
+        — ForensicFace retorna em RGB via cvtColor BGR2RGB) como PNG
+        em `aligned_target_dir/` e reconfigura o dataset pra apontar
+        pros PNGs em modo ABSOLUTE.
 
         Pré-requisito: FFService.process_dataset já rodou — cada
         face com `ff_info.aligned_face` populado vira PNG no destino.
         Faces sem aligned_face (falha de detecção) ficam com o
-        image_path original e marcadas como erro pelo caller.
+        image_path original (apontando pra imagem desalinhada) e são
+        marcadas como erro pelo caller.
 
         Side-effects:
-          - Cria `aligned_target_dir/images/` (mkdir parents=True).
-          - Salva 1 PNG por face com aligned_face.
-          - Muta cada face: image_path = nome_relativo, file_name =
-            basename, hash = SHA256 do PNG, ff_info.aligned_face = None
+          - Cria `aligned_target_dir/` (mkdir parents=True).
+          - Salva 1 PNG por face com aligned_face direto em
+            `aligned_target_dir/<file>.png` (sem subpasta intermediária).
+          - Muta cada face com aligned_face: `image_path` =
+            caminho absoluto do PNG, `file_name` = basename do PNG,
+            `hash` = SHA-256 do PNG, `ff_info.aligned_face = None`
             (libera memória — embedding já foi extraído).
-          - Muta dataset: path_mode=RELATIVE, path_root='images',
-            _parquet_dir=aligned_target_dir, is_aligned=True.
+          - Se ao menos uma face foi materializada, muta o dataset:
+            `path_mode=ABSOLUTE`, `path_root=None`, `is_aligned=True`.
+            Se zero faces foram materializadas (FF não rodou ou todas as
+            detecções falharam), **não** muta o dataset — evita corromper
+            o estado declarando `is_aligned`/`path_mode` enquanto os
+            paths ainda apontam pra imagens desalinhadas.
+
+        Por que ABSOLUTE e não RELATIVE: cada `image_path` fica
+        self-describing — perito abre o parquet em qualquer lugar e os
+        paths apontam direto pros PNGs alinhados onde foram criados.
+        Para portabilidade (mover o `.fa` pra outra máquina), o fluxo
+        canônico é "Selar projeto", que reescreve paths como relativos
+        e copia as imagens pra dentro do projeto.
+
+        Nota: o **parquet em si** não fica aqui — vai pra `storage_path`
+        da biblioteca global de datasets (decisão do caller). Esta função
+        cuida apenas dos PNGs alinhados direto em `aligned_target_dir/`.
         """
         import cv2
         from faceaudit.services.hash_service import HashService
 
         aligned_target_dir = Path(aligned_target_dir).resolve()
-        images_dir = aligned_target_dir / "images"
-        images_dir.mkdir(parents=True, exist_ok=True)
+        aligned_target_dir.mkdir(parents=True, exist_ok=True)
         hash_service = HashService()
         used_names: set = set()
+        n_materialized = 0
 
         n = len(dataset.faces)
         print(
             f"📐 [Pipeline] Materializando {n} face(s) alinhada(s) em "
-            f"{images_dir}"
+            f"{aligned_target_dir}"
         )
         for idx, face in enumerate(dataset.faces):
             if (
@@ -644,7 +668,12 @@ class FeatureExtractionPipeline:
                 # Mantém path original; caller já marca como erro.
                 continue
 
-            bgr = face.ff_info.aligned_face
+            # ForensicFace._assemble_result armazena `aligned_face` em
+            # RGB (cvtColor BGR2RGB). cv2.imencode/imwrite esperam BGR
+            # — sem essa conversão os PNGs salvariam com R↔B trocados.
+            rgb = face.ff_info.aligned_face
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
             # Nome do PNG: usa o file_name original (sanitizado) com
             # extensão .png forçada. Sufixa em caso de colisão.
             base = face.file_name or Path(face.image_path).name or f"face_{idx}"
@@ -655,20 +684,33 @@ class FeatureExtractionPipeline:
                 rel_name = f"{stem}_{i}.png"
                 i += 1
             used_names.add(rel_name)
-            dst = images_dir / rel_name
+            dst = aligned_target_dir / rel_name
 
-            ok = cv2.imwrite(str(dst), bgr)
-            if not ok:
-                print(f"⚠️  [Pipeline] cv2.imwrite falhou: {dst}")
+            # `cv2.imwrite` falha SILENCIOSAMENTE em paths com chars não-ASCII
+            # no Windows (bug histórico do OpenCV em paths via fopen UTF-8).
+            # Caminhos como `OneDrive/...` quebram tudo
+            # sem aviso, levando o dataset a preservar paths das imagens
+            # desalinhadas. Workaround: encoda em memória e grava bytes
+            # via pathlib, que usa a API Unicode do Windows direto.
+            success, buf = cv2.imencode(".png", bgr)
+            if not success:
+                print(f"⚠️  [Pipeline] cv2.imencode falhou: {dst}")
+                continue
+            try:
+                dst.write_bytes(buf.tobytes())
+            except OSError as exc:
+                print(f"⚠️  [Pipeline] gravação falhou {dst}: {exc}")
                 continue
 
-            # Atualiza FaceInfo pra apontar pro PNG (relativo).
-            face.image_path = rel_name
+            # Atualiza FaceInfo: image_path absoluto pro PNG alinhado,
+            # file_name = basename do PNG.
+            face.image_path = dst.resolve().as_posix()
             face.file_name = rel_name
             face.hash = hash_service.calculate_file_hash(dst)
             # Libera memória — embedding e demais campos já estão em
             # ff_info; aligned_face foi persistido em disco.
             face.ff_info.aligned_face = None
+            n_materialized += 1
 
             if progress_callback and (idx % 50 == 0 or idx + 1 == n):
                 progress_callback(
@@ -676,11 +718,30 @@ class FeatureExtractionPipeline:
                     95 + int((idx + 1) / n * 4),  # 95..99% slot
                 )
 
-        # Reconfigura o dataset pra modo RELATIVE apontando pros PNGs.
-        dataset.path_mode = PathMode.RELATIVE
-        dataset.path_root = "images"
-        dataset._parquet_dir = aligned_target_dir
+        if n_materialized == 0:
+            # Nenhum PNG salvo — manter o estado original do dataset.
+            # Sem isso, o dataset ficava declarado is_aligned/RELATIVE
+            # enquanto os paths apontavam pras imagens desalinhadas, em
+            # estado inconsistente.
+            print(
+                "⚠️  [Pipeline] Nenhuma face alinhada foi materializada "
+                "(FF não retornou `aligned_face`). Dataset preservado em "
+                "modo ABSOLUTE original — sem marcar is_aligned."
+            )
+            return
+
+        # Reconfigura o dataset pra ABSOLUTE — cada face já tem path
+        # self-describing. `path_root` é irrelevante em ABSOLUTE.
+        # `_parquet_dir` será populado por `from_parquet` quando o
+        # dataset for relido do disco (apontando pro storage_path
+        # global, não pro aligned_target_dir).
+        dataset.path_mode = PathMode.ABSOLUTE
+        dataset.path_root = None
         dataset.is_aligned = True
+        print(
+            f"📐 [Pipeline] {n_materialized}/{n} face(s) materializada(s). "
+            f"Dataset marcado: is_aligned=True, path_mode=ABSOLUTE."
+        )
 
     @staticmethod
     def _apply_error_marks_to_dataset(

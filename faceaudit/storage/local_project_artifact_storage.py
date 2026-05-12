@@ -198,6 +198,56 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
             hash=file_hash,
         )
 
+    def import_dataset(
+        self,
+        source_path: Union[str, Path],
+        dataset_id: str,
+    ) -> StrategyArtifactReference:
+        """Importa um parquet de dataset pro projeto, absolutizando paths
+        se necessário.
+
+        Diferente do `copy_artifact_to_project` genérico, este método sabe
+        que um parquet pode declarar `path_mode=RELATIVE` na metadata —
+        nesse caso, os paths das imagens são ancorados em
+        `(source_parquet_dir / path_root)` e regravados como absolutos
+        antes da cópia. Sem isso, ao trazer um dataset RELATIVE pra
+        `<projeto>/datasets/`, os paths internos passariam a apontar pra
+        `<projeto>/datasets/<path_root>/...` (onde as imagens não estão).
+
+        Datasets já em `path_mode=ABSOLUTE` são copiados byte-a-byte —
+        nada a transformar.
+
+        Args:
+            source_path: Caminho absoluto do parquet original.
+            dataset_id: Identificador do dataset no projeto (usado pra
+                montar o path destino via `StrategyFileType.SOURCE_DATASET`).
+
+        Returns:
+            StrategyArtifactReference com path relativo ao projeto e
+            hash SHA-256 do parquet final (pós-absolutização, se houve).
+
+        Raises:
+            FileNotFoundError: Se `source_path` não existir.
+        """
+        from faceaudit.services.dataset_path_absolutizer import (
+            absolutize_parquet_paths,
+        )
+
+        file_type = StrategyFileType.for_artifact(
+            StrategyArtifactType.GLOBAL_DATASET,
+        )
+        relative_path = file_type.build_path(dataset_id=dataset_id)
+        abs_dest = self._root / relative_path
+
+        absolutize_parquet_paths(source_path, abs_dest)
+
+        file_hash = self._hash.calculate_file_hash(abs_dest)
+        return StrategyArtifactReference(
+            artifact_type=StrategyArtifactType.GLOBAL_DATASET,
+            path=relative_path.as_posix(),
+            hash=file_hash,
+        )
+
     def resolve_artifact(
         self,
         artifact_ref: StrategyArtifactReference,

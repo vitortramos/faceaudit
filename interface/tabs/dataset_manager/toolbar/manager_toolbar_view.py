@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import QFrame, QVBoxLayout, QTabWidget
 from .toolbar_widgets import StatusLabel
 from .ribbons.arquivo_ribbon import ArquivoRibbon
 from .ribbons.dataset_ribbon import DatasetRibbon
+from .ribbons.exibir_ribbon import ExibirRibbon
 from .ribbons.imagens_ribbon import ImagensRibbon
 
 
@@ -57,21 +58,57 @@ class ManagerToolbarView(QFrame):
 
         # ── QTabWidget contendo os 3 ribbons ──
         self.tabs = QTabWidget()
+        # Estilo "Office accent bar" — aba selecionada ganha barra azul
+        # de 3px no topo + texto azul + bold. Inativas em cinza médio
+        # com `border-top transparent` da mesma espessura pra evitar
+        # jump visual quando a seleção muda. Hover escurece o fundo
+        # da inativa pra dar feedback de mouse-over.
         self.tabs.setStyleSheet(
-            "QTabWidget::pane { border: 1px solid #ddd; "
-            "background: white; border-radius: 4px; } "
-            "QTabBar::tab { padding: 6px 16px; font-size: 11px; } "
-            "QTabBar::tab:selected { background: white; "
-            "border: 1px solid #ddd; border-bottom: 2px solid white; "
-            "font-weight: bold; }"
+            # Pane (área dos botões)
+            "QTabWidget::pane { "
+            "    border: 1px solid #d0d0d0; "
+            "    background: white; "
+            "    border-radius: 4px; "
+            "    top: -1px; "  # encaixa na aba sem gap
+            "} "
+            # Aba inativa (default)
+            "QTabBar::tab { "
+            "    background: #e8e8e8; "
+            "    color: #555; "
+            "    padding: 7px 20px; "
+            "    font-size: 11px; "
+            "    border: 1px solid #d0d0d0; "
+            "    border-top: 3px solid transparent; "  # placeholder pra evitar jump
+            "    border-right: none; "
+            "    border-top-left-radius: 4px; "
+            "    border-top-right-radius: 4px; "
+            "    margin-right: 1px; "
+            "} "
+            # Hover na inativa
+            "QTabBar::tab:hover:!selected { "
+            "    background: #dcdcdc; "
+            "    color: #333; "
+            "} "
+            # Aba selecionada — accent bar azul + fundo branco contínuo
+            "QTabBar::tab:selected { "
+            "    background: white; "
+            "    color: #1976d2; "
+            "    font-weight: bold; "
+            "    border-top: 3px solid #1976d2; "
+            "    border-bottom: 1px solid white; "  # cobre a borda da pane → continuidade visual
+            "} "
+            # Última aba não tem margin-right
+            "QTabBar::tab:last { margin-right: 0; }"
         )
 
         self.arquivo_ribbon = ArquivoRibbon()
         self.dataset_ribbon = DatasetRibbon()
+        self.exibir_ribbon = ExibirRibbon()
         self.imagens_ribbon = ImagensRibbon()
 
         self.tabs.addTab(self.arquivo_ribbon, "Arquivo")
         self.tabs.addTab(self.dataset_ribbon, "Dataset")
+        self.tabs.addTab(self.exibir_ribbon, "Exibir")
         self.tabs.addTab(self.imagens_ribbon, "Imagens")
         self.tabs.setCurrentIndex(0)  # default: Arquivo (decisão #3)
 
@@ -95,6 +132,8 @@ class ManagerToolbarView(QFrame):
         self.btn_save_as = self.arquivo_ribbon.btn_save_as
         self.btn_close = self.arquivo_ribbon.btn_close
         self.btn_save_to_library = self.arquivo_ribbon.btn_save_to_library
+        # Movido de Dataset → Arquivo
+        self.btn_send_to_strategy = self.arquivo_ribbon.btn_send_to_strategy
 
         # Dataset
         self.btn_enrich = self.dataset_ribbon.btn_enrich
@@ -104,14 +143,15 @@ class ManagerToolbarView(QFrame):
         self.btn_compare = self.dataset_ribbon.btn_compare
         self.btn_stats = self.dataset_ribbon.btn_stats
         self.btn_analyze = self.dataset_ribbon.btn_analyze
-        self.btn_schema_report = self.dataset_ribbon.btn_schema_report
         self.btn_audit_log = self.dataset_ribbon.btn_audit_log
         self.btn_localize = self.dataset_ribbon.btn_localize
         self.btn_filter = self.dataset_ribbon.btn_filter
         self.btn_clear_filter = self.dataset_ribbon.btn_clear_filter
         self.btn_add_column = self.dataset_ribbon.btn_add_column
-        self.btn_toggle_gallery = self.dataset_ribbon.btn_toggle_gallery
-        self.btn_send_to_strategy = self.dataset_ribbon.btn_send_to_strategy
+
+        # Exibir (movidos de Dataset → Exibir)
+        self.btn_toggle_gallery = self.exibir_ribbon.btn_toggle_gallery
+        self.btn_schema_report = self.exibir_ribbon.btn_schema_report
 
         # Imagens (placeholder — desabilitados)
         self.btn_image_pipeline_editor = self.imagens_ribbon.btn_image_pipeline_editor

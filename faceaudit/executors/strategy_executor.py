@@ -262,11 +262,87 @@ class StrategyExecutor:
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
 
-        return self._artifact_storage.save_artifact(
+        ref = self._artifact_storage.save_artifact(
             artifact_type=artifact_type,
             data=resource.payload,
             **kwargs,
         )
+
+        # Snapshot PNG em `<project>/graphics/` pra tipos cujo painel de
+        # resultados mostra o gráfico inline via QPixmap (sem reconstruir
+        # matplotlib na main thread). O plot vivo (`🔍 Expandir`) continua
+        # sendo construído sob demanda a partir do payload. Falha é
+        # best-effort — não bloqueia a persistência principal.
+        from faceaudit.enums.strategy_resource_type import StrategyResourceType
+        if ref is not None:
+            try:
+                project_root = getattr(
+                    self._artifact_storage, "project_root", None,
+                )
+                if project_root is None:
+                    pass
+                elif resource.resource_type in (
+                    StrategyResourceType.SIMILARITY_SCORES,
+                    StrategyResourceType.CALIBRATED_SCORES,
+                ):
+                    # CALIBRATED_SCORES (output de SCORE_CALIBRATION) e
+                    # SIMILARITY_SCORES (SCORING/PAIR_MINING) usam o mesmo
+                    # render — `write_distribution_png` detecta automaticamente
+                    # `metadata["log_lr"]` em algum sample e troca pro
+                    # eixo "log-LR calibrado". Subfolder diferente preserva
+                    # a distinção visual na pasta `graphics/`.
+                    from faceaudit.models.similarity.similarity_score_dataset import (
+                        SimilarityScoreDataset,
+                    )
+                    from faceaudit.models.similarity.distribution_plot import (
+                        score_distribution_png_path,
+                    )
+                    if isinstance(resource.payload, SimilarityScoreDataset):
+                        is_calibrated = (
+                            resource.resource_type
+                            == StrategyResourceType.CALIBRATED_SCORES
+                        )
+                        png_path = score_distribution_png_path(
+                            project_root, strategy_id, resource.resource_id,
+                            calibrated=is_calibrated,
+                        )
+                        resource.payload.write_distribution_png(png_path)
+                elif (
+                    resource.resource_type
+                    == StrategyResourceType.CASEWORK_VISUALIZATION
+                ):
+                    from faceaudit.models.casework_visualization_result import (
+                        CaseworkVisualizationResult,
+                    )
+                    from faceaudit.models.casework_visualization_plot import (
+                        casework_visualization_png_path,
+                        render_casework_png,
+                    )
+                    if isinstance(resource.payload, CaseworkVisualizationResult):
+                        png_path = casework_visualization_png_path(
+                            project_root, strategy_id, resource.resource_id,
+                        )
+                        render_casework_png(resource.payload, png_path)
+                elif (
+                    resource.resource_type
+                    == StrategyResourceType.VALIDATION_RESULT
+                ):
+                    from faceaudit.models.strategy_validation_result import (
+                        StrategyValidationResult,
+                    )
+                    from faceaudit.models.validation_result_plot import (
+                        render_validation_pngs,
+                        validation_result_png_paths,
+                    )
+                    if isinstance(resource.payload, StrategyValidationResult):
+                        paths = validation_result_png_paths(
+                            project_root, strategy_id, resource.resource_id,
+                        )
+                        render_validation_pngs(resource.payload, paths)
+            except Exception:
+                pass  # best-effort; perda de PNG não invalida o parquet
+
+        return ref
 
     # =========================================================================
     # ETAPAS INTERNAS

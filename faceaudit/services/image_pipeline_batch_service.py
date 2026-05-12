@@ -2,17 +2,26 @@
 dataset, produzindo dataset derivado enxuto (PR I5).
 
 Output:
-    <target_dir>/
-    ├── <dataset_name>__<pipeline_name>.parquet  ← dataset derivado
-    ├── images/
-    │   ├── <file>.png
-    │   └── ...
-    └── manifest.json                             ← anchor forense
+    <images_dir>/
+    ├── <file>.png                                 ← imagens processadas
+    ├── ...
+    └── manifest.json                              ← anchor forense
+
+    <dataset_output_dir>/
+    ├── <dataset_name>__<pipeline_name>.parquet           ← dataset derivado
+    └── <dataset_name>__<pipeline_name>__errors.parquet   ← falhas (se houver)
+
+Mesma separação do fluxo "Novo Dataset com Alinhamento" — pasta global
+de datasets recebe o parquet; pasta escolhida pelo usuário recebe só as
+imagens (sem subpasta `images/` intermediária).
 
 Decisões consolidadas (PR I0):
   - Output enxuto: novo FaceDataset com `image_path`/`hash`/`file_name`/
     `identity` apenas. Sem ff_info/ofiq_info/serfiq_info — perito roda
     Enrich depois quando precisar.
+  - `path_mode=ABSOLUTE`: cada PNG tem path self-describing. Como o
+    parquet vive na biblioteca global e as imagens podem estar em qualquer
+    pasta escolhida pelo usuário, RELATIVE não tem âncora estável.
   - Naming: PRESERVE com `.png` forçado (sempre PNG, lossless — pipelines
     lossy ficam evidentes pelo conteúdo, não pela serialização).
   - Idempotência via `skip_existing=True`: PNG já existe + hash bate → pula.
@@ -52,7 +61,6 @@ from faceaudit.services.audit_log_service import AuditLogService
 from faceaudit.services.hash_service import HashService
 
 
-_IMAGES_SUBDIR = "images"
 _MANIFEST_NAME = "manifest.json"
 
 
@@ -64,8 +72,9 @@ class ImagePipelineBatchService:
         self,
         dataset: FaceDataset,
         pipeline_config: ImageProcessingPipelineConfig,
-        target_dir: Path,
+        images_dir: Path,
         *,
+        dataset_output_dir: Path,
         ff_service=None,
         skip_existing: bool = True,
         output_filename: Optional[str] = None,
@@ -76,12 +85,15 @@ class ImagePipelineBatchService:
         Args:
             dataset: dataset de entrada (não é mutado).
             pipeline_config: configuração do pipeline a aplicar.
-            target_dir: pasta destino. Será criada se não existir.
-                Imagens em `target_dir/images/`, parquet em
-                `target_dir/<output_filename>.parquet` (ou
-                `target_dir/<name>__<pipeline>.parquet` quando
-                `output_filename` é None), manifest em
-                `target_dir/manifest.json`.
+            images_dir: pasta destino dos PNGs processados. Os arquivos
+                vão direto pra cá, sem subpasta intermediária; manifest
+                também (`<images_dir>/manifest.json`). Mesmo padrão do
+                fluxo "Novo Dataset com Alinhamento". Será criada se não
+                existir.
+            dataset_output_dir: pasta onde o parquet do dataset derivado
+                + parquet de erros (se houver) são gravados. Espera-se
+                receber `pipeline.storage_path` (biblioteca global de
+                datasets). Será criada se não existir.
             ff_service: necessário se `input_source=ALIGNED_FACE` ou
                 algum step usa FFService (ex: CropMode.FACE_DETECTED).
             skip_existing: idempotência — PNGs já existentes com mesmo
@@ -94,10 +106,10 @@ class ImagePipelineBatchService:
         Returns:
             `BatchProcessingResult` agregando totais.
         """
-        target_dir = Path(target_dir).resolve()
-        target_dir.mkdir(parents=True, exist_ok=True)
-        images_dir = target_dir / _IMAGES_SUBDIR
+        images_dir = Path(images_dir).resolve()
         images_dir.mkdir(parents=True, exist_ok=True)
+        dataset_output_dir = Path(dataset_output_dir).resolve()
+        dataset_output_dir.mkdir(parents=True, exist_ok=True)
 
         started_at = datetime.now(timezone.utc)
         start_time = time.time()
@@ -163,23 +175,30 @@ class ImagePipelineBatchService:
                 f"'{pipeline_config.name}'."
             ),
             faces=new_faces,
-            path_mode=PathMode.RELATIVE,
-            path_root=_IMAGES_SUBDIR,
+            # ABSOLUTE pra que o parquet (na biblioteca global) e as
+            # imagens (na pasta escolhida pelo usuário) se mantenham
+            # rastreáveis independente de onde estão. Cada face tem o
+            # path absoluto do PNG resolvido no `_process_one`.
+            path_mode=PathMode.ABSOLUTE,
+            path_root=None,
             is_aligned=derived_is_aligned,
         )
 
-        # Salva parquet
-        parquet_path = target_dir / f"{output_stem}.parquet"
+        # Salva parquet na biblioteca global de datasets (separado das
+        # imagens — mesmo padrão do fluxo "Novo Dataset com Alinhamento").
+        parquet_path = dataset_output_dir / f"{output_stem}.parquet"
         new_dataset.to_parquet(parquet_path)
 
         # Salva parquet de erros quando houver — mesmo schema do
         # dataset original (image_path/identity/file_name/hash) +
         # coluna `error_message`. Permite ao perito abrir esse arquivo
         # como dataset normal pra inspecionar/exportar/reanálisar as
-        # falhas.
+        # falhas. Vai pra biblioteca global junto com o parquet principal.
         error_parquet_path: Optional[Path] = None
         if failures:
-            error_parquet_path = target_dir / f"{output_stem}__errors.parquet"
+            error_parquet_path = (
+                dataset_output_dir / f"{output_stem}__errors.parquet"
+            )
             self._save_error_parquet(
                 dataset, failures, error_parquet_path, output_stem,
             )
@@ -203,14 +222,16 @@ class ImagePipelineBatchService:
             "operator": AuditLogService.current_operator(),
             "pipeline_config": pipeline_config.to_dict(),
         }
-        manifest_path = target_dir / _MANIFEST_NAME
+        # Manifest fica com as imagens — quem encontra a pasta de PNGs
+        # no disco precisa saber qual pipeline as gerou.
+        manifest_path = images_dir / _MANIFEST_NAME
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
 
         return BatchProcessingResult(
-            target_dir=target_dir,
+            images_dir=images_dir,
             parquet_path=parquet_path,
             pipeline_name=pipeline_config.name,
             n_processed=n_processed,
@@ -243,8 +264,18 @@ class ImagePipelineBatchService:
         if not src_path.exists():
             raise RuntimeError(f"arquivo fonte não encontrado: {src_path}")
 
-        # Carrega imagem
-        bgr = cv2.imread(str(src_path), cv2.IMREAD_COLOR)
+        # Carrega imagem via open+imdecode — `cv2.imread` falha
+        # SILENCIOSAMENTE em paths com chars não-ASCII no Windows
+        # (bug histórico do OpenCV em paths via fopen). Mesmo padrão
+        # do `FFService._safe_read_image`.
+        try:
+            with open(src_path, "rb") as fh:
+                file_bytes = fh.read()
+            bgr = cv2.imdecode(
+                np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR,
+            )
+        except OSError as exc:
+            raise RuntimeError(f"falha ao ler {src_path.name}: {exc}") from exc
         if bgr is None:
             raise RuntimeError(f"falha ao decodificar: {src_path.name}")
 
@@ -266,25 +297,32 @@ class ImagePipelineBatchService:
         # Determina filename — sempre .png
         rel_name = self._build_dest_name(face, src_path, used_names)
         dst = images_dir / rel_name
+        abs_dst = dst.resolve().as_posix()
 
         # Idempotência: PNG já existe?
         if skip_existing and dst.exists():
             existing_hash = hash_service.calculate_file_hash(dst)
             new_face = self._clone_face_minimal(
-                face, rel_name, existing_hash,
+                face, abs_dst, existing_hash,
             )
             return {"status": "skipped", "face": new_face, "rel_name": rel_name}
 
-        # Grava PNG (lossless)
+        # Grava PNG (lossless) via imencode+write_bytes — `cv2.imwrite`
+        # tem o mesmo bug de não-ASCII no Windows (não escreve nada e
+        # retorna False). Padrão consistente com `_materialize_aligned_crops`.
         dst.parent.mkdir(parents=True, exist_ok=True)
-        ok = cv2.imwrite(str(dst), processed)
-        if not ok:
-            raise RuntimeError("cv2.imwrite retornou False")
+        success, buf = cv2.imencode(".png", processed)
+        if not success:
+            raise RuntimeError("cv2.imencode retornou False")
+        try:
+            dst.write_bytes(buf.tobytes())
+        except OSError as exc:
+            raise RuntimeError(f"falha ao gravar {dst.name}: {exc}") from exc
 
         # Hash do PNG resultante
         file_hash = hash_service.calculate_file_hash(dst)
 
-        new_face = self._clone_face_minimal(face, rel_name, file_hash)
+        new_face = self._clone_face_minimal(face, abs_dst, file_hash)
         return {"status": "success", "face": new_face, "rel_name": rel_name}
 
     # ── Helpers ─────────────────────────────────────────────────────────────

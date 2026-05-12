@@ -1,7 +1,7 @@
 """Ribbon de operações de arquivo (PR Ribbon refactor).
 
 Botões: Novo, Abrir, Salvar, Salvar Como, Salvar na Biblioteca,
-Fechar.
+→ Estratégia, Fechar.
 """
 
 from PyQt6.QtWidgets import QHBoxLayout
@@ -45,6 +45,15 @@ class ArquivoRibbon(ResponsiveRibbon):
                     "(reusável entre projetos do Strategy Manager V2)",
         )
         layout.addWidget(self.btn_save_to_library)
+
+        # Envio pra outra aba (movido de Dataset → Arquivo)
+        self.btn_send_to_strategy = ToolbarButton(
+            "→ Estratégia", "🎯",
+            tooltip="Envia o dataset atual para o Strategy Manager V2 — "
+                    "switch de aba + import automático no projeto aberto "
+                    "(ou prompt pra abrir/criar projeto)",
+        )
+        layout.addWidget(self.btn_send_to_strategy)
         layout.addWidget(ToolbarSeparator())
 
         # Encerramento

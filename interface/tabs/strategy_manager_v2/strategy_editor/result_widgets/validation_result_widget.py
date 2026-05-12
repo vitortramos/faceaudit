@@ -272,177 +272,27 @@ class ValidationResultWidget(QtWidgets.QWidget):
             if cursor_pushed:
                 QtWidgets.QApplication.restoreOverrideCursor()
 
-    # ── Plot functions (extraídas do dialog antigo) ───────────────────────────
+    # ── Plot functions: delegam pros helpers puros em
+    # `faceaudit.models.validation_result_plot`. Wrappers mantidos por
+    # compat (o `_setup_tabs` registra esses callbacks). A lógica de
+    # desenho foi extraída pra que o snapshot PNG gerado durante a
+    # persistência use exatamente o mesmo render. ────────────────────────
 
     def _draw_lr_distribution(self, figure: Figure) -> None:
-        ax = figure.add_subplot(111)
-
-        pd = self._result.plot_data
-        gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
-        imp = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
-
-        if gen.size == 0 and imp.size == 0:
-            ax.text(0.5, 0.5, "(sem dados)", ha="center", va="center",
-                    transform=ax.transAxes, color="#888")
-            return
-
-        all_lrs = np.concatenate([gen, imp])
-        x_min, x_max = float(np.min(all_lrs)), float(np.max(all_lrs))
-        if x_min == x_max:
-            x_min -= 0.5
-            x_max += 0.5
-        bins = np.linspace(x_min, x_max, 60)
-
-        if imp.size > 0:
-            ax.hist(imp, bins=bins, density=True, alpha=0.45,
-                    color="#c62828", edgecolor="#7a0000", linewidth=0.5,
-                    label=f"Impostores  (n={imp.size:,})".replace(",", "."))
-        if gen.size > 0:
-            ax.hist(gen, bins=bins, density=True, alpha=0.45,
-                    color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
-                    label=f"Genuínos  (n={gen.size:,})".replace(",", "."))
-
-        try:
-            from scipy.stats import gaussian_kde
-            xs = np.linspace(x_min, x_max, 400)
-            if imp.size > 1:
-                ax.plot(xs, gaussian_kde(imp)(xs), color="#7a0000",
-                        linewidth=1.4, alpha=0.9)
-            if gen.size > 1:
-                ax.plot(xs, gaussian_kde(gen)(xs), color="#0d3a10",
-                        linewidth=1.4, alpha=0.9)
-        except Exception:
-            pass
-
-        ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
-                   alpha=0.6, label="log-LR = 0")
-        ax.set_title("Distribuição de log-LRs", fontsize=11)
-        ax.set_xlabel("log-LR calibrado")
-        ax.set_ylabel("Densidade")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="best", fontsize=9)
-        figure.tight_layout()
+        from faceaudit.models.validation_result_plot import draw_lr_distribution
+        draw_lr_distribution(figure, self._result)
 
     def _draw_tippett(self, figure: Figure) -> None:
-        ax = figure.add_subplot(111)
-
-        pd = self._result.plot_data
-        gen = np.sort(np.asarray(pd.genuine_log_lrs, dtype=np.float64))
-        imp = np.sort(np.asarray(pd.impostor_log_lrs, dtype=np.float64))
-
-        if gen.size == 0 or imp.size == 0:
-            ax.text(0.5, 0.5, "(requer ambas as classes)", ha="center", va="center",
-                    transform=ax.transAxes, color="#888")
-            return
-
-        gen_cum = np.arange(1, gen.size + 1) / gen.size
-        imp_cum_above = 1.0 - np.arange(1, imp.size + 1) / imp.size
-
-        ax.plot(gen, gen_cum, color="#2e7d32", linewidth=1.6,
-                label="Genuínos: P(log-LR ≤ x | Hp)")
-        ax.plot(imp, imp_cum_above, color="#c62828", linewidth=1.6,
-                label="Impostores: P(log-LR > x | Hd)")
-
-        ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
-                   alpha=0.6, label="log-LR = 0")
-
-        ax.set_title("Tippett Plot", fontsize=11)
-        ax.set_xlabel("log-LR (limiar de decisão)")
-        ax.set_ylabel("Proporção cumulativa")
-        ax.set_ylim(-0.02, 1.02)
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="best", fontsize=9)
-        figure.tight_layout()
+        from faceaudit.models.validation_result_plot import draw_tippett
+        draw_tippett(figure, self._result)
 
     def _draw_det_curve(self, figure: Figure) -> None:
-        ax = figure.add_subplot(111)
-
-        pd = self._result.plot_data
-        fpr = np.asarray(pd.fpr_array, dtype=np.float64)
-        fnr = np.asarray(pd.fnr_array, dtype=np.float64)
-        m = self._result.metrics
-
-        if fpr.size == 0 or fnr.size == 0:
-            ax.text(0.5, 0.5, "(sem dados de DET)", ha="center", va="center",
-                    transform=ax.transAxes, color="#888")
-            return
-
-        eps = 1e-6
-        fpr_c = np.clip(fpr, eps, 1.0 - eps)
-        fnr_c = np.clip(fnr, eps, 1.0 - eps)
-
-        try:
-            from scipy.stats import norm
-            x = norm.ppf(fpr_c)
-            y = norm.ppf(fnr_c)
-        except Exception:
-            x, y = fpr_c, fnr_c
-
-        ax.plot(x, y, color="#1a4f8a", linewidth=1.8, label="DET")
-
-        try:
-            from scipy.stats import norm
-            eer_n = norm.ppf(np.clip(m.eer, eps, 1.0 - eps))
-            ax.scatter([eer_n], [eer_n], color="#E8A020", s=80, zorder=5,
-                       edgecolor="#7a4f00", linewidth=1.4,
-                       label=f"EER = {m.eer*100:.2f}%")
-            ax.axhline(eer_n, color="#888", linestyle=":", linewidth=0.8, alpha=0.5)
-            ax.axvline(eer_n, color="#888", linestyle=":", linewidth=0.8, alpha=0.5)
-        except Exception:
-            pass
-
-        try:
-            from scipy.stats import norm
-            tick_pcts = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.4]
-            tick_locs = norm.ppf(tick_pcts)
-            tick_labels = [f"{p*100:g}%" for p in tick_pcts]
-            ax.set_xticks(tick_locs)
-            ax.set_xticklabels(tick_labels)
-            ax.set_yticks(tick_locs)
-            ax.set_yticklabels(tick_labels)
-        except Exception:
-            pass
-
-        ax.set_title("Curva DET (Detection Error Tradeoff)", fontsize=11)
-        ax.set_xlabel("Taxa de Falsos Positivos (FPR)")
-        ax.set_ylabel("Taxa de Falsos Negativos (FNR)")
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="upper right", fontsize=9)
-        figure.tight_layout()
+        from faceaudit.models.validation_result_plot import draw_det_curve
+        draw_det_curve(figure, self._result)
 
     def _draw_ece(self, figure: Figure) -> None:
-        ax = figure.add_subplot(111)
-
-        pd = self._result.plot_data
-        x = np.asarray(pd.ece_prior_log_odds, dtype=np.float64)
-        y_real = np.asarray(pd.ece_values, dtype=np.float64)
-        y_min = np.asarray(pd.ece_min_values, dtype=np.float64)
-
-        if x.size == 0 or y_real.size == 0:
-            ax.text(0.5, 0.5, "(sem dados de ECE)", ha="center", va="center",
-                    transform=ax.transAxes, color="#888")
-            return
-
-        if y_min.size == y_real.size:
-            ax.fill_between(x, y_min, y_real, where=(y_real >= y_min),
-                            color="#E8A020", alpha=0.18,
-                            label="Perda de calibração")
-
-        ax.plot(x, y_real, color="#1a4f8a", linewidth=1.8,
-                label="ECE (modelo)")
-        if y_min.size:
-            ax.plot(x, y_min, color="#2e7d32", linewidth=1.6, linestyle="--",
-                    label="ECE mínimo (PAVA)")
-
-        ax.axvline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
-
-        ax.set_title("Empirical Cross-Entropy (ECE)", fontsize=11)
-        ax.set_xlabel("Prior log₁₀-odds (P(Hp)/P(Hd))")
-        ax.set_ylabel("Cross-entropy (bits)")
-        ax.set_ylim(bottom=0)
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="upper center", fontsize=9)
-        figure.tight_layout()
+        from faceaudit.models.validation_result_plot import draw_ece
+        draw_ece(figure, self._result)
 
     # ── Help text ─────────────────────────────────────────────────────────────
 

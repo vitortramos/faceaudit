@@ -75,6 +75,139 @@ from .result_widgets import (
 )
 
 
+class _PngSnapshotWidget(QtWidgets.QWidget):
+    """Mostra um snapshot PNG escalado mantendo aspecto via `paintEvent`.
+
+    Genérico — usado pra qualquer plot que tenha PNG persistido em
+    `<project>/graphics/` durante a execução. Bem mais leve que reconstruir
+    a figura matplotlib na main thread; cobre hoje SIMILARITY_SCORING,
+    PAIR_MINING, SCORE_CALIBRATION e CASEWORK_VISUALIZATION. O plot vivo
+    correspondente continua disponível pelo botão 🔍 Expandir.
+
+    Pintamos via `paintEvent` em vez de usar `QLabel.setPixmap` pra evitar
+    um feedback loop: `setPixmap` altera o `sizeHint` do label, o layout
+    recalcula, o widget cresce, `resizeEvent` dispara novo scale, sizeHint
+    cresce de novo, etc. Sem QLabel a renderização desacopla do sizing.
+
+    Quando o arquivo PNG está ausente (recurso ainda não executado ou
+    invalidado por Aplicar Alterações), mostra placeholder discreto.
+    """
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        # Aceita qualquer tamanho dado pelo layout; sizeHint pequeno
+        # garante que o widget NÃO empurra o pai a crescer.
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self.setMinimumSize(1, 1)
+
+        # Pixmap original em resolução cheia. paintEvent escala on-demand
+        # mantendo aspecto. Sem manter o original, sucessivos resizes
+        # acumulariam perda de qualidade.
+        self._full_pixmap: Optional[QtGui.QPixmap] = None
+        self._placeholder_text: str = "Execute para gerar visualização"
+
+    def sizeHint(self) -> QtCore.QSize:  # noqa: N802 — Qt API
+        # Pequeno e fixo — independente do pixmap. Sem isso, mostrar uma
+        # imagem grande fazia o widget pedir muito espaço e crescer.
+        return QtCore.QSize(120, 80)
+
+    def show_placeholder(self, text: str) -> None:
+        self._full_pixmap = None
+        self._placeholder_text = text or ""
+        self.update()
+
+    def show_image(self, png_path) -> bool:
+        """Carrega o PNG do disco. Retorna True se sucesso, False senão."""
+        from pathlib import Path
+        p = Path(png_path)
+        if not p.exists():
+            return False
+        pixmap = QtGui.QPixmap(str(p))
+        if pixmap.isNull():
+            return False
+        self._full_pixmap = pixmap
+        self._placeholder_text = ""
+        self.update()
+        return True
+
+    def paintEvent(self, event) -> None:  # noqa: N802 — Qt API
+        painter = QtGui.QPainter(self)
+        rect = self.rect()
+
+        if self._full_pixmap is not None:
+            # Scale on-demand mantendo aspecto. Custo da operação a cada
+            # repaint é trivial (escala raster), e o sizing do widget
+            # NÃO depende do tamanho do pixmap escalado — quebra o loop.
+            scaled = self._full_pixmap.scaled(
+                rect.size(),
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                QtCore.Qt.TransformationMode.SmoothTransformation,
+            )
+            x = (rect.width() - scaled.width()) // 2
+            y = (rect.height() - scaled.height()) // 2
+            painter.drawPixmap(x, y, scaled)
+            return
+
+        if self._placeholder_text:
+            painter.setPen(QtGui.QColor("#888"))
+            font = painter.font()
+            font.setItalic(True)
+            font.setPointSize(11)
+            painter.setFont(font)
+            painter.drawText(
+                rect,
+                QtCore.Qt.AlignmentFlag.AlignCenter
+                | QtCore.Qt.TextFlag.TextWordWrap,
+                self._placeholder_text,
+            )
+
+
+class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
+    """QTabWidget de `_PngSnapshotWidget`s — usado pra STRATEGY_EVALUATION,
+    que tem 4 plots (distribuição de LRs, Tippett, DET, ECE) em vez de 1.
+
+    Espelha visualmente o `ValidationResultWidget` (4 abas) mas substitui
+    cada FigureCanvas+plot vivo por um QPixmap pré-renderizado. Render
+    instantâneo, sem matplotlib na main thread. Plot vivo continua
+    disponível pelo botão 🔍 Expandir → `ValidationResultViewerDialog`.
+    """
+
+    def __init__(self, tab_keys, tab_titles: Dict[str, str],
+                 parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._tabs = QtWidgets.QTabWidget()
+        self._snapshots: Dict[str, _PngSnapshotWidget] = {}
+        for key in tab_keys:
+            snap = _PngSnapshotWidget()
+            self._snapshots[key] = snap
+            self._tabs.addTab(snap, tab_titles.get(key, key))
+        layout.addWidget(self._tabs, 1)
+
+    def show_images(self, paths_dict: Dict[str, Any]) -> int:
+        """Carrega os PNGs em cada aba. Retorna número de PNGs carregados
+        com sucesso (algumas abas podem ficar em placeholder se o PNG
+        correspondente não existir / falhar)."""
+        loaded = 0
+        for key, snap in self._snapshots.items():
+            target = paths_dict.get(key)
+            if target is not None and snap.show_image(target):
+                loaded += 1
+            else:
+                snap.show_placeholder("(sem PNG disponível)")
+        return loaded
+
+    def show_placeholder(self, text: str) -> None:
+        for snap in self._snapshots.values():
+            snap.show_placeholder(text)
+
+
 # Tipos de plot inline (não inclui trajetória — fica como botão).
 _PLOT_KIND_SCORE_DISTRIBUTION = "score_distribution"
 _PLOT_KIND_VALIDATION_RESULT = "validation_result"
@@ -333,19 +466,44 @@ class _ResultsCard(QtWidgets.QWidget):
 
         # Widget concreto inline (sem toolbar, sem help — modo compacto).
         if self._plot_kind == _PLOT_KIND_SCORE_DISTRIBUTION:
-            self._plot_widget = ScoreDistributionWidget(
-                parent=plot_page, score_dataset=None,
-                show_toolbar=False,
-            )
+            # Pra SIMILARITY_SCORING e PAIR_MINING usamos o snapshot PNG
+            # gerado durante a persistência — render instantâneo via
+            # QPixmap (sem reconstruir a figura matplotlib na main thread,
+            # sem rodar gaussian_kde de novo). Ambas produzem
+            # `SIMILARITY_SCORES`, então o executor já cuida do PNG no
+            # `persist_produced_resource`. SCORE_CALIBRATION (output
+            # `CALIBRATED_SCORES`) segue usando o widget vivo via sidecar
+            # `_dist.json`.
+            if self._uses_png_snapshot_inline():
+                self._plot_widget = _PngSnapshotWidget(
+                    parent=plot_page,
+                )
+            else:
+                self._plot_widget = ScoreDistributionWidget(
+                    parent=plot_page, score_dataset=None,
+                    show_toolbar=False,
+                )
         elif self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
-            self._plot_widget = ValidationResultWidget(
-                parent=plot_page, result=None,
-                show_toolbar=False, show_help=False,
+            # STRATEGY_EVALUATION: 4 PNGs (distribuição de LRs, Tippett,
+            # DET, ECE) gerados pelo executor durante a persistência.
+            # Tabbed snapshot widget reproduz o layout do
+            # `ValidationResultWidget` mas sem reconstruir 4 figuras
+            # matplotlib. Expandir abre o widget vivo completo.
+            from faceaudit.models.validation_result_plot import (
+                PLOT_KEYS, PLOT_TAB_TITLE,
+            )
+            self._plot_widget = _TabbedPngSnapshotWidget(
+                tab_keys=PLOT_KEYS,
+                tab_titles=PLOT_TAB_TITLE,
+                parent=plot_page,
             )
         elif self._plot_kind == _PLOT_KIND_CASEWORK_VISUALIZATION:
-            self._plot_widget = CaseworkVisualizationWidget(
-                parent=plot_page, result=None,
-                show_toolbar=False, show_help=False,
+            # CASEWORK_VISUALIZATION: mesma estratégia das instruções de
+            # scoring — executor gera PNG em `<project>/graphics/` durante
+            # a persistência, painel mostra via QPixmap. Expandir abre o
+            # plot vivo (CaseworkVisualizationWidget completo).
+            self._plot_widget = _PngSnapshotWidget(
+                parent=plot_page,
             )
         elif self._plot_kind == _PLOT_KIND_HUBNESS_REPORT:
             from .result_widgets import HubnessReportWidget
@@ -407,6 +565,22 @@ class _ResultsCard(QtWidgets.QWidget):
 
         if self._plot_widget is None:
             return  # sem plot inline; nada a fazer
+
+        # Caminho dedicado pros plots com snapshot PNG (SIMILARITY_SCORING,
+        # PAIR_MINING, CASEWORK_VISUALIZATION → `_PngSnapshotWidget` simples;
+        # STRATEGY_EVALUATION → `_TabbedPngSnapshotWidget` com 4 abas). O
+        # inline mostra os PNGs gravados pelo executor, sem reconstruir
+        # matplotlib.
+        if isinstance(
+            self._plot_widget,
+            (_PngSnapshotWidget, _TabbedPngSnapshotWidget),
+        ):
+            self._update_snapshot_state(
+                definition=definition,
+                context=context,
+                resource_loader=resource_loader,
+            )
+            return
 
         # Tenta resolver o payload do recurso de output relevante para o plot.
         payload, resource_id, in_memory = self._resolve_plot_payload(
@@ -517,6 +691,91 @@ class _ResultsCard(QtWidgets.QWidget):
                 self._btn_hydrate.setVisible(False)
                 self._plot_stack.setCurrentIndex(1)
 
+    def _update_snapshot_state(
+        self,
+        definition: LRStrategyDefinition,
+        context: Optional[StrategyExecutionContextProtocol],
+        resource_loader: Any,
+    ) -> None:
+        """Atualiza o snapshot PNG inline. Mostra a(s) imagem(ns) se
+        existem; senão exibe placeholder. Cobre tanto o
+        `_PngSnapshotWidget` (1 PNG: scoring/pair_mining/casework) quanto
+        o `_TabbedPngSnapshotWidget` (4 PNGs: validation)."""
+        # Resolve o resource_id do output relevante.
+        target_types = self._plot_target_types()
+        target_resource_id: Optional[str] = None
+        try:
+            specs = self._instruction.get_resource_field_specs() or []
+        except Exception:
+            specs = []
+        for spec in specs:
+            if not spec.is_output:
+                continue
+            if any(t in target_types for t in spec.accepted_types):
+                target_resource_id = getattr(
+                    self._instruction, spec.field_name, None,
+                )
+                break
+
+        widget = self._plot_widget
+        loaded = False
+
+        if isinstance(widget, _TabbedPngSnapshotWidget):
+            # STRATEGY_EVALUATION: 4 PNGs separados.
+            paths_dict = self._resolve_png_paths_dict(
+                definition, target_resource_id or "", resource_loader,
+            )
+            if paths_dict:
+                loaded = widget.show_images(paths_dict) > 0
+            if not loaded:
+                widget.show_placeholder(
+                    "Execute para gerar visualização da validação"
+                )
+        elif isinstance(widget, _PngSnapshotWidget):
+            # Plot único.
+            png_path = self._resolve_png_path(
+                definition, target_resource_id or "", resource_loader,
+            )
+            if png_path is not None and widget.show_image(png_path):
+                loaded = True
+            else:
+                widget.show_placeholder(
+                    "Execute para gerar visualização da distribuição"
+                )
+        else:
+            return
+
+        if hasattr(self, "_plot_stack"):
+            self._btn_hydrate.setVisible(False)
+            self._plot_stack.setCurrentIndex(1)
+        if loaded:
+            self._plot_rendered_once = True
+
+    def _resolve_png_paths_dict(
+        self,
+        definition: LRStrategyDefinition,
+        resource_id: str,
+        resource_loader: Any,
+    ):
+        """Versão "multi-PNG" do `_resolve_png_path` — usada pelo tabbed
+        snapshot widget de STRATEGY_EVALUATION. Retorna dict
+        `{plot_key: Path}` ou None se faltam dados."""
+        if resource_loader is None or definition is None or not resource_id:
+            return None
+        storage = getattr(resource_loader, "_storage", None)
+        project_root = getattr(storage, "project_root", None) if storage else None
+        strategy_id = getattr(definition, "strategy_id", None)
+        if project_root is None or not strategy_id:
+            return None
+        if self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
+            from faceaudit.models.validation_result_plot import (
+                validation_result_png_paths,
+            )
+            return validation_result_png_paths(
+                project_root, strategy_id, resource_id,
+            )
+        return None
+
     def invalidate(self) -> None:
         """
         Marca o card como precisando de re-render do gráfico (ex.: quando a
@@ -529,7 +788,15 @@ class _ResultsCard(QtWidgets.QWidget):
         # Importa Hubness widgets aqui (lazy) pra evitar dep circular.
         from .result_widgets import HubnessReportWidget, HubnessAblationWidget
         try:
-            if isinstance(self._plot_widget, ScoreDistributionWidget):
+            if isinstance(self._plot_widget, _TabbedPngSnapshotWidget):
+                self._plot_widget.show_placeholder(
+                    "Execute para gerar visualização da validação"
+                )
+            elif isinstance(self._plot_widget, _PngSnapshotWidget):
+                self._plot_widget.show_placeholder(
+                    "Execute para gerar visualização"
+                )
+            elif isinstance(self._plot_widget, ScoreDistributionWidget):
                 self._plot_widget.set_dataset(None)
             elif isinstance(self._plot_widget, ValidationResultWidget):
                 self._plot_widget.set_result(None)
@@ -647,6 +914,67 @@ class _ResultsCard(QtWidgets.QWidget):
             if hasattr(self, "_plot_stack"):
                 self._btn_hydrate.setVisible(False)
                 self._plot_stack.setCurrentIndex(1)
+
+    def _uses_png_snapshot_inline(self) -> bool:
+        """True se a instrução deve renderizar o snapshot PNG inline em
+        vez do widget vivo. Aplica-se aos tipos cujo executor já gera o
+        PNG durante a persistência: SIMILARITY_SCORING e PAIR_MINING
+        (produzem `SIMILARITY_SCORES`); SCORE_CALIBRATION (produz
+        `CALIBRATED_SCORES`, plot usa log-LR no eixo X)."""
+        try:
+            return self._instruction.instruction_type in (
+                StrategyInstructionType.SIMILARITY_SCORING,
+                StrategyInstructionType.PAIR_MINING,
+                StrategyInstructionType.SCORE_CALIBRATION,
+            )
+        except Exception:
+            return False
+
+    def _resolve_png_path(
+        self,
+        definition: LRStrategyDefinition,
+        resource_id: str,
+        resource_loader: Any,
+    ):
+        """Path absoluto do PNG snapshot deste output, ou None se faltam
+        dados (project_root indisponível, etc.). Não verifica existência.
+
+        Dispatch pelo `_plot_kind`: score distribution usa
+        `score_distribution_png_path`; casework usa
+        `casework_visualization_png_path`. Mesma convenção `<project>/
+        graphics/<strategy_id>__<resource_id>_<sufixo>.png`, com sufixo
+        distinto por tipo (`_dist` vs `_casework`)."""
+        if resource_loader is None or definition is None or not resource_id:
+            return None
+        storage = getattr(resource_loader, "_storage", None)
+        project_root = getattr(storage, "project_root", None) if storage else None
+        strategy_id = getattr(definition, "strategy_id", None)
+        if project_root is None or not strategy_id:
+            return None
+        if self._plot_kind == _PLOT_KIND_CASEWORK_VISUALIZATION:
+            from faceaudit.models.casework_visualization_plot import (
+                casework_visualization_png_path,
+            )
+            return casework_visualization_png_path(
+                project_root, strategy_id, resource_id,
+            )
+        # Score distribution: subfolder muda se for output de
+        # SCORE_CALIBRATION (CALIBRATED_SCORES) — log-LR no eixo X.
+        is_calibrated = False
+        try:
+            is_calibrated = (
+                self._instruction.instruction_type
+                == StrategyInstructionType.SCORE_CALIBRATION
+            )
+        except Exception:
+            pass
+        from faceaudit.models.similarity.distribution_plot import (
+            score_distribution_png_path,
+        )
+        return score_distribution_png_path(
+            project_root, strategy_id, resource_id,
+            calibrated=is_calibrated,
+        )
 
     def _is_calibrated_scores_output(self) -> bool:
         """True se o output relevante é CALIBRATED_SCORES (usa log_lr)."""

@@ -421,11 +421,29 @@ class FFService:
         if bgr_aligned_face is None:
             return face_info
 
-        ff_data = self.extract_embeddings_from_aligned_face(
+        new_ff_data = self.extract_embeddings_from_aligned_face(
             bgr_aligned_face, model=model, models=models,
         )
-        if ff_data is not None:
-            face_info.ff_info = ff_data
+        if new_ff_data is None:
+            return face_info
+
+        # MERGE em vez de REPLACE — preserva embedding/FIQA/yaw vindos de
+        # runs anteriores. Sem isso, enrich seletivo via face alinhada
+        # (ex: rodar só sepaelv4) apagava sepaelv2, FIQA, etc. que já
+        # estavam populados pra cada face.
+        existing = face_info.ff_info
+        if existing is None:
+            face_info.ff_info = new_ff_data
+            return face_info
+
+        for key in (
+            "ipd", "fiqa_score", "det_score", "gender", "age",
+            "yaw", "pitch", "roll", "bbox", "keypoints",
+            "aligned_face", "embedding_sepaelv2", "embedding_sepaelv4",
+        ):
+            val = getattr(new_ff_data, key, None)
+            if val is not None:
+                setattr(existing, key, val)
         return face_info
 
     def process_face(
@@ -474,7 +492,12 @@ class FFService:
         else:
             target_models = [self._default_model]
 
-        ff_data: Optional[FFInfo] = None
+        # Começa do FFInfo existente (se houver) — semântica de MERGE,
+        # não REPLACE. Sem isso, enrich com um único modelo (ex: sepaelv4)
+        # apagava tudo que veio de runs anteriores: embedding_sepaelv2,
+        # FIQA, yaw/pitch/roll, etc. — porque `face_info.ff_info = ff_data`
+        # (linha final) substituía o objeto inteiro.
+        ff_data: Optional[FFInfo] = face_info.ff_info
 
         for m in target_models:
             try:
@@ -483,26 +506,26 @@ class FFService:
                 if not resultado:
                     continue
 
-                # Primeira iteração cria o FFInfo com toda a metadata
-                # (bbox/keypoints/quality/etc.); iterações seguintes só
-                # preenchem o slot do embedding correspondente.
                 if ff_data is None:
-                    ff_data = FFInfo(
-                        ipd=resultado.get("ipd"),
-                        fiqa_score=resultado.get("fiqa_score"),
-                        det_score=resultado.get("det_score"),
-                        gender=resultado.get("gender"),
-                        age=resultado.get("age"),
-                        yaw=resultado.get("yaw"),
-                        pitch=resultado.get("pitch"),
-                        roll=resultado.get("roll"),
-                        bbox=resultado.get("bbox"),
-                        keypoints=resultado.get("keypoints"),
-                        aligned_face=resultado.get("aligned_face"),
-                    )
+                    ff_data = FFInfo()
+
+                # Atualiza só os campos que o resultado efetivamente
+                # trouxe — `resultado.get(key)` None NÃO sobrescreve o
+                # valor anterior. Isso preserva FIQA/yaw/etc. quando o
+                # usuário roda o enrich com `ff_extended=False` (que faz
+                # o ForensicFace omitir esses campos no `_assemble_result`).
+                for key in (
+                    "ipd", "fiqa_score", "det_score", "gender", "age",
+                    "yaw", "pitch", "roll", "bbox", "keypoints",
+                    "aligned_face",
+                ):
+                    val = resultado.get(key)
+                    if val is not None:
+                        setattr(ff_data, key, val)
 
                 emb = resultado.get("embedding")
-                setattr(ff_data, self._slot_for_model(model_name), emb)
+                if emb is not None:
+                    setattr(ff_data, self._slot_for_model(model_name), emb)
 
             except Exception as e:
                 print(f"Error processing face {image_path} (model={m}): {e}")

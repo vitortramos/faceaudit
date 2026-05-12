@@ -234,114 +234,13 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _draw(figure: Figure, r: Any, show_title: bool = True) -> None:
-        from scipy.stats import gaussian_kde
+        """Delega pro helper puro-matplotlib em
+        `faceaudit.models.casework_visualization_plot.draw_casework_visualization`.
 
-        ax = figure.add_subplot(111)
-
-        gen = np.asarray(r.genuine_scores, dtype=np.float64)
-        imp = np.asarray(r.impostor_scores, dtype=np.float64)
-        case = np.asarray(r.case_scores, dtype=np.float64)
-
-        all_vals = []
-        if gen.size > 0:
-            all_vals.append(gen)
-        if imp.size > 0:
-            all_vals.append(imp)
-        if case.size > 0:
-            all_vals.append(case)
-        if not all_vals:
-            ax.text(0.5, 0.5, "Sem dados para plotar.",
-                    ha="center", va="center", transform=ax.transAxes)
-            return
-        combined = np.concatenate(all_vals)
-        x_min = float(np.min(combined))
-        x_max = float(np.max(combined))
-        pad = max(0.05 * (x_max - x_min), 0.5)
-        x_min -= pad
-        x_max += pad
-        xs = np.linspace(x_min, x_max, 500)
-
-        if imp.size > 0:
-            ax.hist(
-                imp, bins=50, density=True, color="#d62728", alpha=0.35,
-                label=f"Impostores (n={imp.size:,})".replace(",", "."),
-            )
-            if imp.size > 1:
-                try:
-                    ax.plot(xs, gaussian_kde(imp)(xs),
-                            color="#8b0000", linewidth=1.4, alpha=0.9)
-                except Exception:
-                    pass
-
-        if gen.size > 0:
-            ax.hist(
-                gen, bins=50, density=True, color="#2ca02c", alpha=0.35,
-                label=f"Genuínos (n={gen.size:,})".replace(",", "."),
-            )
-            if gen.size > 1:
-                try:
-                    ax.plot(xs, gaussian_kde(gen)(xs),
-                            color="#1d4d1d", linewidth=1.4, alpha=0.9)
-                except Exception:
-                    pass
-
-        if case.size >= _KDE_MIN_CASE_SAMPLES:
-            ax.hist(
-                case, bins=30, density=True, color="#1f77b4", alpha=0.35,
-                label=f"Caso (n={case.size:,}, KDE)".replace(",", "."),
-            )
-            if case.size > 1:
-                try:
-                    ax.plot(xs, gaussian_kde(case)(xs),
-                            color="#0d3b66", linewidth=1.6, alpha=0.95)
-                except Exception:
-                    pass
-        else:
-            y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 1.0
-            for i, val in enumerate(case):
-                label = (
-                    f"Caso (n={case.size}, marcas)"
-                    if i == 0 else None
-                )
-                ax.axvline(
-                    val, color="#1f77b4", linestyle="--", linewidth=1.4,
-                    alpha=0.9, label=label,
-                )
-                ax.annotate(
-                    f"{val:+.2f}",
-                    xy=(val, y_top * 0.95),
-                    xytext=(0, -5),
-                    textcoords="offset points",
-                    rotation=90,
-                    color="#0d3b66",
-                    fontsize=8,
-                    ha="center", va="top",
-                    bbox=dict(boxstyle="round,pad=0.2",
-                              fc="white", ec="#1f77b4", lw=0.8, alpha=0.85),
-                )
-
-        if r.score_type == "CALIBRATED":
-            ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
-                       alpha=0.7, label="log-LR = 0 (limiar neutro)")
-        elif r.score_type == "RAW" and r.eer_threshold is not None:
-            ax.axvline(
-                r.eer_threshold, color="#444", linestyle=":", linewidth=1.0,
-                alpha=0.7,
-                label=f"EER threshold = {r.eer_threshold:.4f}",
-            )
-
-        x_label = (
-            "log-LR calibrado"
-            if r.score_type == "CALIBRATED" else "raw_score"
+        Wrapper mantido por compat com chamadores existentes; a lógica de
+        desenho foi extraída pra que o snapshot PNG gerado durante a
+        persistência use exatamente o mesmo render."""
+        from faceaudit.models.casework_visualization_plot import (
+            draw_casework_visualization,
         )
-        ax.set_xlabel(x_label)
-        ax.set_ylabel("Densidade")
-        ax.set_xlim(x_min, x_max)
-        if show_title:
-            ax.set_title(
-                "Distribuição forense — Caso sobreposto à referência"
-            )
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="best", fontsize=9)
-        # tight_layout removido — _render seta constrained_layout antes,
-        # que reserva espaço pro ylabel/legenda sem cortar.
+        draw_casework_visualization(figure, r, show_title=show_title)

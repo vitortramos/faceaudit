@@ -238,7 +238,6 @@ class DatasetAnalysisController(QtCore.QObject):
         )
         self._mining_findings = new_findings
         self.view.btn_run_mining.setEnabled(True)
-        self.view.btn_run_mining.setText("✅ Mineração concluída — reexecutar?")
         # NÃO rerodar `audit_all_quick` — em dataset grande isso bloqueia
         # a main thread por segundos. Só re-renderizar a tree com os
         # caches já populados.
@@ -299,7 +298,6 @@ class DatasetAnalysisController(QtCore.QObject):
             return
         self._biometric_findings = list(payload)
         self.view.btn_run_biometric.setEnabled(True)
-        self.view.btn_run_biometric.setText("✅ Auditoria de IDs concluída — reexecutar?")
         # NÃO rerodar `audit_all_quick` — só re-renderizar com caches.
         self._rebuild_findings_view()
 
@@ -358,7 +356,6 @@ class DatasetAnalysisController(QtCore.QObject):
             return
         self._hubness_findings = list(payload)
         self.view.btn_run_hubness.setEnabled(True)
-        self.view.btn_run_hubness.setText("✅ Hubness concluída — reexecutar?")
         self._rebuild_findings_view()
 
     def _on_hubness_error(self, msg: str) -> None:

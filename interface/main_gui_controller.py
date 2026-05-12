@@ -175,6 +175,9 @@ class MainGuiController:
     def handle_app_close(self, event):
         """Gatekeeper final: intercepta o fechamento da aplicação e pergunta
         a cada aba se ela pode ser fechada (cada uma pode salvar antes)."""
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtWidgets import QApplication
+
         # 1. Aba Gerenciador de Datasets
         if getattr(self, 'manager_controller', None) is not None:
             if not self.manager_controller.request_close():
@@ -187,4 +190,11 @@ class MainGuiController:
                 event.ignore()
                 return
 
+        # WaitCursor cobre o teardown síncrono que vem depois do
+        # accept() — Qt libera widgets, datasets em memória (1M+ faces
+        # podem demorar segundos pra deallocate), etc. SEM restore —
+        # o cursor morre junto com a app, e não queremos "piscar" pra
+        # o cursor normal antes do shutdown completar.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()  # força repaint imediato do cursor
         event.accept()

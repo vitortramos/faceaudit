@@ -11,7 +11,7 @@ Suporta os 5 step types do MVP:
   - JPEG (quality)
   - WEBP (quality)
   - CROP (mode, target_w/h, face_padding)
-  - OCCLUSION (kind, position, coverage_pct)
+  - OCCLUSION (kind, position, width_pct/height_pct, radius_pct, mask)
 """
 
 from __future__ import annotations
@@ -69,7 +69,10 @@ class StepConfigPanel(QtWidgets.QWidget):
     # MASK_FACE não usa position (apenas a máscara desenhada).
     _OCCLUSION_POSITIONS_BY_KIND = {
         OcclusionKind.RECTANGLE_BLACK: [
-            OcclusionPosition.CENTER, OcclusionPosition.RANDOM,
+            OcclusionPosition.CENTER,
+            OcclusionPosition.RANDOM,
+            OcclusionPosition.EYES,
+            OcclusionPosition.MOUTH,
         ],
         OcclusionKind.CIRCLE_BLACK: [
             OcclusionPosition.CENTER,
@@ -290,9 +293,9 @@ class StepConfigPanel(QtWidgets.QWidget):
         _refresh_visibility()
 
     def _build_occlusion_form(self, config: OcclusionConfig):
-        """PR I7 — combos dinâmicos: kind define quais positions estão
-        disponíveis. Spin coverage_pct vs radius_pct alternam conforme
-        kind selecionado. EYES/MOUTH só aparecem com CIRCLE_BLACK.
+        """Combos dinâmicos: kind define quais positions estão
+        disponíveis. Spinners de largura/altura (retângulo) vs raio
+        (círculo) alternam conforme kind selecionado.
         """
         cmb_kind = QtWidgets.QComboBox()
         for k in self._OCCLUSION_KINDS_AVAILABLE:
@@ -304,14 +307,28 @@ class StepConfigPanel(QtWidgets.QWidget):
 
         cmb_pos = QtWidgets.QComboBox()
 
-        spn_coverage = QtWidgets.QDoubleSpinBox()
-        spn_coverage.setRange(0.01, 1.0)
-        spn_coverage.setSingleStep(0.05)
-        spn_coverage.setValue(float(config.coverage_pct))
-        spn_coverage.setDecimals(2)
-        spn_coverage.setToolTip(
-            "Fração da ÁREA da imagem coberta pelo retângulo "
-            "(0.25 = 25%)."
+        # Largura (X) e altura (Y) independentes — substituem o antigo
+        # `coverage_pct` único, que forçava o retângulo a ter o mesmo
+        # aspecto da imagem. Permite ex: barra horizontal sobre os olhos
+        # (width alto + height baixo) ou faixa vertical.
+        spn_width = QtWidgets.QDoubleSpinBox()
+        spn_width.setRange(0.01, 1.0)
+        spn_width.setSingleStep(0.05)
+        spn_width.setValue(float(config.width_pct))
+        spn_width.setDecimals(2)
+        spn_width.setToolTip(
+            "Largura do retângulo como fração da LARGURA da imagem "
+            "(0.5 = metade da largura)."
+        )
+
+        spn_height = QtWidgets.QDoubleSpinBox()
+        spn_height.setRange(0.01, 1.0)
+        spn_height.setSingleStep(0.05)
+        spn_height.setValue(float(config.height_pct))
+        spn_height.setDecimals(2)
+        spn_height.setToolTip(
+            "Altura do retângulo como fração da ALTURA da imagem "
+            "(0.5 = metade da altura)."
         )
 
         spn_radius = QtWidgets.QDoubleSpinBox()
@@ -326,7 +343,8 @@ class StepConfigPanel(QtWidgets.QWidget):
         )
 
         # Linhas condicionais — guardamos QLabel pra esconder/mostrar
-        coverage_label = QtWidgets.QLabel("Cobertura:")
+        width_label = QtWidgets.QLabel("Largura:")
+        height_label = QtWidgets.QLabel("Altura:")
         radius_label = QtWidgets.QLabel("Raio:")
 
         # PR I6 — botão pra abrir canvas (só visível em MASK_FACE)
@@ -377,20 +395,22 @@ class StepConfigPanel(QtWidgets.QWidget):
                 config.position = new_pos
 
         def _refresh_visibility():
-            """Mostra coverage / radius / mask button conforme kind."""
+            """Mostra largura/altura / raio / mask button conforme kind."""
             kind = cmb_kind.currentData()
             is_mask = kind == OcclusionKind.MASK_FACE
             is_rect = kind == OcclusionKind.RECTANGLE_BLACK
             is_circle = kind == OcclusionKind.CIRCLE_BLACK
 
-            # MASK_FACE: esconde position/coverage/radius, mostra botão
+            # MASK_FACE: esconde position/dimensões, mostra botão de canvas
             position_label.setVisible(not is_mask)
             cmb_pos.setVisible(not is_mask)
             mask_label.setVisible(is_mask)
             btn_draw_mask.setVisible(is_mask)
 
-            coverage_label.setVisible(is_rect)
-            spn_coverage.setVisible(is_rect)
+            width_label.setVisible(is_rect)
+            spn_width.setVisible(is_rect)
+            height_label.setVisible(is_rect)
+            spn_height.setVisible(is_rect)
             radius_label.setVisible(is_circle)
             spn_radius.setVisible(is_circle)
 
@@ -409,8 +429,12 @@ class StepConfigPanel(QtWidgets.QWidget):
                 config.position = new
             self._emit_changed()
 
-        def _on_coverage():
-            config.coverage_pct = float(spn_coverage.value())
+        def _on_width():
+            config.width_pct = float(spn_width.value())
+            self._emit_changed()
+
+        def _on_height():
+            config.height_pct = float(spn_height.value())
             self._emit_changed()
 
         def _on_radius():
@@ -419,12 +443,14 @@ class StepConfigPanel(QtWidgets.QWidget):
 
         cmb_kind.currentIndexChanged.connect(_on_kind)
         cmb_pos.currentIndexChanged.connect(_on_pos)
-        spn_coverage.valueChanged.connect(_on_coverage)
+        spn_width.valueChanged.connect(_on_width)
+        spn_height.valueChanged.connect(_on_height)
         spn_radius.valueChanged.connect(_on_radius)
 
         self._form_layout.addRow("Tipo:", cmb_kind)
         self._form_layout.addRow(position_label, cmb_pos)
-        self._form_layout.addRow(coverage_label, spn_coverage)
+        self._form_layout.addRow(width_label, spn_width)
+        self._form_layout.addRow(height_label, spn_height)
         self._form_layout.addRow(radius_label, spn_radius)
         self._form_layout.addRow(mask_label, btn_draw_mask)
 

@@ -457,11 +457,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
             return
         resource_id = resource_id.strip()
 
-        # 3. Copia pro projeto + sidecar de stats + refresh
+        # 3. Importa pro projeto (absolutiza paths se RELATIVE) + sidecar
+        # de stats + refresh. Ver `LocalProjectArtifactStorage.import_dataset`
+        # — RELATIVE com `path_root` ancorado em `(parquet_dir / path_root)`
+        # viraria broken assim que o parquet fosse copiado pra cá; a
+        # absolutização preserva os paths apontando pras imagens originais.
         try:
-            ref = self._project.storage.copy_artifact_to_project(
+            ref = self._project.storage.import_dataset(
                 source_path=parquet_path,
-                artifact_type=StrategyArtifactType.GLOBAL_DATASET,
                 dataset_id=resource_id,
             )
             self._compute_and_save_dataset_stats(
@@ -573,10 +576,22 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         try:
             if copy_images_to_project:
+                # Opção 2 — copia imagens pra `<projeto>/images/<id>/` e
+                # reescreve paths como relativos (Selar-no-import).
                 ref = self._import_dataset_with_image_copy(
                     source_path, resource_id,
                 )
+            elif artifact_type == StrategyArtifactType.GLOBAL_DATASET:
+                # Opção 1 — absolutiza paths (se RELATIVE) e copia o parquet
+                # pro projeto. Imagens continuam onde estavam; projeto não é
+                # autocontido até o usuário rodar "Selar projeto".
+                ref = self._project.storage.import_dataset(
+                    source_path=source_path,
+                    dataset_id=resource_id,
+                )
             else:
+                # Demais artifact types (split/mining/pipeline configs) —
+                # cópia direta, sem semântica de path.
                 ref = self._project.storage.copy_artifact_to_project(
                     source_path=source_path,
                     artifact_type=artifact_type,
@@ -1391,6 +1406,63 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     stats_path = abs_path.parent / (abs_path.stem + "_stats.json")
                     if stats_path.exists():
                         stats_path.unlink()
+                    # Sidecar de distribuição (_dist.json) e snapshot PNG
+                    # (em `<project>/graphics/`) — só relevantes pra
+                    # SIMILARITY_SCORES / CALIBRATED_SCORES. Apaga ambos
+                    # silenciosamente; ausência não é erro.
+                    dist_sidecar = abs_path.parent / (abs_path.stem + "_dist.json")
+                    if dist_sidecar.exists():
+                        dist_sidecar.unlink()
+                    if existing.resource_type in (
+                        StrategyResourceType.SIMILARITY_SCORES,
+                        StrategyResourceType.CALIBRATED_SCORES,
+                    ):
+                        # Subfolder distinto por tipo — flag `calibrated`
+                        # diferencia `similarity_scores/` de
+                        # `calibrated_scores/` no path resolver.
+                        from faceaudit.models.similarity.distribution_plot import (
+                            score_distribution_png_path,
+                        )
+                        png_path = score_distribution_png_path(
+                            self._project.storage.project_root,
+                            self._current_definition.strategy_id,
+                            output_id,
+                            calibrated=(
+                                existing.resource_type
+                                == StrategyResourceType.CALIBRATED_SCORES
+                            ),
+                        )
+                        if png_path.exists():
+                            png_path.unlink()
+                    elif (
+                        existing.resource_type
+                        == StrategyResourceType.CASEWORK_VISUALIZATION
+                    ):
+                        from faceaudit.models.casework_visualization_plot import (
+                            casework_visualization_png_path,
+                        )
+                        png_path = casework_visualization_png_path(
+                            self._project.storage.project_root,
+                            self._current_definition.strategy_id,
+                            output_id,
+                        )
+                        if png_path.exists():
+                            png_path.unlink()
+                    elif (
+                        existing.resource_type
+                        == StrategyResourceType.VALIDATION_RESULT
+                    ):
+                        from faceaudit.models.validation_result_plot import (
+                            validation_result_png_paths,
+                        )
+                        png_paths = validation_result_png_paths(
+                            self._project.storage.project_root,
+                            self._current_definition.strategy_id,
+                            output_id,
+                        )
+                        for png in png_paths.values():
+                            if png.exists():
+                                png.unlink()
                 except Exception:
                     pass
 

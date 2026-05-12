@@ -1,4 +1,4 @@
-from faceaudit.models.filter_config import FilterConfig
+from faceaudit.models.filter import FilterConfig
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 from .enrich_dataset_view import EnrichDatasetView
 
@@ -10,7 +10,15 @@ class EnrichDatasetController:
     def __init__(self, dataset, parent=None):
         self.dataset = dataset
         self.view = EnrichDatasetView(parent)
-        
+
+        # Pré-preenche o checkbox de "faces já alinhadas" com o valor
+        # atual do dataset — usuário só altera pra corrigir metadata
+        # errada (parquets legados sem o flag, ou criados antes do flag
+        # existir).
+        self.view.set_ff_is_aligned(
+            bool(getattr(dataset, "is_aligned", False))
+        )
+
         # Analisa o dataset e preenche a UI com estatísticas
         self._analyze_and_populate()
 
@@ -38,6 +46,7 @@ class EnrichDatasetController:
             ff_models=self.view.get_ff_models(),
             ff_det_size=self.view.get_ff_det_size(),
             ff_extended=self.view.get_ff_extended(),
+            is_aligned=self.view.get_ff_is_aligned(),
             serfiq_t=self.view.get_serfiq_t(),
             serfiq_alpha=self.view.get_serfiq_alpha(),
 

@@ -283,19 +283,14 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
             pass
 
         if show_title:
-            title_prefix = (
-                "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
-            )
-            title_suffix = ""
-            ds_name = getattr(score_dataset, "name", None)
-            if ds_name:
-                title_suffix = f" — {ds_name}"
+            # Título enxuto — sem nome do dataset nem linha de total
+            # (cabia mal em cells estreitos do painel de resultados).
+            # Espelha o helper `draw_distribution_from_summary`.
             ax.set_title(
-                f"{title_prefix}{title_suffix}\n"
-                f"Total: {n_gen + n_imp + n_case:,} pares".replace(",", "."),
+                "Distribuição de log-LR" if use_log_lr else "Distribuição de Escores",
                 fontsize=11,
             )
-        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
+        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Escore Bruto")
         ax.set_ylabel("Densidade")
         if use_log_lr:
             ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
@@ -311,111 +306,13 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
     def _draw_from_summary(
         figure: Figure, summary: dict, show_title: bool = True,
     ) -> None:
-        """
-        Desenha o mesmo plot a partir do sidecar pré-computado pelo
-        `SimilarityScoreDataset._write_distribution_summary_sidecar`.
+        """Delega pro helper puro-matplotlib em
+        `faceaudit.models.similarity.distribution_plot.draw_distribution_from_summary`.
 
-        Espera dict com:
-            score_type ('raw' | 'log_lr'), name, n_gen, n_imp,
-            x_min, x_max, bins, gen_hist_density, imp_hist_density,
-            kde_x, kde_gen_y, kde_imp_y.
-        """
-        figure.clear()
-        ax = figure.add_subplot(111)
-
-        score_type = summary.get("score_type", "raw")
-        use_log_lr = score_type == "log_lr"
-        n_gen = int(summary.get("n_gen", 0))
-        n_imp = int(summary.get("n_imp", 0))
-        n_case = int(summary.get("n_case", 0))
-        # Para n<30, o sidecar grava as posições brutas em case_values em vez
-        # de um histograma — permite desenhar como linhas verticais.
-        case_values = summary.get("case_values") or []
-
-        if n_gen == 0 and n_imp == 0 and n_case == 0:
-            ax.text(
-                0.5, 0.5, "(sem scores)", transform=ax.transAxes,
-                ha="center", va="center", fontsize=12, color="#888",
-            )
-            return
-
-        bins = np.asarray(summary["bins"], dtype=np.float64)
-        # Histograma plotado via bar() usando densidades pré-computadas.
-        widths = np.diff(bins)
-        centers = bins[:-1] + widths / 2.0
-
-        if n_imp > 0:
-            ax.bar(
-                centers, summary["imp_hist_density"],
-                width=widths, alpha=0.45,
-                color="#c62828", edgecolor="#7a0000", linewidth=0.5,
-                label=f"Impostores  (n={n_imp:,})".replace(",", "."),
-            )
-        if n_gen > 0:
-            ax.bar(
-                centers, summary["gen_hist_density"],
-                width=widths, alpha=0.45,
-                color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
-                label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
-            )
-        if n_case > 0:
-            case_hist = summary.get("case_hist_density")
-            if case_hist is not None and len(case_hist) == centers.size:
-                ax.bar(
-                    centers, case_hist, width=widths, alpha=0.45,
-                    color="#1565c0", edgecolor="#0d3a6c", linewidth=0.5,
-                    label=f"Caso  (n={n_case:,})".replace(",", "."),
-                )
-            elif case_values:
-                for i, val in enumerate(case_values):
-                    ax.axvline(
-                        float(val), color="#1565c0", linestyle="--",
-                        linewidth=1.4, alpha=0.85,
-                        label=(
-                            f"Caso  (n={n_case})" if i == 0 else None
-                        ),
-                    )
-
-        kde_x = summary.get("kde_x")
-        kde_gen_y = summary.get("kde_gen_y")
-        kde_imp_y = summary.get("kde_imp_y")
-        kde_case_y = summary.get("kde_case_y")
-        if kde_x is not None:
-            kde_x_arr = np.asarray(kde_x, dtype=np.float64)
-            if kde_imp_y is not None:
-                ax.plot(
-                    kde_x_arr, np.asarray(kde_imp_y, dtype=np.float64),
-                    color="#7a0000", linewidth=1.4, alpha=0.9,
-                )
-            if kde_gen_y is not None:
-                ax.plot(
-                    kde_x_arr, np.asarray(kde_gen_y, dtype=np.float64),
-                    color="#0d3a10", linewidth=1.4, alpha=0.9,
-                )
-            if kde_case_y is not None:
-                ax.plot(
-                    kde_x_arr, np.asarray(kde_case_y, dtype=np.float64),
-                    color="#0d3a6c", linewidth=1.4, alpha=0.9,
-                )
-
-        if show_title:
-            title_prefix = (
-                "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"
-            )
-            ds_name = summary.get("name") or ""
-            title_suffix = f" — {ds_name}" if ds_name else ""
-            ax.set_title(
-                f"{title_prefix}{title_suffix}\n"
-                f"Total: {n_gen + n_imp + n_case:,} pares".replace(",", "."),
-                fontsize=11,
-            )
-        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
-        ax.set_ylabel("Densidade")
-        if use_log_lr:
-            ax.axvline(
-                0.0, color="#444", linestyle=":", linewidth=1.0,
-                alpha=0.6, label="log-LR = 0",
-            )
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(loc="best", fontsize=9)
-        # tight_layout removido — constrained_layout já está ativo em _render.
+        Mantido como wrapper estático pra compat com chamadores existentes;
+        a lógica de desenho foi extraída pra que o snapshot PNG gerado
+        durante a persistência use exatamente o mesmo render."""
+        from faceaudit.models.similarity.distribution_plot import (
+            draw_distribution_from_summary,
+        )
+        draw_distribution_from_summary(figure, summary, show_title=show_title)

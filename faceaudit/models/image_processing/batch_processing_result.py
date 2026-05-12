@@ -16,7 +16,11 @@ from typing import Optional, Tuple
 class BatchProcessingResult:
     """Resultado de processar um dataset inteiro com um pipeline."""
 
-    target_dir: Path
+    # Pasta escolhida pelo usuário onde os PNGs processados foram salvos
+    # (junto com `manifest.json`). Separado de `parquet_path` — desde a
+    # mudança que alinhou esse fluxo ao "Novo Dataset com Alinhamento",
+    # o parquet vai pra biblioteca global de datasets, não pra cá.
+    images_dir: Path
     parquet_path: Path
     pipeline_name: str
     n_processed: int

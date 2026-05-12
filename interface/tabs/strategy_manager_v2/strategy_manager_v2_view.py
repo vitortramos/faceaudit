@@ -68,7 +68,7 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         self.workspace_page = self._create_workspace_page()
         self.content_stack.addWidget(self.workspace_page)     # index 1
 
-        root.addWidget(self.content_stack)
+        root.addWidget(self.content_stack, 1)
         self.show_welcome_screen()
 
     # ── Welcome screen ────────────────────────────────────────────────────────

@@ -340,9 +340,16 @@ class ImagePipelineDialogController:
             )
             return
 
-        # Lê imagem
+        # Lê imagem via open+imdecode (`cv2.imread` falha SILENCIOSAMENTE
+        # em paths com chars não-ASCII no Windows — caminho típico do
+        # projeto contém `OneDrive/...`). Mesmo padrão
+        # do `FFService._safe_read_image`.
         try:
-            img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+            with open(img_path, "rb") as fh:
+                file_bytes = fh.read()
+            img = cv2.imdecode(
+                np.frombuffer(file_bytes, np.uint8), cv2.IMREAD_COLOR,
+            )
         except Exception as e:
             self._cached_original = None
             self.view.image_compare.show_status(

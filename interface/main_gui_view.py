@@ -17,7 +17,51 @@ class MainGuiView(QtWidgets.QMainWindow):
             raise RuntimeError(f"Falha crítica ao carregar arquivo de interface (.ui): {e}")
 
         self.main_tabs = self.findChild(QtWidgets.QTabWidget)
+        self._apply_main_tabs_style()
         self._setup_corner_config_button()
+
+    def _apply_main_tabs_style(self):
+        """Estilo Office accent bar nas tabs principais — mesma família
+        visual das tabs do ribbon (manager_toolbar_view), mas com
+        accent navy escuro (`#1a3d6e`) + barra mais grossa (4px) +
+        padding maior pra reforçar a hierarquia: tabs principais (nível 1
+        — navegação no app) > tabs do ribbon (nível 2 — grupos de
+        ferramentas)."""
+        self.main_tabs.setStyleSheet(
+            # Pane (área do conteúdo da aba)
+            "QTabWidget::pane { "
+            "    border: 1px solid #c8c8c8; "
+            "    background: white; "
+            "    top: -1px; "
+            "} "
+            # Aba inativa
+            "QTabBar::tab { "
+            "    background: #e0e0e0; "
+            "    color: #555; "
+            "    padding: 10px 24px; "
+            "    font-size: 12px; "
+            "    border: 1px solid #c8c8c8; "
+            "    border-top: 4px solid transparent; "
+            "    border-right: none; "
+            "    border-top-left-radius: 5px; "
+            "    border-top-right-radius: 5px; "
+            "    margin-right: 1px; "
+            "} "
+            # Hover
+            "QTabBar::tab:hover:!selected { "
+            "    background: #d2d2d2; "
+            "    color: #1a3d6e; "
+            "} "
+            # Aba selecionada — accent bar navy + texto navy + bold
+            "QTabBar::tab:selected { "
+            "    background: white; "
+            "    color: #1a3d6e; "
+            "    font-weight: bold; "
+            "    border-top: 4px solid #1a3d6e; "
+            "    border-bottom: 1px solid white; "
+            "} "
+            "QTabBar::tab:last { margin-right: 0; }"
+        )
 
     def add_tab(self, index: int, widget: QWidget, label: str):
         """Insere um widget MVC em uma posição específica do QTabWidget."""

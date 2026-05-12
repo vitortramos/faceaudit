@@ -34,7 +34,8 @@ class ApplyImagePipelineWorker(QtCore.QObject):
         self,
         dataset: FaceDataset,
         pipeline_config: ImageProcessingPipelineConfig,
-        target_dir: Path,
+        images_dir: Path,
+        dataset_output_dir: Path,
         ff_service=None,
         skip_existing: bool = True,
         output_filename: Optional[str] = None,
@@ -42,7 +43,8 @@ class ApplyImagePipelineWorker(QtCore.QObject):
         super().__init__()
         self.dataset = dataset
         self.pipeline_config = pipeline_config
-        self.target_dir = target_dir
+        self.images_dir = images_dir
+        self.dataset_output_dir = dataset_output_dir
         self.ff_service = ff_service
         self.skip_existing = skip_existing
         self.output_filename = output_filename
@@ -58,7 +60,8 @@ class ApplyImagePipelineWorker(QtCore.QObject):
             result = service.run(
                 self.dataset,
                 self.pipeline_config,
-                self.target_dir,
+                self.images_dir,
+                dataset_output_dir=self.dataset_output_dir,
                 ff_service=self.ff_service,
                 skip_existing=self.skip_existing,
                 output_filename=self.output_filename,

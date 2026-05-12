@@ -8,6 +8,7 @@ from .dataset_table_model import DatasetTableModel
 from .replace_dialog.replace_dialog_controller import ReplaceDialogController
 from .tooltip_thumb_cache import TooltipThumbCache
 from .vocabulary_combo_delegate import install_vocabulary_delegates
+from interface.wait_cursor import wait_cursor
 
 
 class ManagerTableController(QtCore.QObject):
@@ -419,17 +420,36 @@ class ManagerTableController(QtCore.QObject):
             f"Novo valor para {len(indexes)} células:"
         )
         if ok:
-            self._apply_batch_edit(indexes, new_val)
+            # WaitCursor cobre o batch — em N células grande
+            # (coluna inteira de 1M rows) leva segundos. Sem isso,
+            # o clique no OK do dialog parece "engasgado".
+            with wait_cursor():
+                self._apply_batch_edit(indexes, new_val)
 
     def _action_replace_value(self):
         indexes = self.view.selectedIndexes()
         if not indexes: return
 
         dialog_ctrl = ReplaceDialogController(parent_view=self.view)
-        
+
         if dialog_ctrl.exec():
             find_text, replace_text, exact_match = dialog_ctrl.get_data()
-            self._apply_batch_replace(indexes, find_text, replace_text, exact_match)
+            with wait_cursor():
+                count = self._apply_batch_replace(
+                    indexes, find_text, replace_text, exact_match,
+                )
+            # QMessageBox fora do `with` — mensagem aparece com
+            # cursor normal e modal interativo.
+            if count > 0:
+                QMessageBox.information(
+                    self.view, "Substituição",
+                    f"{count} registros atualizados.",
+                )
+            else:
+                QMessageBox.information(
+                    self.view, "Substituição",
+                    "Nenhuma ocorrência encontrada.",
+                )
 
     # --- WORKERS ---
 
@@ -441,11 +461,14 @@ class ManagerTableController(QtCore.QObject):
             if self.model.setData(idx, new_value, Qt.ItemDataRole.EditRole):
                 count += 1
         self.model.layoutChanged.emit()
-        
-    def _apply_batch_replace(self, indexes, find_text, replace_text, exact_match):
+
+    def _apply_batch_replace(self, indexes, find_text, replace_text, exact_match) -> int:
+        """Aplica substituição em batch. Retorna a contagem de células
+        modificadas (caller exibe QMessageBox com o resultado FORA do
+        wait_cursor pra não congelar o cursor durante a interação)."""
         self.model.layoutAboutToBeChanged.emit()
         count = 0
-        
+
         for idx in indexes:
             # Pega valor visual atual
             current_val = str(idx.data(Qt.ItemDataRole.DisplayRole))
@@ -464,10 +487,6 @@ class ManagerTableController(QtCore.QObject):
             if should_replace:
                 if self.model.setData(idx, final_val, Qt.ItemDataRole.EditRole):
                     count += 1
-                    
+
         self.model.layoutChanged.emit()
-        
-        if count > 0:
-            QMessageBox.information(self.view, "Substituição", f"{count} registros atualizados.")
-        else:
-            QMessageBox.information(self.view, "Substituição", "Nenhuma ocorrência encontrada.")
+        return count

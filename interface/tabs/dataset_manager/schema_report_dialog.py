@@ -51,9 +51,15 @@ def _format_value(v: Optional[float]) -> str:
 
 
 class SchemaReportDialog(QtWidgets.QDialog):
-    """Dialog de Relatório de Schema (Tema 5.3)."""
+    """Dialog de Colunas — Relatório de cobertura + controle de
+    visibilidade na tabela (PR — Tema 5.3 ampliado).
+
+    Primeira coluna do grid (checkbox "Visível") aplica live via
+    `on_visibility_change(name, visible)`. Demais colunas mostram
+    metadados + cobertura, como antes."""
 
     _COLUMNS = [
+        ("Visível", 60),
         ("Coluna", 140),
         ("Rótulo", 130),
         ("Role", 90),
@@ -68,6 +74,9 @@ class SchemaReportDialog(QtWidgets.QDialog):
         ("Distintos", 80),
         ("Dim", 50),
     ]
+    # Índice da coluna do checkbox — usado pelo handler de itemChanged
+    _COL_VISIBLE = 0
+    _COL_NAME = 1
 
     def __init__(
         self,
@@ -75,6 +84,7 @@ class SchemaReportDialog(QtWidgets.QDialog):
         parent=None,
         *,
         on_export: Optional[Callable[[Dict[str, Any]], None]] = None,
+        on_visibility_change: Optional[Callable[[str, bool], None]] = None,
     ):
         super().__init__(parent)
         self._dataset = dataset
@@ -83,9 +93,13 @@ class SchemaReportDialog(QtWidgets.QDialog):
         # `format`, `rows`, `cols`, `path`. Default None preserva o
         # comportamento standalone (sem audit log).
         self._on_export = on_export
-        self.setWindowTitle(f"Relatório de Schema — {dataset.name}")
+        # Callback do toggle de visibilidade — `(name, visible)`. Live
+        # (cada toggle dispara imediatamente). None desabilita os
+        # checkboxes da coluna "Visível".
+        self._on_visibility_change = on_visibility_change
+        self.setWindowTitle(f"Colunas — {dataset.name}")
         self.setModal(True)
-        self.resize(1100, 600)
+        self.resize(1150, 600)
         self._build_ui()
         self._populate()
 
@@ -97,13 +111,30 @@ class SchemaReportDialog(QtWidgets.QDialog):
 
         # Header explicativo
         header = QtWidgets.QLabel(
-            "<b>Cobertura por coluna</b> — % de não-nulos, valores distintos, "
-            "min/max para numéricas, dim para vetores. "
+            "<b>Painel de colunas</b> — marque/desmarque <i>Visível</i> "
+            "pra controlar quais colunas aparecem na tabela do dataset "
+            "(aplicação imediata). Demais colunas são informativas: "
+            "cobertura (% não-nulos), distintos, min/max etc. "
             "<span style='color:#666;font-size:11px;'>Verde = 100%, "
             "amarelo = parcial, vermelho = &lt; 50%.</span>"
         )
         header.setWordWrap(True)
         layout.addWidget(header)
+
+        # Toolbar de visibilidade — Marcar/Desmarcar tudo em batch
+        vis_bar = QtWidgets.QHBoxLayout()
+        self.btn_show_all = QtWidgets.QPushButton("☑ Mostrar todas")
+        self.btn_show_all.clicked.connect(
+            lambda: self._toggle_all_visibility(True)
+        )
+        self.btn_hide_all = QtWidgets.QPushButton("☐ Ocultar todas")
+        self.btn_hide_all.clicked.connect(
+            lambda: self._toggle_all_visibility(False)
+        )
+        vis_bar.addWidget(self.btn_show_all)
+        vis_bar.addWidget(self.btn_hide_all)
+        vis_bar.addStretch()
+        layout.addLayout(vis_bar)
 
         # Tabela
         self.table = QtWidgets.QTableWidget()
@@ -115,6 +146,9 @@ class SchemaReportDialog(QtWidgets.QDialog):
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        # Conecta itemChanged pra capturar toggle dos checkboxes —
+        # bloqueado durante populate.
+        self.table.itemChanged.connect(self._on_table_item_changed)
         layout.addWidget(self.table)
 
         # Footer com botões
@@ -148,11 +182,18 @@ class SchemaReportDialog(QtWidgets.QDialog):
             if name not in names:
                 names.append(name)
 
-        self.table.setRowCount(len(names))
-        for row, name in enumerate(names):
-            spec = specs.get(name)
-            cs = coverage.get(name)
-            self._fill_row(row, name, spec, cs)
+        # Bloqueia signals — sem isso, o setItem do checkbox abaixo
+        # dispara `itemChanged` por cada linha e tenta aplicar
+        # visibilidade no model (com estado ainda transiente).
+        self.table.blockSignals(True)
+        try:
+            self.table.setRowCount(len(names))
+            for row, name in enumerate(names):
+                spec = specs.get(name)
+                cs = coverage.get(name)
+                self._fill_row(row, name, spec, cs)
+        finally:
+            self.table.blockSignals(False)
 
         self.table.resizeRowsToContents()
 
@@ -171,6 +212,31 @@ class SchemaReportDialog(QtWidgets.QDialog):
         distinct = getattr(cs, "distinct_count", None) if cs else None
         dim = getattr(cs, "dim", None) if cs else None
 
+        # Coluna 0 — checkbox de visibilidade. Estado lido de
+        # `spec.visible_default` (mutado pelo model.set_column_visibility
+        # ao longo da sessão, então reflete estado corrente).
+        visible_now = (
+            bool(getattr(spec, "visible_default", True))
+            if spec else False
+        )
+        vis_item = QtWidgets.QTableWidgetItem()
+        vis_item.setFlags(
+            (QtCore.Qt.ItemFlag.ItemIsEnabled
+             | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            if (spec is not None and self._on_visibility_change is not None)
+            else QtCore.Qt.ItemFlag.ItemIsEnabled
+        )
+        vis_item.setCheckState(
+            QtCore.Qt.CheckState.Checked
+            if visible_now
+            else QtCore.Qt.CheckState.Unchecked
+        )
+        # Guarda o nome da coluna no UserRole pra recuperar no handler
+        vis_item.setData(QtCore.Qt.ItemDataRole.UserRole, name)
+        vis_item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.table.setItem(row, self._COL_VISIBLE, vis_item)
+
+        # Demais colunas — informativas (read-only)
         cells = [
             name, label, role, source, dtype,
             f"{non_null:,}", f"{total:,}", _format_pct(pct),
@@ -178,9 +244,9 @@ class SchemaReportDialog(QtWidgets.QDialog):
             "—" if distinct is None else f"{distinct:,}",
             "—" if dim is None else str(dim),
         ]
-        for col, text in enumerate(cells):
+        for offset, text in enumerate(cells):
             item = QtWidgets.QTableWidgetItem(text)
-            self.table.setItem(row, col, item)
+            self.table.setItem(row, self._COL_VISIBLE + 1 + offset, item)
 
         # Pinta a linha inteira com a cor da cobertura
         color = _coverage_color(pct)
@@ -189,6 +255,57 @@ class SchemaReportDialog(QtWidgets.QDialog):
             item = self.table.item(row, col)
             if item is not None:
                 item.setBackground(brush)
+
+    # ── Visibilidade ────────────────────────────────────────────────────────
+
+    def _on_table_item_changed(self, item: QtWidgets.QTableWidgetItem) -> None:
+        """Disparado por toggle do checkbox da coluna Visível. Ignora
+        toggles de outras colunas (no caso, nenhuma editable além do
+        checkbox, mas é defensive). Chama o callback do controller."""
+        if item is None or item.column() != self._COL_VISIBLE:
+            return
+        if self._on_visibility_change is None:
+            return
+        name = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if not name:
+            return
+        visible = (item.checkState() == QtCore.Qt.CheckState.Checked)
+        try:
+            self._on_visibility_change(name, visible)
+        except Exception:
+            # Callback do controller é best-effort — não trava a UI
+            # se algo falhar lá.
+            pass
+
+    def _toggle_all_visibility(self, visible: bool) -> None:
+        """Marca/desmarca todos os checkboxes em batch e dispara o
+        callback do controller pra cada mudança efetiva."""
+        if self._on_visibility_change is None:
+            return
+        target_state = (
+            QtCore.Qt.CheckState.Checked
+            if visible else QtCore.Qt.CheckState.Unchecked
+        )
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, self._COL_VISIBLE)
+                if item is None:
+                    continue
+                # Só linhas com checkbox editável (specs presentes)
+                if not (item.flags() & QtCore.Qt.ItemFlag.ItemIsUserCheckable):
+                    continue
+                if item.checkState() == target_state:
+                    continue
+                item.setCheckState(target_state)
+                name = item.data(QtCore.Qt.ItemDataRole.UserRole)
+                if name:
+                    try:
+                        self._on_visibility_change(name, visible)
+                    except Exception:
+                        pass
+        finally:
+            self.table.blockSignals(False)
 
     # ── Export ──────────────────────────────────────────────────────────────
 

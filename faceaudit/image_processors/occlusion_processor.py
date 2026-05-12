@@ -2,17 +2,19 @@
 (PR I6).
 
 Implementações suportadas:
-  - RECTANGLE_BLACK + CENTER  → retângulo central, lado=√(coverage_pct)·(W,H)
+  - RECTANGLE_BLACK + CENTER  → retângulo central
+                                (W·width_pct × H·height_pct)
   - RECTANGLE_BLACK + RANDOM  → retângulo aleatório (mesma dim, posição via RNG)
+  - RECTANGLE_BLACK + EYES    → DOIS retângulos, um sobre cada olho
+                                (via FFService landmarks)
+  - RECTANGLE_BLACK + MOUTH   → retângulo sobre a boca
   - CIRCLE_BLACK    + CENTER  → círculo central, raio=radius_pct·min(H,W)
   - CIRCLE_BLACK    + RANDOM  → círculo aleatório (mantém dentro do frame)
-  - CIRCLE_BLACK    + EYES    → círculo entre olhos (via FFService landmarks)
+  - CIRCLE_BLACK    + EYES    → DOIS círculos, um sobre cada olho
+                                (via FFService landmarks)
   - CIRCLE_BLACK    + MOUTH   → círculo entre cantos da boca
   - MASK_FACE       + (N/A)   → polígonos/retângulos/elipses desenhados
                                 no canvas (coords em [0..1])
-
-Combinações inválidas (RECTANGLE_BLACK + EYES/MOUTH) levantam erro
-claro — esse caso não tem dimensionamento natural.
 
 EYES/MOUTH exigem `ff_service` injetado no constructor (uniforme via
 factory `ImageProcessorFactory.build`). Sem face detectada na
@@ -25,9 +27,8 @@ em imagens de tamanhos diferentes.
 
 from __future__ import annotations
 
-import math
 from random import Random
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -69,18 +70,6 @@ class OcclusionProcessor:
         rng: Optional[Random] = None,
     ) -> np.ndarray:
         kind = self._config.kind
-        position = self._config.position
-
-        # Validação de combinação inválida
-        if kind == OcclusionKind.RECTANGLE_BLACK and position in (
-            OcclusionPosition.EYES, OcclusionPosition.MOUTH,
-        ):
-            raise ValueError(
-                f"Combinação inválida: {kind.name} + {position.name}. "
-                f"Posições EYES/MOUTH só são suportadas com "
-                f"OcclusionKind.CIRCLE_BLACK (sem dimensionamento "
-                f"natural pra retângulo sobre região semântica)."
-            )
 
         if kind == OcclusionKind.RECTANGLE_BLACK:
             return self._apply_rectangle_black(image, rng)
@@ -92,30 +81,32 @@ class OcclusionProcessor:
             f"OcclusionKind.{kind.name} ainda não implementado."
         )
 
-    # ── RECTANGLE_BLACK (PR I1) ──────────────────────────────────────────────
+    # ── RECTANGLE_BLACK ──────────────────────────────────────────────────────
 
     def _apply_rectangle_black(
         self, image: np.ndarray, rng: Optional[Random],
     ) -> np.ndarray:
         h, w = image.shape[:2]
-        ratio = math.sqrt(float(self._config.coverage_pct))
-        rect_w = max(1, int(w * ratio))
-        rect_h = max(1, int(h * ratio))
+        rect_w = max(1, int(w * self._config.width_pct))
+        rect_h = max(1, int(h * self._config.height_pct))
 
-        position = self._config.position
-        if position == OcclusionPosition.RANDOM:
-            if rng is None:
-                position = OcclusionPosition.CENTER  # defensivo
-            else:
-                x = rng.randint(0, max(0, w - rect_w))
-                y = rng.randint(0, max(0, h - rect_h))
+        centers = self._compute_centers(
+            image, rng,
+            half_extent_x=rect_w // 2,
+            half_extent_y=rect_h // 2,
+        )
+        if not centers:
+            centers = [(w // 2, h // 2)]
 
-        if position == OcclusionPosition.CENTER:
-            x = (w - rect_w) // 2
-            y = (h - rect_h) // 2
-
+        # Cada centro vira um retângulo centrado nele. EYES devolve 2
+        # centros (um sobre cada olho); demais devolvem 1.
         out = image.copy()
-        out[y:y + rect_h, x:x + rect_w] = _BLACK_BGR
+        for (cx, cy) in centers:
+            x1 = max(0, cx - rect_w // 2)
+            y1 = max(0, cy - rect_h // 2)
+            x2 = min(w, x1 + rect_w)
+            y2 = min(h, y1 + rect_h)
+            out[y1:y2, x1:x2] = _BLACK_BGR
         return out
 
     # ── CIRCLE_BLACK (PR I7) ─────────────────────────────────────────────────
@@ -126,51 +117,73 @@ class OcclusionProcessor:
         h, w = image.shape[:2]
         radius = max(1, int(min(h, w) * self._config.radius_pct))
 
-        center = self._compute_center(image, rng, radius)
-        if center is None:
-            # Fallback defensivo — face não detectada em EYES/MOUTH
-            center = (w // 2, h // 2)
+        centers = self._compute_centers(
+            image, rng, half_extent_x=radius, half_extent_y=radius,
+        )
+        if not centers:
+            # Fallback defensivo — face não detectada em EYES/MOUTH ou
+            # combinação inesperada. Centraliza um círculo único.
+            centers = [(w // 2, h // 2)]
 
-        # cv2.circle muta in-place — copiamos antes
+        # cv2.circle muta in-place — copiamos antes e iteramos. EYES
+        # devolve 2 centros (um por olho); demais devolvem 1.
+        # `lineType=LINE_AA` suaviza a borda — sem isso, círculos pequenos
+        # ficam visivelmente serrilhados e dão impressão de não serem
+        # circulares.
         out = image.copy()
-        cv2.circle(out, center, radius, _BLACK_BGR, thickness=-1)
+        for center in centers:
+            cv2.circle(
+                out, center, radius, _BLACK_BGR,
+                thickness=-1, lineType=cv2.LINE_AA,
+            )
         return out
 
-    # ── Cálculo de centro ────────────────────────────────────────────────────
+    # ── Cálculo de centros ───────────────────────────────────────────────────
 
-    def _compute_center(
+    def _compute_centers(
         self,
         image: np.ndarray,
         rng: Optional[Random],
-        radius: int,
-    ) -> Optional[Tuple[int, int]]:
-        """Devolve (cx, cy) conforme `position`. None pra EYES/MOUTH
-        quando detecção falha (caller faz fallback)."""
+        *,
+        half_extent_x: int,
+        half_extent_y: int,
+    ) -> List[Tuple[int, int]]:
+        """Devolve a lista de centros `(cx, cy)` onde a forma deve ser
+        desenhada — geralmente 1, exceto EYES que devolve 2 (um por olho).
+
+        `half_extent_x`/`half_extent_y` definem o "raio" em cada eixo —
+        círculo usa o raio mesmo nos dois; retângulo usa metade da
+        largura e metade da altura. Usado pra manter o desenho dentro do
+        frame quando `position=RANDOM`.
+
+        Lista vazia pra EYES/MOUTH quando a detecção falha (caller faz
+        fallback pra centro da imagem).
+        """
         h, w = image.shape[:2]
         position = self._config.position
 
         if position == OcclusionPosition.CENTER:
-            return (w // 2, h // 2)
+            return [(w // 2, h // 2)]
 
         if position == OcclusionPosition.RANDOM:
             if rng is None:
-                return (w // 2, h // 2)  # defensivo
-            # Mantém círculo dentro da imagem
-            min_x = radius
-            min_y = radius
-            max_x = max(min_x, w - radius)
-            max_y = max(min_y, h - radius)
-            return (rng.randint(min_x, max_x), rng.randint(min_y, max_y))
+                return [(w // 2, h // 2)]  # defensivo
+            # Mantém a forma dentro da imagem
+            min_x = half_extent_x
+            min_y = half_extent_y
+            max_x = max(min_x, w - half_extent_x)
+            max_y = max(min_y, h - half_extent_y)
+            return [(rng.randint(min_x, max_x), rng.randint(min_y, max_y))]
 
         if position in (OcclusionPosition.EYES, OcclusionPosition.MOUTH):
-            return self._compute_semantic_center(image, position)
+            return self._compute_semantic_centers(image, position)
 
-        return None
+        return []
 
-    def _compute_semantic_center(
+    def _compute_semantic_centers(
         self, image: np.ndarray, position: OcclusionPosition,
-    ) -> Optional[Tuple[int, int]]:
-        """Centro semântico baseado em landmarks do FFService.
+    ) -> List[Tuple[int, int]]:
+        """Centros semânticos baseados em landmarks do FFService.
 
         Keypoints do RetinaFace (insightface):
           [0] = olho esquerdo
@@ -179,8 +192,14 @@ class OcclusionProcessor:
           [3] = canto esquerdo da boca
           [4] = canto direito da boca
 
-        EYES: midpoint(kps[0], kps[1])
-        MOUTH: midpoint(kps[3], kps[4])
+        EYES: devolve **dois** centros, um sobre cada olho — `[kps[0],
+        kps[1]]`. O usuário espera ver os dois olhos cobertos, não um
+        único círculo no espaço entre eles.
+
+        MOUTH: devolve **um** centro, midpoint entre os cantos da boca
+        — o círculo único cobre a boca inteira de forma natural.
+
+        Lista vazia se a detecção falhar (caller centraliza).
         """
         if self._ff_service is None:
             raise RuntimeError(
@@ -193,23 +212,25 @@ class OcclusionProcessor:
             faces = engine.backend.detect_faces(image)
         except Exception as e:
             print(f"Error detect_faces in OcclusionProcessor: {e}")
-            return None
+            return []
         if not faces:
-            return None
+            return []
 
         face = engine._get_best_face(image, faces, criterion="size")
         kps = getattr(face, "kps", None)
         if kps is None or len(kps) < 5:
-            return None
+            return []
 
         if position == OcclusionPosition.EYES:
-            cx = int((float(kps[0][0]) + float(kps[1][0])) / 2)
-            cy = int((float(kps[0][1]) + float(kps[1][1])) / 2)
-        else:  # MOUTH
-            cx = int((float(kps[3][0]) + float(kps[4][0])) / 2)
-            cy = int((float(kps[3][1]) + float(kps[4][1])) / 2)
+            return [
+                (int(float(kps[0][0])), int(float(kps[0][1]))),
+                (int(float(kps[1][0])), int(float(kps[1][1]))),
+            ]
 
-        return (cx, cy)
+        # MOUTH: midpoint entre os cantos da boca.
+        cx = int((float(kps[3][0]) + float(kps[4][0])) / 2)
+        cy = int((float(kps[3][1]) + float(kps[4][1])) / 2)
+        return [(cx, cy)]
 
     # ── MASK_FACE (PR I6) ────────────────────────────────────────────────────
 

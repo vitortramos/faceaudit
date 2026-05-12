@@ -31,12 +31,15 @@ from .workers.worker_progress_runner import WorkerProgressRunner
 
 # --- MODELOS ---
 from faceaudit.models import FaceDataset
-from faceaudit.models.filter_config import FilterConfig
+from faceaudit.models.filter import FilterConfig
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 
 # PR 25 (Tema 5.4) — audit log forense / chain of custody
 from faceaudit.enums.audit_operation import AuditOperation
 from faceaudit.enums.localization_mode import LocalizationMode
+
+# Feedback visual em operações síncronas pesadas
+from interface.wait_cursor import wait_cursor
 from faceaudit.services.audit_log_service import AuditLogService
 from faceaudit.services.hash_service import HashService
 
@@ -382,6 +385,11 @@ class DatasetManagerController(QtCore.QObject):
 
         self.table_ctrl.load_dataframe(self.dataset.to_pandas())
 
+        # Reseta o painel direito — sem isso, ao trocar de dataset
+        # (ou limpar filtro) a face selecionada antes continua
+        # exibida, mesmo podendo não estar mais no dataset corrente.
+        self.detail_ctrl.load_face_data(None)
+
         # PR 15: invalida cache da galeria (dataset trocou) e re-popula só
         # se o usuário estiver no modo galeria. No modo tabela, a galeria
         # popula on-demand quando o usuário ativar o toggle.
@@ -411,13 +419,16 @@ class DatasetManagerController(QtCore.QObject):
         if self.dataset.column_specs:
             dataset_visual_atualizado.column_specs = dict(self.dataset.column_specs)
         # `from_dataframe` também não restaura path_mode/path_root/
-        # _parquet_dir — sem isso, datasets RELATIVE viravam ABSOLUTE
-        # silenciosamente e enrich falhava (cv2.imread em paths
+        # _parquet_dir/is_aligned — sem isso, datasets RELATIVE viravam
+        # ABSOLUTE silenciosamente e enrich falhava (cv2.imread em paths
         # relativos contra CWD), gravando metadata corrompida no save
-        # subsequente.
+        # subsequente. is_aligned tem o mesmo problema: ao trocar de
+        # view (galeria/tabela) ou editar qualquer célula, o flag se
+        # perdia e o status bar passava a mostrar "fotos originais".
         dataset_visual_atualizado.path_mode = self.dataset.path_mode
         dataset_visual_atualizado.path_root = self.dataset.path_root
         dataset_visual_atualizado._parquet_dir = self.dataset._parquet_dir
+        dataset_visual_atualizado.is_aligned = self.dataset.is_aligned
         self.dataset = dataset_visual_atualizado
 
         if self.dataset_original:
@@ -517,8 +528,13 @@ class DatasetManagerController(QtCore.QObject):
             f"<b>Modo de path:</b> {ds.path_mode.value}"
             + (f" (root={ds.path_root})" if ds.path_root else "")
         )
+        # Sempre mostra o estado de alinhamento no tooltip — útil quando
+        # o usuário cria com "Alinhar durante criação" e quer confirmar
+        # que o dataset ficou marcado.
         if getattr(ds, "is_aligned", False):
             tooltip_lines.append("<b>Conteúdo:</b> faces alinhadas 112×112")
+        else:
+            tooltip_lines.append("<b>Conteúdo:</b> fotos originais (não alinhadas)")
         # Coverage % por estágio (mais informativo que count).
         if n_imgs > 0:
             tooltip_lines.append(
@@ -975,12 +991,13 @@ class DatasetManagerController(QtCore.QObject):
         if not self.dataset:
             return
         # Sincroniza edições in-table antes — garante que custom columns
-        # editadas ali já apareçam no relatório.
-        self.sync_changes_from_table()
+        # editadas ali já apareçam no relatório. WaitCursor cobre todo
+        # o setup pesado (sync + computação de stats de cobertura no
+        # construtor do dialog); restaurado antes do `exec()` pra que
+        # o usuário interaja com cursor normal.
         from .schema_report_dialog import SchemaReportDialog
-        # PR 25 (Tema 5.4) — passa callback de audit pro dialog. Quando
-        # o usuário clica "Exportar para CSV/Excel" lá dentro e
-        # confirma, o callback registra um evento EXPORT na chain.
+
+        # PR 25 (Tema 5.4) — callback de audit pro dialog.
         def _audit_export(meta: dict) -> None:
             self._audit(
                 AuditOperation.EXPORT,
@@ -989,10 +1006,31 @@ class DatasetManagerController(QtCore.QObject):
                 f"{meta.get('cols', '?')} colunas).",
                 metadata=meta,
             )
-        dialog = SchemaReportDialog(
-            self.dataset, parent=self.view,
-            on_export=_audit_export,
-        )
+
+        # Callback de visibilidade — chamado a cada toggle do checkbox
+        # da coluna "Visível" no dialog. Aplica imediatamente no model
+        # da tabela (mesmo caminho do menu de contexto do header).
+        def _on_visibility_change(col_name: str, visible: bool) -> None:
+            try:
+                if self.table_ctrl.model.set_column_visibility(col_name, visible):
+                    from .table.vocabulary_combo_delegate import (
+                        install_vocabulary_delegates,
+                    )
+                    install_vocabulary_delegates(
+                        self.table_ctrl.view, self.table_ctrl.model,
+                    )
+                    self.table_ctrl.view.resizeColumnsToContents()
+                    self.set_dirty(True)
+            except Exception as e:
+                print(f"[warn] visibility toggle falhou: {e}")
+
+        with wait_cursor():
+            self.sync_changes_from_table()
+            dialog = SchemaReportDialog(
+                self.dataset, parent=self.view,
+                on_export=_audit_export,
+                on_visibility_change=_on_visibility_change,
+            )
         dialog.exec()
 
     def fluxo_audit_log(self):
@@ -1020,30 +1058,36 @@ class DatasetManagerController(QtCore.QObject):
         corrente + propõe Save As (consistência com Enrich/Filter)."""
         if not self.dataset:
             return
-        self.sync_changes_from_table()
 
-        # Sugere target_dir = <parquet_dir_atual>/<dataset_name>__localized/
-        if self.current_path:
-            base = Path(self.current_path).parent
-        else:
-            base = Path(self._get_initial_dir() or os.getcwd())
-        suggested = base / f"{self.dataset.name}__localized"
+        # sync + detect_path_prefix + construção do dialog são síncronos
+        # e podem demorar em datasets grandes → wait cursor cobre tudo
+        # até o dialog estar pronto pra interagir.
+        with wait_cursor():
+            self.sync_changes_from_table()
 
-        # Auto-detecta o prefixo comum dos image_paths atuais — só
-        # é útil pro modo REBASE_PREFIX, mas computar antes evita
-        # uma round-trip do dialog ao service.
-        from faceaudit.services.dataset_localization_service import (
-            DatasetLocalizationService,
-        )
-        detected = DatasetLocalizationService.detect_path_prefix(self.dataset)
+            # Sugere target_dir = <parquet_dir_atual>/<dataset_name>__localized/
+            if self.current_path:
+                base = Path(self.current_path).parent
+            else:
+                base = Path(self._get_initial_dir() or os.getcwd())
+            suggested = base / f"{self.dataset.name}__localized"
 
-        from .localize_dataset_dialog import LocalizeDatasetDialog
-        dialog = LocalizeDatasetDialog(
-            dataset_name=self.dataset.name,
-            suggested_target_dir=suggested,
-            parent=self.view,
-            detected_prefix=detected,
-        )
+            # Auto-detecta o prefixo comum dos image_paths atuais — só
+            # é útil pro modo REBASE_PREFIX, mas computar antes evita
+            # uma round-trip do dialog ao service.
+            from faceaudit.services.dataset_localization_service import (
+                DatasetLocalizationService,
+            )
+            detected = DatasetLocalizationService.detect_path_prefix(self.dataset)
+
+            from .localize_dataset_dialog import LocalizeDatasetDialog
+            dialog = LocalizeDatasetDialog(
+                dataset_name=self.dataset.name,
+                suggested_target_dir=suggested,
+                parent=self.view,
+                detected_prefix=detected,
+            )
+        # exec() fora do wait_cursor — dialog precisa de cursor normal
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
 
@@ -1204,14 +1248,17 @@ class DatasetManagerController(QtCore.QObject):
             getattr(self.config, "paths", None), "library", None,
         )
 
+        # Construção do controller é pesada (carrega face inicial,
+        # inicializa pipeline + view com preview). WaitCursor cobre.
         from .image_pipeline_dialog import ImagePipelineDialogController
-        ctrl = ImagePipelineDialogController(
-            dataset=self.dataset,
-            initial_face_index=initial_face_idx,
-            ff_service=ff_svc,
-            library_root=library_root,
-            parent=self.view,
-        )
+        with wait_cursor():
+            ctrl = ImagePipelineDialogController(
+                dataset=self.dataset,
+                initial_face_index=initial_face_idx,
+                ff_service=ff_svc,
+                library_root=library_root,
+                parent=self.view,
+            )
         ctrl.exec()
 
     # =================================================================================
@@ -1245,12 +1292,14 @@ class DatasetManagerController(QtCore.QObject):
             base = Path(self._get_initial_dir() or os.getcwd())
 
         from .apply_image_pipeline_dialog import ApplyImagePipelineDialog
-        dialog = ApplyImagePipelineDialog(
-            library_root=Path(library_root),
-            dataset_name=self.dataset.name,
-            suggested_target_parent=base,
-            parent=self.view,
-        )
+        # Construção lista pipelines disponíveis da biblioteca — I/O.
+        with wait_cursor():
+            dialog = ApplyImagePipelineDialog(
+                library_root=Path(library_root),
+                dataset_name=self.dataset.name,
+                suggested_target_parent=base,
+                parent=self.view,
+            )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
 
@@ -1311,10 +1360,16 @@ class DatasetManagerController(QtCore.QObject):
             else None
         )
 
+        # Mesmo padrão do "Novo Dataset com Alinhamento": parquet vai
+        # pra biblioteca global de datasets, imagens vão pra pasta
+        # escolhida pelo usuário.
+        dataset_output_dir = Path(self.pipeline.storage_path)
+
         worker = ApplyImagePipelineWorker(
             dataset=self.dataset,
             pipeline_config=pipeline_cfg,
-            target_dir=Path(target_dir),
+            images_dir=Path(target_dir),
+            dataset_output_dir=dataset_output_dir,
             ff_service=ff_svc,
             skip_existing=skip_existing,
             output_filename=output_filename or None,
@@ -1355,7 +1410,7 @@ class DatasetManagerController(QtCore.QObject):
                 metadata={
                     "operation": "image_pipeline_batch",
                     "pipeline_name": result.pipeline_name,
-                    "target_dir": str(result.target_dir),
+                    "images_dir": str(result.images_dir),
                     "parquet_path": str(result.parquet_path),
                     "n_processed": result.n_processed,
                     "n_succeeded": result.n_succeeded,
@@ -1392,7 +1447,8 @@ class DatasetManagerController(QtCore.QObject):
             self.view, "Pipeline aplicado",
             f"{result.summary()}{extra}\n\n"
             f"Dataset derivado: {result.parquet_path}\n"
-            f"Manifest forense: {result.target_dir / 'manifest.json'}"
+            f"Imagens: {result.images_dir}\n"
+            f"Manifest forense: {result.images_dir / 'manifest.json'}"
             f"{error_line}",
         )
 
@@ -1508,9 +1564,10 @@ class DatasetManagerController(QtCore.QObject):
         self.sync_changes_from_table()
         path, _ = QFileDialog.getOpenFileName(self.view, "Juntar com...", self._get_initial_dir(), "Parquet (*.parquet)")
         if path:
-            other = FaceDataset.from_parquet(path)
-            new_ds = self.dataset.concat(other)
-            self.carregar_dataset_na_tela(new_ds)
+            with wait_cursor():
+                other = FaceDataset.from_parquet(path)
+                new_ds = self.dataset.concat(other)
+                self.carregar_dataset_na_tela(new_ds)
             QMessageBox.information(self.view, "Merge", f"Datasets unidos. Total: {len(new_ds)} imagens.")
         self.set_dirty(True)
 
@@ -1563,22 +1620,41 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_filtrar(self):
         if not self.dataset: return
+        # IMPORTANTE: setOverrideCursor PRIMEIRO + processEvents pra
+        # forçar o repaint do cursor ANTES de qualquer trabalho síncrono.
+        # `sync_changes_from_table()` em datasets grandes (1M+ rows)
+        # bloqueia a main thread por segundos — sem o defer abaixo, o
+        # cursor só virava ampulheta lá no fim, parecendo que o clique
+        # não foi recebido.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()  # repaint imediato do cursor
+        # Defer TODO o trabalho síncrono pro próximo tick — sync + abrir
+        # dialog vão acontecer com a ampulheta já visível.
+        QTimer.singleShot(0, self._abrir_dialogo_filtro_continuar)
+
+    def _abrir_dialogo_filtro_continuar(self):
         # PR 21 (Tema 4.2) — sincroniza edições in-table (incluindo
         # colunas custom no model._df) pra `dataset.faces[i].extra_data`
         # antes de abrir o dialog. Sem isso, custom columns adicionadas/
         # editadas via UI ficariam só no model e seriam invisíveis pra
         # `apply_filter`.
         self.sync_changes_from_table()
-        if not self.dataset_original: self.dataset_original = self.dataset
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-        QTimer.singleShot(10, self._abrir_dialogo_filtro_real)
+        if not self.dataset_original:
+            self.dataset_original = self.dataset
+        self._abrir_dialogo_filtro_real()
 
     def _abrir_dialogo_filtro_real(self):
         try:
+            # library_root vem de app_config.paths.library — usado pelo
+            # filter_dialog pra Salvar/Abrir filtros na biblioteca global.
+            library_root = getattr(
+                getattr(self.config, "paths", None), "library", None,
+            )
             filter_ctrl = FilterDialogController(
-                self.dataset_original, 
-                self.current_filter_config, 
-                parent=self.view
+                self.dataset_original,
+                self.current_filter_config,
+                parent=self.view,
+                library_root=library_root,
             )
             QApplication.restoreOverrideCursor()
             if filter_ctrl.exec() == QtWidgets.QDialog.DialogCode.Accepted:
@@ -1607,6 +1683,25 @@ class DatasetManagerController(QtCore.QObject):
             if len(filtered_ds) > 0:
                 self.dataset = filtered_ds
                 self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+                # Propaga o NOVO dataset filtrado pros widgets que
+                # resolvem paths/atributos contra ele. Sem isso, o
+                # detail_panel/gallery continuam apontando pro dataset
+                # original (e a face selecionada antes do filtro pode
+                # nem estar mais no resultado).
+                self.detail_ctrl.set_dataset(self.dataset)
+                # Reseta a face exibida no painel direito — sem isso
+                # o usuário vê uma face que pode nem estar no
+                # resultado filtrado (ex: filtrou só M e ficou
+                # mostrando a F que estava selecionada antes).
+                self.detail_ctrl.load_face_data(None)
+                # Idem pra galeria
+                if hasattr(self.gallery_widget, "set_dataset"):
+                    self.gallery_widget.set_dataset(self.dataset)
+                self.gallery_widget.clear_cache()
+                if self._view_stack.currentIndex() == 1:
+                    self.gallery_widget.populate(list(self.dataset.faces))
+                else:
+                    self.gallery_widget.populate([])
                 text, tooltip = self._build_dataset_status(filtered=True)
                 self.toolbar_ctrl.update_filter_status(
                     text, is_filtered=True, tooltip=tooltip,
@@ -1617,16 +1712,24 @@ class DatasetManagerController(QtCore.QObject):
             QMessageBox.critical(self.view, "Erro", f"Erro ao aplicar filtro: {e}")
 
     def fluxo_limpar_filtro(self):
-        if self.dataset_original:
+        if not self.dataset_original:
+            return
+        # Recarregar a tabela com o dataset original pode levar segundos
+        # em datasets grandes (BFW 20k → 1-2s; webface 1M → minutos).
+        # WaitCursor cobre o trabalho síncrono na main thread.
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
             self.dataset = self.dataset_original
             self.dataset_original = None
-            self.current_filter_config = FilterConfig() 
+            self.current_filter_config = FilterConfig()
             self.carregar_dataset_na_tela(self.dataset, self.current_path)
-            
+
             text, tooltip = self._build_dataset_status(filtered=False)
             self.toolbar_ctrl.update_filter_status(
                 text, is_filtered=False, tooltip=tooltip,
             )
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def fluxo_enriquecer(self):
         if not self.dataset: return
@@ -1690,13 +1793,13 @@ class DatasetManagerController(QtCore.QObject):
     def fluxo_balancear(self):
         if not self.dataset:
             return
-        self.sync_changes_from_table()
-
-        from .balance_dataset_dialog import BalanceDatasetDialog
-        dialog = BalanceDatasetDialog(
-            dataset_name=self.dataset.name or "Sem Nome",
-            parent=self.view,
-        )
+        with wait_cursor():
+            self.sync_changes_from_table()
+            from .balance_dataset_dialog import BalanceDatasetDialog
+            dialog = BalanceDatasetDialog(
+                dataset_name=self.dataset.name or "Sem Nome",
+                parent=self.view,
+            )
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
 

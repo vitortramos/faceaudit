@@ -222,6 +222,7 @@ class DatasetLocalizationService:
             column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
             path_mode=PathMode.RELATIVE,
             path_root=".",
+            is_aligned=dataset.is_aligned,
         )
         # Cuidado: hash global do dataset não é mais válido (paths mudaram).
         new_dataset.hash = None
@@ -318,6 +319,7 @@ class DatasetLocalizationService:
             column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
             path_mode=PathMode.ABSOLUTE,
             path_root=None,
+            is_aligned=dataset.is_aligned,
         )
         new_dataset.hash = None
 
@@ -414,6 +416,7 @@ class DatasetLocalizationService:
             column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
             path_mode=PathMode.RELATIVE,
             path_root=_COPY_SUBDIR,
+            is_aligned=dataset.is_aligned,
         )
         new_dataset.hash = None
 

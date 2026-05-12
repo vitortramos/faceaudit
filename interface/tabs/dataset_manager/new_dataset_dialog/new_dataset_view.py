@@ -70,9 +70,11 @@ class NewDatasetView(QDialog):
         self.chk_align_during.setToolTip(
             "Roda detect+align nos originais durante a ingestão e "
             "salva os crops 112×112 como PNG numa pasta destino. "
-            "O dataset resultante já fica marcado is_aligned=True — "
-            "evita rodar detect+align 2× via 'New Dataset + Image "
-            "Pipeline'. Requer compute_ff habilitado."
+            "O dataset (.parquet) vai pra biblioteca global de datasets; "
+            "a pasta selecionada recebe apenas os PNGs alinhados. "
+            "O dataset fica marcado is_aligned=True — evita rodar "
+            "detect+align 2× via 'New Dataset + Image Pipeline'. "
+            "Requer compute_ff habilitado."
         )
         self.form_input.addRow("", self.chk_align_during)
 
@@ -83,20 +85,24 @@ class NewDatasetView(QDialog):
         self.chk_align_during.toggled.connect(self._on_align_during_toggled)
 
         # Target dir pros PNGs alinhados (visível só quando
-        # chk_align_during=True).
+        # chk_align_during=True). Label e widget são escondidos juntos
+        # — sem o label explícito, `addRow(str, widget)` cria a QLabel
+        # internamente e ela não some quando `row_align_target.hide()`.
         self.row_align_target = QtWidgets.QWidget()
         row_layout = QtWidgets.QHBoxLayout(self.row_align_target)
         row_layout.setContentsMargins(0, 0, 0, 0)
         self.txt_align_target = QtWidgets.QLineEdit()
         self.txt_align_target.setPlaceholderText(
-            "Pasta destino dos crops alinhados (PNG + parquet)"
+            "Pasta destino dos PNGs alinhados (o parquet vai pra biblioteca global)"
         )
         self.btn_browse_align_target = QPushButton("...")
         self.btn_browse_align_target.setFixedWidth(40)
         row_layout.addWidget(self.txt_align_target, 1)
         row_layout.addWidget(self.btn_browse_align_target)
+        self._lbl_align_target = QtWidgets.QLabel("Destino PNGs alinhados:")
+        self._lbl_align_target.setVisible(False)
         self.row_align_target.setVisible(False)
-        self.form_input.addRow("Destino alinhados:", self.row_align_target)
+        self.form_input.addRow(self._lbl_align_target, self.row_align_target)
 
         layout.addLayout(self.form_input)
 
@@ -310,6 +316,7 @@ class NewDatasetView(QDialog):
             self.chk_align_during.blockSignals(True)
             self.chk_align_during.setChecked(False)
             self.chk_align_during.blockSignals(False)
+            self._lbl_align_target.setVisible(False)
             self.row_align_target.setVisible(False)
 
     def _on_align_during_toggled(self, checked: bool) -> None:
@@ -317,4 +324,5 @@ class NewDatasetView(QDialog):
             self.chk_is_aligned.blockSignals(True)
             self.chk_is_aligned.setChecked(False)
             self.chk_is_aligned.blockSignals(False)
+        self._lbl_align_target.setVisible(checked)
         self.row_align_target.setVisible(checked)

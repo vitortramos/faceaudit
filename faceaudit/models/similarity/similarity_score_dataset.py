@@ -292,16 +292,30 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         computados (genuínos vs impostores). O ScoreDistributionWidget lê
         esse sidecar quando existe e desenha sem precisar carregar o
         parquet inteiro nem rodar gaussian_kde de novo.
+        """
+        import json
+
+        summary = self._compute_distribution_summary()
+        if summary is None:
+            return
+        sidecar_path = parquet_path.with_name(parquet_path.stem + "_dist.json")
+        sidecar_path.write_text(
+            json.dumps(summary, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def _compute_distribution_summary(self) -> Optional[dict]:
+        """
+        Computa o dict de distribuição (histograma + KDE) usado tanto
+        pelo sidecar `_dist.json` quanto pelo PNG snapshot em
+        `<project>/graphics/`. Retorna None se não houver pares.
 
         Detecta automaticamente o tipo de score relevante:
         - se há `metadata["log_lr"]` em pelo menos um sample → modo "log_lr"
           (output de SCORE_CALIBRATION)
         - caso contrário → modo "raw" (output de SIMILARITY_SCORING / PAIR_MINING)
         """
-        import json
-
         if not self.items:
-            return
+            return None
 
         # Decide o eixo X com base na presença de log_lr.
         has_log_lr = any(
@@ -341,7 +355,7 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         n_imp = int(imp_arr.size)
         n_case = int(case_arr.size)
         if n_gen == 0 and n_imp == 0 and n_case == 0:
-            return
+            return None
 
         # Eixo X cobre todas as 3 séries (gen, imp, case).
         non_empty = [a for a in (gen_arr, imp_arr, case_arr) if a.size > 0]
@@ -391,7 +405,7 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         except Exception:
             pass
 
-        sidecar = {
+        return {
             "schema_version": 2,
             "score_type": score_type,
             "name": self.name,
@@ -411,10 +425,28 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             "kde_case_y": kde_case_y,
         }
 
-        sidecar_path = parquet_path.with_name(parquet_path.stem + "_dist.json")
-        sidecar_path.write_text(
-            json.dumps(sidecar, ensure_ascii=False), encoding="utf-8"
-        )
+    def write_distribution_png(self, target_png_path: Path) -> bool:
+        """Renderiza a distribuição como PNG (matplotlib Agg headless).
+
+        Reusa o sidecar dict via `_compute_distribution_summary` e delega
+        o desenho ao helper puro `distribution_plot.render_distribution_png`,
+        garantindo idéntico visual ao que o ScoreDistributionWidget exibe.
+
+        Retorna True se gravou, False se o dataset estava vazio (sem PNG
+        a gerar) ou se a renderização falhou. Falha NÃO levanta — caller
+        decide se quer logar.
+        """
+        try:
+            summary = self._compute_distribution_summary()
+            if summary is None:
+                return False
+            from faceaudit.models.similarity.distribution_plot import (
+                render_distribution_png,
+            )
+            render_distribution_png(summary, target_png_path)
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def try_load_distribution_summary(parquet_path: Union[str, Path]) -> Optional[dict]:
