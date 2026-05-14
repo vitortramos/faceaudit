@@ -9,6 +9,12 @@ from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.executors.instructions.strategy_instruction_executor_base import (
     StrategyInstructionExecutorBase,
 )
+from faceaudit.models.calibration.bi_gaussianized_calibration_model import (
+    BiGaussianizedCalibrationModel,
+)
+from faceaudit.models.calibration.bi_gaussianized_calibration_model_config import (
+    BiGaussianizedCalibrationModelConfig,
+)
 from faceaudit.models.calibration.kde_calibration_model import KDECalibrationModel
 from faceaudit.models.calibration.kde_calibration_model_config import (
     KDECalibrationModelConfig,
@@ -43,6 +49,7 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
     Famílias atualmente suportadas:
     - LOGISTIC_REGRESSION
     - KDE
+    - BI_GAUSSIANIZED
 
     Nesta versão, o recurso de entrada pode conter:
 
@@ -102,6 +109,15 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                     context=context,
                 )
 
+            elif instruction.uses_bigauss:
+                # Config embutida no DTO da instrução.
+                trained_model = self._train_bigauss_calibrator(
+                    scores=scores,
+                    labels=labels,
+                    config_payload=instruction.bigauss_config,
+                    context=context,
+                )
+
             else:
                 return self._failure_result(
                     f"Tipo de modelo de calibração não suportado: "
@@ -143,6 +159,10 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                     metadata["used_gridsearch"] = bool(
                         instruction.logreg_config.use_gridsearch
                     )
+
+            sigma_target = getattr(trained_model, "sigma_target", None)
+            if sigma_target is not None:
+                metadata["sigma_target"] = float(sigma_target)
 
             return InstructionExecutionResult.ok(
                 produced_resource_ids=[output_resource_id],
@@ -212,6 +232,19 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             elif not isinstance(instruction.kde_config, KDECalibrationModelConfig):
                 result.add_error(
                     "O 'kde_config' embutido não é um KDECalibrationModelConfig válido."
+                )
+
+        elif instruction.uses_bigauss:
+            if instruction.bigauss_config is None:
+                result.add_error(
+                    "Bi-Gaussianized exige um 'bigauss_config' embutido na instrução."
+                )
+            elif not isinstance(
+                instruction.bigauss_config, BiGaussianizedCalibrationModelConfig
+            ):
+                result.add_error(
+                    "O 'bigauss_config' embutido não é um "
+                    "BiGaussianizedCalibrationModelConfig válido."
                 )
 
         else:
@@ -322,5 +355,20 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         os logs para o contexto de execução.
         """
         model = KDECalibrationModel(config=config_payload)
+        model.fit(scores=scores, labels=labels, logger_callback=context.log)
+        return model
+
+    def _train_bigauss_calibrator(
+        self,
+        scores: np.ndarray,
+        labels: np.ndarray,
+        config_payload: BiGaussianizedCalibrationModelConfig,
+        context: StrategyExecutionContextProtocol,
+    ) -> BiGaussianizedCalibrationModel:
+        """
+        Instancia e treina um BiGaussianizedCalibrationModel, encaminhando
+        os logs para o contexto de execução.
+        """
+        model = BiGaussianizedCalibrationModel(config=config_payload)
         model.fit(scores=scores, labels=labels, logger_callback=context.log)
         return model

@@ -8,6 +8,9 @@ from faceaudit.enums.calibration_model_type import CalibrationModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.enums.validation_rule_type import ValidationRuleType
+from faceaudit.models.calibration.bi_gaussianized_calibration_model_config import (
+    BiGaussianizedCalibrationModelConfig,
+)
 from faceaudit.models.calibration.kde_calibration_model_config import (
     KDECalibrationModelConfig,
 )
@@ -55,6 +58,11 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         metadata={"help": "Hyperparâmetros do calibrador KDE (quando esse tipo é selecionado)."}
     )
 
+    bigauss_config: Optional[BiGaussianizedCalibrationModelConfig] = field(
+        default=None,
+        metadata={"help": "Hyperparâmetros do calibrador Bi-Gaussianized (quando esse tipo é selecionado)."}
+    )
+
     trained_calibration_model_resource_id: Optional[str] = field(
         default=None,
         metadata={"help": "Recurso de saída que representará o calibrador treinado/preparado."}
@@ -73,6 +81,8 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             self.logreg_config = LogisticRegressionCalibrationModelConfig()
         if self.uses_kde and self.kde_config is None:
             self.kde_config = KDECalibrationModelConfig()
+        if self.uses_bigauss and self.bigauss_config is None:
+            self.bigauss_config = BiGaussianizedCalibrationModelConfig()
 
         self._sync_declared_io()
 
@@ -163,6 +173,10 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
     def uses_kde(self) -> bool:
         return self.calibration_model_type == CalibrationModelType.KDE
 
+    @property
+    def uses_bigauss(self) -> bool:
+        return self.calibration_model_type == CalibrationModelType.BI_GAUSSIANIZED
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         if not data:
@@ -197,6 +211,15 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         ):
             processed_data["kde_config"] = KDECalibrationModelConfig.from_dict(
                 processed_data["kde_config"]
+            )
+
+        if "bigauss_config" in processed_data and isinstance(
+            processed_data["bigauss_config"], dict
+        ):
+            processed_data["bigauss_config"] = (
+                BiGaussianizedCalibrationModelConfig.from_dict(
+                    processed_data["bigauss_config"]
+                )
             )
 
         # Retrocompat: campo removido

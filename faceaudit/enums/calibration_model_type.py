@@ -26,6 +26,14 @@ class CalibrationModelType(Enum):
         "convertendo score bruto em LR/log-LR calibrado.",
     )
 
+    BI_GAUSSIANIZED = (
+        "BI_GAUSSIANIZED",
+        "Bi-Gaussianized Calibration",
+        "Mapeia scores para um sistema bi-gaussiano perfeitamente calibrado com σ² alvo "
+        "calculado a partir do Cllr ou EER do treino. Robusto a violação da suposição de "
+        "duas gaussianas equi-variantes (Morrison 2024).",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label

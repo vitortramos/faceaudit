@@ -1194,7 +1194,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         cfg = getattr(payload, "config", None)
         is_logreg = "LogisticRegression" in type_name
-        is_kde = "KDE" in type_name
+        is_kde = "KDE" in type_name and "BiGauss" not in type_name
+        is_bigauss = "BiGauss" in type_name
 
         # Hyperparâmetros principais por família.
         hyperparams = []
@@ -1232,12 +1233,25 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 hyperparams.append(f"bw_imp={bw_imp:.4f}")
             if getattr(cfg, "use_gridsearch", False):
                 hyperparams.append("GridSearch (bandwidth)")
+        elif is_bigauss and cfg is not None:
+            target_metric = getattr(cfg, "target_metric", None)
+            initial = getattr(cfg, "initial_calibrator", None)
+            inv_method = getattr(cfg, "inversion_method", None)
+            shrinkage = getattr(cfg, "sigma_shrinkage_factor", None)
+            tm_str = target_metric.value if hasattr(target_metric, "value") else str(target_metric)
+            init_str = initial.value if hasattr(initial, "value") else str(initial)
+            inv_str = inv_method.value if hasattr(inv_method, "value") else str(inv_method)
+            hyperparams.append(f"metric={tm_str}")
+            hyperparams.append(f"initial={init_str}")
+            hyperparams.append(f"inv={inv_str}")
+            if shrinkage is not None and shrinkage != 1.0:
+                hyperparams.append(f"shrinkage={shrinkage:g}")
         self.lbl_calib_hyperparams.setText(
             " | ".join(hyperparams) if hyperparams else "—"
         )
 
-        # Clipping de log-LR (KDE expõe min/max no config; LogReg não tem).
-        if is_kde and cfg is not None:
+        # Clipping de log-LR (KDE e BiGauss expõem min/max no config; LogReg não tem).
+        if (is_kde or is_bigauss) and cfg is not None:
             min_lr = getattr(cfg, "min_log_lr", None)
             max_lr = getattr(cfg, "max_log_lr", None)
             if min_lr is not None and max_lr is not None:
@@ -1273,6 +1287,23 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             fisher_eps = getattr(cfg, "fisher_epsilon", None) if cfg else None
             if fisher_eps is not None:
                 extras.append(f"fisher_eps={fisher_eps:g}")
+        elif is_bigauss:
+            sigma = getattr(payload, "sigma_target", None)
+            if sigma is not None:
+                extras.append(f"σ_alvo={sigma:.4f}")
+            md = getattr(payload, "metadata", {}) or {}
+            cllr = md.get("cllr_at_fit")
+            eer = md.get("eer_at_fit")
+            if cllr is not None:
+                extras.append(f"Cllr_treino={cllr:.4f}")
+            if eer is not None:
+                extras.append(f"EER_treino={eer:.4f}")
+            n_gen = md.get("n_genuine")
+            n_imp = md.get("n_impostor")
+            if n_gen is not None and n_imp is not None:
+                extras.append(
+                    f"N_gen={n_gen:,} | N_imp={n_imp:,}".replace(",", ".")
+                )
 
         self.lbl_calib_extra.setText(" | ".join(extras) if extras else "—")
 
