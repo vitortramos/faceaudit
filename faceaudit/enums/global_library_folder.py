@@ -23,6 +23,7 @@ class GlobalLibraryFolder(Enum):
     IMAGE_PIPELINES = "image_pipelines"     # PR I4 — pipelines de processamento de imagens (JSON)
     FILTER_CONFIGS = "filter_configs"       # FilterConfig polimórfico (JSON) — uma lista de ColumnFilter
     STRATEGY_TEMPLATES = "strategy_templates"  # Templates de estratégia (LRStrategyDefinition JSON)
+    VALIDATION_RULES = "validation_rules"      # Templates de regra de validação (ValidationRuleConfig + metadata JSON)
 
     def __str__(self) -> str:
         return self.value

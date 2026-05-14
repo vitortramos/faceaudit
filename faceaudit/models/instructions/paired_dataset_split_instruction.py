@@ -6,6 +6,7 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ChoiceFieldSpec,
     ResourceFieldSpec,
@@ -13,6 +14,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     ValueFieldSpec,
 )
 from faceaudit.models.split_config import GroupingStrategy
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="PairedDatasetSplitInstruction")
@@ -234,6 +236,33 @@ class PairedDatasetSplitInstruction(StrategyInstructionDefinition):
                 outputs.append(oid)
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Default: DATASET_OVERLAP_REQUIRED entre primary e secondary —
+        sem overlap de identidades não há candidatos pro sorteio pareado.
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not (
+            self.primary_dataset_resource_id
+            and self.secondary_dataset_resource_id
+        ):
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.DATASET_OVERLAP_REQUIRED,
+                params={
+                    "dataset_a_resource_id": self.primary_dataset_resource_id,
+                    "dataset_b_resource_id": self.secondary_dataset_resource_id,
+                },
+            ),
+        ]
 
     @property
     def uses_lookalikes(self) -> bool:

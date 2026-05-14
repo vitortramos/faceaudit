@@ -106,6 +106,44 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
             ),
         ]
 
+    def build_validation_rules(self) -> list:
+        """
+        Regras dinâmicas (não persistidas):
+        - MODEL_FITTED no modelo de similaridade
+        - EMBEDDING_DIM_MATCHES_MODEL no probe (e no reference se cross)
+
+        Não persistidas por serem pré-condições intrínsecas — sem o
+        modelo treinado ou com dim incompatível o executor crasha.
+        """
+        from faceaudit.validation_rules.model_fitted_rule import ModelFittedRule
+        from faceaudit.validation_rules.embedding_dim_matches_model_rule import (
+            EmbeddingDimMatchesModelRule,
+        )
+
+        rules: list = []
+        if not self.trained_similarity_model_resource_id:
+            return rules
+
+        rules.append(ModelFittedRule(
+            rule_id=f"{self.instruction_id}_model_fitted",
+            model_resource_id=self.trained_similarity_model_resource_id,
+        ))
+
+        if self.probe_dataset_resource_id:
+            rules.append(EmbeddingDimMatchesModelRule(
+                rule_id=f"{self.instruction_id}_dim_compat_probe",
+                dataset_resource_id=self.probe_dataset_resource_id,
+                model_resource_id=self.trained_similarity_model_resource_id,
+            ))
+        if self.reference_dataset_resource_id:
+            rules.append(EmbeddingDimMatchesModelRule(
+                rule_id=f"{self.instruction_id}_dim_compat_reference",
+                dataset_resource_id=self.reference_dataset_resource_id,
+                model_resource_id=self.trained_similarity_model_resource_id,
+            ))
+
+        return rules
+
     def get_configuration_help(self) -> Optional[str]:
         """
         Texto explicativo do modo de comparação, exibido no topo da seção

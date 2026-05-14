@@ -9,12 +9,14 @@ from faceaudit.enums.dataset_balancing_selection import DatasetBalancingSelectio
 from faceaudit.enums.quality_score_type import QualityScoreType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ChoiceFieldSpec,
     ResourceFieldSpec,
     StrategyInstructionDefinition,
     ValueFieldSpec,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="DatasetBalancingInstruction")
@@ -303,6 +305,46 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Defaults:
+        - MIN_IDENTITIES no source — balanceamento exige ≥ 2 identidades
+          pra ter sentido (∀id = 1 sample não tem o que balancear).
+        - QUALITY_METRIC_AVAILABLE quando BY_QUALITY — alerta se a
+          métrica escolhida tem baixa cobertura no dataset.
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not self.dataset_resource_id:
+            return
+
+        cfgs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_IDENTITIES,
+                params={"dataset_resource_id": self.dataset_resource_id},
+            ),
+        ]
+
+        if self.selection_criterion == DatasetBalancingSelection.BY_QUALITY:
+            metric_str = (
+                self.quality_metric.value
+                if hasattr(self.quality_metric, "value")
+                else str(self.quality_metric)
+            )
+            cfgs.append(ValidationRuleConfig(
+                rule_type=ValidationRuleType.QUALITY_METRIC_AVAILABLE,
+                params={
+                    "dataset_resource_id": self.dataset_resource_id,
+                    "quality_metric": metric_str,
+                },
+            ))
+
+        self.validation_rule_configs = cfgs
 
     # ── Properties para UI/executor ──────────────────────────────────
 

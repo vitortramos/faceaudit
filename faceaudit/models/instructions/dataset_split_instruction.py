@@ -7,6 +7,7 @@ from typing import List, Optional, Type, TypeVar
 from faceaudit.enums.dataset_split_mode import DatasetSplitMode
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ChoiceFieldSpec,
     ResourceFieldSpec,
@@ -14,6 +15,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     ValueFieldSpec,
 )
 from faceaudit.models.split_config import GroupingStrategy
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="DatasetSplitInstruction")
@@ -400,6 +402,62 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        # Repopula defaults após o usuário definir o dataset e/ou modo.
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Defaults:
+        - Modos BY_IDENTITY_*: MIN_IDENTITIES no source (split por identidade
+          exige ≥ 2 identidades pra produzir A+B não-vazios).
+        - Modos BY_INDEX_*: MIN_SAMPLES no source.
+        - BY_SUPERVISED_ADAPTATION: MIN_IDENTITIES no source + target +
+          DATASET_OVERLAP_REQUIRED (SDA precisa de identidades compartilhadas
+          pra alinhar pares).
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not self.dataset_resource_id:
+            return
+
+        cfgs = []
+        if (
+            self.uses_identity_ratio
+            or self.uses_identity_list
+            or self.uses_identity_absolute
+        ):
+            cfgs.append(ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_IDENTITIES,
+                params={"dataset_resource_id": self.dataset_resource_id},
+            ))
+        elif self.uses_index_ratio or self.uses_index_list:
+            cfgs.append(ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_SAMPLES,
+                params={"dataset_resource_id": self.dataset_resource_id},
+            ))
+        elif self.uses_supervised_adaptation:
+            cfgs.append(ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_IDENTITIES,
+                params={"dataset_resource_id": self.dataset_resource_id},
+            ))
+            if self.target_dataset_resource_id:
+                cfgs.append(ValidationRuleConfig(
+                    rule_type=ValidationRuleType.MIN_IDENTITIES,
+                    params={"dataset_resource_id": self.target_dataset_resource_id},
+                ))
+                cfgs.append(ValidationRuleConfig(
+                    rule_type=ValidationRuleType.DATASET_OVERLAP_REQUIRED,
+                    params={
+                        "dataset_a_resource_id": self.dataset_resource_id,
+                        "dataset_b_resource_id": self.target_dataset_resource_id,
+                    },
+                ))
+
+        if cfgs:
+            self.validation_rule_configs = cfgs
 
     @property
     def uses_identity_ratio(self) -> bool:

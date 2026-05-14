@@ -6,11 +6,13 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
     ValueFieldSpec,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="HubnessAnalysisInstruction")
@@ -132,6 +134,35 @@ class HubnessAnalysisInstruction(StrategyInstructionDefinition):
             outputs.append(self.output_report_resource_id)
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Defaults:
+        - MIN_SAMPLES no source — análise topológica exige ≥ 2 samples.
+        - MAX_SAMPLES_WARNING — alerta de custo O(N²) acima de 100k samples.
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not self.dataset_resource_id:
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_SAMPLES,
+                params={"dataset_resource_id": self.dataset_resource_id},
+            ),
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MAX_SAMPLES_WARNING,
+                params={
+                    "dataset_resource_id": self.dataset_resource_id,
+                    "max_samples": 100_000,
+                },
+            ),
+        ]
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:

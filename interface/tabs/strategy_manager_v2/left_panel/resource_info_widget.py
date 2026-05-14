@@ -421,15 +421,22 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_pt_mode = QtWidgets.QLabel("—")
         self.lbl_pt_n_steps = QtWidgets.QLabel("—")
         self.lbl_pt_steps = QtWidgets.QLabel("—")
+        self.lbl_pt_output_dim = QtWidgets.QLabel("—")
         self.lbl_pt_fitted = QtWidgets.QLabel("—")
-        for lbl in (self.lbl_pt_mode, self.lbl_pt_n_steps, self.lbl_pt_steps, self.lbl_pt_fitted):
+        for lbl in (
+            self.lbl_pt_mode, self.lbl_pt_n_steps, self.lbl_pt_steps,
+            self.lbl_pt_output_dim, self.lbl_pt_fitted,
+        ):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
         self.lbl_pt_steps.setWordWrap(True)
+        # Habilita HTML pra exibir "Source: ... <br> Target: ..." em DUAL.
+        self.lbl_pt_steps.setTextFormat(QtCore.Qt.TextFormat.RichText)
 
         for text, value_lbl in [
             ("Modo:", self.lbl_pt_mode),
             ("Nº de steps:", self.lbl_pt_n_steps),
             ("Cadeia:", self.lbl_pt_steps),
+            ("Dim. saída:", self.lbl_pt_output_dim),
             ("Estado:", self.lbl_pt_fitted),
         ]:
             lbl = QtWidgets.QLabel(text)
@@ -1596,20 +1603,68 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             return
 
         mode = getattr(payload, "mode", None)
-        steps = getattr(payload, "steps", []) or []
         fitted = getattr(payload, "_fitted", None)
 
         mode_str = mode.to_str() if (mode is not None and hasattr(mode, "to_str")) else (
             str(mode) if mode is not None else "—"
         )
         self.lbl_pt_mode.setText(mode_str)
-        self.lbl_pt_n_steps.setText(str(len(steps)))
 
-        names = []
-        for step in steps:
-            name = getattr(step, "name", None) or type(step).__name__
-            names.append(str(name))
-        self.lbl_pt_steps.setText(" → ".join(names) if names else "(sem steps)")
+        # DUAL: source_steps + target_steps separados. LINEAR: steps. A
+        # versão antiga lia só `payload.steps` que vinha vazia em DUAL
+        # (steps próprio guarda só a chain linear); por isso o painel
+        # mostrava "Nº de steps: 0" e "(sem steps)" pra pipelines DUAL.
+        is_dual = (
+            mode_str == "DUAL"
+            or (hasattr(mode, "name") and mode.name == "DUAL")
+        )
+
+        def _step_name(step) -> str:
+            n = getattr(step, "name", None) or type(step).__name__
+            return str(n)
+
+        if is_dual:
+            source_steps = getattr(payload, "source_steps", []) or []
+            target_steps = getattr(payload, "target_steps", []) or []
+            self.lbl_pt_n_steps.setText(
+                f"{len(source_steps)} (source) + {len(target_steps)} (target)"
+            )
+            src_chain = (
+                " → ".join(_step_name(s) for s in source_steps)
+                or "(vazio)"
+            )
+            tgt_chain = (
+                " → ".join(_step_name(s) for s in target_steps)
+                or "(vazio)"
+            )
+            self.lbl_pt_steps.setText(
+                f"<b>Source:</b> {src_chain}<br/><b>Target:</b> {tgt_chain}"
+            )
+
+            src_dim = self._compute_steps_output_dim(source_steps)
+            tgt_dim = self._compute_steps_output_dim(target_steps)
+            if src_dim is not None and tgt_dim is not None:
+                if src_dim == tgt_dim:
+                    dim_str = f"{src_dim}D"
+                else:
+                    dim_str = f"source={src_dim}D • target={tgt_dim}D"
+            elif src_dim is not None:
+                dim_str = f"source={src_dim}D • target=preserva"
+            elif tgt_dim is not None:
+                dim_str = f"source=preserva • target={tgt_dim}D"
+            else:
+                dim_str = "preserva (nenhum step redutor)"
+            self.lbl_pt_output_dim.setText(dim_str)
+        else:
+            steps = getattr(payload, "steps", []) or []
+            self.lbl_pt_n_steps.setText(str(len(steps)))
+            self.lbl_pt_steps.setText(
+                " → ".join(_step_name(s) for s in steps) or "(sem steps)"
+            )
+            dim = self._compute_steps_output_dim(steps)
+            self.lbl_pt_output_dim.setText(
+                f"{dim}D" if dim is not None else "preserva (nenhum step redutor)"
+            )
 
         if fitted is True:
             self.lbl_pt_fitted.setText("✅ treinado")
@@ -1618,10 +1673,34 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self.lbl_pt_fitted.setText("—")
 
+    @staticmethod
+    def _compute_steps_output_dim(steps) -> Optional[int]:
+        """
+        Inspeciona as matrizes fitadas dos steps (LDA, Whitening) pra
+        determinar a dim de saída do pipeline. Itera de trás pra frente
+        — a última matriz redutora define a dim final.
+
+        Retorna None quando nenhum step da chain altera dim (ex: só
+        CORAL + Centering + L2Norm — preserva). Os transformators que
+        reduzem dim guardam `_lda_matrix` ou `_whitening_matrix`
+        após `fit`, com `.shape[1]` = output_dim.
+        """
+        import numpy as _np
+        for step in reversed(list(steps or [])):
+            for attr in ("_lda_matrix", "_whitening_matrix"):
+                m = getattr(step, attr, None)
+                if isinstance(m, _np.ndarray) and m.ndim == 2:
+                    try:
+                        return int(m.shape[1])
+                    except Exception:
+                        continue
+        return None
+
     def _clear_pipeline_trained(self) -> None:
         self.lbl_pt_mode.setText("—")
         self.lbl_pt_n_steps.setText("—")
         self.lbl_pt_steps.setText("—")
+        self.lbl_pt_output_dim.setText("—")
         self.lbl_pt_fitted.setText("—")
 
     # ── HUBNESS_REPORT ─────────────────────────────────────────────────────

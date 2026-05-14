@@ -56,6 +56,7 @@ class StrategyArtifactType(Enum):
     IMAGE_PIPELINE_CONFIG = "image_pipeline_config"  # PR I4 — configuração de pipeline de processamento de imagens (JSON)
     FILTER_CONFIG = "filter_config"          # FilterConfig polimórfico (lista de ColumnFilter, JSON)
     STRATEGY_TEMPLATE = "strategy_template"  # Template de estratégia (LRStrategyDefinition JSON sem recursos vinculados)
+    VALIDATION_RULE_TEMPLATE = "validation_rule_template"  # Template de regra de validação (ValidationRuleConfig + metadata, JSON)
 
     # --- FALLBACK ---
     UNKNOWN = "unknown"

@@ -6,10 +6,12 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="StrategyEvaluationInstruction")
@@ -91,6 +93,46 @@ class StrategyEvaluationInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Defaults:
+        - SCORE_CALIBRATION_STATE(CALIBRATED) — métricas só fazem sentido
+          em log-LR, não em scores raw.
+        - CASEWORK_STATE(False) — validação exige ground truth; rejeita
+          dataset marcado como casework.
+        - MIN_CALIBRATION_PAIRS — protege EER/Cllr de estimativa instável
+          em datasets pequenos.
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not self.input_calibrated_scores_resource_id:
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.SCORE_CALIBRATION_STATE,
+                params={
+                    "scores_resource_id": self.input_calibrated_scores_resource_id,
+                    "expected": "CALIBRATED",
+                },
+            ),
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.CASEWORK_STATE,
+                params={
+                    "scores_resource_id": self.input_calibrated_scores_resource_id,
+                    "expected": False,
+                },
+            ),
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
+                params={"scores_resource_id": self.input_calibrated_scores_resource_id},
+            ),
+        ]
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:

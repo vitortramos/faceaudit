@@ -72,6 +72,16 @@ class GlobalLibraryFileType(Enum):
         "{config_id}",
     )
 
+    # Template de regra de validação — `ValidationRuleConfig` serializado +
+    # metadata (nome, descrição, autor). Salvo via botão 📤 numa linha
+    # de regra do `InstructionConfigPanel`, importado via dropdown do
+    # `AddValidationRuleDialog`.
+    VALIDATION_RULE_TEMPLATE = (
+        ".json",
+        GlobalLibraryFolder.VALIDATION_RULES,
+        "{template_id}",
+    )
+
     def __init__(self, extension: str, folder: GlobalLibraryFolder, name_template: str):
         self.extension = extension
         self.folder = folder
@@ -146,11 +156,12 @@ class GlobalLibraryFileType(Enum):
     @classmethod
     def _artifact_map(cls) -> dict:
         return {
-            StrategyArtifactType.GLOBAL_DATASET:        cls.GLOBAL_DATASET,
-            StrategyArtifactType.SPLIT_CONFIG:           cls.SPLIT_CONFIG,
-            StrategyArtifactType.MINING_CONFIG:          cls.MINING_CONFIG,
-            StrategyArtifactType.PIPELINE_CONFIG:        cls.PIPELINE_CONFIG,
-            StrategyArtifactType.IMAGE_PIPELINE_CONFIG:  cls.IMAGE_PIPELINE_CONFIG,
-            StrategyArtifactType.FILTER_CONFIG:          cls.FILTER_CONFIG,
+            StrategyArtifactType.GLOBAL_DATASET:            cls.GLOBAL_DATASET,
+            StrategyArtifactType.SPLIT_CONFIG:               cls.SPLIT_CONFIG,
+            StrategyArtifactType.MINING_CONFIG:              cls.MINING_CONFIG,
+            StrategyArtifactType.PIPELINE_CONFIG:            cls.PIPELINE_CONFIG,
+            StrategyArtifactType.IMAGE_PIPELINE_CONFIG:      cls.IMAGE_PIPELINE_CONFIG,
+            StrategyArtifactType.FILTER_CONFIG:              cls.FILTER_CONFIG,
+            StrategyArtifactType.VALIDATION_RULE_TEMPLATE:   cls.VALIDATION_RULE_TEMPLATE,
             StrategyArtifactType.STRATEGY_TEMPLATE:      cls.STRATEGY_TEMPLATE,
         }

@@ -126,8 +126,11 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         estiver vazia, houver `input_resource_id` definido E o usuário
         não tiver assumido o controle das regras.
 
-        Default: MIN_CALIBRATION_PAIRS — protege contra calibradores
-        treinados com poucos pares genuínos ou impostores.
+        Defaults:
+        - MIN_CALIBRATION_PAIRS — protege contra calibradores treinados
+          com poucos pares genuínos ou impostores.
+        - SCORE_CALIBRATION_STATE(RAW) — evita treino sobre log-LR já
+          calibrado, que produziria modelo distorcido.
         """
         if self.validation_rules_user_managed:
             return
@@ -142,6 +145,13 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             ValidationRuleConfig(
                 rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
                 params={"scores_resource_id": self.input_resource_id},
+            ),
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.SCORE_CALIBRATION_STATE,
+                params={
+                    "scores_resource_id": self.input_resource_id,
+                    "expected": "RAW",
+                },
             ),
         ]
 

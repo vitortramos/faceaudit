@@ -110,6 +110,26 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     # coluna) sincronizem o nome exibido em tempo real.
     output_name_changed = QtCore.pyqtSignal(str, str)  # (field_name, new_value)
 
+    # Emitido quando o usuário clica em 📤 numa linha de regra. Carrega o
+    # config bruto da regra clicada; o controller é responsável por abrir
+    # o `SaveValidationRuleTemplateDialog` e persistir.
+    save_validation_rule_as_template_requested = QtCore.pyqtSignal(object)
+    # Emitido quando o usuário clica em ➕ Adicionar Regra no header da
+    # seção de regras. O controller responde abrindo
+    # `AddValidationRuleDialog` com a lista de templates já listada do
+    # disco — quando o usuário aceitar, o controller anexa o novo
+    # ValidationRuleConfig em instruction.validation_rule_configs.
+    add_validation_rule_requested = QtCore.pyqtSignal(object)
+
+    # Emitido quando um campo com `triggers_rebuild=True` muda — ex:
+    # `apply_to_training_datasets` em PIPELINE_TRAINING, que adiciona
+    # ou remove campos de output. O editor escuta esse sinal e invalida
+    # o card cacheado no `InstructionResultsPanel` (3ª coluna) pra que
+    # ele seja recriado com os novos specs. Sem isso, a 3ª coluna fica
+    # com a lista de outputs do estado anterior — usuário só vê a
+    # mudança após save/reload do projeto.
+    instruction_specs_rebuilt = QtCore.pyqtSignal(object)
+
     def __init__(self, parent=None, outputs_in_results_panel: bool = False):
         """
         Args:
@@ -255,6 +275,31 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._validation_section_header = SectionHeader(
             "Regras de Validação", "validation"
         )
+        # Botão ➕ — abre AddValidationRuleDialog (Phase 3, template-only).
+        self._btn_add_validation_rule = QtWidgets.QPushButton(
+            "➕ Adicionar Regra"
+        )
+        self._btn_add_validation_rule.setToolTip(
+            "Adiciona uma regra de validação à instrução. Tipos "
+            "configuráveis ou templates salvos na biblioteca."
+        )
+        self._btn_add_validation_rule.setCursor(
+            QtCore.Qt.CursorShape.PointingHandCursor
+        )
+        _validation_btn_style = (
+            "QPushButton { background: transparent; border: 1px solid #E8A020;"
+            " border-radius: 3px; color: #8B5E00; font-size: 10px;"
+            " padding: 2px 8px; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+        )
+        self._btn_add_validation_rule.setStyleSheet(_validation_btn_style)
+        self._btn_add_validation_rule.clicked.connect(
+            self._on_add_validation_rule_clicked
+        )
+        self._validation_section_header.addActionWidget(
+            self._btn_add_validation_rule
+        )
+
         self._btn_restore_validation_defaults = QtWidgets.QPushButton(
             "🔄 Restaurar padrões"
         )
@@ -265,12 +310,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._btn_restore_validation_defaults.setCursor(
             QtCore.Qt.CursorShape.PointingHandCursor
         )
-        self._btn_restore_validation_defaults.setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #E8A020;"
-            " border-radius: 3px; color: #8B5E00; font-size: 10px;"
-            " padding: 2px 8px; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-        )
+        self._btn_restore_validation_defaults.setStyleSheet(_validation_btn_style)
         self._btn_restore_validation_defaults.clicked.connect(
             self._on_restore_default_validation_rules
         )
@@ -1491,6 +1531,54 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             f"source: <b>{p.get('source_config_resource_id', '—')}</b>"
             f" • target: <b>{p.get('target_config_resource_id', '—')}</b>"
         ),
+        ValidationRuleType.MIN_IDENTITIES: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • mínimo: {p.get('min_required', 2)}"
+            f" • alerta abaixo: {p.get('safety_threshold', 5)}"
+        ),
+        ValidationRuleType.MIN_SAMPLES: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • mínimo: {p.get('min_required', 2)}"
+            f" • alerta abaixo: {p.get('safety_threshold', 100)}"
+        ),
+        ValidationRuleType.MODEL_FITTED: lambda p: (
+            f"modelo: <b>{p.get('model_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.EMBEDDING_DIM_MATCHES_MODEL: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" × modelo: <b>{p.get('model_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.SCORE_CALIBRATION_STATE: lambda p: (
+            f"scores: <b>{p.get('scores_resource_id', '—')}</b>"
+            f" • esperado: {p.get('expected', 'RAW')}"
+        ),
+        ValidationRuleType.CASEWORK_STATE: lambda p: (
+            f"scores: <b>{p.get('scores_resource_id', '—')}</b>"
+            f" • is_casework esperado: {p.get('expected', False)}"
+        ),
+        ValidationRuleType.SCORE_TYPE_MATCH: lambda p: (
+            f"referência: <b>{p.get('reference_resource_id', '—')}</b>"
+            f" • caso: <b>{p.get('case_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.DATASETS_EMBEDDING_COMPAT: lambda p: (
+            f"datasets: {len(p.get('dataset_resource_ids') or [])}"
+            + (
+                f" • coluna: <b>{p.get('embedding_column')}</b>"
+                if p.get('embedding_column') else ""
+            )
+        ),
+        ValidationRuleType.QUALITY_METRIC_AVAILABLE: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • métrica: <b>{p.get('quality_metric', '—')}</b>"
+            f" • cobertura mín: {float(p.get('min_coverage', 0.5)):.0%}"
+        ),
+        ValidationRuleType.HAS_POSE_METADATA: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.MAX_SAMPLES_WARNING: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • limite: {int(p.get('max_samples', 100_000)):,}"
+        ),
     }
 
     @classmethod
@@ -1518,20 +1606,41 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
     def _rebuild_validation_section(self) -> None:
         """
-        Limpa e redesenha a lista de regras de validação. Chamada pelo
-        `_rebuild_form` e por handlers de exclusão / restauração.
+        Limpa e redesenha a lista de regras de validação. Renderiza dois
+        grupos:
+        1. **Configuráveis** (persistentes em `validation_rule_configs`):
+           podem ser removidas (🗑) e restauradas (🔄 padrões).
+        2. **Intrínsecas** (dinâmicas, retornadas por
+           `instruction.build_validation_rules()`): exibidas em read-only
+           com 🔒 — mostram ao usuário que essas regras vão rodar mas não
+           são removíveis (sem sentido desabilitar checks de
+           pré-condições matemáticas da própria instrução).
+
+        Chamada pelo `_rebuild_form` e por handlers de exclusão /
+        restauração / adição.
         """
         self._clear_validation_layout()
 
         instr = self._instruction
         configs = getattr(instr, "validation_rule_configs", None) or [] if instr else []
 
-        # Estado vazio — mostra mensagem amigável + dica de uso do botão de
-        # restauração.
-        if not configs:
+        # Regras dinâmicas são construídas a cada render — sempre refletem
+        # o estado atual da instrução (ex: PIPELINE_TRAINING DUAL só
+        # retorna rules quando source+target estão preenchidos).
+        dynamic_rules = []
+        if instr is not None:
+            try:
+                dynamic_rules = list(instr.build_validation_rules() or [])
+            except Exception:
+                dynamic_rules = []
+
+        # Estado vazio só quando NÃO há nem configuráveis nem intrínsecas.
+        if not configs and not dynamic_rules:
             empty = QtWidgets.QLabel(
-                "(nenhuma regra ativa) — clique em <b>Restaurar padrões</b> "
-                "para aplicar as regras recomendadas para este tipo de instrução."
+                "(nenhuma regra ativa) — defaults são populados conforme "
+                "você preenche os recursos da instrução. Clique em "
+                "<b>Restaurar padrões</b> se já preencheu mas não viu "
+                "regras aparecerem."
             )
             empty.setStyleSheet(
                 "color: #888; font-size: 11px; font-style: italic;"
@@ -1542,6 +1651,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         for idx, cfg in enumerate(configs):
             self._validation_layout.addWidget(self._make_rule_row(idx, cfg))
+
+        for rule in dynamic_rules:
+            self._validation_layout.addWidget(self._make_rule_row_locked(rule))
 
     def _make_rule_row(self, index: int, cfg) -> QtWidgets.QWidget:
         """
@@ -1594,6 +1706,25 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         col_wrapper.setLayout(v)
         h.addWidget(col_wrapper, 1)
 
+        # 📤 — salvar esta regra como template (Global library e/ou projeto).
+        btn_save = QtWidgets.QToolButton()
+        btn_save.setText("📤")
+        btn_save.setToolTip(
+            "Salvar esta regra como template (biblioteca global ou "
+            "no projeto). Templates aparecem no diálogo 'Adicionar Regra'."
+        )
+        btn_save.setFixedWidth(28)
+        btn_save.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        btn_save.setStyleSheet(
+            "QToolButton { background: transparent; border: 1px solid #6E5A2E;"
+            " border-radius: 3px; color: #6E5A2E; }"
+            "QToolButton:hover { background: #F5EBD0; }"
+        )
+        btn_save.clicked.connect(
+            lambda _checked=False, c=cfg: self.save_validation_rule_as_template_requested.emit(c)
+        )
+        h.addWidget(btn_save, 0)
+
         btn_del = QtWidgets.QToolButton()
         btn_del.setText("🗑")
         btn_del.setToolTip(
@@ -1611,6 +1742,76 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             lambda _checked=False, i=index: self._on_delete_validation_rule(i)
         )
         h.addWidget(btn_del, 0)
+
+        return row
+
+    def _make_rule_row_locked(self, rule) -> QtWidgets.QWidget:
+        """
+        Constrói uma linha read-only para uma regra de validação intrínseca
+        (retornada por `instruction.build_validation_rules()`). Visualmente
+        distinta da linha editável: fundo cinza-azulado, 🔒 em vez de 🗑,
+        tooltip explicando o porquê.
+
+        O sumário usa `rule.description` (já populada com nomes dos
+        recursos pelo construtor da regra concreta) — evita re-mapear de
+        atributos privados pra dict de params.
+        """
+        row = QtWidgets.QFrame()
+        row.setStyleSheet(
+            "QFrame { background: #F5F5F8; border: 1px solid #D8D8E0;"
+            " border-radius: 3px; }"
+        )
+        h = QtWidgets.QHBoxLayout(row)
+        h.setContentsMargins(8, 4, 6, 4)
+        h.setSpacing(8)
+
+        icon = QtWidgets.QLabel("🛡️")
+        icon.setStyleSheet("font-size: 13px;")
+        h.addWidget(icon, 0)
+
+        v = QtWidgets.QVBoxLayout()
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        name_lbl = QtWidgets.QLabel(getattr(rule, "name", "Regra intrínseca"))
+        name_lbl.setStyleSheet(
+            "color: #34344A; font-size: 11px; font-weight: bold;"
+            " background: transparent; border: none;"
+        )
+        v.addWidget(name_lbl)
+
+        desc = getattr(rule, "description", None) or ""
+        if desc:
+            desc_lbl = QtWidgets.QLabel(desc)
+            desc_lbl.setStyleSheet(
+                "color: #555566; font-size: 10px;"
+                " background: transparent; border: none;"
+            )
+            desc_lbl.setWordWrap(True)
+            v.addWidget(desc_lbl)
+
+        col_wrapper = QtWidgets.QWidget()
+        col_wrapper.setLayout(v)
+        h.addWidget(col_wrapper, 1)
+
+        row.setToolTip(
+            "Regra intrínseca — não pode ser removida. É uma pré-condição "
+            "matemática da instrução (ex: compatibilidade dimensional, "
+            "modelo treinado, scores no estado certo). Falha aqui = "
+            "impossibilidade de execução, não opinião de configuração."
+        )
+
+        # Indicador visual de "trancado": label simples ao invés de botão
+        # — reforça que não é clicável. Mesma largura do 🗑 pra alinhar
+        # verticalmente com as linhas editáveis acima.
+        lock = QtWidgets.QLabel("🔒")
+        lock.setFixedWidth(28)
+        lock.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        lock.setStyleSheet(
+            "QLabel { color: #888; background: transparent; border: none;"
+            " font-size: 12px; }"
+        )
+        h.addWidget(lock, 0)
 
         return row
 
@@ -1658,6 +1859,35 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         if hasattr(instr, "_sync_declared_io"):
             instr._sync_declared_io()
 
+        self._rebuild_validation_section()
+        self.config_changed.emit(instr)
+
+    def _on_add_validation_rule_clicked(self) -> None:
+        """
+        Encaminha o pedido pro controller. O controller é quem tem acesso
+        aos storages (global + projeto) pra carregar templates e abrir o
+        `AddValidationRuleDialog`. Quando o usuário aceitar, o controller
+        chama de volta `append_validation_rule_config(cfg)` neste painel.
+        """
+        if self._instruction is not None:
+            self.add_validation_rule_requested.emit(self._instruction)
+
+    def append_validation_rule_config(self, cfg) -> None:
+        """
+        Anexa um `ValidationRuleConfig` à instrução atual. Chamado pelo
+        controller após o `AddValidationRuleDialog` aceitar.
+
+        Marca `validation_rules_user_managed=True` — qualquer adição
+        manual sinaliza que o usuário assumiu controle, impedindo
+        repopulação automática dos defaults na próxima abertura.
+        """
+        instr = self._instruction
+        if instr is None or cfg is None:
+            return
+        if instr.validation_rule_configs is None:
+            instr.validation_rule_configs = []
+        instr.validation_rule_configs.append(cfg)
+        instr.validation_rules_user_managed = True
         self._rebuild_validation_section()
         self.config_changed.emit(instr)
 
@@ -1895,6 +2125,11 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         if not self._instruction:
             return
         self._rebuild_form()
+        # `instruction_specs_rebuilt` PRIMEIRO — força a 3ª coluna a
+        # invalidar o card cacheado, que está com a lista de outputs
+        # do estado anterior do triggers_rebuild. Em seguida emite
+        # `config_changed` (fluxo normal de save).
+        self.instruction_specs_rebuilt.emit(self._instruction)
         self.config_changed.emit(self._instruction)
 
     def _convert_choice_value(self, field_name: str, text: str) -> Any:

@@ -107,6 +107,29 @@ class DatasetMergeInstruction(StrategyInstructionDefinition):
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
 
+    def build_validation_rules(self) -> list:
+        """
+        Regra dinâmica (não persistida): DATASETS_EMBEDDING_COMPAT entre
+        base e secondary — necessário pra CONCAT/REPLACE/UPDATE não
+        produzir dataset com schema misturado.
+        """
+        from faceaudit.validation_rules.datasets_embedding_compat_rule import (
+            DatasetsEmbeddingCompatRule,
+        )
+
+        if not (self.base_dataset_resource_id and self.secondary_dataset_resource_id):
+            return []
+
+        return [
+            DatasetsEmbeddingCompatRule(
+                rule_id=f"{self.instruction_id}_emb_compat",
+                dataset_resource_ids=[
+                    self.base_dataset_resource_id,
+                    self.secondary_dataset_resource_id,
+                ],
+            ),
+        ]
+
     @property
     def uses_concat(self) -> bool:
         return self.merge_mode == DatasetMergeMode.CONCAT

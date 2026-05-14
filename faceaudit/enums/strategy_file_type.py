@@ -163,6 +163,11 @@ class StrategyFileType(Enum):
         ProjectFolder.PIPELINES,
         "{config_id}",
     )
+    PROJECT_VALIDATION_RULE_TEMPLATE = (
+        ".json",
+        ProjectFolder.VALIDATION_RULES,
+        "{template_id}",
+    )
 
     def __init__(self, extension: str, folder: ProjectFolder, name_template: str):
         self.extension = extension
@@ -277,5 +282,6 @@ class StrategyFileType(Enum):
             StrategyArtifactType.SPLIT_CONFIG:              cls.PROJECT_SPLIT_CONFIG,
             StrategyArtifactType.MINING_CONFIG:             cls.PROJECT_MINING_CONFIG,
             StrategyArtifactType.PIPELINE_CONFIG:           cls.PROJECT_PIPELINE_CONFIG,
+            StrategyArtifactType.VALIDATION_RULE_TEMPLATE:  cls.PROJECT_VALIDATION_RULE_TEMPLATE,
             # StrategyArtifactType.UNKNOWN e STRATEGY_TEMPLATE não têm mapeamento intencional
         }

@@ -120,6 +120,52 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
     def is_dual(self) -> bool:
         return self.pipeline_mode == PipelineMode.DUAL
 
+    def build_validation_rules(self) -> list:
+        """
+        Regras dinâmicas (não persistidas):
+        - MODEL_FITTED no pipeline treinado
+        - EMBEDDING_DIM_MATCHES_MODEL no(s) dataset(s) de entrada × pipeline
+
+        Não persistidas porque são pré-condições intrínsecas — sem o
+        pipeline treinado ou com dim incompatível, o executor crasha.
+        Sem sentido pro usuário deletá-las.
+        """
+        from faceaudit.validation_rules.model_fitted_rule import ModelFittedRule
+        from faceaudit.validation_rules.embedding_dim_matches_model_rule import (
+            EmbeddingDimMatchesModelRule,
+        )
+
+        rules: list = []
+        if not self.trained_pipeline_resource_id:
+            return rules
+
+        rules.append(ModelFittedRule(
+            rule_id=f"{self.instruction_id}_pipeline_fitted",
+            model_resource_id=self.trained_pipeline_resource_id,
+        ))
+
+        if self.is_linear and self.dataset_resource_id:
+            rules.append(EmbeddingDimMatchesModelRule(
+                rule_id=f"{self.instruction_id}_dim_compat",
+                dataset_resource_id=self.dataset_resource_id,
+                model_resource_id=self.trained_pipeline_resource_id,
+            ))
+        elif self.is_dual:
+            if self.source_dataset_resource_id:
+                rules.append(EmbeddingDimMatchesModelRule(
+                    rule_id=f"{self.instruction_id}_dim_compat_source",
+                    dataset_resource_id=self.source_dataset_resource_id,
+                    model_resource_id=self.trained_pipeline_resource_id,
+                ))
+            if self.target_dataset_resource_id:
+                rules.append(EmbeddingDimMatchesModelRule(
+                    rule_id=f"{self.instruction_id}_dim_compat_target",
+                    dataset_resource_id=self.target_dataset_resource_id,
+                    model_resource_id=self.trained_pipeline_resource_id,
+                ))
+
+        return rules
+
     def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
         return [
             ChoiceFieldSpec("pipeline_mode", "Modo do Pipeline", ("LINEAR", "DUAL"), PipelineMode),

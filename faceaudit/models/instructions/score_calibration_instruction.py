@@ -91,6 +91,31 @@ class ScoreCalibrationInstruction(StrategyInstructionDefinition):
             "calibração já está embutida no modelo treinado."
         )
 
+    def build_validation_rules(self) -> list:
+        """
+        Regras dinâmicas (não persistidas):
+        - MODEL_FITTED no calibrador
+        - SCORE_CALIBRATION_STATE(RAW) no input — evita dupla calibração
+        """
+        from faceaudit.validation_rules.model_fitted_rule import ModelFittedRule
+        from faceaudit.validation_rules.score_calibration_state_rule import (
+            ScoreCalibrationStateRule,
+        )
+
+        rules: list = []
+        if self.trained_calibration_model_resource_id:
+            rules.append(ModelFittedRule(
+                rule_id=f"{self.instruction_id}_calibrator_fitted",
+                model_resource_id=self.trained_calibration_model_resource_id,
+            ))
+        if self.input_similarity_scores_resource_id:
+            rules.append(ScoreCalibrationStateRule(
+                rule_id=f"{self.instruction_id}_scores_raw",
+                scores_resource_id=self.input_similarity_scores_resource_id,
+                expected="RAW",
+            ))
+        return rules
+
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos

@@ -71,6 +71,84 @@ class ValidationRuleType(Enum):
         "steps do source.",
     )
 
+    MIN_IDENTITIES = (
+        "MIN_IDENTITIES",
+        "Mínimo de identidades",
+        "Verifica que o dataset tem pelo menos N identidades distintas. "
+        "Aplicável a SPLIT, BALANCING e treinos com LDA.",
+    )
+
+    MIN_SAMPLES = (
+        "MIN_SAMPLES",
+        "Mínimo de amostras",
+        "Verifica que o dataset tem pelo menos N amostras totais. "
+        "Aplicável a HUBNESS, SPLIT por índice e treinos com Whitening.",
+    )
+
+    MODEL_FITTED = (
+        "MODEL_FITTED",
+        "Modelo treinado",
+        "Verifica que o recurso (pipeline, modelo de similaridade ou "
+        "calibrador) foi efetivamente treinado (`is_fitted=True`). "
+        "Sem isso o executor crasha em runtime.",
+    )
+
+    EMBEDDING_DIM_MATCHES_MODEL = (
+        "EMBEDDING_DIM_MATCHES_MODEL",
+        "Compatibilidade dimensional dataset×modelo",
+        "Verifica que `dataset.embedding_dim == model.input_dimension`. "
+        "Aplicável a PIPELINE_APPLICATION e SIMILARITY_SCORING.",
+    )
+
+    SCORE_CALIBRATION_STATE = (
+        "SCORE_CALIBRATION_STATE",
+        "Estado de calibração do score dataset",
+        "Verifica se o score dataset está RAW ou CALIBRATED. Evita dupla "
+        "calibração e garante que avaliação só rode em scores calibrados.",
+    )
+
+    CASEWORK_STATE = (
+        "CASEWORK_STATE",
+        "Estado de casework do score dataset",
+        "Verifica se o score dataset tem `metadata.is_casework` no estado "
+        "esperado (True para caso, False para validação).",
+    )
+
+    SCORE_TYPE_MATCH = (
+        "SCORE_TYPE_MATCH",
+        "Mesmo tipo de score (referência × caso)",
+        "Em CASEWORK_VISUALIZATION, verifica que reference e case têm "
+        "o mesmo tipo de score (RAW ou CALIBRATED).",
+    )
+
+    DATASETS_EMBEDDING_COMPAT = (
+        "DATASETS_EMBEDDING_COMPAT",
+        "Compatibilidade de embedding entre datasets",
+        "Verifica que múltiplos datasets compartilham a mesma coluna de "
+        "embedding e a mesma dimensão (pré-condição pra DATASET_MERGE).",
+    )
+
+    QUALITY_METRIC_AVAILABLE = (
+        "QUALITY_METRIC_AVAILABLE",
+        "Métrica de qualidade disponível",
+        "Verifica que a métrica de qualidade escolhida (FIQA/OFIQ/SERFIQ/"
+        "EMBEDDING_NORM) tem cobertura suficiente no dataset (default 50%).",
+    )
+
+    HAS_POSE_METADATA = (
+        "HAS_POSE_METADATA",
+        "Metadata de pose disponível",
+        "Verifica que o dataset tem colunas yaw/pitch necessárias pro "
+        "modo BY_POSE de HUBNESS_ABLATION.",
+    )
+
+    MAX_SAMPLES_WARNING = (
+        "MAX_SAMPLES_WARNING",
+        "Aviso de tamanho excessivo",
+        "Emite WARNING quando o dataset excede um threshold (custo O(N²) "
+        "ou similar). Usado em HUBNESS_ANALYSIS e HUBNESS_ABLATION.",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label

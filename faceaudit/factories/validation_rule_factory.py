@@ -153,6 +153,146 @@ class ValidationRuleFactory:
                 ),
             )
 
+        if rule_type == ValidationRuleType.MIN_IDENTITIES:
+            from faceaudit.validation_rules.min_identities_rule import (
+                MinIdentitiesRule,
+            )
+            return MinIdentitiesRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+                min_required=int(params.get("min_required", 2)),
+                safety_threshold=int(params.get("safety_threshold", 5)),
+            )
+
+        if rule_type == ValidationRuleType.MIN_SAMPLES:
+            from faceaudit.validation_rules.min_samples_rule import (
+                MinSamplesRule,
+            )
+            return MinSamplesRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+                min_required=int(params.get("min_required", 2)),
+                safety_threshold=int(params.get("safety_threshold", 100)),
+            )
+
+        if rule_type == ValidationRuleType.MODEL_FITTED:
+            from faceaudit.validation_rules.model_fitted_rule import (
+                ModelFittedRule,
+            )
+            return ModelFittedRule(
+                rule_id=rule_id,
+                model_resource_id=ValidationRuleFactory._req_str(
+                    params, "model_resource_id", rule_type
+                ),
+            )
+
+        if rule_type == ValidationRuleType.EMBEDDING_DIM_MATCHES_MODEL:
+            from faceaudit.validation_rules.embedding_dim_matches_model_rule import (
+                EmbeddingDimMatchesModelRule,
+            )
+            return EmbeddingDimMatchesModelRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+                model_resource_id=ValidationRuleFactory._req_str(
+                    params, "model_resource_id", rule_type
+                ),
+            )
+
+        if rule_type == ValidationRuleType.SCORE_CALIBRATION_STATE:
+            from faceaudit.validation_rules.score_calibration_state_rule import (
+                ScoreCalibrationStateRule,
+            )
+            return ScoreCalibrationStateRule(
+                rule_id=rule_id,
+                scores_resource_id=ValidationRuleFactory._req_str(
+                    params, "scores_resource_id", rule_type
+                ),
+                expected=str(params.get("expected", "RAW")),
+            )
+
+        if rule_type == ValidationRuleType.CASEWORK_STATE:
+            from faceaudit.validation_rules.casework_state_rule import (
+                CaseworkStateRule,
+            )
+            expected_raw = params.get("expected", False)
+            return CaseworkStateRule(
+                rule_id=rule_id,
+                scores_resource_id=ValidationRuleFactory._req_str(
+                    params, "scores_resource_id", rule_type
+                ),
+                expected=bool(expected_raw),
+            )
+
+        if rule_type == ValidationRuleType.SCORE_TYPE_MATCH:
+            from faceaudit.validation_rules.score_type_match_rule import (
+                ScoreTypeMatchRule,
+            )
+            return ScoreTypeMatchRule(
+                rule_id=rule_id,
+                reference_resource_id=ValidationRuleFactory._req_str(
+                    params, "reference_resource_id", rule_type
+                ),
+                case_resource_id=ValidationRuleFactory._req_str(
+                    params, "case_resource_id", rule_type
+                ),
+            )
+
+        if rule_type == ValidationRuleType.DATASETS_EMBEDDING_COMPAT:
+            from faceaudit.validation_rules.datasets_embedding_compat_rule import (
+                DatasetsEmbeddingCompatRule,
+            )
+            return DatasetsEmbeddingCompatRule(
+                rule_id=rule_id,
+                dataset_resource_ids=ValidationRuleFactory._req_list_str(
+                    params, "dataset_resource_ids", rule_type
+                ),
+                embedding_column=params.get("embedding_column"),
+            )
+
+        if rule_type == ValidationRuleType.QUALITY_METRIC_AVAILABLE:
+            from faceaudit.validation_rules.quality_metric_available_rule import (
+                QualityMetricAvailableRule,
+            )
+            return QualityMetricAvailableRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+                quality_metric=ValidationRuleFactory._req_str(
+                    params, "quality_metric", rule_type
+                ),
+                min_coverage=float(params.get("min_coverage", 0.5)),
+            )
+
+        if rule_type == ValidationRuleType.HAS_POSE_METADATA:
+            from faceaudit.validation_rules.has_pose_metadata_rule import (
+                HasPoseMetadataRule,
+            )
+            return HasPoseMetadataRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+            )
+
+        if rule_type == ValidationRuleType.MAX_SAMPLES_WARNING:
+            from faceaudit.validation_rules.max_samples_warning_rule import (
+                MaxSamplesWarningRule,
+            )
+            return MaxSamplesWarningRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+                max_samples=int(params.get("max_samples", 100_000)),
+            )
+
         raise ValueError(
             f"ValidationRuleFactory: tipo de regra não suportado: {rule_type}."
         )

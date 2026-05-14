@@ -201,6 +201,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.embedding_column_change_requested.connect(
             self._on_embedding_column_change_requested
         )
+        # Phase 3 — diálogos de regra de validação (Add + Save Template).
+        self._strategy_editor.add_validation_rule_requested.connect(
+            self._on_add_validation_rule_requested
+        )
+        self._strategy_editor.save_validation_rule_as_template_requested.connect(
+            self._on_save_validation_rule_as_template_requested
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -2727,6 +2734,278 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 self._view,
                 "Erro ao abrir visualizador",
                 f"Não foi possível abrir o visualizador de trajetória:\n{open_error}",
+            )
+
+    # =========================================================================
+    # PHASE 3 — Adição/save de regras de validação (template-only)
+    # =========================================================================
+
+    def _load_validation_rule_templates(self) -> list:
+        """
+        Lista templates de ValidationRuleTemplate disponíveis em duas
+        fontes: biblioteca global + projeto atual. Falhas em arquivos
+        individuais (JSON corrompido, schema antigo) são logadas no
+        stdout e o template é pulado — não bloqueia o resto.
+        """
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.models.validation.validation_rule_template import (
+            ValidationRuleTemplate,
+        )
+        import json as _json
+
+        templates: list = []
+
+        def _load_from(storage, label: str) -> None:
+            if storage is None:
+                return
+            try:
+                refs = storage.list_artifacts(
+                    StrategyArtifactType.VALIDATION_RULE_TEMPLATE
+                )
+            except Exception:
+                return
+            for ref in refs:
+                abs_path = storage.resolve_artifact(ref)
+                if abs_path is None or not abs_path.exists():
+                    continue
+                try:
+                    data = _json.loads(abs_path.read_text(encoding="utf-8"))
+                    tpl = ValidationRuleTemplate.from_dict(data)
+                except Exception as exc:
+                    print(
+                        f"[validation_rule_template] Falha ao carregar "
+                        f"'{ref.path}' ({label}): {exc}"
+                    )
+                    continue
+                if tpl is not None:
+                    templates.append(tpl)
+
+        _load_from(self._global_storage, "global")
+        if self._project is not None:
+            _load_from(self._project.storage, "projeto")
+        return templates
+
+    def _resources_available_at_instruction_validation(
+        self,
+        instruction: StrategyInstructionDefinition,
+        definition: Optional[LRStrategyDefinition],
+    ) -> List[StrategyResource]:
+        """
+        Filtra os recursos que estarão **garantidamente** no contexto
+        no momento em que a validação de `instruction` rodar.
+
+        A regra é simples:
+        1. PRIMARIES — registrados desde `prepare_context`, sempre lá.
+        2. `instruction.input_resource_ids` — gate de dependência exige
+           que estejam no contexto antes de X poder ser validada.
+        3. `output_resource_ids` de instruções que vêm ANTES de
+           `instruction` em ordem de execução (preparação → validação →
+           análise de caso; dentro da fase, ordem da lista).
+
+        Recursos **excluídos** intencionalmente:
+        - Outputs da própria `instruction` (não existem ainda — X não
+          rodou na hora da validação).
+        - Outputs de instruções posteriores (ainda não produzidos).
+
+        Sem isso, o usuário poderia anexar uma regra que referencia algo
+        ainda não criado, e a regra falharia silenciosamente com "recurso
+        não encontrado" a cada validação. Em vez de validar de verdade,
+        viraria mensagem de erro espúria.
+        """
+        if definition is None or instruction is None:
+            return []
+
+        all_resources = self._collect_editor_resources(definition)
+        by_id: Dict[str, StrategyResource] = {r.resource_id: r for r in all_resources}
+
+        available_ids: Set[str] = set()
+
+        # 1. PRIMARIES — sempre disponíveis.
+        for r in all_resources:
+            if r.category == ResourceCategory.PRIMARY:
+                available_ids.add(r.resource_id)
+
+        # 2. Inputs da própria instrução — gate de dependência garante.
+        for rid in (instruction.input_resource_ids or []):
+            if rid:
+                available_ids.add(rid)
+
+        # 3. Outputs de instruções anteriores na ordem de execução.
+        #    Itera _phase_lists() (preparation → validation → casework)
+        #    parando ao encontrar a instrução-alvo.
+        try:
+            phase_lists = definition._phase_lists()
+        except AttributeError:
+            phase_lists = []
+        target_id = instruction.instruction_id
+        for phase_list in phase_lists:
+            stop = False
+            for upstream in phase_list:
+                if upstream.instruction_id == target_id:
+                    stop = True
+                    break
+                for rid in (upstream.output_resource_ids or []):
+                    if rid:
+                        available_ids.add(rid)
+            if stop:
+                break
+
+        # Filtra a lista mantendo apenas recursos que existem na pool de
+        # `_collect_editor_resources`. Resource_ids declarados mas sem
+        # entry em `_collect_editor_resources` (raro — ex: output_id
+        # com nome mas que o spec do tipo não considera) ficam fora.
+        return [by_id[rid] for rid in available_ids if rid in by_id]
+
+    def _on_add_validation_rule_requested(
+        self, instruction: StrategyInstructionDefinition,
+    ) -> None:
+        """
+        Abre `AddValidationRuleDialog` populado com:
+        - 11 tipos configuráveis (FISHER, MIN_IDENTITIES, etc.)
+        - templates salvos (global + projeto)
+        - recursos garantidos no contexto no momento de validação de X
+          (PRIMARIES + inputs da X + outputs de instruções anteriores).
+          NÃO inclui outputs da própria X nem de instruções posteriores
+          — referenciá-los faria a regra falhar com "recurso não
+          encontrado" na hora da validação.
+
+        Em sucesso, anexa o `ValidationRuleConfig` retornado em
+        `instruction.validation_rule_configs` via editor.
+        """
+        from interface.tabs.strategy_manager_v2.strategy_editor.add_validation_rule_dialog import (
+            AddValidationRuleDialog,
+        )
+
+        if instruction is None:
+            return
+
+        # Filtragem rigorosa: só recursos garantidos no contexto na
+        # ordem de execução. Evita footgun de referenciar recursos
+        # ainda não produzidos.
+        available = self._resources_available_at_instruction_validation(
+            instruction, self._current_definition,
+        )
+        templates = self._load_validation_rule_templates()
+
+        dlg = AddValidationRuleDialog(
+            available_resources=available,
+            templates=templates,
+            parent=self._view,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        cfg = dlg.get_config()
+        if cfg is None:
+            return
+
+        # Editor faz o append no panel correto e emite config_changed →
+        # _on_strategy_modified → save.
+        self._strategy_editor.append_validation_rule_to_instruction(
+            instruction, cfg,
+        )
+
+    def _on_save_validation_rule_as_template_requested(self, cfg) -> None:
+        """
+        Abre `SaveValidationRuleTemplateDialog`, salva como JSON em
+        `<global_library>/validation_rules/{template_id}.json` e/ou
+        `<project>/validation_rules/{template_id}.json` conforme escolha.
+
+        Mostra QMessageBox de erro se algum save falhar. Continua tentando
+        o outro destino se for "ambos" e um falhar.
+        """
+        from interface.tabs.strategy_manager_v2.strategy_editor.save_validation_rule_template_dialog import (
+            SaveValidationRuleTemplateDialog,
+        )
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.models.validation.validation_rule_template import (
+            ValidationRuleTemplate,
+        )
+
+        if cfg is None:
+            return
+
+        # Default name: o label do tipo da regra, pra dar dica visual.
+        default_name = (
+            cfg.rule_type.label if hasattr(cfg.rule_type, "label") else ""
+        )
+
+        dlg = SaveValidationRuleTemplateDialog(
+            has_project=(self._project is not None),
+            default_name=default_name,
+            parent=self._view,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        result = dlg.get_result()
+        if result is None:
+            return
+        template_id, name, description, destination = result
+
+        template = ValidationRuleTemplate(
+            template_id=template_id,
+            name=name,
+            description=description,
+            rule_config=cfg,
+        )
+
+        errors: list = []
+        saved_paths: list = []
+
+        save_global = destination in (
+            SaveValidationRuleTemplateDialog.DEST_GLOBAL,
+            SaveValidationRuleTemplateDialog.DEST_BOTH,
+        )
+        save_project = destination in (
+            SaveValidationRuleTemplateDialog.DEST_PROJECT,
+            SaveValidationRuleTemplateDialog.DEST_BOTH,
+        )
+
+        if save_global:
+            if self._global_storage is None:
+                errors.append(
+                    "Biblioteca global não está configurada. "
+                    "Configure em Preferências antes de salvar."
+                )
+            else:
+                try:
+                    ref = self._global_storage.save_artifact(
+                        artifact_type=StrategyArtifactType.VALIDATION_RULE_TEMPLATE,
+                        data=template,
+                        template_id=template_id,
+                    )
+                    saved_paths.append(f"Biblioteca global: {ref.path}")
+                except Exception as exc:
+                    errors.append(f"Falha ao salvar na biblioteca: {exc}")
+
+        if save_project:
+            if self._project is None:
+                errors.append("Nenhum projeto aberto.")
+            else:
+                try:
+                    ref = self._project.storage.save_artifact(
+                        artifact_type=StrategyArtifactType.VALIDATION_RULE_TEMPLATE,
+                        data=template,
+                        template_id=template_id,
+                    )
+                    saved_paths.append(f"Projeto: {ref.path}")
+                except Exception as exc:
+                    errors.append(f"Falha ao salvar no projeto: {exc}")
+
+        if errors:
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Salvar Template",
+                "Alguns destinos falharam:\n\n" + "\n".join(errors)
+                + (
+                    "\n\nSalvos com sucesso em:\n" + "\n".join(saved_paths)
+                    if saved_paths else ""
+                ),
+            )
+        elif saved_paths:
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Template salvo",
+                "Salvo em:\n" + "\n".join(saved_paths),
             )
 
     def _on_hydrate_resource_requested(

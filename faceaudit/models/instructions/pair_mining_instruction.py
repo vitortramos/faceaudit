@@ -6,11 +6,13 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.comparison_mining_config import ComparisonMiningConfig
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="PairMiningInstruction")
@@ -100,6 +102,30 @@ class PairMiningInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Default: MIN_CALIBRATION_PAIRS no input — mineração precisa de
+        pool razoável de gen e imp pra HARD/EASY/TYPICAL terem
+        candidatos. Os defaults da regra (100 gen, 500 imp) são pisos
+        operacionais; thresholds ideais dependem dos max_gen/max_imp
+        no mining_config.
+        """
+        if self.validation_rules_user_managed:
+            return
+        if self.validation_rule_configs:
+            return
+        if not self.input_similarity_scores_resource_id:
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
+                params={"scores_resource_id": self.input_similarity_scores_resource_id},
+            ),
+        ]
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:

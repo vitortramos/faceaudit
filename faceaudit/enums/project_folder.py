@@ -20,6 +20,7 @@ class ProjectFolder(Enum):
     # --- NOVA ARQUITETURA ---
     DEFINITIONS = "definitions" # Definições declarativas de estratégia (LRStrategyDefinition JSON)
     MODELS = "models"           # Modelos treinados da nova arch (LRStrategyTrainedModel pkl)
+    VALIDATION_RULES = "validation_rules"  # Templates de regra de validação (ValidationRuleConfig JSON)
 
     def __str__(self) -> str:
         return self.value

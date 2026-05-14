@@ -144,6 +144,40 @@ class CaseworkVisualizationInstruction(StrategyInstructionDefinition):
             "log-LR do caso cai em relação à população de referência."
         )
 
+    def build_validation_rules(self) -> list:
+        """
+        Regras dinâmicas (não persistidas):
+        - CASEWORK_STATE(False) na referência — deve ser validação, não caso
+        - CASEWORK_STATE(True) no caso — deve estar marcado como casework
+        - SCORE_TYPE_MATCH — referência e caso devem ser RAW×RAW ou
+          CALIBRATED×CALIBRATED (comparar escalas diferentes é sem sentido)
+        """
+        from faceaudit.validation_rules.casework_state_rule import CaseworkStateRule
+        from faceaudit.validation_rules.score_type_match_rule import (
+            ScoreTypeMatchRule,
+        )
+
+        rules: list = []
+        if self.reference_scores_resource_id:
+            rules.append(CaseworkStateRule(
+                rule_id=f"{self.instruction_id}_reference_not_casework",
+                scores_resource_id=self.reference_scores_resource_id,
+                expected=False,
+            ))
+        if self.case_scores_resource_id:
+            rules.append(CaseworkStateRule(
+                rule_id=f"{self.instruction_id}_case_is_casework",
+                scores_resource_id=self.case_scores_resource_id,
+                expected=True,
+            ))
+        if self.reference_scores_resource_id and self.case_scores_resource_id:
+            rules.append(ScoreTypeMatchRule(
+                rule_id=f"{self.instruction_id}_score_type_match",
+                reference_resource_id=self.reference_scores_resource_id,
+                case_resource_id=self.case_scores_resource_id,
+            ))
+        return rules
+
     def _sync_declared_io(self) -> None:
         inputs = []
         outputs = []

@@ -56,6 +56,11 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     hydrate_resource_requested = QtCore.pyqtSignal(object, str)
     resource_edit_requested = QtCore.pyqtSignal(str)
     instruction_applied = QtCore.pyqtSignal(object)
+    # Phase 3 (template-only) — propagados do InstructionConfigPanel:
+    # botão ➕ Adicionar Regra abre o AddValidationRuleDialog;
+    # botão 📤 numa linha salva via SaveValidationRuleTemplateDialog.
+    save_validation_rule_as_template_requested = QtCore.pyqtSignal(object)
+    add_validation_rule_requested = QtCore.pyqtSignal(object)
     # Disparado quando o usuário remove uma instrução da lista — o
     # controller usa pra apagar arquivos dos recursos produzidos antes
     # da instrução sumir.
@@ -191,6 +196,22 @@ class StrategyEditorWidget(QtWidgets.QWidget):
                 self._on_resource_edit_requested
             )
             config_panel.instruction_applied.connect(self._on_instruction_applied)
+            # Phase 3 — propaga add/save de regra direto pro controller.
+            config_panel.add_validation_rule_requested.connect(
+                self.add_validation_rule_requested
+            )
+            config_panel.save_validation_rule_as_template_requested.connect(
+                self.save_validation_rule_as_template_requested
+            )
+            # triggers_rebuild → invalida o card cacheado da 3ª coluna pra
+            # que ele se reconstrua com a nova lista de output_specs.
+            # Sem isso, toggle de `apply_to_training_datasets` em
+            # PIPELINE_TRAINING não mostra os outputs novos até reload.
+            config_panel.instruction_specs_rebuilt.connect(
+                lambda instr, rp=results_panel: rp.invalidate_instruction(
+                    instr.instruction_id
+                )
+            )
             # Sincroniza o nome de output exibido no painel de resultados
             # (3ª coluna, read-only) sempre que o usuário edita o nome no
             # painel de configuração (2ª coluna).
@@ -429,6 +450,29 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             _, config_panel, _ = self._phase_widgets[phase_key]
             if hasattr(config_panel, "set_project_root"):
                 config_panel.set_project_root(project_root)
+
+    def append_validation_rule_to_instruction(
+        self,
+        instruction: StrategyInstructionDefinition,
+        cfg,
+    ) -> None:
+        """
+        Encontra o `InstructionConfigPanel` que está mostrando `instruction`
+        e delega o append do `cfg` pra ele.
+
+        Chamado pelo controller depois que o `AddValidationRuleDialog`
+        aceitar — o panel cuida de marcar `user_managed=True`, rebuildar
+        a seção visual e emitir `config_changed` (que flui pra
+        `_on_strategy_modified` no controller → save).
+        """
+        if instruction is None or cfg is None:
+            return
+        for phase_key, _ in _PHASES:
+            _, config_panel, _ = self._phase_widgets[phase_key]
+            shown = getattr(config_panel, "_instruction", None)
+            if shown is not None and shown.instruction_id == instruction.instruction_id:
+                config_panel.append_validation_rule_config(cfg)
+                return
 
     # ── Internal slots ────────────────────────────────────────────────────────
 
