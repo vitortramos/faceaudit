@@ -11,16 +11,20 @@ correspondendo à linha da tabela — cross-reference visual rápido.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from faceaudit.models.similarity.distribution_plot import (
+    score_distribution_png_path,
+)
 from faceaudit.models.similarity.similarity_score_dataset import (
     SimilarityScoreDataset,
 )
 
-from ...strategy_editor.result_widgets.score_distribution_widget import (
-    ScoreDistributionWidget,
+from ...strategy_editor.result_widgets.png_snapshot_widget import (
+    PngSnapshotWidget,
 )
 from ..availability_resolver import ComparisonItem
 from ..flow_layout import (
@@ -38,11 +42,17 @@ class CalibrationDistributionView(QtWidgets.QWidget):
         self,
         items: List[ComparisonItem],
         resource_loader: Any = None,
+        project_root: Optional[Path] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         super().__init__(parent)
         self._items = list(items)
         self._resource_loader = resource_loader
+        # project_root explícito (preferido) ou derivado do loader.
+        if project_root is None and resource_loader is not None:
+            storage = getattr(resource_loader, "_storage", None)
+            project_root = getattr(storage, "project_root", None) if storage else None
+        self._project_root = project_root
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -235,45 +245,31 @@ class CalibrationDistributionView(QtWidgets.QWidget):
         header.setWordWrap(True)
         cell_layout.addWidget(header)
 
-        # show_title=False — o cell já tem header próprio acima, evita
-        # duplicação ("Distribuição de Scores — Frontais_Centered_Coral...").
-        widget = ScoreDistributionWidget(
-            parent=cell, score_dataset=None,
-            show_toolbar=False, show_title=False,
-        )
+        # PngSnapshotWidget — usa o PNG persistido pelo executor de
+        # SIMILARITY_SCORING (output do tipo SIMILARITY_SCORES). Pula
+        # totalmente a hidratação do parquet (que pode ter milhões de
+        # pares) e o rebuild matplotlib.
+        widget = PngSnapshotWidget(parent=cell)
         cell_layout.addWidget(widget, 1)
 
-        if summary is not None:
-            widget.set_distribution_summary(summary)
-            return cell
+        png_path = self._resolve_png_path(item)
+        if png_path is None or not widget.show_image(png_path):
+            widget.show_placeholder(
+                "PNG não disponível — execute a instrução SIMILARITY_SCORING."
+            )
 
-        # Fallback: hidrata o parquet inteiro via loader.
-        if self._resource_loader is not None:
-            try:
-                from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
-                from faceaudit.enums.strategy_resource_type import StrategyResourceType
-                from faceaudit.models.storage.strategy_artifact_reference import (
-                    StrategyArtifactReference,
-                )
-                from faceaudit.models.strategy.strategy_resource import StrategyResource
-
-                ref = StrategyArtifactReference(
-                    artifact_type=StrategyArtifactType.SIMILARITY_SCORES,
-                    path=str(item.artifact_path),
-                    hash=None,
-                )
-                placeholder = StrategyResource(
-                    resource_id=item.resource_id,
-                    name=item.resource_name,
-                    resource_type=StrategyResourceType.SIMILARITY_SCORES,
-                    artifact_ref=ref,
-                )
-                self._resource_loader.hydrate(placeholder)
-                if placeholder.has_payload:
-                    widget.set_dataset(placeholder.payload)
-            except Exception:
-                pass
         return cell
+
+    def _resolve_png_path(self, item: ComparisonItem) -> Optional[Path]:
+        """Path absoluto do PNG do output `SIMILARITY_SCORES` (não calibrado
+        — o kind CALIBRATION_DATASET_DISTRIBUTION lista apenas inputs de
+        calibração, que são scores RAW). None se faltar project_root."""
+        if self._project_root is None or not item.strategy_id or not item.resource_id:
+            return None
+        return score_distribution_png_path(
+            self._project_root, item.strategy_id, item.resource_id,
+            calibrated=False,
+        )
 
     def _render_empty(self, layout: QtWidgets.QVBoxLayout) -> None:
         lbl = QtWidgets.QLabel(

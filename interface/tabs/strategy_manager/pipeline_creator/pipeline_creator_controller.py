@@ -173,23 +173,26 @@ class PipelineCreatorController(QtCore.QObject):
 
         item = items[0]
         t_type = item.data(QtCore.Qt.ItemDataRole.UserRole)
-        
+
         # Recupera o DTO (pode ser None para L2/Centering)
-        dto_config = item.data(ROLE_DTO) 
+        dto_config = item.data(ROLE_DTO)
 
-        val = t_type.value if hasattr(t_type, 'value') else str(t_type)
-        widget = None
+        # Dispatch table: tipo → builder. Adicionar nova transformação
+        # com params editáveis = adicionar uma linha aqui. Tipos stateless
+        # (L2, Centering) ficam fora — caem no fallback "sem params".
+        form_builders = {
+            TransformationType.CORAL_TRANSFORMATION:   self._build_coral_form,
+            TransformationType.LDA_TRANSFORMATION:     self._build_lda_form,
+            TransformationType.WHITENING_TRANSFORMATION: self._build_whitening_form,
+            TransformationType.IDENTITY_AGGREGATION:   self._build_aggregation_form,
+            TransformationType.RADIAL_GAUSSIANIZATION: self._build_radial_gauss_form,
+        }
 
-        if val == TransformationType.CORAL_TRANSFORMATION.value:
-            widget = self._build_coral_form(dto_config, item)
-        elif val == TransformationType.LDA_TRANSFORMATION.value:
-            widget = self._build_lda_form(dto_config, item)
-        elif val == TransformationType.WHITENING_TRANSFORMATION.value:
-            widget = self._build_whitening_form(dto_config, item)
-        elif val == TransformationType.IDENTITY_AGGREGATION.value:
-            widget = self._build_aggregation_form(dto_config, item) # <--- O NOVO FORM DE AGREGAÇÃO
+        builder = form_builders.get(t_type)
+        if builder is not None:
+            widget = builder(dto_config, item)
         else:
-            label = getattr(t_type, 'label', val)
+            label = getattr(t_type, "label", str(t_type))
             widget = QtWidgets.QLabel(f"{label}\nnão possui parâmetros editáveis.")
             widget.setStyleSheet("color: gray; font-style: italic; margin-top: 20px;")
             widget.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -358,6 +361,75 @@ class PipelineCreatorController(QtCore.QObject):
             
         combo_method.currentIndexChanged.connect(update_combo_vis)
         update_combo_vis()
+
+        return w
+
+    def _build_radial_gauss_form(self, dto, item):
+        """
+        Form pra `RadialGaussianizationConfig` (Lyu & Simoncelli 2009).
+
+        Três parâmetros:
+        - `eps_clip`: clamp dos quantis empíricos antes do `chi.ppf`.
+          Sem isso, u=1.0 produz r=∞. Default 1e-6 (~ 1 amostra a cada 1M).
+        - `assume_whitened`: quando True, o transformator emite WARNING
+          se a covariância do source desviar muito de I (proxy de "não
+          whitened"). Não impede a execução.
+        - `whitening_check_tolerance`: tolerância pra detecção de desvio
+          (±10% por padrão na média da diagonal da covariância).
+        """
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # eps_clip — escala log porque o valor útil varia de 1e-9 a 1e-3.
+        spin_eps = QtWidgets.QDoubleSpinBox()
+        spin_eps.setDecimals(9)
+        spin_eps.setRange(1e-12, 1e-2)
+        spin_eps.setSingleStep(1e-7)
+        spin_eps.setValue(float(dto.eps_clip))
+        spin_eps.setToolTip(
+            "Clamp dos quantis empíricos antes do chi.ppf — evita "
+            "r=∞ no inverso da CDF. Default 1e-6."
+        )
+        spin_eps.valueChanged.connect(
+            lambda v: self._update_dto_param(item, "eps_clip", float(v))
+        )
+        layout.addRow("Clip de quantil (ε):", spin_eps)
+
+        # assume_whitened
+        chk_assume = QtWidgets.QCheckBox("Esperar dados whitened")
+        chk_assume.setChecked(bool(dto.assume_whitened))
+        chk_assume.setToolTip(
+            "Quando marcado, emite WARNING no fit se a covariância "
+            "desvia da identidade (proxy de 'não whitened'). RG só "
+            "remove dependências em fontes elipticamente simétricas."
+        )
+
+        # whitening_check_tolerance — só relevante quando assume_whitened.
+        spin_tol = QtWidgets.QDoubleSpinBox()
+        spin_tol.setDecimals(3)
+        spin_tol.setRange(0.0, 1.0)
+        spin_tol.setSingleStep(0.01)
+        spin_tol.setValue(float(dto.whitening_check_tolerance))
+        spin_tol.setToolTip(
+            "Tolerância pra detectar desvio de whitening (média da "
+            "diagonal da covariância vs 1.0). 0.1 = ±10%."
+        )
+        spin_tol.valueChanged.connect(
+            lambda v: self._update_dto_param(
+                item, "whitening_check_tolerance", float(v),
+            )
+        )
+
+        def toggle_assume(checked: bool):
+            self._update_dto_param(item, "assume_whitened", bool(checked))
+            spin_tol.setEnabled(checked)
+
+        chk_assume.toggled.connect(toggle_assume)
+        spin_tol.setEnabled(chk_assume.isChecked())
+
+        layout.addRow("", chk_assume)
+        layout.addRow("Tolerância whitening:", spin_tol)
 
         return w
 

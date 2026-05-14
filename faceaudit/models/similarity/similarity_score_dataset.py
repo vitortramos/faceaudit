@@ -479,7 +479,14 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             if p.exists() and p.stat().st_mtime > sidecar_path.stat().st_mtime + 1.0:
                 return None
             data = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            if data.get("schema_version") != 1:
+            # Aceita v1 (legacy) e v2 (atual com case_*). Os consumidores
+            # leem case_* via `.get(..., default)`, então a leitura de
+            # sidecar v1 fica compatível. Rejeição estrita a "== 1" era
+            # um bug — toda escrita atual cria v2 (ver
+            # `_compute_distribution_summary`), e a leitura jogava fora
+            # o sidecar, forçando "n/a" nas tabelas que dependem dele.
+            schema_version = data.get("schema_version")
+            if schema_version not in (1, 2):
                 return None
             return data
         except Exception:

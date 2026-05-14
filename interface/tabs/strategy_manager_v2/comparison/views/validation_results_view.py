@@ -34,7 +34,11 @@ from matplotlib.figure import Figure
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
+from faceaudit.models.validation_result_plot import validation_result_png_paths
 
+from ...strategy_editor.result_widgets.png_snapshot_widget import (
+    PngSnapshotWidget,
+)
 from ..availability_resolver import ComparisonItem
 from ..flow_layout import (
     CELL_HEIGHT,
@@ -322,16 +326,18 @@ class ValidationResultsView(QtWidgets.QWidget):
         self, item: ComparisonItem, result: Any, idx: int = 0,
     ) -> QtWidgets.QWidget:
         """
-        Cell de distribuição log-LR — mesmo tamanho fixo dos overlays.
+        Cell de distribuição log-LR — usa o PNG snapshot gravado pelo
+        executor de STRATEGY_EVALUATION em vez de reconstruir matplotlib.
 
-        Recebe `idx` (posição na lista _loaded) pra colorir a borda
-        esquerda com a mesma cor da paleta usada na linha correspondente
-        da tabela e nos overlays. Cross-reference visual rápido.
+        Recebe `idx` pra colorir a borda esquerda com a mesma cor da
+        paleta usada na linha correspondente da tabela e nos overlays
+        (cross-reference visual rápido).
+
+        Os overlays DET/Tippett/ECE (`_build_plot_cell`) permanecem
+        matplotlib porque combinam várias estratégias num mesmo gráfico
+        — o PNG por-recurso não cobre esse caso.
         """
         cell = QtWidgets.QFrame()
-        # Mesmo fundo branco dos overlays + borda esquerda grossa colorida
-        # com a cor da estratégia (4px). O `QFrame` precisa do seletor de
-        # classe explícito senão o stylesheet vaza pros filhos.
         color_hex = _PALETTE[idx % len(_PALETTE)]
         cell.setStyleSheet(
             "QFrame { background: white; border: 1px solid #e0e0e0;"
@@ -355,16 +361,29 @@ class ValidationResultsView(QtWidgets.QWidget):
         header.setWordWrap(True)
         cell_layout.addWidget(header)
 
-        figure = Figure(figsize=(5, 3.5), dpi=100)
-        figure.set_layout_engine("constrained")
-        canvas = FigureCanvas(figure)
-        cell_layout.addWidget(canvas, 1)
-        try:
-            self._draw_lr_distribution_single(figure, result)
-        except Exception:
-            pass
-        canvas.draw_idle()
+        widget = PngSnapshotWidget(parent=cell)
+        cell_layout.addWidget(widget, 1)
+
+        png_path = self._resolve_lr_distribution_png(item)
+        if png_path is None or not widget.show_image(png_path):
+            widget.show_placeholder(
+                "PNG não disponível — execute a instrução STRATEGY_EVALUATION."
+            )
         return cell
+
+    def _resolve_lr_distribution_png(
+        self, item: ComparisonItem,
+    ) -> Optional[Path]:
+        """Path do PNG `lr_distribution` do `STRATEGY_EVALUATION` output."""
+        if (
+            self._project_root is None
+            or not item.strategy_id
+            or not item.resource_id
+        ):
+            return None
+        return validation_result_png_paths(
+            self._project_root, item.strategy_id, item.resource_id,
+        ).get("lr_distribution")
 
     # ── Plot drawing functions (overlays) ────────────────────────────────────
 
@@ -488,57 +507,6 @@ class ValidationResultsView(QtWidgets.QWidget):
             ncol=1, fontsize=8, frameon=True,
             title="Cheia: ECE modelo  •  Tracejada: ECE mínimo (PAVA)",
             title_fontsize=8,
-        )
-
-    # ── Plot drawing — LR distribution per cell ──────────────────────────────
-
-    @staticmethod
-    def _draw_lr_distribution_single(figure: Figure, result: Any) -> None:
-        ax = figure.add_subplot(111)
-        pd = result.plot_data
-        gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
-        imp = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
-        if gen.size == 0 and imp.size == 0:
-            ax.text(0.5, 0.5, "(sem dados)", ha="center", va="center",
-                    transform=ax.transAxes, color="#888")
-            return
-
-        all_lrs = np.concatenate([gen, imp])
-        x_min, x_max = float(np.min(all_lrs)), float(np.max(all_lrs))
-        if x_min == x_max:
-            x_min -= 0.5
-            x_max += 0.5
-        bins = np.linspace(x_min, x_max, 50)
-
-        if imp.size > 0:
-            ax.hist(imp, bins=bins, density=True, alpha=0.45,
-                    color="#c62828", edgecolor="#7a0000", linewidth=0.5,
-                    label=f"Impostores (n={imp.size:,})".replace(",", "."))
-        if gen.size > 0:
-            ax.hist(gen, bins=bins, density=True, alpha=0.45,
-                    color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
-                    label=f"Genuínos (n={gen.size:,})".replace(",", "."))
-
-        try:
-            from scipy.stats import gaussian_kde
-            xs = np.linspace(x_min, x_max, 200)
-            if imp.size > 1:
-                ax.plot(xs, gaussian_kde(imp)(xs), color="#7a0000",
-                        linewidth=1.2, alpha=0.9)
-            if gen.size > 1:
-                ax.plot(xs, gaussian_kde(gen)(xs), color="#0d3a10",
-                        linewidth=1.2, alpha=0.9)
-        except Exception:
-            pass
-
-        ax.axvline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
-        ax.set_xlabel("log-LR", fontsize=9)
-        ax.set_ylabel("Densidade", fontsize=9)
-        ax.tick_params(labelsize=8)
-        ax.grid(True, linestyle="--", alpha=0.4)
-        ax.legend(
-            loc="upper center", bbox_to_anchor=(0.5, -0.18),
-            ncol=1, fontsize=8, frameon=True,
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────────

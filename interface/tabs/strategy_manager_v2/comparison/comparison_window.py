@@ -210,7 +210,9 @@ class ComparisonWindow(QtWidgets.QDialog):
     ) -> QtWidgets.QWidget:
         if kind == ComparisonKind.CALIBRATION_DATASET_DISTRIBUTION:
             return CalibrationDistributionView(
-                items=items, resource_loader=self._resource_loader,
+                items=items,
+                resource_loader=self._resource_loader,
+                project_root=self._project_root,
             )
         if kind == ComparisonKind.VALIDATION_RESULTS:
             return ValidationResultsView(
@@ -219,7 +221,9 @@ class ComparisonWindow(QtWidgets.QDialog):
             )
         if kind == ComparisonKind.CASEWORK_RESULTS:
             return CaseworkResultsView(
-                items=items, resource_loader=self._resource_loader,
+                items=items,
+                resource_loader=self._resource_loader,
+                project_root=self._project_root,
             )
         # Fallback (não deveria acontecer)
         lbl = QtWidgets.QLabel(f"Tipo não suportado: {kind}")

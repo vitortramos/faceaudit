@@ -73,117 +73,14 @@ from .result_widgets import (
     ScoreDistributionWidget,
     ValidationResultWidget,
 )
+from .result_widgets.png_snapshot_widget import PngSnapshotWidget
 
 
-class _PngSnapshotWidget(QtWidgets.QWidget):
-    """Mostra um snapshot PNG escalado mantendo aspecto via `paintEvent`.
-
-    Genérico — usado pra qualquer plot que tenha PNG persistido em
-    `<project>/graphics/` durante a execução. Bem mais leve que reconstruir
-    a figura matplotlib na main thread; cobre hoje SIMILARITY_SCORING,
-    PAIR_MINING, SCORE_CALIBRATION e CASEWORK_VISUALIZATION. O plot vivo
-    correspondente continua disponível pelo botão 🔍 Expandir.
-
-    Pintamos via `paintEvent` em vez de usar `QLabel.setPixmap` pra evitar
-    um feedback loop: `setPixmap` altera o `sizeHint` do label, o layout
-    recalcula, o widget cresce, `resizeEvent` dispara novo scale, sizeHint
-    cresce de novo, etc. Sem QLabel a renderização desacopla do sizing.
-
-    Quando o arquivo PNG está ausente (recurso ainda não executado ou
-    invalidado por Aplicar Alterações), mostra placeholder discreto.
-    """
-
-    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent)
-        # Largura: expande pra preencher a coluna. Altura: derivada do
-        # aspect ratio do pixmap via heightForWidth (ver método abaixo).
-        policy = QtWidgets.QSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Expanding,
-            QtWidgets.QSizePolicy.Policy.Preferred,
-        )
-        policy.setHeightForWidth(True)
-        self.setSizePolicy(policy)
-        self.setMinimumSize(1, 1)
-
-        # Pixmap original em resolução cheia. paintEvent escala on-demand.
-        # Sem manter o original, sucessivos resizes acumulariam perda de
-        # qualidade.
-        self._full_pixmap: Optional[QtGui.QPixmap] = None
-        self._placeholder_text: str = "Execute para gerar visualização"
-
-    def hasHeightForWidth(self) -> bool:  # noqa: N802 — Qt API
-        return True
-
-    def heightForWidth(self, width: int) -> int:  # noqa: N802 — Qt API
-        """Altura pedida pra uma dada largura — derivada do aspect ratio
-        do PNG carregado. Permite que o layout dê espaço vertical suficiente
-        pra exibir a imagem cheia sem padding lateral."""
-        if self._full_pixmap is None or self._full_pixmap.width() <= 0:
-            return 200  # placeholder default
-        aspect_h_w = self._full_pixmap.height() / self._full_pixmap.width()
-        return max(120, int(width * aspect_h_w))
-
-    def sizeHint(self) -> QtCore.QSize:  # noqa: N802 — Qt API
-        # Largura intencionalmente pequena pra deixar o layout decidir
-        # (Expanding); altura derivada do aspect quando há imagem.
-        w = 320
-        return QtCore.QSize(w, self.heightForWidth(w))
-
-    def show_placeholder(self, text: str) -> None:
-        self._full_pixmap = None
-        self._placeholder_text = text or ""
-        self.updateGeometry()
-        self.update()
-
-    def show_image(self, png_path) -> bool:
-        """Carrega o PNG do disco. Retorna True se sucesso, False senão."""
-        from pathlib import Path
-        p = Path(png_path)
-        if not p.exists():
-            return False
-        pixmap = QtGui.QPixmap(str(p))
-        if pixmap.isNull():
-            return False
-        self._full_pixmap = pixmap
-        self._placeholder_text = ""
-        # updateGeometry sinaliza ao layout que sizeHint/heightForWidth
-        # mudaram — sem isso a coluna não recalcula a altura ao trocar
-        # de imagem.
-        self.updateGeometry()
-        self.update()
-        return True
-
-    def paintEvent(self, event) -> None:  # noqa: N802 — Qt API
-        painter = QtGui.QPainter(self)
-        rect = self.rect()
-
-        if self._full_pixmap is not None:
-            # Escala pela LARGURA — preenche toda a largura disponível.
-            # Altura segue o aspect ratio do PNG. heightForWidth garante
-            # que o layout dê altura compatível, então não cropamos.
-            scaled = self._full_pixmap.scaledToWidth(
-                rect.width(),
-                QtCore.Qt.TransformationMode.SmoothTransformation,
-            )
-            # Centraliza verticalmente caso o widget receba altura > pedida
-            # (raro, mas pode acontecer com stretch maior). Largura sempre
-            # encosta nas duas bordas.
-            y = max(0, (rect.height() - scaled.height()) // 2)
-            painter.drawPixmap(0, y, scaled)
-            return
-
-        if self._placeholder_text:
-            painter.setPen(QtGui.QColor("#888"))
-            font = painter.font()
-            font.setItalic(True)
-            font.setPointSize(11)
-            painter.setFont(font)
-            painter.drawText(
-                rect,
-                QtCore.Qt.AlignmentFlag.AlignCenter
-                | QtCore.Qt.TextFlag.TextWordWrap,
-                self._placeholder_text,
-            )
+# Alias mantido pra preservar todos os call sites internos do
+# instruction_results_panel sem mexer em dezenas de linhas. A versão
+# pública vive em `result_widgets/png_snapshot_widget.py` — usada
+# também pela janela de comparação de estratégias.
+_PngSnapshotWidget = PngSnapshotWidget
 
 
 class _TabbedPngSnapshotWidget(QtWidgets.QWidget):

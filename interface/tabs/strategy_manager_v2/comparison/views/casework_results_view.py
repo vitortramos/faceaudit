@@ -12,12 +12,17 @@ cell tem borda esquerda colorida correspondente à linha da tabela.
 from __future__ import annotations
 
 import pickle
+from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from ...strategy_editor.result_widgets.casework_visualization_widget import (
-    CaseworkVisualizationWidget,
+from faceaudit.models.casework_visualization_plot import (
+    casework_visualization_png_path,
+)
+
+from ...strategy_editor.result_widgets.png_snapshot_widget import (
+    PngSnapshotWidget,
 )
 from ..availability_resolver import ComparisonItem
 from ..flow_layout import (
@@ -33,11 +38,18 @@ class CaseworkResultsView(QtWidgets.QWidget):
         self,
         items: List[ComparisonItem],
         resource_loader: Any = None,
+        project_root: Optional[Path] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ):
         super().__init__(parent)
         self._items = list(items)
         self._resource_loader = resource_loader
+        # project_root pode vir explícito (ComparisonWindow passa) ou ser
+        # derivado do storage do loader (fallback pra callers antigos).
+        if project_root is None and resource_loader is not None:
+            storage = getattr(resource_loader, "_storage", None)
+            project_root = getattr(storage, "project_root", None) if storage else None
+        self._project_root = project_root
 
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -143,6 +155,19 @@ class CaseworkResultsView(QtWidgets.QWidget):
             )
             eer_thr = getattr(result, "eer_threshold", None)
 
+            # Threshold semântica:
+            # - CALIBRATED: `eer_threshold` é sempre None por design — o plot
+            #   usa log-LR=0 (limiar neutro). Mostrar "0 (log-LR)" deixa
+            #   isso explícito em vez do "—" enganoso.
+            # - RAW: `eer_threshold` carrega o valor computado on-the-fly
+            #   (FNR=FPR crossover do dataset de referência).
+            if eer_thr is not None:
+                threshold_text = f"{eer_thr:.4f}"
+            elif str(score_type).upper() == "CALIBRATED":
+                threshold_text = "0 (log-LR)"
+            else:
+                threshold_text = "—"
+
             cells = [
                 item.strategy_name,
                 item.resource_name,
@@ -151,7 +176,7 @@ class CaseworkResultsView(QtWidgets.QWidget):
                 f"{n_imp:,}".replace(",", ".") if n_imp is not None else "n/a",
                 f"{n_case:,}".replace(",", ".") if n_case is not None else "n/a",
                 f"{case_mean:+.3f}" if case_mean is not None else "n/a",
-                f"{eer_thr:.4f}" if eer_thr is not None else "—",
+                threshold_text,
             ]
             for offset, text in enumerate(cells):
                 col = offset + 1
@@ -241,18 +266,27 @@ class CaseworkResultsView(QtWidgets.QWidget):
         header.setWordWrap(True)
         cell_layout.addWidget(header)
 
-        # show_title=False — header próprio do cell substitui o do plot.
-        widget = CaseworkVisualizationWidget(
-            parent=cell,
-            result=result,
-            show_header=False,
-            show_toolbar=False,
-            show_help=False,
-            show_title=False,
-        )
+        # PngSnapshotWidget — usa o PNG persistido pelo executor de
+        # CASEWORK_VISUALIZATION durante a execução (em vez de reconstruir
+        # a figura matplotlib a partir do pickle). Render imediato +
+        # baixíssimo custo de memória.
+        widget = PngSnapshotWidget(parent=cell)
         cell_layout.addWidget(widget, 1)
 
+        png_path = self._resolve_png_path(item)
+        if png_path is None or not widget.show_image(png_path):
+            widget.show_placeholder("PNG não disponível — execute a instrução.")
+
         return cell
+
+    def _resolve_png_path(self, item: ComparisonItem) -> Optional[Path]:
+        """Path absoluto do PNG do output `CASEWORK_VISUALIZATION` ou
+        None quando o `project_root` não está disponível."""
+        if self._project_root is None or not item.strategy_id or not item.resource_id:
+            return None
+        return casework_visualization_png_path(
+            self._project_root, item.strategy_id, item.resource_id,
+        )
 
     def _load_result(self, item: ComparisonItem) -> Any:
         try:
