@@ -22,26 +22,71 @@ notebooks/.ipynb_checkpoints/
 
 # Arquivos de saída temporários
 *.log
+log.txt
+terminal.txt
+
+# Backups locais
+*.bak
 
 # Documento PDF gerado por generate_arch_doc.py (regenerar com `python generate_arch_doc.py`)
 FaceAudit_Nova_Arquitetura.pdf
 
-# IDE
-.vscode/settings.json
+# IDE / editor
+.vscode/
 *.swp
+
+# Claude Code — cache local de sessão (memory, planos, hooks)
+.claude/
+
+# Configuração local (chaves, paths privados)
+.env
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Arquivos com nomes corrompidos (artefatos de sessão anterior)
+# Arquivos com nomes corrompidos (artefatos de sessão anterior).
+# Os colchetes são escapados com `\[` porque `[` em gitignore inicia
+# uma classe de caracteres — sem escape o pattern não casa o nome real.
 1])
 None
 float
 str
-"Tuple[float"
-"Tuple[int"
+Tuple\[float
+Tuple\[int
 CaseResult
 
 # Backup local do código da arquitetura antiga (não versionado)
 Código Velho/
+
+# Trabalho do usuário no root do repo — datasets, projetos FaceAudit,
+# notebooks e documentação local. Não pertencem ao repo do código.
+Projeto*/
+Documentação/
+gráficos/
+notebooks/
+*.ipynb
+*.puml
+
+# Artefatos avulsos no root: PDFs/PNGs/JPGs gerados pela aplicação ou
+# por scripts pontuais (laudos, capturas, plots, diagramas).
+/*.pdf
+/*.png
+/*.PNG
+/*.jpg
+/*.JPG
+/*.jpeg
+
+# Definitions órfãs soltas no root (devem viver dentro de pasta de
+# projeto FaceAudit, nunca diretamente no root do repo).
+/[0-9a-f]*-*-*-*-*_definition.json
+
+# Notas/propostas avulsas no root usadas pra trabalho externo.
+ForensicFace_Batch_API_Proposal.md
+
+# Referência ao código antigo (mantido localmente, não no repo).
+codigo_antigo.txt
+
+# Documento companion gerado junto com os .puml de arquitetura C4
+# (regenerável a partir das próprias fontes .puml).
+faceaudit_strategy_engine_c4_packages.md
