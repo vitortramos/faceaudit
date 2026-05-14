@@ -15,8 +15,14 @@ dependencies = [
     "scikit-learn",
     "pyarrow",
     "tqdm",
-    # Image / face
-    "opencv-python",
+    # Image / face — usa a versão `-headless` (sem deps de GUI nativa):
+    #   - PyQt6 cuida de toda a UI; nada do código chama cv2.imshow/etc.
+    #   - `forensicface` já traz `opencv-python-headless` transitivamente;
+    #     declarar `opencv-python` (GUI) criava duplicata de ~230MB no
+    #     site-packages e conflito potencial no namespace `cv2`.
+    #   - Para empacotar o app como .exe Windows futuramente, `-headless`
+    #     é o caminho oficial (sem .so de GUI que falham fora do Linux).
+    "opencv-python-headless",
     # Plotting (used by validation, casework, hubness widgets and
     # by generate_arch_doc.py PDF generation)
     "matplotlib",
