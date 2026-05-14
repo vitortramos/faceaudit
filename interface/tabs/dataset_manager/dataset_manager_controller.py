@@ -50,6 +50,10 @@ class DatasetManagerController(QtCore.QObject):
     """
     
     dataset_changed = QtCore.pyqtSignal()
+    # Save concluído sobrescrevendo o path atual (fluxo_salvar). Path é
+    # absoluto. Subscriber natural: Strategy Manager V2 — quando o path
+    # casa com um primary do projeto aberto, atualiza hash + cascade.
+    dataset_saved_to_project = QtCore.pyqtSignal(str)
     # PR 17: emitido quando o usuário pede pra enviar o dataset corrente
     # pra V2. Carrega o caminho absoluto do parquet salvo. Capturado pelo
     # MainGUIController, que troca de aba e chama a V2.
@@ -607,11 +611,19 @@ class DatasetManagerController(QtCore.QObject):
         )
         if not path:
             return
+        self.open_dataset_from_path(path)
+
+    def open_dataset_from_path(self, path: str) -> None:
+        """Carrega um dataset diretamente de um path absoluto, pulando o
+        QFileDialog. Entry point usado por chamadas cross-tab (ex:
+        Strategy Manager V2 "Abrir no Gerenciador de Datasets")."""
+        if not path:
+            return
         self._run_worker(
             LoadDatasetWorker(path),
             label="Lendo arquivo Parquet...",
             allow_cancel=False,
-            determinate=False,  # pyarrow não emite progresso
+            determinate=False,
             wait_cursor=True,
             on_finished=lambda ds: self._on_load_success(ds, path),
         )
@@ -704,6 +716,11 @@ class DatasetManagerController(QtCore.QObject):
                     },
                     hash_file=True,
                 )
+                # Notifica subscribers (cross-tab) que o arquivo no path
+                # atual foi sobrescrito. Strategy Manager V2 usa pra
+                # detectar mudança em primary do projeto e propagar
+                # hash + cascade.
+                self.dataset_saved_to_project.emit(str(self.current_path))
             except Exception as e:
                 QMessageBox.critical(self.view, "Erro", f"Falha ao salvar: {e}")
         else:
@@ -1784,6 +1801,16 @@ class DatasetManagerController(QtCore.QObject):
                     "identities": self.dataset.number_of_identities,
                 },
             )
+            # `enrich_existing_dataset` SOBRESCREVE o parquet em disco
+            # diretamente — não passa por `fluxo_salvar`. Pra que o
+            # Strategy Manager V2 (cross-tab) detecte a mudança e
+            # propague atualização de hash + cascade dos derivados,
+            # disparamos o signal aqui manualmente. Crítico pro fluxo
+            # de enriquecimento (caso mais comum de "dataset modificado
+            # externamente"): sem isso, derivados continuariam ✅
+            # apontando pra entrada de uma versão pré-enriquecimento.
+            if self.current_path:
+                self.dataset_saved_to_project.emit(str(self.current_path))
             QMessageBox.information(self.view, "Sucesso", "Enriquecimento concluído com sucesso!")
             self.set_dirty(True)
         else:

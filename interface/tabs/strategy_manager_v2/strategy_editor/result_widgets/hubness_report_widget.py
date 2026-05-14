@@ -76,7 +76,7 @@ class HubnessReportWidget(QtWidgets.QWidget):
         else:
             self._header_frame = None
 
-        self.tabs = QtWidgets.QTabWidget()
+        self.tabs = QtWidgets.QTabWidget(parent=self)
         layout.addWidget(self.tabs, 1)
 
         self._setup_tabs()
@@ -102,7 +102,7 @@ class HubnessReportWidget(QtWidgets.QWidget):
     # ── Header ────────────────────────────────────────────────────────────────
 
     def _build_header_frame(self) -> QtWidgets.QFrame:
-        frame = QtWidgets.QFrame()
+        frame = QtWidgets.QFrame(parent=self)
         frame.setStyleSheet(
             f"QFrame {{ background: {_BG_HEADER}; "
             f"border-left: 3px solid {_BORDER_HEADER}; border-radius: 2px; }}"
@@ -199,7 +199,7 @@ class HubnessReportWidget(QtWidgets.QWidget):
             help_container.setHorizontalScrollBarPolicy(
                 QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
             )
-            help_inner = QtWidgets.QFrame()
+            help_inner = QtWidgets.QFrame(parent=self)
             help_inner.setStyleSheet(
                 "QFrame { background: #f4f6fa; border-left: 3px solid #2E5090;"
                 " border-radius: 2px; }"

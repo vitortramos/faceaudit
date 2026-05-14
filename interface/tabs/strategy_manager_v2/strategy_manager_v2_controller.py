@@ -62,6 +62,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
         _definitions: List[LRStrategyDefinition] — todas as definições do projeto
     """
 
+    # Pedido de abrir um dataset (path absoluto) no Dataset Manager.
+    # Emitido pelo botão "Abrir no Gerenciador de Datasets" no painel de
+    # propriedades. Propagado pro MainGUIController, que troca de aba e
+    # carrega o dataset.
+    open_dataset_in_manager_requested = QtCore.pyqtSignal(str)
+
     def __init__(
         self,
         parent=None,
@@ -131,6 +137,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.add_resources_requested.connect(
             self._on_add_resources_from_library
         )
+        self._project_toolbar.verify_integrity_requested.connect(
+            self._on_verify_integrity_requested
+        )
         self._project_toolbar.pipeline_requested.connect(self._on_pipeline)
         self._project_toolbar.mining_requested.connect(self._on_mining)
         self._project_toolbar.split_requested.connect(self._on_split)
@@ -153,6 +162,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._left_panel.add_mining_config_requested.connect(self._add_mining_config)
         self._left_panel.add_pipeline_config_requested.connect(self._add_pipeline_config)
         self._left_panel.remove_resource_requested.connect(self._on_remove_resource)
+        self._left_panel.edit_dataset_in_manager_requested.connect(
+            self.open_dataset_in_manager_requested
+        )
 
         # Strategy editor
         self._strategy_editor.strategy_modified.connect(self._on_strategy_modified)
@@ -185,6 +197,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         )
         self._strategy_editor.hydrate_resource_requested.connect(
             self._on_hydrate_resource_requested
+        )
+        self._strategy_editor.embedding_column_change_requested.connect(
+            self._on_embedding_column_change_requested
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -256,13 +271,48 @@ class StrategyManagerV2Controller(QtCore.QObject):
             QtWidgets.QApplication.restoreOverrideCursor()
 
         self._set_project(project)
+        self._process_integrity_results(project.integrity_results or [])
 
-        # Trata problemas de integridade em duas categorias:
-        #   MISSING — refs apontando pra arquivos inexistentes.
-        #     Auto-limpáveis: zerar artifact_ref/payload da definition.
-        #   MODIFIED — arquivo presente mas hash mudou.
-        #     Não auto-limpa (pode ser legítimo); apenas avisa.
-        results = project.integrity_results or []
+    def _on_verify_integrity_requested(self) -> None:
+        """Re-roda check_integrity on-demand pelo botão "Verificar Integridade".
+
+        Detecta arquivos que foram apagados ou modificados externamente
+        depois da abertura do projeto, mesmo quando o usuário não fechou
+        e reabriu. Mesmo fluxo de tratamento que `open_project`.
+        """
+        if not self._project:
+            return
+        try:
+            QtWidgets.QApplication.setOverrideCursor(
+                QtCore.Qt.CursorShape.WaitCursor
+            )
+            results = self._project.check_integrity()
+        except Exception as exc:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(
+                self._view, "Erro ao verificar integridade",
+                f"Falha ao verificar integridade:\n{exc}",
+            )
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        # Sem problemas detectados → notifica e sai.
+        if not any(r.is_problem for r in results):
+            QtWidgets.QMessageBox.information(
+                self._view, "Integridade OK",
+                "Todos os arquivos referenciados pelas estratégias "
+                "estão presentes e com hash íntegro.",
+            )
+            return
+
+        self._process_integrity_results(results)
+
+    def _process_integrity_results(self, results: list) -> None:
+        """Despacha resultados de `check_integrity()` para os handlers de
+        MISSING e MODIFIED. Reusado por `open_project` e pelo botão de
+        re-check manual.
+        """
         missing_results = [
             r for r in results
             if r.status == ArtifactIntegrityStatus.MISSING
@@ -276,13 +326,260 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._handle_missing_artifact_refs(missing_results)
 
         if modified_results:
-            details = "\n".join(r.describe() for r in modified_results)
-            QtWidgets.QMessageBox.warning(
-                self._view,
-                "Arquivos modificados",
-                "Os seguintes arquivos têm hash diferente do registrado "
-                "(possível adulteração ou substituição):\n\n" + details,
+            self._handle_modified_artifact_refs(modified_results)
+
+    def _handle_modified_artifact_refs(self, modified_results: list) -> None:
+        """Diálogo Yes/No quando arquivos têm hash divergente do registrado.
+
+        Yes → atualiza `artifact_ref.hash` nas definitions com o hash atual
+        do disco e dispara cascade dos recursos derivados produzidos a
+        partir desses primários (eles foram gerados com a versão antiga).
+        No → preserva o aviso (status quo), próxima abertura mostra de novo.
+        """
+        n = len(modified_results)
+        sample_lines = [r.describe() for r in modified_results[:10]]
+        sample = "\n".join(sample_lines)
+        more = f"\n... e mais {n - 10}" if n > 10 else ""
+
+        reply = QtWidgets.QMessageBox.question(
+            self._view,
+            "Arquivos modificados",
+            f"{n} arquivo(s) têm hash diferente do registrado — foram "
+            "modificados externamente desde o último uso pelo projeto.\n\n"
+            f"Exemplos:\n{sample}{more}\n\n"
+            "Aceitar a nova versão e invalidar todos os recursos derivados "
+            "produzidos a partir desses arquivos? (Os derivados ficarão "
+            "stale por construção: foram gerados de uma versão anterior "
+            "da entrada.)\n\n"
+            "• Sim — atualiza o hash registrado e remove os derivados.\n"
+            "• Não — mantém o aviso; próxima abertura repete o alerta.",
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,  # default conservador
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return
+
+        updated, invalidated = self._accept_modified_artifact_refs(
+            modified_results
+        )
+        if updated == 0:
+            return
+
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Versão atualizada",
+            f"{updated} hash(es) atualizado(s) nas definitions. "
+            f"{invalidated} recurso(s) derivado(s) foram invalidados — "
+            "re-execute as instruções afetadas pra reprocessar.",
+        )
+        self._refresh_left_panel()
+        self._refresh_instruction_states()
+        self._refresh_produced_resources()
+
+    def on_external_dataset_saved(self, saved_path: str) -> None:
+        """Cross-tab hook: Dataset Manager acabou de sobrescrever um
+        arquivo via `fluxo_salvar`. Se o path bate com um primary do
+        projeto aberto, atualiza `artifact_ref.hash` e dispara cascade
+        dos dependentes — sem diálogo de confirmação, pois o usuário
+        chegou aqui via o botão "Abrir no Gerenciador" e já consentiu
+        a edição ao clicar Save.
+
+        Path mismatch (Save As pra outro lugar, ou nenhum projeto
+        aberto) = no-op silencioso.
+        """
+        if not saved_path or not self._project:
+            return
+        try:
+            saved_abs = Path(saved_path).resolve()
+        except Exception:
+            return
+
+        try:
+            project_root = self._project.storage.project_root.resolve()
+        except Exception:
+            return
+
+        # Path tem de estar DENTRO da raiz do projeto.
+        try:
+            saved_abs.relative_to(project_root)
+        except ValueError:
+            return  # path fora do projeto — Save As pra outro lugar
+
+        # Identifica resources com esse path.
+        rel_path = saved_abs.relative_to(project_root).as_posix()
+        affected_resource_ids: Set[str] = set()
+        touched_strategy_ids: Set[str] = set()
+
+        from faceaudit.services.hash_service import HashService
+        new_hash: Optional[str] = None
+        try:
+            new_hash = HashService().calculate_file_hash(saved_abs)
+        except Exception:
+            new_hash = None
+
+        for defn in self._definitions:
+            for res in defn.resources:
+                ref = res.artifact_ref
+                if ref is None or ref.path != rel_path:
+                    continue
+                # Se o hash não mudou de fato, ignora — usuário pode ter
+                # apenas salvado sem alterar conteúdo. Sem essa checagem,
+                # o cascade dispararia mesmo em casos sem alteração real.
+                if new_hash and ref.hash == new_hash:
+                    continue
+                if new_hash:
+                    ref.hash = new_hash
+                # Zera payload: forçar re-hidratação do parquet na próxima
+                # leitura. Sem isso, `column_specs` em memória continua o
+                # antigo — o combo de embedding NÃO mostraria novas
+                # colunas após enriquecimento (caso comum do fluxo
+                # Dataset Manager → enrich → save).
+                res.payload = None
+                if (
+                    self._execution_context is not None
+                    and self._execution_context.has_resource(res.resource_id)
+                ):
+                    try:
+                        ctx_res = self._execution_context.get_resource(res.resource_id)
+                        if ctx_res is not None:
+                            ctx_res.payload = None
+                    except Exception:
+                        pass
+                affected_resource_ids.add(res.resource_id)
+                touched_strategy_ids.add(defn.strategy_id)
+
+        if not affected_resource_ids:
+            return
+
+        for defn in self._definitions:
+            if defn.strategy_id in touched_strategy_ids:
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception:
+                    pass
+
+        # Cascade dos dependentes — reusa o BFS já existente.
+        invalidated_total = 0
+        for rid in affected_resource_ids:
+            before = sum(
+                1 for defn in self._definitions for r in defn.resources
+                if r.category == ResourceCategory.DERIVED
+                and r.artifact_ref is not None
             )
+            self._invalidate_dependents_of(rid)
+            after = sum(
+                1 for defn in self._definitions for r in defn.resources
+                if r.category == ResourceCategory.DERIVED
+                and r.artifact_ref is not None
+            )
+            invalidated_total += max(0, before - after)
+
+        self._refresh_left_panel()
+        self._refresh_instruction_states()
+        self._refresh_produced_resources()
+
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Dataset atualizado",
+            f"Dataset '{rel_path}' atualizado a partir do Gerenciador "
+            f"de Datasets.\n\n{invalidated_total} recurso(s) derivado(s) "
+            "foram invalidados — re-execute as instruções afetadas "
+            "para reprocessar com a versão nova.",
+        )
+
+    def _accept_modified_artifact_refs(
+        self, modified_results: list,
+    ) -> tuple:
+        """Atualiza `artifact_ref.hash` pra cada path em `modified_results`
+        com o hash atual do arquivo no disco, em todas as definitions que
+        referenciam aquele path. Dispara cascade dos derivados produzidos
+        a partir de cada um.
+
+        Retorna `(num_hashes_updated, num_derived_invalidated)`.
+        """
+        if not self._project:
+            return (0, 0)
+
+        from faceaudit.services.hash_service import HashService
+
+        hash_service = HashService()
+        project_root = self._project.storage.project_root
+
+        # Mapeia path → novo hash recém-computado.
+        new_hashes: dict = {}
+        for r in modified_results:
+            if not r.artifact_ref or not r.artifact_ref.path:
+                continue
+            abs_path = project_root / r.artifact_ref.path
+            if not abs_path.exists():
+                continue
+            try:
+                new_hashes[r.artifact_ref.path] = (
+                    hash_service.calculate_file_hash(abs_path)
+                )
+            except Exception:
+                continue
+
+        if not new_hashes:
+            return (0, 0)
+
+        # Atualiza hash + coleta resource_ids afetados (pra cascade).
+        affected_resource_ids: Set[str] = set()
+        updated_count = 0
+        touched_strategy_ids: Set[str] = set()
+        for defn in self._definitions:
+            for res in defn.resources:
+                ref = res.artifact_ref
+                if ref and ref.path in new_hashes:
+                    ref.hash = new_hashes[ref.path]
+                    # Força re-hidratação na próxima leitura. Crítico
+                    # pra que `_collect_primary_embedding_columns` veja
+                    # `column_specs` novos (ex: dataset re-enriquecido
+                    # com nova coluna de embedding).
+                    res.payload = None
+                    if (
+                        self._execution_context is not None
+                        and self._execution_context.has_resource(res.resource_id)
+                    ):
+                        try:
+                            ctx_res = self._execution_context.get_resource(
+                                res.resource_id
+                            )
+                            if ctx_res is not None:
+                                ctx_res.payload = None
+                        except Exception:
+                            pass
+                    updated_count += 1
+                    affected_resource_ids.add(res.resource_id)
+                    touched_strategy_ids.add(defn.strategy_id)
+
+        # Salva primeiro as definitions com hash atualizado.
+        for defn in self._definitions:
+            if defn.strategy_id in touched_strategy_ids:
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception:
+                    pass
+
+        # Cascade: invalida todos os dependentes de cada resource_id afetado.
+        # `_invalidate_dependents_of` já cuida do save após.
+        total_invalidated = 0
+        for rid in affected_resource_ids:
+            before = len([
+                r for defn in self._definitions for r in defn.resources
+                if r.category == ResourceCategory.DERIVED
+                and r.artifact_ref is not None
+            ])
+            self._invalidate_dependents_of(rid)
+            after = len([
+                r for defn in self._definitions for r in defn.resources
+                if r.category == ResourceCategory.DERIVED
+                and r.artifact_ref is not None
+            ])
+            total_invalidated += max(0, before - after)
+
+        return (updated_count, total_invalidated)
 
     def _handle_missing_artifact_refs(self, missing_results: list) -> None:
         """Pergunta ao usuário se quer limpar refs cujos arquivos sumiram.
@@ -1072,6 +1369,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project_toolbar.set_project_open(True)
         self._left_panel.set_strategy_actions_enabled(False)
         self._left_panel.set_project_root(project.root)
+        if hasattr(self._strategy_editor, "set_project_root"):
+            self._strategy_editor.set_project_root(project.root)
         self._left_panel.set_add_resource_enabled(True)
         self._refresh_left_panel()
         self._strategy_editor.show_empty()
@@ -1083,6 +1382,36 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not self._project:
             return
         self._definitions = list(self._project.definition_repository.list_definitions())
+
+        # CRÍTICO: precisamos manter três instâncias-Python em sincronia
+        # — `controller._current_definition`, `editor._definition` e o
+        # elemento correspondente em `controller._definitions`. Senão
+        # divergem após cada Run/Apply (que faz reload do disco aqui).
+        #
+        # Histórico: a versão antiga deste método re-apontava
+        # `_current_definition` para a instância recém-carregada do disco
+        # (`for defn in self._definitions: if match: _current_definition = defn`).
+        # Bug: `editor._definition` (setado UMA ÚNICA vez em
+        # `_on_strategy_opened`) NÃO era atualizado, ficando órfão. Próximo
+        # `strategy_modified` emitido pelo editor (Add/Apply/edit) emitia
+        # essa instância órfã com mutações stale (ex: artifact_refs do
+        # último sync NÃO estavam nela porque o sync mutou a instância
+        # recém-carregada do disco). `_on_strategy_modified` então fazia
+        # `_current_definition = órfã_stale` → `_compute_executed_ids_from_disk`
+        # via outputs sem artifact_ref → ✅ desaparecia da instrução
+        # executada anteriormente.
+        #
+        # Solução: preservar a instância in-memory (que tem todas as
+        # mutações de hidratação/sync) e SUBSTITUÍ-LA em `_definitions`
+        # no lugar da versão recém-carregada do disco. Assim editor,
+        # controller e a lista compartilham a MESMA instância Python —
+        # impossível divergir.
+        if self._current_definition is not None:
+            target_id = self._current_definition.strategy_id
+            for i, defn in enumerate(self._definitions):
+                if defn.strategy_id == target_id:
+                    self._definitions[i] = self._current_definition
+                    break
         # Árvore esquerda mostra TODOS os recursos do projeto (agrupados por
         # estratégia para tipos produzidos). Editor recebe apenas os recursos
         # acessíveis à estratégia atual: globais (datasets, configs) + os
@@ -1105,39 +1434,54 @@ class StrategyManagerV2Controller(QtCore.QObject):
         editor_resources = self._collect_editor_resources(self._current_definition)
         self._strategy_editor.update_available_resources(editor_resources)
 
+        # Combo de embedding precisa refletir adições/remoções de datasets
+        # primários (importação, bulk add, remoção de strategy). Sem
+        # re-chamar aqui, o combo só atualizava ao trocar de estratégia.
+        self._strategy_editor.set_available_embedding_columns(
+            self._collect_primary_embedding_columns()
+        )
+
     def _collect_editor_resources(self, current_definition) -> List[StrategyResource]:
         """
         Lista de recursos disponíveis aos dropdowns do editor para a estratégia
-        atualmente aberta, filtrada por `ResourceCategory`:
+        atualmente aberta, filtrada por `ResourceCategory` e (para datasets)
+        por compatibilidade de embedding:
 
-        - **PRIMÁRIOS** (category=PRIMARY): visíveis em qualquer estratégia
-          — vêm do disk-scan ou de declarações em qualquer definição
-          (datasets importados, pipeline/split/mining configs).
+        - **PRIMÁRIOS** (category=PRIMARY): visíveis em qualquer estratégia.
+          DATASETS primários são adicionalmente filtrados por
+          `current_definition.embedding_column` — só aparecem aqueles cujo
+          schema contém a coluna escolhida (verificada via
+          `column_specs` ou metadata do parquet).
         - **DERIVADOS** (category=DERIVED): visíveis SOMENTE quando declarados
           na própria estratégia atual. Datasets transformados, scores, modelos
           treinados etc. produzidos por OUTRAS estratégias ficam invisíveis.
-
-        Regra deriva da semântica: derivados pertencem ao pipeline da
-        estratégia que os produziu — usá-los cross-strategy quebraria
-        rastreabilidade e poderia trazer artefatos incompatíveis
-        (dim/coluna/escala/etc.).
+          Não filtra por embedding — derivados foram produzidos PELA estratégia
+          atual, então herdam o embedding por construção.
 
         Sem `current_definition` (nenhuma estratégia aberta) retorna lista vazia.
         """
         if current_definition is None:
             return []
 
+        embedding_col = getattr(current_definition, "embedding_column", None)
         seen_ids: set = set()
         resources: List[StrategyResource] = []
 
-        # 1. PRIMÁRIOS — qualquer estratégia ou disk-scan.
+        # 1. PRIMÁRIOS — qualquer estratégia ou disk-scan. DATASETS primários
+        # são filtrados pela coluna de embedding selecionada.
         for r in self._collect_project_resources():
+            if r.category != ResourceCategory.PRIMARY:
+                continue
+            if r.resource_id in seen_ids:
+                continue
             if (
-                r.category == ResourceCategory.PRIMARY
-                and r.resource_id not in seen_ids
+                embedding_col
+                and r.resource_type == StrategyResourceType.DATASET
             ):
-                seen_ids.add(r.resource_id)
-                resources.append(r)
+                if embedding_col not in self._resource_embedding_columns(r):
+                    continue
+            seen_ids.add(r.resource_id)
+            resources.append(r)
 
         # 2. DERIVADOS — somente os da estratégia atual.
         for r in current_definition.resources:
@@ -1176,19 +1520,15 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Lê a dimensionalidade da `embedding_column` da estratégia a partir
         do `column_specs` do primeiro DATASET que ofereça aquela coluna.
 
-        Substitui o lookup antigo via `EmbeddingType.dimensions` —
-        funciona pra qualquer coluna com role=EMBEDDING (incluindo
-        DeepFace/ArcFace no futuro).
+        Funciona pra qualquer coluna com role=EMBEDDING (sepael, DeepFace,
+        ArcFace, etc.).
         """
         col = getattr(definition, "embedding_column", None)
         if not col:
             return None
 
         for resource in (definition.resources or []):
-            if resource.resource_type not in (
-                StrategyResourceType.DATASET,
-                StrategyResourceType.DATASET,
-            ):
+            if resource.resource_type != StrategyResourceType.DATASET:
                 continue
             payload = getattr(resource, "payload", None)
             specs = getattr(payload, "column_specs", None) if payload else None
@@ -1200,46 +1540,40 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 return dim
         return None
 
-    def _collect_common_embedding_columns(self) -> List[str]:
+    def _resource_embedding_columns(self, resource) -> Set[str]:
+        """Retorna o conjunto de colunas role=EMBEDDING de um resource
+        DATASET. Lê de `payload.column_specs` se disponível, senão faz
+        leitura colunar do metadata do parquet (sem hidratar). Retorna
+        set vazio quando não consegue determinar.
         """
-        Calcula a interseção das colunas com role=EMBEDDING entre todos
-        os datasets do projeto (declarados em estratégias + scan de disco).
-        Sem datasets, retorna lista vazia.
-        """
-        dataset_specs_per_resource: List[dict] = []
+        if resource is None or resource.resource_type != StrategyResourceType.DATASET:
+            return set()
+        payload = getattr(resource, "payload", None)
+        specs = getattr(payload, "column_specs", None) if payload else None
+        if not specs:
+            specs = self._read_column_specs_from_parquet(resource)
+        if not specs:
+            return set()
+        return {
+            name for name, spec in specs.items()
+            if str(getattr(spec, "role", "")).lower().endswith("embedding")
+        }
 
+    def _collect_primary_embedding_columns(self) -> List[str]:
+        """
+        Coleta a UNIÃO das colunas role=EMBEDDING dos datasets PRIMÁRIOS
+        do projeto. Sem primários, retorna lista vazia.
+
+        Derivados não entram — eles herdam o embedding da estratégia que
+        os produziu, então restringir o universo por eles era confuso.
+        """
+        all_cols: Set[str] = set()
         for resource in self._collect_project_resources():
-            if resource.resource_type not in (
-                StrategyResourceType.DATASET,
-                StrategyResourceType.DATASET,
-            ):
+            if resource.category != ResourceCategory.PRIMARY:
                 continue
+            all_cols |= self._resource_embedding_columns(resource)
+        return sorted(all_cols)
 
-            payload = getattr(resource, "payload", None)
-            # Lazy-load só do schema do parquet pra ler column_specs sem
-            # hidratar o dataset inteiro (cuidando do custo). Quando o
-            # payload já está em memória, usa direto.
-            specs = getattr(payload, "column_specs", None) if payload else None
-            if not specs:
-                specs = self._read_column_specs_from_parquet(resource)
-            if not specs:
-                continue
-
-            embedding_cols = {
-                name for name, spec in specs.items()
-                if str(getattr(spec, "role", "")).lower().endswith("embedding")
-            }
-            if embedding_cols:
-                dataset_specs_per_resource.append(embedding_cols)
-
-        if not dataset_specs_per_resource:
-            return []
-
-        # Interseção sucessiva.
-        common = dataset_specs_per_resource[0]
-        for s in dataset_specs_per_resource[1:]:
-            common = common & s
-        return sorted(common)
 
     def _read_column_specs_from_parquet(self, resource) -> Optional[dict]:
         """
@@ -1403,10 +1737,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
             emb_dims = self._infer_embedding_dimensions(definition)
             self._left_panel.set_embedding_dimensions(emb_dims)
 
-            # Atualiza opções do combo de embedding com a interseção das
-            # colunas role=EMBEDDING entre os datasets do projeto.
+            # Atualiza opções do combo de embedding com a UNIÃO das colunas
+            # role=EMBEDDING dos datasets PRIMÁRIOS do projeto.
             self._strategy_editor.set_available_embedding_columns(
-                self._collect_common_embedding_columns()
+                self._collect_primary_embedding_columns()
             )
 
     def _on_new_strategy(self) -> None:
@@ -1801,16 +2135,37 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     self._executed_instruction_ids.discard(instr.instruction_id)
                     touched_strategy_ids.add(defn.strategy_id)
 
-        if not any_invalidated:
+        # GATE pela presença de instruções atingidas pelo BFS, NÃO por
+        # `any_invalidated` (que só vira True quando algum output existia
+        # em `defn.resources` e teve `artifact_ref` zerado). Se uma
+        # instrução foi alcançada pelo cascade mas os placeholders dos
+        # outputs estão fora de sync com `defn.resources` por alguma razão,
+        # `_executed_instruction_ids.discard` E `_delete_instruction_output_files`
+        # já rodaram — precisamos persistir os discards + atualizar UI
+        # mesmo se nenhum `existing.artifact_ref = None` aconteceu, senão
+        # o disco fica inconsistente (arquivos apagados, mas JSON ainda
+        # marca como executada) e a UI segue mostrando ✅ falso.
+        if not touched_strategy_ids:
             return
 
-        # Persiste todas as definitions afetadas.
+        # Persiste todas as definitions afetadas. Erros são surfaceados —
+        # se a invalidação fica só em memória mas não chega ao disco, o
+        # próximo open mostra estratégias com ✅ falso em outputs que já
+        # foram deletados do disco.
+        save_errors: List[str] = []
         for defn in self._definitions:
             if defn.strategy_id in touched_strategy_ids:
                 try:
                     self._project.definition_repository.save_definition(defn)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    save_errors.append(f"  • {defn.name} ({defn.strategy_id}): {exc}")
+        if save_errors:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao persistir invalidação",
+                "Falha ao salvar a definition após invalidação em cascata:\n\n"
+                + "\n".join(save_errors),
+            )
 
         # Refresh visual: gates 🔒/✅ + painel de produced resources + árvore.
         self._refresh_instruction_states()
@@ -1900,6 +2255,157 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # NÃO chamamos `_save_current_definition()` aqui — o save virá em
         # seguida via `_on_strategy_modified` (emitido pelo widget logo
         # depois desse signal). Salvar duas vezes seria redundante.
+
+    def _on_embedding_column_change_requested(
+        self, old_value: str, new_value: Optional[str],
+    ) -> None:
+        """Disparado quando o usuário escolhe outra coluna de embedding no
+        combo do header. Mostra diálogo de confirmação listando datasets
+        primários incompatíveis e quantidade de derivados que serão
+        invalidados. Aceita → cascade total + atualiza definition. Cancela
+        → reverte o combo pro `old_value`.
+        """
+        defn = self._current_definition
+        if defn is None or not new_value:
+            # Sem definition ou tentativa de "desselecionar" — só reverte.
+            self._strategy_editor.set_embedding_column_silent(
+                old_value or None
+            )
+            return
+
+        # Datasets primários referenciados por instruções da estratégia
+        # que NÃO têm a nova coluna.
+        incompatible: List[str] = []
+        used_dataset_ids = self._used_primary_dataset_ids(defn)
+        for ds_id in used_dataset_ids:
+            res = defn.get_resource_by_id(ds_id)
+            if res is None:
+                continue
+            cols = self._resource_embedding_columns(res)
+            if new_value not in cols:
+                incompatible.append(ds_id)
+
+        # Conta derivados a invalidar (todos os que têm artifact_ref).
+        derived_with_files = [
+            r for r in defn.resources
+            if r.category == ResourceCategory.DERIVED and r.artifact_ref
+        ]
+
+        # Estratégia limpa (sem derivados nem incompatíveis) → troca direto
+        # sem diálogo. UX: não atrapalha quem está só configurando.
+        if not derived_with_files and not incompatible:
+            self._strategy_editor.set_embedding_column_silent(new_value)
+            self._save_current_definition()
+            self._refresh_left_panel()
+            return
+
+        # Monta mensagem do diálogo
+        lines: List[str] = [
+            f"Mudar o embedding de "
+            f"<b>{old_value or '(nenhum)'}</b> para <b>{new_value}</b>?",
+            "",
+        ]
+        if incompatible:
+            sample = ", ".join(incompatible[:5])
+            extra = f" (+{len(incompatible) - 5})" if len(incompatible) > 5 else ""
+            lines.append(
+                f"⚠ <b>{len(incompatible)} dataset(s) em uso</b> não têm a "
+                f"coluna '{new_value}': {sample}{extra}. Eles ficarão "
+                "indisponíveis nos dropdowns das instruções até serem "
+                "trocados ou re-enriquecidos."
+            )
+            lines.append("")
+        if derived_with_files:
+            lines.append(
+                f"⚠ <b>{len(derived_with_files)} recurso(s) derivado(s)</b> "
+                "produzidos pelas instruções desta estratégia serão "
+                "invalidados (arquivos apagados, ✅ removidos)."
+            )
+            lines.append("")
+        lines.append("Confirmar a troca?")
+
+        reply = QtWidgets.QMessageBox.question(
+            self._view,
+            "Trocar embedding da estratégia",
+            "<br>".join(lines),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            self._strategy_editor.set_embedding_column_silent(
+                old_value or None
+            )
+            return
+
+        # Aceito: cascade total + grava nova coluna.
+        self._invalidate_all_derived(defn)
+        self._strategy_editor.set_embedding_column_silent(new_value)
+        self._save_current_definition()
+        self._refresh_left_panel()
+        self._refresh_instruction_states()
+        self._refresh_produced_resources()
+
+    @staticmethod
+    def _used_primary_dataset_ids(defn: LRStrategyDefinition) -> List[str]:
+        """IDs de DATASETs PRIMÁRIOS referenciados como input por alguma
+        instrução da estratégia. Usado pra detectar incompatibilidades
+        ao trocar embedding."""
+        resources_by_id = {r.resource_id: r for r in (defn.resources or [])}
+        seen: Set[str] = set()
+        ids: List[str] = []
+        for instr in (defn.instructions or []):
+            for rid in (getattr(instr, "input_resource_ids", None) or []):
+                if rid in seen:
+                    continue
+                res = resources_by_id.get(rid)
+                if res is None:
+                    continue
+                if (
+                    res.resource_type == StrategyResourceType.DATASET
+                    and res.category == ResourceCategory.PRIMARY
+                ):
+                    ids.append(rid)
+                    seen.add(rid)
+        return ids
+
+    def _invalidate_all_derived(
+        self, defn: LRStrategyDefinition,
+    ) -> int:
+        """Invalida TODOS os recursos derivados de uma estratégia: apaga
+        arquivos, zera artifact_ref/payload, tira o ✅ das instruções.
+        Usado pelo cascade ao trocar embedding (afeta toda a estratégia,
+        não só a partir de uma raiz).
+
+        Diferente do `_invalidate_dependents_of` (BFS a partir de um
+        resource_id) — aqui invalidamos sem percorrer grafo, já que
+        embedding muda o universo inteiro.
+        """
+        if not self._project:
+            return 0
+
+        invalidated = 0
+        for instr in (defn.instructions or []):
+            output_ids = self._delete_instruction_output_files(
+                instr, definition=defn,
+            )
+            for output_id in output_ids:
+                res = defn.get_resource_by_id(output_id)
+                if res is None:
+                    continue
+                res.artifact_ref = None
+                res.payload = None
+                invalidated += 1
+                if (
+                    self._execution_context is not None
+                    and self._execution_context.has_resource(output_id)
+                ):
+                    try:
+                        self._execution_context.remove_resource(output_id)
+                    except Exception:
+                        pass
+            self._executed_instruction_ids.discard(instr.instruction_id)
+        return invalidated
 
     def _compute_executed_ids_from_disk(self) -> set:
         """
@@ -2047,11 +2553,20 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if self._project is not None:
             self._ensure_executor_and_context(silent=True)
 
-        # Une o set in-memory (instruções executadas nesta sessão) com o
-        # set derivado do disco (instruções cujos outputs já estão
-        # persistidos). Isso restaura ✅ ao reabrir o projeto e mantém ✅
-        # mesmo após resets acidentais do contexto.
-        self._executed_instruction_ids |= self._compute_executed_ids_from_disk()
+        # REPLACEMENT (=) em vez de UNION (|=): o estado de disco é
+        # sempre a fonte autoritativa. Antes esta linha era `|=`, que
+        # corrompia o ✅ visual após edições de pipeline/mining: o
+        # cascade descartava IDs em memória, depois esta linha re-
+        # adicionava se `_compute_executed_ids_from_disk` retornasse
+        # algo (caso raro mas observado), porque a união não tem como
+        # "remover" — só agrega. Com replacement, a função sempre
+        # reflete o estado de disco pós-cascade (artifact_refs zerados
+        # → instrução excluída do set). Cenários que dependiam do
+        # comportamento de união (Run All, Run Single) continuam
+        # funcionando porque chamam `_sync_*_to_definition` ANTES desta
+        # função, garantindo que o disco já tenha os artifact_refs
+        # populados quando `_compute_executed_ids_from_disk` lê.
+        self._executed_instruction_ids = self._compute_executed_ids_from_disk()
 
         runnable_ids: set = set()
         if self._execution_context is not None and self._executor is not None:
@@ -2605,6 +3120,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
             return False
 
         # Propaga novo hash a qualquer definition que referencie o recurso.
+        # Erros de persistência são surfaceados — não dá pra "silenciar" um
+        # save falho aqui: deixaria o JSON em disco com hash antigo, e o
+        # check_integrity do próximo `open` flagaria o arquivo como
+        # MODIFICADO mesmo sem o usuário ter editado nada externamente.
+        save_errors: List[str] = []
+        propagated_to_any_defn = False
         for defn in self._definitions:
             touched = False
             for res in defn.resources:
@@ -2613,10 +3134,43 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     res.artifact_ref = new_ref
                     touched = True
             if touched:
+                propagated_to_any_defn = True
                 try:
                     self._project.definition_repository.save_definition(defn)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    save_errors.append(f"  • {defn.name} ({defn.strategy_id}): {exc}")
+
+        if save_errors:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao persistir definição",
+                "A configuração foi salva em disco mas o hash atualizado "
+                "não pôde ser propagado a uma ou mais estratégias. Ao "
+                "reabrir o projeto, o arquivo aparecerá como MODIFICADO:\n\n"
+                + "\n".join(save_errors),
+            )
+
+        # Defesa contra `self._definitions` desatualizado: se a estratégia
+        # atual existe e tem o recurso mas não foi tocada na propagação
+        # (lista em memória ficou stale por algum motivo), força save.
+        if (
+            not propagated_to_any_defn
+            and self._current_definition is not None
+            and self._current_definition.get_resource_by_id(resource_id) is not None
+        ):
+            existing = self._current_definition.get_resource_by_id(resource_id)
+            existing.payload = new_config
+            existing.artifact_ref = new_ref
+            try:
+                self._project.definition_repository.save_definition(
+                    self._current_definition
+                )
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    self._view,
+                    "Erro ao persistir definição",
+                    f"Falha ao salvar a estratégia atual após edição:\n{exc}",
+                )
 
         # Invalida em cascata qualquer instrução que dependa do recurso
         # editado — em qualquer estratégia do projeto. Sem isso, modelos
@@ -2625,6 +3179,52 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # desatualizados. Cascade também atinge outputs derivados que
         # virem inputs de outras instruções (transitivo).
         self._invalidate_dependents_of(resource_id)
+
+        # Defesa adicional: RESETA `_executed_instruction_ids` para o estado
+        # autoritativo derivado de disco. Necessário porque
+        # `_refresh_instruction_states` faz
+        # `self._executed_instruction_ids |= _compute_executed_ids_from_disk()`
+        # — esse `|=` é UNIÃO. Se o cascade descartou IDs em memória mas
+        # `_compute_executed_ids_from_disk` retorna esses IDs (por alguma
+        # inconsistência transiente entre `defn.resources` e o read), a
+        # união RE-ADICIONA. Aqui forçamos REPLACEMENT (=, não |=) usando
+        # o estado de disco direto, que reflete o estado pós-cascade
+        # (foi acabado de ser salvo via `save_definition`).
+        try:
+            self._executed_instruction_ids = self._compute_executed_ids_from_disk()
+
+            runnable_ids: Set[str] = set()
+            if (
+                self._current_definition is not None
+                and self._execution_context is not None
+                and self._executor is not None
+            ):
+                for instr in self._current_definition.instructions:
+                    if instr.instruction_id in self._executed_instruction_ids:
+                        continue
+                    try:
+                        can_run, _ = self._executor.can_execute_instruction(
+                            instr, self._execution_context
+                        )
+                    except Exception:
+                        can_run = False
+                    if can_run:
+                        runnable_ids.add(instr.instruction_id)
+
+            self._strategy_editor.update_instruction_states(
+                runnable_ids=runnable_ids,
+                executed_ids=set(self._executed_instruction_ids),
+            )
+            self._refresh_produced_resources()
+        except Exception as exc:
+            # Surface erros ao invés de engolir silenciosamente.
+            import traceback
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Falha ao atualizar UI pós-edição",
+                f"Estado em memória foi atualizado, mas a UI pode "
+                f"estar dessincronizada:\n{exc}\n\n{traceback.format_exc()}",
+            )
 
         # Re-renderiza a árvore esquerda SEM recarregar definitions do disco
         # (o que descartaria seleções pendentes nos dropdowns do editor).
@@ -3831,15 +4431,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._save_current_definition()
 
     def _save_current_definition(self) -> None:
-        """Salva a definição da estratégia atual no repositório."""
+        """Salva a definição da estratégia atual no repositório.
+
+        Erros de persistência são surfaceados como QMessageBox — antes
+        eram silenciosamente engolidos via `except: pass`, o que mascarava
+        bugs onde mutações in-memory (ex: novo hash após edição inline de
+        pipeline/mining) nunca chegavam ao disco e o `check_integrity` do
+        próximo `open` flagava o arquivo como MODIFICADO.
+        """
         if self._project and self._current_definition:
             try:
                 self._project.definition_repository.save_definition(
                     self._current_definition
                 )
                 self._is_dirty = False
-            except Exception:
-                pass
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    self._view,
+                    "Erro ao salvar estratégia",
+                    f"Não foi possível persistir a estratégia "
+                    f"'{self._current_definition.name}':\n{exc}\n\n"
+                    "Alterações em memória não foram salvas. Tente "
+                    "novamente; se o problema persistir, verifique "
+                    "permissões de escrita na pasta do projeto.",
+                )
 
     def _refresh_produced_resources(self) -> None:
         """Atualiza o widget de recursos produzidos em todas as abas."""

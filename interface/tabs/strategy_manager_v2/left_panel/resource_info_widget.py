@@ -25,6 +25,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
     - Utilização: em quais estratégias/instruções o recurso aparece
     """
 
+    # Disparado quando o usuário clica em "Abrir no Gerenciador" no
+    # painel de propriedades de um DATASET primário. O controller V2
+    # propaga até MainGUIController, que troca de aba e carrega o
+    # dataset. Path é absoluto.
+    edit_dataset_in_manager_requested = QtCore.pyqtSignal(str)
+
     def __init__(self, parent=None, compact: bool = False):
         """
         Args:
@@ -36,10 +42,30 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 editor de instruções) sem duplicar info que já está visível.
         """
         super().__init__(parent)
+        # WA_DontShowOnScreen impede o Qt de exibir este widget como
+        # janela top-level caso seja criado sem parent legítimo (callers
+        # antigos podem ter feito isso). A flag é automaticamente
+        # neutralizada quando o widget vai ser mostrado dentro da árvore
+        # do parent legítimo. Crítico pra evitar o flash "janelinha
+        # piscando" durante criação lazy de cards de instrução.
+        self.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True
+        )
         self._hash_service = HashService()
         self._compact = bool(compact)
         self._init_ui()
         self.clear()
+
+    def showEvent(self, event):
+        # Remove a flag uma vez que o widget está sendo realmente
+        # exibido dentro do parent — daí em diante comportamento normal.
+        if self.testAttribute(
+            QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen
+        ):
+            self.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, False
+            )
+        super().showEvent(event)
 
     def _add_section_header(
         self,
@@ -54,7 +80,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         """
         if self._compact:
             return
-        sep = QtWidgets.QFrame()
+        sep = QtWidgets.QFrame(parent=self)
         sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
         sep.setStyleSheet("color: #ddd;")
         layout.addWidget(sep)
@@ -76,7 +102,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # vazio" perceptível no card. Sem scroll area, o props_container
         # respeita seu sizeHint natural.
         if not self._compact:
-            self.tabs = QtWidgets.QTabWidget()
+            self.tabs = QtWidgets.QTabWidget(parent=self)
             self.tabs.setDocumentMode(True)
             self.tabs.setStyleSheet("""
                 QTabWidget::pane {
@@ -105,7 +131,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             """)
 
         # ── Container das Propriedades (sempre criado) ───────────────
-        props_container = QtWidgets.QWidget()
+        props_container = QtWidgets.QWidget(parent=self)
         props_layout = QtWidgets.QVBoxLayout(props_container)
         props_layout.setContentsMargins(8, 8, 8, 8)
         props_layout.setSpacing(6)
@@ -155,15 +181,42 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             lbl.setStyleSheet(_lbl_style)
             form.addRow(lbl, value_lbl)
 
-        self._basic_info_section = QtWidgets.QWidget()
+        self._basic_info_section = QtWidgets.QWidget(parent=self)
         basic_layout = QtWidgets.QVBoxLayout(self._basic_info_section)
         basic_layout.setContentsMargins(0, 0, 0, 0)
-        basic_layout.setSpacing(0)
+        basic_layout.setSpacing(4)
         basic_layout.addLayout(form)
+
+        # Botão "Abrir no Gerenciador de Datasets" — visível só pra
+        # DATASET PRIMARY com arquivo existente no projeto. Modo compact
+        # esconde (a 3ª coluna do editor é informativa, não navegacional).
+        self.btn_open_in_dataset_manager = QtWidgets.QPushButton(
+            "📂 Abrir no Gerenciador de Datasets"
+        )
+        self.btn_open_in_dataset_manager.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid #1565c0; border-radius: 4px;"
+            "  background: #e3f2fd; color: #1565c0;"
+            "  padding: 4px 10px; font-size: 11px;"
+            "}"
+            "QPushButton:hover { background: #bbdefb; }"
+        )
+        self.btn_open_in_dataset_manager.setToolTip(
+            "Abre o dataset no Gerenciador de Datasets. Modificações "
+            "salvas lá são automaticamente refletidas no projeto."
+        )
+        self.btn_open_in_dataset_manager.clicked.connect(
+            self._on_open_in_dataset_manager
+        )
+        self.btn_open_in_dataset_manager.setVisible(False)
+        basic_layout.addWidget(self.btn_open_in_dataset_manager)
+        # Path absoluto atual exposto pra `_on_open_in_dataset_manager`.
+        self._current_resource_abs_path: Optional[Path] = None
+
         props_layout.addWidget(self._basic_info_section)
 
         # Estatísticas do dataset (visível apenas para DATASET)
-        self._stats_section = QtWidgets.QWidget()
+        self._stats_section = QtWidgets.QWidget(parent=self)
         stats_layout = QtWidgets.QVBoxLayout(self._stats_section)
         stats_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         stats_layout.setSpacing(4)
@@ -211,7 +264,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         props_layout.addWidget(self._stats_section)
 
         # Detalhes do pipeline (visível apenas para PIPELINE_CONFIG)
-        self._pipeline_section = QtWidgets.QWidget()
+        self._pipeline_section = QtWidgets.QWidget(parent=self)
         pipe_layout = QtWidgets.QVBoxLayout(self._pipeline_section)
         pipe_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         pipe_layout.setSpacing(4)
@@ -244,7 +297,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         # Detalhes do Modelo de Similaridade (visível apenas para
         # TRAINED_SIMILARITY_MODEL)
-        self._sim_model_section = QtWidgets.QWidget()
+        self._sim_model_section = QtWidgets.QWidget(parent=self)
         sim_layout = QtWidgets.QVBoxLayout(self._sim_model_section)
         sim_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         sim_layout.setSpacing(4)
@@ -280,7 +333,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         # Detalhes do Modelo de Calibração (visível apenas para
         # TRAINED_CALIBRATION_MODEL)
-        self._calib_model_section = QtWidgets.QWidget()
+        self._calib_model_section = QtWidgets.QWidget(parent=self)
         calib_layout = QtWidgets.QVBoxLayout(self._calib_model_section)
         calib_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         calib_layout.setSpacing(4)
@@ -317,7 +370,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         # Detalhes de Score Dataset (visível para SIMILARITY_SCORES e
         # CALIBRATED_SCORES)
-        self._scores_section = QtWidgets.QWidget()
+        self._scores_section = QtWidgets.QWidget(parent=self)
         scores_layout = QtWidgets.QVBoxLayout(self._scores_section)
         scores_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         scores_layout.setSpacing(4)
@@ -354,7 +407,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         props_layout.addWidget(self._scores_section)
 
         # Detalhes de Pipeline TREINADO (visível para TRAINED_PIPELINE)
-        self._pipeline_trained_section = QtWidgets.QWidget()
+        self._pipeline_trained_section = QtWidgets.QWidget(parent=self)
         pt_layout = QtWidgets.QVBoxLayout(self._pipeline_trained_section)
         pt_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         pt_layout.setSpacing(4)
@@ -387,7 +440,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         props_layout.addWidget(self._pipeline_trained_section)
 
         # Detalhes de Hubness Report (visível para HUBNESS_REPORT)
-        self._hubness_report_section = QtWidgets.QWidget()
+        self._hubness_report_section = QtWidgets.QWidget(parent=self)
         hr_layout = QtWidgets.QVBoxLayout(self._hubness_report_section)
         hr_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         hr_layout.setSpacing(4)
@@ -420,7 +473,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         props_layout.addWidget(self._hubness_report_section)
 
         # Detalhes de Hubness Ablation (visível para HUBNESS_ABLATION_RESULT)
-        self._hubness_ablation_section = QtWidgets.QWidget()
+        self._hubness_ablation_section = QtWidgets.QWidget(parent=self)
         ha_layout = QtWidgets.QVBoxLayout(self._hubness_ablation_section)
         ha_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         ha_layout.setSpacing(4)
@@ -451,7 +504,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         props_layout.addWidget(self._hubness_ablation_section)
 
         # Detalhes do Resultado de Validação (visível para VALIDATION_RESULT)
-        self._validation_result_section = QtWidgets.QWidget()
+        self._validation_result_section = QtWidgets.QWidget(parent=self)
         vr_layout = QtWidgets.QVBoxLayout(self._validation_result_section)
         vr_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
         vr_layout.setSpacing(4)
@@ -513,7 +566,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             props_layout.addStretch()
 
-            props_scroll = QtWidgets.QScrollArea()
+            props_scroll = QtWidgets.QScrollArea(parent=self)
             props_scroll.setWidgetResizable(True)
             props_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
             props_scroll.setWidget(props_container)
@@ -521,12 +574,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
             # Aba Utilização — só faz sentido com `definitions` passadas
             # pelo left panel principal.
-            usage_container = QtWidgets.QWidget()
+            usage_container = QtWidgets.QWidget(parent=self)
             usage_layout = QtWidgets.QVBoxLayout(usage_container)
             usage_layout.setContentsMargins(8, 8, 8, 8)
             usage_layout.setSpacing(4)
 
-            self.usage_list = QtWidgets.QListWidget()
+            self.usage_list = QtWidgets.QListWidget(parent=self)
             self.usage_list.setStyleSheet(
                 "font-size: 11px; border: none; background: white;"
             )
@@ -581,6 +634,24 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self.lbl_path.setText("(sem arquivo vinculado)")
             self.lbl_hash.setText("—")
             self.lbl_size.setText("—")
+
+        # Atualiza o botão "Abrir no Gerenciador de Datasets":
+        # só visível pra DATASET + PRIMARY + arquivo presente no projeto.
+        # Modo compact (3ª coluna do editor) NUNCA mostra — não é fluxo
+        # de navegação.
+        from faceaudit.enums.resource_category import ResourceCategory as _RC
+        from faceaudit.enums.strategy_resource_type import (
+            StrategyResourceType as _RT,
+        )
+        show_open_btn = (
+            not self._compact
+            and resource.resource_type == _RT.DATASET
+            and resource.category == _RC.PRIMARY
+            and abs_path is not None
+            and abs_path.exists()
+        )
+        self.btn_open_in_dataset_manager.setVisible(show_open_btn)
+        self._current_resource_abs_path = abs_path if show_open_btn else None
 
         # Estatísticas do dataset — também aplicáveis a INTERMEDIATE_DATASET
         # (datasets produzidos por instruções; o JSON paralelo é gerado sob
@@ -691,12 +762,21 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             else:
                 self.tabs.setTabText(1, f"Utilização ({usage_count})")
 
+    def _on_open_in_dataset_manager(self) -> None:
+        """Slot do botão — emite signal com path absoluto do dataset."""
+        if self._current_resource_abs_path is not None:
+            self.edit_dataset_in_manager_requested.emit(
+                str(self._current_resource_abs_path)
+            )
+
     def clear(self) -> None:
         # Mostra o placeholder e esconde TODAS as seções de conteúdo —
         # estado "sem recurso selecionado". Usuário vê uma mensagem
         # única em vez de uma fileira de "—" nos campos.
         self._empty_placeholder.setVisible(True)
         self._basic_info_section.setVisible(False)
+        self.btn_open_in_dataset_manager.setVisible(False)
+        self._current_resource_abs_path = None
 
         for lbl in (self.lbl_id, self.lbl_type, self.lbl_path, self.lbl_hash, self.lbl_size):
             lbl.setText("—")

@@ -88,12 +88,24 @@ class WorkerProgressRunner(QtCore.QObject):
         worker.error.connect(self._on_worker_error)
 
         # Cancel: amarra o botão à .stop() do worker quando ambos existem.
+        # CRÍTICO: usa `Qt.DirectConnection` pra que `.stop()` execute na
+        # main thread imediatamente, em vez de ser enfileirado no event
+        # loop do thread do worker. Sem isso, o worker NUNCA processa o
+        # slot porque está bloqueado no loop do `run()` (não dá tick no
+        # event loop). Cancel fica "preso" até o worker terminar
+        # naturalmente — usuário vê "Cancelar não funciona".
+        # Seguro pra `stop()` que só seta uma flag bool — atomic em CPython
+        # via GIL.
         if allow_cancel and hasattr(cls, "stop"):
             if use_log_dialog:
                 # LogProgressDialog usa sinal próprio.
-                self._dialog.cancellation_requested.connect(worker.stop)
+                self._dialog.cancellation_requested.connect(
+                    worker.stop, QtCore.Qt.ConnectionType.DirectConnection,
+                )
             else:
-                self._dialog.canceled.connect(worker.stop)
+                self._dialog.canceled.connect(
+                    worker.stop, QtCore.Qt.ConnectionType.DirectConnection,
+                )
 
         # Lifecycle: thread termina em qualquer um dos sinais terminais.
         worker.finished.connect(self._thread.quit)

@@ -82,19 +82,25 @@ class OutputRowWidget(QtWidgets.QFrame):
         layout.setVerticalSpacing(2)
 
         # Linha 1: ícone status + label + nome + tipo
-        self._status_lbl = QtWidgets.QLabel("⬜")
+        # O ícone só faz sentido em modo read_only (painel de resultados,
+        # 3ª coluna) — reflete estado de runtime ⬜/🟡/🟢. Em modo de
+        # edição (painel de configuração, 2ª coluna) o estado é sempre
+        # placeholder e o quadradinho ⬜ era confundido com checkbox.
+        self._status_lbl = QtWidgets.QLabel("⬜", parent=self)
         self._status_lbl.setStyleSheet("font-size: 14px;")
         self._status_lbl.setMinimumWidth(20)
-        layout.addWidget(self._status_lbl, 0, 0)
+        self._status_lbl.setVisible(self._read_only)
+        if self._read_only:
+            layout.addWidget(self._status_lbl, 0, 0)
 
-        lbl = QtWidgets.QLabel(f"{label}:")
+        lbl = QtWidgets.QLabel(f"{label}:", parent=self)
         lbl.setStyleSheet("font-size: 11px; color: #2e7d32; font-weight: bold;")
         layout.addWidget(lbl, 0, 1)
 
         if self._read_only:
             # Display puro — QLabel, visualmente sintoniza com o painel
             # informativo da 3ª coluna.
-            self._name_field = QtWidgets.QLabel(resource_id or "")
+            self._name_field = QtWidgets.QLabel(resource_id or "", parent=self)
             self._name_field.setStyleSheet(
                 "font-size: 11px; color: #222; font-weight: 500;"
             )
@@ -105,20 +111,20 @@ class OutputRowWidget(QtWidgets.QFrame):
                 "Edite o nome do recurso na coluna de configuração (2ª coluna)."
             )
         else:
-            self._name_field = QtWidgets.QLineEdit(resource_id or "")
+            self._name_field = QtWidgets.QLineEdit(resource_id or "", parent=self)
             self._name_field.setPlaceholderText("nome do recurso de saída")
             self._name_field.setStyleSheet("font-size: 11px;")
             self._name_field.textChanged.connect(self._on_name_changed)
             self._name_field.editingFinished.connect(self._on_name_changed)
         layout.addWidget(self._name_field, 0, 2)
 
-        type_lbl = QtWidgets.QLabel(f"[{self._resource_type.value}]")
+        type_lbl = QtWidgets.QLabel(f"[{self._resource_type.value}]", parent=self)
         type_lbl.setStyleSheet("font-size: 9px; color: #888;")
         layout.addWidget(type_lbl, 0, 3)
 
         # Linha 2: status textual (e.g. "salvo em disco", "em memória",
         # "placeholder"). Container vazio quando não há texto.
-        self._summary_container = QtWidgets.QWidget()
+        self._summary_container = QtWidgets.QWidget(parent=self)
         sum_layout = QtWidgets.QVBoxLayout(self._summary_container)
         sum_layout.setContentsMargins(28, 0, 0, 0)
         sum_layout.setSpacing(0)
@@ -132,7 +138,21 @@ class OutputRowWidget(QtWidgets.QFrame):
             from interface.tabs.strategy_manager_v2.left_panel.resource_info_widget import (
                 ResourceInfoWidget,
             )
-            self._info_widget = ResourceInfoWidget(compact=True)
+            # CRÍTICO: passa parent=self desde a construção. Antes era
+            # criado parentless (ResourceInfoWidget(compact=True) sem
+            # parent), o que fazia o Qt instanciá-lo como top-level
+            # window brevemente — causa do flash "janelinha piscando" na
+            # PRIMEIRA seleção de cada instrução (criação lazy do card).
+            # Subsequente seleções usam o card cacheado, então não recriam
+            # o widget e não piscam. Trocar de estratégia invalida o cache,
+            # forçando recriação e reproduzindo o flash.
+            self._info_container = QtWidgets.QWidget(parent=self)
+            self._info_container.setAttribute(
+                QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True
+            )
+            self._info_widget = ResourceInfoWidget(
+                parent=self._info_container, compact=True
+            )
             # Em compact o widget tem QTabWidget+QScrollArea (policy
             # Expanding default) — sem Maximum vertical o widget puxa o
             # row inteiro e gera faixa vazia.
@@ -140,7 +160,6 @@ class OutputRowWidget(QtWidgets.QFrame):
                 QtWidgets.QSizePolicy.Policy.Preferred,
                 QtWidgets.QSizePolicy.Policy.Maximum,
             )
-            self._info_container = QtWidgets.QWidget()
             info_layout = QtWidgets.QVBoxLayout(self._info_container)
             info_layout.setContentsMargins(28, 4, 4, 4)
             info_layout.setSpacing(0)
@@ -220,10 +239,18 @@ class OutputRowWidget(QtWidgets.QFrame):
             self._info_container.setVisible(False)
             return
 
+        # Signature inclui identificadores que mudam quando o resource é
+        # reproduzido por re-execução. Antes, usava só booleanos
+        # has_payload/has_artifact — bug: re-executar STRATEGY_EVALUATION
+        # produzia novo VALIDATION_RESULT mas booleanos continuavam True
+        # nos dois lados → signature igual → cache hit → ResourceInfoWidget
+        # exibia métricas antigas. id(payload) muda quando nova instância
+        # é produzida; artifact_ref.hash muda quando o arquivo é regravado.
+        artifact_ref = getattr(resource, "artifact_ref", None)
         signature = (
             getattr(resource, "resource_id", None),
-            bool(getattr(resource, "has_payload", False)),
-            bool(getattr(resource, "has_artifact", False)),
+            id(getattr(resource, "payload", None)),
+            getattr(artifact_ref, "hash", None),
             str(project_root) if project_root else None,
         )
         if signature == self._last_info_signature:

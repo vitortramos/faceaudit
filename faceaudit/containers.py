@@ -63,6 +63,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
     ff_service = providers.Singleton(
         FFService,
         use_gpu=config.ff.use_gpu.as_bool(),
+        batch_size=config.ff.batch_size.as_int(),
     )
 
     ofiq_service = providers.Singleton(

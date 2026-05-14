@@ -192,7 +192,16 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             fields.insert(1, ("similarity_score_dataset_description", pa.string()))
         if has_log_lr:
             fields.append(("log_lr", pa.float64()))
-        schema = pa.schema(fields)
+
+        # Schema metadata — flags do dataset que não cabem como coluna
+        # (constantes pra todas as linhas). `is_casework` é crítico:
+        # sem persistir explicitamente, o loader cai numa inferência
+        # frágil baseada em `all(same_person is None)`, que pode falhar
+        # silenciosamente (pd.NA vs None, valores residuais, etc).
+        schema_metadata = {}
+        if bool(self.metadata.get("is_casework", False)):
+            schema_metadata[b"faceaudit:is_casework"] = b"true"
+        schema = pa.schema(fields, metadata=schema_metadata or None)
 
         if n == 0:
             with pq.ParquetWriter(path_obj, schema) as writer:

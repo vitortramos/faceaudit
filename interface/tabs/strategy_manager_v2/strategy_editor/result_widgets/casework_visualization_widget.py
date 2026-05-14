@@ -73,6 +73,7 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
 
         self.figure = Figure(figsize=(8, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setParent(self)
 
         if show_toolbar:
             self.toolbar: Optional[NavigationToolbar] = NavigationToolbar(
@@ -109,7 +110,7 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
     # ── UI building ───────────────────────────────────────────────────────────
 
     def _build_header_frame(self) -> QtWidgets.QFrame:
-        frame = QtWidgets.QFrame()
+        frame = QtWidgets.QFrame(parent=self)
         frame.setStyleSheet(
             f"QFrame {{ background: {_BG_HEADER}; "
             f"border-left: 3px solid {_BORDER_HEADER}; border-radius: 2px; }}"
@@ -153,7 +154,7 @@ class CaseworkVisualizationWidget(QtWidgets.QWidget):
         self._header_label.setText(text)
 
     def _build_help_frame(self) -> QtWidgets.QFrame:
-        frame = QtWidgets.QFrame()
+        frame = QtWidgets.QFrame(parent=self)
         frame.setStyleSheet(
             "QFrame { background: #f4f6fa; border-left: 3px solid #2E5090;"
             " border-radius: 2px; }"

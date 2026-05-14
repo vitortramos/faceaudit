@@ -145,6 +145,9 @@ class FeatureExtractionPipeline:
         # faces são tocadas. Mesma semântica do enrich.
         per_face_failures: List[tuple] = []
         touched_face_ids: set = {id(f) for f in dataset.faces}
+        # Sinaliza cancellation pelo usuário — relançado depois do save
+        # parcial pra que o Worker trate corretamente como cancelado.
+        interrupted = False
 
         try:
             # A. ForensicFace (Embeddings, Detecção, Pose, Idade)
@@ -232,7 +235,11 @@ class FeatureExtractionPipeline:
         except InterruptedError:
             print("\n🛑 [Pipeline] Processamento interrompido pelo usuário.")
             print("   ⚠️ Salvando estado parcial do dataset...")
-            # Não relançamos o erro aqui para permitir que o bloco de persistência abaixo seja executado.
+            interrupted = True
+            # Não relançamos AQUI para permitir o bloco de persistência
+            # abaixo executar. Relançamento ocorre DEPOIS do save (mais
+            # abaixo) — Worker recebe a InterruptedError e trata como
+            # cancelamento legítimo em vez de "sucesso".
 
         except Exception as e:
             self.logger.error(f"Erro inesperado durante a execução do pipeline: {e}", exc_info=True)
@@ -259,8 +266,13 @@ class FeatureExtractionPipeline:
             print(f"❌ {msg}")
             self.logger.error(msg)
             raise e
-        
-        if progress_callback: 
+
+        # Re-lança DEPOIS do save parcial, pra que o Worker trate como
+        # cancelado em vez de "sucesso". Estado parcial fica no disco.
+        if interrupted:
+            raise InterruptedError("Processamento interrompido pelo usuário.")
+
+        if progress_callback:
             progress_callback("Processamento Concluído!", 100)
 
         return dataset
@@ -290,8 +302,10 @@ class FeatureExtractionPipeline:
             return self.ff_service
 
         # Singleton não cobre — constrói FFService temporário. `use_gpu`
-        # vem do Singleton (é capability da máquina, não da execução).
+        # e `batch_size` vêm do Singleton (capability/config da máquina,
+        # não da execução).
         use_gpu = getattr(self.ff_service, "_use_gpu", False)
+        batch_size = getattr(self.ff_service, "_batch_size", 32)
         print(
             f"⚙️ [Pipeline] FFService Singleton não cobre os params pedidos "
             f"(models={wanted_models}, det_size={det_size}, extended={extended}). "
@@ -302,6 +316,7 @@ class FeatureExtractionPipeline:
             det_size=det_size,
             use_gpu=use_gpu,
             extended=extended,
+            batch_size=batch_size,
         )
 
     def _resolve_serfiq_service(
@@ -398,6 +413,9 @@ class FeatureExtractionPipeline:
         # execução — usadas pra limpar as colunas de erro quando todas
         # as fases passaram (re-run convergente).
         touched_face_ids: set = set()
+        # Sinaliza cancellation pelo usuário — relançado depois do save
+        # parcial pra que o Worker trate corretamente como cancelado.
+        interrupted = False
 
         try:
             if config.compute_ff:
@@ -506,7 +524,8 @@ class FeatureExtractionPipeline:
 
         except InterruptedError:
             print("\n🛑 [Pipeline] Enriquecimento interrompido pelo usuário.")
-            
+            interrupted = True
+
         except Exception as e:
             self.logger.error(f"Erro ao enriquecer dataset: {e}", exc_info=True)
             raise e
@@ -526,12 +545,20 @@ class FeatureExtractionPipeline:
         if dataset.name:
             base_dir = dataset._parquet_dir or self.storage_path
             cache_file = Path(base_dir) / f"{dataset.name}.parquet"
-            if progress_callback: progress_callback("Salvando alterações...", 99)
+            if progress_callback and not interrupted:
+                progress_callback("Salvando alterações...", 99)
             try:
                 print(f"💾 [Pipeline] Salvando dataset enriquecido em: {cache_file}")
                 dataset.to_parquet(cache_file)
             except Exception as e:
                 self.logger.error(f"Erro ao salvar pós-enriquecimento: {e}")
+
+        # Re-lança DEPOIS do save parcial, pra que o Worker/Controller
+        # saiba que foi cancelado e não trate como sucesso. Sem isso, o
+        # EnrichWorker emite `finished(dataset)` e a UI fecha o diálogo
+        # como "concluído", ignorando o clique do usuário no Cancelar.
+        if interrupted:
+            raise InterruptedError("Enriquecimento interrompido pelo usuário.")
 
         if progress_callback:
             progress_callback("Enriquecimento Concluído!", 100)

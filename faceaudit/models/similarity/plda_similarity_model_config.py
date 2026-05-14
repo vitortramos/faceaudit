@@ -145,16 +145,14 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
 
     # ── Visibilidade de campos na UI ─────────────────────────────────
 
-    # Campo cuja mudança deve disparar rebuild do nested form (porque
-    # afeta a visibilidade de outros fields). Lido pelo nested_dto_widget.
-    REACTIVE_FIELDS = ("plda_variant",)
+    # Campos cuja mudança deve disparar rebuild do nested form (afetam
+    # visibilidade ou estado de outros fields). Lido pelo nested_dto_widget.
+    REACTIVE_FIELDS = ("plda_variant", "plda_mode")
 
     def get_hidden_fields(self):
         """
         Retorna o conjunto de nomes de campos que devem ser OCULTADOS pela
-        UI dado o estado atual do config. Usado pelo `nested_dto_widget`
-        para esconder dinamicamente campos que não se aplicam à variante
-        selecionada.
+        UI dado o estado atual do config.
 
         - SIMPLE: oculta `regularization` (só faz sentido em TWO_COVARIANCE).
         - TWO_COVARIANCE: oculta `em_iterations`, `plda_mode`, `latent_dim`
@@ -166,6 +164,22 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
         if self.uses_simple_variant:
             return {"regularization"}
         return {"em_iterations", "plda_mode", "latent_dim"}
+
+    def get_readonly_fields(self):
+        """
+        Retorna o conjunto de nomes de campos que devem ficar VISÍVEIS
+        mas READ-ONLY (desabilitados) dado o estado atual do config.
+
+        - SIMPLE + FULL_RANK: `latent_dim` fica read-only porque o valor
+          é ignorado em runtime — full-rank usa toda a dimensão do
+          embedding de treinamento, não o latent_dim configurado.
+
+        Returns:
+            Set[str] com nomes de campos a desabilitar.
+        """
+        if self.uses_simple_variant and self.uses_full_rank:
+            return {"latent_dim"}
+        return set()
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:

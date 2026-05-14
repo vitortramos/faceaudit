@@ -60,6 +60,12 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     # controller usa pra apagar arquivos dos recursos produzidos antes
     # da instrução sumir.
     instruction_removed = QtCore.pyqtSignal(object)
+    # Pedido de troca do embedding column. Diferente de strategy_modified,
+    # este signal é interceptado pelo controller que pode mostrar diálogo
+    # de confirmação (datasets incompatíveis + cascade de derivados) e
+    # decidir aceitar ou reverter.
+    embedding_column_change_requested = QtCore.pyqtSignal(str, object)
+    # (old_value, new_value) — old é "" quando nada estava selecionado.
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -110,19 +116,21 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         header_row.addWidget(lbl_emb)
 
         # Combo dinâmico — populado via `set_available_embedding_columns()`
-        # com a interseção das colunas role=EMBEDDING entre os datasets do
-        # projeto. Sem datasets, mostra só "(auto-detect)".
+        # com a UNIÃO das colunas role=EMBEDDING dos datasets PRIMÁRIOS do
+        # projeto. Sem datasets, fica desabilitado com placeholder.
         self.combo_embedding_column = QtWidgets.QComboBox()
         self.combo_embedding_column.setStyleSheet("font-size: 11px;")
-        self.combo_embedding_column.setMinimumWidth(180)
+        self.combo_embedding_column.setMinimumWidth(220)
         self.combo_embedding_column.setToolTip(
-            "Coluna de embedding usada por toda a estratégia. As opções são "
-            "as colunas com role=EMBEDDING presentes em TODOS os datasets "
-            "do projeto (interseção)."
+            "Coluna de embedding usada por toda a estratégia. "
+            "Apenas datasets que tenham essa coluna ficam disponíveis nas "
+            "instruções. Trocar invalida todos os recursos derivados."
         )
-        self.combo_embedding_column.addItem("(auto-detect)", userData=None)
-        self.combo_embedding_column.currentIndexChanged.connect(
-            self._on_embedding_column_changed
+        # `activated` (não currentIndexChanged) — só dispara em interação
+        # USUÁRIO, ignora mudanças programáticas (`setCurrentIndex` em
+        # populate). Evita loops e mudanças "fantasma" durante refresh.
+        self.combo_embedding_column.activated.connect(
+            self._on_embedding_combo_activated
         )
         # Cache pra evitar repopulações redundantes do combo a cada
         # refresh do controller (`update_available_resources` é chamado
@@ -237,28 +245,11 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             # instruções com IDs que colidiriam (raro mas possível).
             results_panel.invalidate_all()
 
-        # Seleciona a embedding_column gravada na estratégia. Se a coluna
-        # não estiver entre as opções disponíveis (porque o usuário ainda
-        # não importou os datasets, ou a coluna foi removida), adicionamos
-        # como item especial marcado pra ficar visível mas alertando que
-        # falta consistência — a regra de validação vai capturar.
-        target_col = getattr(definition, "embedding_column", None)
-        self.combo_embedding_column.blockSignals(True)
-        idx = 0
-        if target_col:
-            for i in range(self.combo_embedding_column.count()):
-                if self.combo_embedding_column.itemData(i) == target_col:
-                    idx = i
-                    break
-            else:
-                # Não encontrou nas opções atuais — injeta como item órfão.
-                self.combo_embedding_column.addItem(
-                    f"{target_col}  (não disponível em todos os datasets)",
-                    userData=target_col,
-                )
-                idx = self.combo_embedding_column.count() - 1
-        self.combo_embedding_column.setCurrentIndex(idx)
-        self.combo_embedding_column.blockSignals(False)
+        # Sincroniza a seleção do combo com `definition.embedding_column`.
+        # Se a coluna gravada não está entre as opções disponíveis (datasets
+        # ainda não importados), adicionamos como item órfão visível —
+        # validation rule depois alerta sobre inconsistência.
+        self._sync_embedding_combo_to_definition()
 
         self.stack.setCurrentIndex(1)
 
@@ -295,45 +286,97 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             config_panel.show_empty()
             results_panel.invalidate_all()
         self.combo_embedding_column.blockSignals(True)
-        self.combo_embedding_column.setCurrentIndex(0)
+        self.combo_embedding_column.clear()
+        self.combo_embedding_column.setEnabled(False)
+        self.combo_embedding_column.setPlaceholderText(
+            "Adicione um dataset primeiro"
+        )
         self.combo_embedding_column.blockSignals(False)
+        # Reset do cache — sem isso, o próximo `set_available_embedding_columns`
+        # vê o mesmo conteúdo do cache pré-show_empty e considera "sem mudança",
+        # pulando a repopulação. Resultado visível: combo permanece com
+        # placeholder mesmo quando há datasets no projeto.
+        self._available_embedding_columns = []
         self.stack.setCurrentIndex(0)
 
     def set_available_embedding_columns(self, columns: List[str]) -> None:
         """
-        Atualiza as opções do combo de embedding com as colunas role=EMBEDDING
-        comuns a todos os datasets do projeto (a interseção é calculada pelo
-        controller). Preserva a seleção atual se ainda for válida.
+        Atualiza as opções do combo com a UNIÃO das colunas role=EMBEDDING
+        dos datasets PRIMÁRIOS do projeto.
+
+        Sem datasets primários (lista vazia): combo desabilitado com
+        placeholder. Com pelo menos uma coluna: combo habilitado, e:
+
+        - Se a estratégia já tem `embedding_column` gravado E ele está nas
+          opções → seleciona ele.
+        - Se está gravado mas SUMIU das opções → preserva como item órfão
+          marcado (validação alerta).
+        - Se nada está gravado → auto-seleciona o primeiro item da lista
+          e silenciosamente grava em `definition.embedding_column`.
+          Sem isso, a estratégia abriria com o combo no primeiro item mas
+          a definition continuaria None — confuso e quebra os filtros
+          de dropdown.
         """
         normalized = sorted(set(columns or []))
         if normalized == self._available_embedding_columns:
             return  # Sem mudança — evita rebuild redundante.
         self._available_embedding_columns = normalized
 
-        previous = self.combo_embedding_column.currentData()
         self.combo_embedding_column.blockSignals(True)
         self.combo_embedding_column.clear()
-        self.combo_embedding_column.addItem("(auto-detect)", userData=None)
+        self.combo_embedding_column.setPlaceholderText("")
+
+        if not normalized:
+            self.combo_embedding_column.setEnabled(False)
+            self.combo_embedding_column.setPlaceholderText(
+                "Adicione um dataset primeiro"
+            )
+            self.combo_embedding_column.blockSignals(False)
+            return
+
+        self.combo_embedding_column.setEnabled(True)
         for col in normalized:
             self.combo_embedding_column.addItem(col, userData=col)
 
-        # Restaura seleção: se a anterior ainda está nas opções, escolhe-a;
-        # senão, cai pra (auto-detect) e marca como órfã se a estratégia
-        # tinha gravado um valor.
-        idx = 0
-        if previous is not None:
-            for i in range(self.combo_embedding_column.count()):
-                if self.combo_embedding_column.itemData(i) == previous:
-                    idx = i
-                    break
-            else:
-                self.combo_embedding_column.addItem(
-                    f"{previous}  (não disponível em todos os datasets)",
-                    userData=previous,
-                )
-                idx = self.combo_embedding_column.count() - 1
-        self.combo_embedding_column.setCurrentIndex(idx)
+        self._sync_embedding_combo_to_definition()
         self.combo_embedding_column.blockSignals(False)
+
+    def _sync_embedding_combo_to_definition(self) -> None:
+        """Alinha o índice selecionado do combo com
+        `definition.embedding_column`. Se a definition não tem nada
+        gravado e o combo tem opções, auto-seleciona a primeira E grava
+        silenciosamente — evita estado intermediário onde o usuário
+        "vê" uma seleção mas a definition está None.
+
+        Caller deve ter chamado `blockSignals(True)` antes — esse método
+        muta o combo sem disparar `activated`.
+        """
+        target = getattr(self._definition, "embedding_column", None)
+
+        # Caso 1: definition tem coluna gravada — tenta selecionar.
+        if target:
+            for i in range(self.combo_embedding_column.count()):
+                if self.combo_embedding_column.itemData(i) == target:
+                    self.combo_embedding_column.setCurrentIndex(i)
+                    return
+            # Coluna não está mais nas opções — preserva como item órfão.
+            self.combo_embedding_column.addItem(
+                f"{target}  (indisponível nos datasets atuais)",
+                userData=target,
+            )
+            self.combo_embedding_column.setCurrentIndex(
+                self.combo_embedding_column.count() - 1
+            )
+            return
+
+        # Caso 2: definition sem coluna + combo tem opções → auto-seleciona
+        # a primeira E grava na definition. Não emite signal (mudança
+        # programática automática, não interação do usuário).
+        if self.combo_embedding_column.count() > 0 and self._definition is not None:
+            self.combo_embedding_column.setCurrentIndex(0)
+            self._definition.embedding_column = (
+                self.combo_embedding_column.itemData(0)
+            )
 
     def update_instruction_states(
         self,
@@ -375,6 +418,17 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         for phase_key, _ in _PHASES:
             _, _, results_panel = self._phase_widgets[phase_key]
             results_panel.set_resource_loader(loader)
+
+    def set_project_root(self, project_root: object) -> None:
+        """
+        Propaga a raiz do projeto para os painéis de configuração. Usada
+        pelos info labels de dataset (sob dropdowns de DATASET) para
+        localizar o sidecar `<stem>_stats.json` ao lado do parquet.
+        """
+        for phase_key, _ in _PHASES:
+            _, config_panel, _ = self._phase_widgets[phase_key]
+            if hasattr(config_panel, "set_project_root"):
+                config_panel.set_project_root(project_root)
 
     # ── Internal slots ────────────────────────────────────────────────────────
 
@@ -453,11 +507,31 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     def _on_instruction_applied(self, instr: StrategyInstructionDefinition) -> None:
         self.instruction_applied.emit(instr)
 
-    def _on_embedding_column_changed(self, index: int) -> None:
+    def _on_embedding_combo_activated(self, index: int) -> None:
+        """Disparado quando o usuário interage com o combo (não em mudanças
+        programáticas). Emite `embedding_column_change_requested(old, new)`
+        — o controller decide se aceita (cascade dos derivados) ou se
+        cancela (e chama `set_embedding_column_silent` pra reverter).
+        """
         if not self._definition:
             return
-        self._definition.embedding_column = self.combo_embedding_column.itemData(index)
-        self.strategy_modified.emit(self._definition)
+        old_value = getattr(self._definition, "embedding_column", None) or ""
+        new_value = self.combo_embedding_column.itemData(index)
+        if old_value == (new_value or ""):
+            return  # No-op (mesmo valor) — não notifica.
+        self.embedding_column_change_requested.emit(old_value, new_value)
+
+    def set_embedding_column_silent(self, value: Optional[str]) -> None:
+        """Sincroniza o combo + a definition com `value` SEM disparar
+        signals. Usado pelo controller pra (a) confirmar uma mudança
+        aceita ou (b) reverter uma mudança rejeitada pelo usuário no
+        diálogo de confirmação."""
+        if self._definition is None:
+            return
+        self._definition.embedding_column = value
+        self.combo_embedding_column.blockSignals(True)
+        self._sync_embedding_combo_to_definition()
+        self.combo_embedding_column.blockSignals(False)
 
     def _load_instruction_with_wait_cursor(
         self,

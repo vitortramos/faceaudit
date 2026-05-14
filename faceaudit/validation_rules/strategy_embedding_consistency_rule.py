@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Set
+from typing import Any, List, Set
 
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.enums.validation_severity import ValidationSeverity
 from faceaudit.models.validation.validation_result import ValidationResult
@@ -18,20 +19,14 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
     Garante que TODOS os datasets usados pela estratégia compartilham o
     mesmo "tipo" de embedding — isto é:
 
-    1. Cada DATASET/INTERMEDIATE_DATASET referenciado por alguma instrução
-       contém a coluna `embedding_column` escolhida pela estratégia.
-    2. O `column_specs[embedding_column].model_name` é o mesmo em todos os
+    1. `embedding_column` está explicitamente definido na estratégia.
+       Se for None, erro — escolha tem de vir do combo do editor.
+    2. Cada DATASET referenciado por alguma instrução contém a coluna
+       `embedding_column` escolhida.
+    3. O `column_specs[embedding_column].model_name` é o mesmo em todos os
        datasets (impede o caso de duas colunas terem o mesmo nome mas
        virem de modelos diferentes — ex: SEPAEL_V2 vs DeepFace ambos
        chamados `embedding`).
-
-    Quando `embedding_column` é None (auto-detect), a regra:
-    - Calcula a interseção das colunas com role=EMBEDDING entre todos os
-      datasets envolvidos.
-    - Se houver exatamente uma → emite warning sugerindo gravá-la na
-      definição (configuração explícita > implícita).
-    - Se houver mais de uma → erro pedindo escolha explícita.
-    - Se houver zero → erro: nenhuma coluna de embedding em comum.
 
     Aplicada no nível da estratégia (`LRStrategyDefinition.validation_rule_ids`),
     não por instrução. Roda uma vez antes de qualquer fase.
@@ -71,38 +66,11 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
             result.mark_ok()
             return result
 
-        # ─── auto-detect quando embedding_column não foi escolhido ────
         if not embedding_column:
-            common_specs = self._intersect_embedding_specs(dataset_ids, context)
-            if common_specs is None:
-                result.mark_ok()
-                return result
-
-            if len(common_specs) == 0:
-                result.add_error(
-                    "Nenhuma coluna de embedding em comum entre os datasets da "
-                    "estratégia. Verifique se todos os datasets foram enriquecidos "
-                    "com o mesmo modelo (ForensicFace, DeepFace, etc.)."
-                )
-                return result
-
-            if len(common_specs) > 1:
-                names = ", ".join(sorted(common_specs.keys()))
-                result.add_error(
-                    f"Os datasets têm múltiplas colunas de embedding em comum "
-                    f"({names}). Defina explicitamente `embedding_column` na "
-                    f"estratégia para escolher qual usar."
-                )
-                return result
-
-            # Exatamente uma — auto-detect funciona, mas sugere gravar.
-            (only_col,) = list(common_specs.keys())
-            result.add_warning(
-                f"Estratégia sem `embedding_column` definido. Auto-detectado "
-                f"'{only_col}' (única coluna de embedding em comum entre os "
-                f"datasets). Considere gravar a escolha na estratégia."
+            result.add_error(
+                "Estratégia sem coluna de embedding selecionada. "
+                "Escolha uma coluna no combo 'Embedding' do editor."
             )
-            result.mark_ok()
             return result
 
         # ─── embedding_column explícito ───────────────────────────────
@@ -114,6 +82,20 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
             if resource is None:
                 # Recurso não está no contexto — isso é alvo de outra regra
                 # (existência), aqui só pulamos.
+                continue
+
+            # Derivados ainda-não-produzidos (placeholders sem payload nem
+            # artifact_ref) são pulados: serão produzidos por outra instrução
+            # da própria estratégia ao longo do Run All e herdam o embedding
+            # da entrada (que é validada separadamente). Sem esse skip, Run
+            # All falha aqui mesmo quando rodar instrução-por-instrução
+            # funcionaria (instrução upstream produz o derivado on-the-fly).
+            is_pending_derived = (
+                getattr(resource, "category", None) == ResourceCategory.DERIVED
+                and not resource.has_payload
+                and not resource.has_artifact
+            )
+            if is_pending_derived:
                 continue
 
             payload = resource.payload
@@ -172,8 +154,8 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
     @staticmethod
     def _collect_dataset_ids(strategy_definition: Any) -> List[str]:
         """
-        Coleta todos os resource_ids de DATASET/INTERMEDIATE_DATASET
-        referenciados como input por alguma instrução da estratégia.
+        Coleta todos os resource_ids de DATASET referenciados como input
+        por alguma instrução da estratégia.
         """
         ids: List[str] = []
         seen: Set[str] = set()
@@ -185,11 +167,6 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
             r.resource_id: r for r in getattr(strategy_definition, "resources", [])
         }
 
-        dataset_types = (
-            StrategyResourceType.DATASET,
-            StrategyResourceType.DATASET,
-        )
-
         for instr in getattr(strategy_definition, "instructions", []):
             for rid in getattr(instr, "input_resource_ids", []) or []:
                 if rid in seen:
@@ -197,55 +174,11 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
                 resource = resources_by_id.get(rid)
                 if resource is None:
                     continue
-                if resource.resource_type in dataset_types:
+                if resource.resource_type == StrategyResourceType.DATASET:
                     ids.append(rid)
                     seen.add(rid)
 
         return ids
-
-    def _intersect_embedding_specs(
-        self,
-        dataset_ids: List[str],
-        context: StrategyExecutionContextProtocol,
-    ) -> Optional[dict]:
-        """
-        Retorna o dict {column_name: spec} comum a TODOS os datasets, ou
-        None se algum dataset não pôde ser inspecionado (sem
-        column_specs — cai no caminho permissivo do validate).
-        """
-        common: Optional[dict] = None
-        for ds_id in dataset_ids:
-            if not context.has_resource(ds_id):
-                continue
-
-            resource = context.get_resource(ds_id)
-            payload = resource.payload
-            if payload is None:
-                try:
-                    resource = context.ensure_payload(ds_id) or resource
-                    payload = resource.payload
-                except Exception:
-                    continue
-
-            specs = getattr(payload, "column_specs", None) if payload else None
-            if not specs:
-                # Sem specs → não dá pra fazer interseção segura.
-                return None
-
-            embedding_specs = {
-                name: spec for name, spec in specs.items()
-                if str(getattr(spec, "role", "")).lower().endswith("embedding")
-            }
-
-            if common is None:
-                common = embedding_specs
-            else:
-                common = {
-                    name: common[name]
-                    for name in common.keys() & embedding_specs.keys()
-                }
-
-        return common if common is not None else {}
 
     @staticmethod
     def _has_column_in_legacy_payload(payload: Any, column_name: str) -> bool:

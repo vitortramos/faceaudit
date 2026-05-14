@@ -58,10 +58,28 @@ class StrategyExecutionContext(JSONSerializableMixin):
     def set_resource(self, resource: StrategyResource) -> None:
         """
         Registra ou substitui um recurso no contexto.
+
+        Side effect: invalida o cache de stats associado (`"{rid}_stats"`)
+        sempre que o recurso é sobrescrito. Sem isso, regras como Fisher e
+        MinIdentitiesWithMultipleSamples continuariam lendo `DatasetStats`
+        antigos após uma re-execução de PIPELINE_APPLICATION (ou qualquer
+        executor que sobrescreva o dataset com novo payload sob o mesmo id).
+
+        A invalidação é incondicional — recomputar stats é barato (leitura
+        de metadata pyarrow) e a comparação de payloads para detectar
+        "realmente mudou" seria complexa e propensa a falsos negativos.
         """
         if resource is None:
             raise ValueError("O recurso não pode ser nulo.")
-        self.resources[resource.resource_id] = resource
+        rid = resource.resource_id
+        stats_id = f"{rid}_stats"
+        # Safeguard: ao registrar o próprio recurso de stats (id já termina
+        # em `_stats`), não tentamos invalidar uma chave `{stats_id}_stats`
+        # que nunca existe — pop seria no-op de qualquer forma, mas o guard
+        # deixa a intenção explícita.
+        if not rid.endswith("_stats"):
+            self.resources.pop(stats_id, None)
+        self.resources[rid] = resource
 
     def has_resource(self, resource_id: str) -> bool:
         """

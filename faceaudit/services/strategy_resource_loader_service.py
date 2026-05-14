@@ -279,12 +279,33 @@ class StrategyResourceLoaderService:
             return None
 
         try:
-            df = pd.read_parquet(path)
+            # `dtype_backend="pyarrow"` preserva nulls como pd.NA (nullable
+            # boolean) em vez de coercer pra False/nan — crítico pra
+            # `same_person`, onde None tem semântica de "sem ground truth"
+            # (casework). Sem isso, parquets legados com same_person=None
+            # eram lidos como False e a inferência de is_casework via
+            # `all(same_person is None)` falhava.
+            df = pd.read_parquet(path, dtype_backend="pyarrow")
         except Exception as exc:
             msg = f"falha ao ler parquet de scores '{path}': {exc!r}"
             self._last_error = msg
             warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
             return None
+
+        # Lê o flag `is_casework` direto do schema metadata do parquet
+        # (gravado por `SimilarityScoreDataset.to_parquet` quando aplicável).
+        # Esta é a fonte autoritativa — a inferência via `same_person`
+        # mais abaixo só serve como fallback pra parquets antigos
+        # gerados antes desse flag ser persistido.
+        is_casework_explicit = False
+        try:
+            import pyarrow.parquet as pq
+            schema_meta = pq.read_schema(path).metadata or {}
+            is_casework_explicit = (
+                schema_meta.get(b"faceaudit:is_casework") == b"true"
+            )
+        except Exception:
+            pass  # parquet sem metadata, ou erro — cai na inferência
 
         name = ""
         description = None
@@ -323,21 +344,21 @@ class StrategyResourceLoaderService:
             )
 
             same_person_raw = row_dict.get("same_person")
-            same_person = (
-                bool(same_person_raw)
-                if same_person_raw is not None and not (
-                    isinstance(same_person_raw, float) and np.isnan(same_person_raw)
-                )
-                else None
-            )
+            # `pd.isna` cobre None, pd.NA (nullable boolean), e NaN — todas
+            # as variações que parquet/pandas pode produzir pra nulls. Sem
+            # essa unificação, `pd.NA` cairia em `bool(pd.NA)` que lança
+            # TypeError ("boolean value of NA is ambiguous") e o sample
+            # era descartado silenciosamente.
+            if same_person_raw is None or pd.isna(same_person_raw):
+                same_person = None
+            else:
+                same_person = bool(same_person_raw)
 
             # log_lr é coluna opcional — presente em parquets de
             # CALIBRATED_SCORES, ausente em SIMILARITY_SCORES legacy.
             sample_metadata: dict = {}
             log_lr_raw = row_dict.get("log_lr")
-            if log_lr_raw is not None and not (
-                isinstance(log_lr_raw, float) and np.isnan(log_lr_raw)
-            ):
+            if log_lr_raw is not None and not pd.isna(log_lr_raw):
                 sample_metadata["log_lr"] = float(log_lr_raw)
 
             try:
@@ -350,12 +371,26 @@ class StrategyResourceLoaderService:
                 )
             except Exception:
                 continue
+
+            # Casework: o __post_init__ do SimilarityScoreSample INFERE
+            # `same_person` por igualdade de identidades quando o valor
+            # gravado é null. Em casework, probe/reference têm identidades
+            # convencionais ("questionada", "padrao_X") que NÃO são ground
+            # truth — a inferência erroneamente marca samples como
+            # impostores. Quando o dataset foi marcado explicitamente como
+            # casework no parquet, forçamos `same_person=None` pós-
+            # construção pra preservar a semântica "ground truth desconhecido".
+            if is_casework_explicit:
+                sample.same_person = None
             items.append(sample)
 
-        # Inferência de casework: se nenhum sample tem ground truth (todos
-        # com same_person=None), o dataset foi produzido em modo casework.
-        # Marca no metadata para a UI e validators downstream tratarem.
-        is_casework = (
+        # Determina `is_casework`:
+        # 1. Flag explícito no schema metadata (autoritativo, gravado por
+        #    parquets pós-fix) — quando True, vence.
+        # 2. Fallback pra inferência via `all(same_person is None)` —
+        #    cobre parquets legados sem o flag. Frágil porque `pd.NA`
+        #    de pyarrow nullable bool às vezes não vira `None` no loader.
+        is_casework = is_casework_explicit or (
             len(items) > 0
             and all(s.same_person is None for s in items)
         )

@@ -114,7 +114,7 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._tabs = QtWidgets.QTabWidget()
+        self._tabs = QtWidgets.QTabWidget(parent=self)
         self._tabs.setStyleSheet(
             "QTabBar::tab { padding: 6px 14px; font-size: 11px; }"
             "QTabBar::tab:selected { background: white; font-weight: bold; }"
@@ -133,7 +133,7 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         # Não vão ao layout — posicionados externamente pelo left_panel
         # (compat com a estrutura existente). `btn_add` é escondido
         # quando o usuário troca pra aba Derivados.
-        self.btn_add = QtWidgets.QToolButton()
+        self.btn_add = QtWidgets.QToolButton(parent=self)
         self.btn_add.setText("Adicionar Recurso")
         self.btn_add.setToolTip("Importar recurso para o projeto")
         self.btn_add.setEnabled(False)
@@ -194,7 +194,7 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         self._on_tab_changed(self._tabs.currentIndex())
 
     def _build_tree(self) -> QtWidgets.QTreeWidget:
-        tree = QtWidgets.QTreeWidget()
+        tree = QtWidgets.QTreeWidget(parent=self)
         tree.setHeaderLabels(["Recursos"])
         tree.setAlternatingRowColors(True)
         tree.setStyleSheet(_TREE_STYLESHEET)
@@ -213,13 +213,24 @@ class ResourceTreeWidget(QtWidgets.QWidget):
           - Primários: lista plana `<tipo> / <recurso>`.
           - Derivados: aninhamento `<estratégia> / <tipo> / <recurso>`
             (quando `resource_to_strategy` é fornecido).
+
+        **Filtro na aba Derivados**: placeholders sem `artifact_ref` E sem
+        `payload` ficam ocultos. São declarações de output que ainda não
+        produziram nada — esses só fazem sentido na coluna de configuração
+        do editor (3ª coluna), não na árvore de recursos do projeto, que
+        deve refletir "o que existe". Quando o usuário executa a instrução,
+        o placeholder ganha artifact_ref e reaparece automaticamente.
         """
         self.tree_primary.clear()
         self.tree_derived.clear()
         resource_to_strategy = resource_to_strategy or {}
 
         primary = [r for r in resources if r.category == ResourceCategory.PRIMARY]
-        derived = [r for r in resources if r.category == ResourceCategory.DERIVED]
+        derived_all = [r for r in resources if r.category == ResourceCategory.DERIVED]
+        derived = [
+            r for r in derived_all
+            if r.has_artifact or r.has_payload
+        ]
 
         self._populate_tree(
             self.tree_primary, primary,
@@ -233,8 +244,66 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         )
 
         # Atualiza contadores nas abas pra o usuário ver quantidade de cada lado.
+        # Derivados conta só os visíveis (com artefato/payload), não placeholders
+        # pendentes — alinhado com o filtro acima.
         self._tabs.setTabText(0, f"Primários ({len(primary)})")
         self._tabs.setTabText(1, f"Derivados ({len(derived)})")
+
+        # Se havia um recurso selecionado antes do rebuild E ele ainda
+        # existe na lista nova (mesma instância — `_refresh_left_panel`
+        # passa as instâncias mutadas in-place), re-emite o signal pra
+        # que o ResourceInfoWidget no left panel re-renderize com os
+        # dados atualizados. Sem isso, após re-executar uma instrução
+        # o painel de propriedades continuava mostrando hash/tamanho/
+        # métricas antigos até o usuário clicar de novo no recurso.
+        if self._current_resource is not None:
+            still_present = (
+                self._current_resource in primary
+                or self._current_resource in derived
+            )
+            if still_present:
+                # Re-localiza o QTreeWidgetItem correspondente (foi
+                # recriado durante o rebuild) e re-aplica `setCurrentItem`,
+                # preservando o highlight azul que o usuário tinha antes.
+                # Decide a tree certa pela categoria do resource.
+                target_tree = (
+                    self.tree_primary
+                    if self._current_resource in primary
+                    else self.tree_derived
+                )
+                item = self._find_item_for_resource(
+                    target_tree, self._current_resource,
+                )
+                if item is not None:
+                    # Garante a aba certa visível (Primários ou Derivados).
+                    self._tabs.setCurrentWidget(target_tree)
+                    target_tree.setCurrentItem(item)
+                self.resource_selected.emit(self._current_resource)
+            else:
+                self._current_resource = None
+                self.btn_remove.setEnabled(False)
+
+    @staticmethod
+    def _find_item_for_resource(
+        tree: QtWidgets.QTreeWidget,
+        resource: StrategyResource,
+    ) -> Optional[QtWidgets.QTreeWidgetItem]:
+        """Busca recursiva pelo QTreeWidgetItem cujo UserRole bate com
+        `resource` (identity-equal). Retorna None se não achar."""
+        target_id = id(resource)
+
+        def _walk(parent: QtWidgets.QTreeWidgetItem) -> Optional[QtWidgets.QTreeWidgetItem]:
+            for i in range(parent.childCount()):
+                child = parent.child(i)
+                data = child.data(0, QtCore.Qt.ItemDataRole.UserRole)
+                if data is not None and id(data) == target_id:
+                    return child
+                found = _walk(child)
+                if found is not None:
+                    return found
+            return None
+
+        return _walk(tree.invisibleRootItem())
 
     def clear(self) -> None:
         self.tree_primary.clear()

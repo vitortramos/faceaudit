@@ -23,7 +23,8 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
     Classe base para executores concretos de instrução.
 
     Responsabilidades desta classe base:
-    - validar as validation_rule_ids declaradas na instrução
+    - validar as `validation_rule_configs` declaradas na instrução
+      (instanciadas via `ValidationRuleFactory` em runtime)
     - agregar os resultados das regras de validação
     - oferecer helpers para logging e criação de resultados
 
@@ -44,7 +45,8 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
 
         Estágios:
             1. Structural  — null checks em instruction e context
-            2. Pluggable   — regras registradas via validation_rule_ids
+            2. Pluggable   — regras instanciadas a partir de
+                             validation_rule_configs via ValidationRuleFactory
             3. Dynamic     — regras construídas pelo DTO (build_validation_rules)
             4. Executor    — validações hard-coded do executor concreto
                              (_validate_instruction_specifics)
@@ -80,19 +82,26 @@ class StrategyInstructionExecutorBase(StrategyInstructionExecutorProtocol):
                     # com mensagem específica (payload=None / load do disco).
                     pass
 
-        # ── Estágio 2: Pluggable (validation_rule_ids) ─────────────
-        for rule_id in instruction.validation_rule_ids:
-            if not context.has_validation_rule(rule_id):
-                result.add_error(
-                    f"A instrução '{instruction.name}' ({instruction.instruction_id}) "
-                    f"referencia uma validation_rule não registrada no contexto: '{rule_id}'."
-                )
-                continue
+        # ── Estágio 2: Pluggable (validation_rule_configs) ─────────
+        # As regras agora são auto-contidas: cada `ValidationRuleConfig`
+        # carrega rule_type + params suficientes para o factory instanciar
+        # a regra concreta em runtime. Não dependemos mais do contexto
+        # ter as regras pré-registradas.
+        from faceaudit.factories.validation_rule_factory import ValidationRuleFactory
 
-            rule = context.get_validation_rule(rule_id)
-            if rule is None:
+        for cfg in getattr(instruction, "validation_rule_configs", []) or []:
+            try:
+                rule = ValidationRuleFactory.create(
+                    config=cfg, instruction_id=instruction.instruction_id
+                )
+            except ValueError as exc:
+                # Config malformado (params ausentes/inválidos, tipo
+                # desconhecido). Reporta erro específico mas segue tentando
+                # as demais — falha de uma regra não bloqueia o pipeline
+                # de validação restante.
                 result.add_error(
-                    f"Falha ao recuperar a validation_rule '{rule_id}' no contexto."
+                    f"[{instruction.name}] Falha ao instanciar regra de "
+                    f"validação: {exc}"
                 )
                 continue
 

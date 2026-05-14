@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore
@@ -28,6 +30,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     ValueFieldSpec,
 )
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.protocols.strategy_execution_context_protocol import (
@@ -124,6 +127,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._instruction: Optional[StrategyInstructionDefinition] = None
         self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
+
+        # Raiz do projeto atual — usada para resolver `artifact_ref.path`
+        # (relativo) em path absoluto para leitura do sidecar de stats
+        # exibido sob dropdowns de DATASET. Propagado pelo controller via
+        # `set_project_root` após abrir o projeto.
+        self._project_root: Optional[Path] = None
 
         # Estado de runtime para colorir as Saídas após execução
         self._latest_definition: Optional[LRStrategyDefinition] = None
@@ -236,6 +245,46 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         wrapper_out = QtWidgets.QWidget()
         wrapper_out.setLayout(self._outputs_layout)
         scroll_layout.addWidget(wrapper_out)
+
+        # ─── Seção 4: Regras de Validação ─────────────────────────────────
+        # Lista as `validation_rule_configs` da instrução. Pluggable via
+        # __post_init__ + _sync_declared_io das instruções que conhecem
+        # seus defaults. O usuário pode remover regras individualmente
+        # (🗑) ou restaurar os defaults via botão na header da seção.
+        # Não há UI de adição nesta fase — virá na Fase 3.
+        self._validation_section_header = SectionHeader(
+            "Regras de Validação", "validation"
+        )
+        self._btn_restore_validation_defaults = QtWidgets.QPushButton(
+            "🔄 Restaurar padrões"
+        )
+        self._btn_restore_validation_defaults.setToolTip(
+            "Limpa a lista atual e repopula com as regras padrão "
+            "recomendadas para o tipo + estado da instrução."
+        )
+        self._btn_restore_validation_defaults.setCursor(
+            QtCore.Qt.CursorShape.PointingHandCursor
+        )
+        self._btn_restore_validation_defaults.setStyleSheet(
+            "QPushButton { background: transparent; border: 1px solid #E8A020;"
+            " border-radius: 3px; color: #8B5E00; font-size: 10px;"
+            " padding: 2px 8px; }"
+            "QPushButton:hover { background: #FFEFC4; }"
+        )
+        self._btn_restore_validation_defaults.clicked.connect(
+            self._on_restore_default_validation_rules
+        )
+        self._validation_section_header.addActionWidget(
+            self._btn_restore_validation_defaults
+        )
+        scroll_layout.addWidget(self._validation_section_header)
+
+        self._validation_layout = QtWidgets.QVBoxLayout()
+        self._validation_layout.setContentsMargins(8, 6, 8, 8)
+        self._validation_layout.setSpacing(4)
+        wrapper_val = QtWidgets.QWidget()
+        wrapper_val.setLayout(self._validation_layout)
+        scroll_layout.addWidget(wrapper_val)
 
         scroll_layout.addStretch(1)  # ANCORA conteúdo ao topo
 
@@ -371,6 +420,14 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._available_resources = list(resources)
         if self._instruction is not None:
             self._rebuild_form()
+
+    def set_project_root(self, project_root: Optional[Path]) -> None:
+        """
+        Define a raiz do projeto atual. Usado para resolver paths relativos
+        de artefatos (`StrategyArtifactReference.path`) ao ler o sidecar
+        `<stem>_stats.json` que alimenta o info label de DATASETs.
+        """
+        self._project_root = Path(project_root) if project_root else None
 
     def load_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         self._instruction = instruction
@@ -624,6 +681,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # ─── Seção Saídas ────────────────────────────────────────────────
         self._build_outputs_section(instr)
 
+        # ─── Seção Regras de Validação ───────────────────────────────────
+        self._rebuild_validation_section()
+
         # Visibilidade dos botões de visualização — só faz sentido aplicar
         # quando os botões foram realmente adicionados ao layout deste painel.
         # Quando outputs_in_results_panel=True, os botões são instanciados
@@ -782,6 +842,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 combo = self._make_input_resource_combo(instr, spec)
                 self._resource_field_widgets[spec.field_name] = combo
                 row_widget = self._wrap_combo_with_edit_button_if_needed(combo, spec)
+                row_widget = self._wrap_with_dataset_info_label_if_needed(
+                    combo, spec, row_widget
+                )
                 self._form_cfg.addRow(f"{spec.label}:", row_widget)
                 rendered_field_names.add(spec.field_name)
 
@@ -1030,6 +1093,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
             combo = self._make_input_resource_combo(self._instruction, spec)
             row_widget = self._wrap_combo_with_edit_button_if_needed(combo, spec)
+            row_widget = self._wrap_with_dataset_info_label_if_needed(
+                combo, spec, row_widget
+            )
             cv.addWidget(row_widget)
 
             self._resource_field_widgets[spec.field_name] = combo
@@ -1122,6 +1188,224 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         h.addWidget(edit_btn, 0)
         return container
 
+    # Tipos de recurso pra os quais mostramos um info label abaixo do combo
+    # com (N° Amostras, N° Identidades, N° Dimensões do Embedding). Inclui
+    # apenas DATASET — INTERMEDIATE_DATASET foi unificado no DATASET.
+    _DATASET_INFO_TYPES = (
+        StrategyResourceType.DATASET,
+    )
+
+    def _wrap_with_dataset_info_label_if_needed(
+        self,
+        combo: QtWidgets.QComboBox,
+        spec: ResourceFieldSpec,
+        outer_widget: QtWidgets.QWidget,
+    ) -> QtWidgets.QWidget:
+        """
+        Se o spec aceita DATASET, envelopa `outer_widget` (combo ou container
+        com botão ✎) num container vertical [combo / info_label], onde o
+        info_label exibe "N° Amostras, N° Identidades, N° Dimensões" do
+        dataset atualmente selecionado. Sem dataset selecionado o label fica
+        escondido. Reage ao `currentIndexChanged` do combo.
+        """
+        if not any(t in spec.accepted_types for t in self._DATASET_INFO_TYPES):
+            return outer_widget
+
+        # Container subclass: dispara `_update_dataset_info_label` na PRIMEIRA
+        # exibição (showEvent). Antes essa chamada era sincrona dentro de
+        # `_wrap_...` ou via QTimer.singleShot(0) — ambos sofriam do mesmo
+        # bug: setVisible(True) no info_lbl enquanto o container ainda não
+        # estava parenteado fazia o Qt exibi-lo brevemente como janela
+        # flutuante. showEvent só dispara quando o widget está realmente
+        # sendo desenhado dentro da árvore correta — não há risco de top-level.
+        panel = self
+
+        class _LazyInitContainer(QtWidgets.QWidget):
+            def __init__(self, lbl: QtWidgets.QLabel, target_combo: QtWidgets.QComboBox):
+                # Parent provisório = panel (self do enclosing scope) — Qt
+                # vai reparentá-lo via `addWidget` quando o caller inseri-lo
+                # no layout final. Crítico: NÃO criar parentless mesmo
+                # provisoriamente. Widgets criados sem parent viram top-level
+                # window e podem flashear brevemente em algumas plataformas
+                # (especialmente Windows) durante o ciclo de criação/reparent.
+                super().__init__(parent=panel)
+                # WA_DontShowOnScreen é um cinto-de-segurança adicional —
+                # garante que mesmo se Qt tentasse exibir o widget durante
+                # o reparent, nada apareceria como janela.
+                self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+                self._lbl = lbl
+                self._target_combo = target_combo
+                self._initialized = False
+
+            def showEvent(self, event):
+                # Remove a flag agora que o widget está sendo exibido
+                # dentro da árvore correta — caso ainda esteja setada.
+                if self.testAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen):
+                    self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+                super().showEvent(event)
+                if not self._initialized:
+                    self._initialized = True
+                    panel._update_dataset_info_label(self._target_combo, self._lbl)
+
+        info_lbl = QtWidgets.QLabel("")
+        info_lbl.setStyleSheet(
+            "QLabel { color: #555; font-size: 11px; font-style: italic;"
+            " padding-left: 4px; }"
+        )
+        info_lbl.setWordWrap(True)
+        info_lbl.setVisible(False)
+
+        container = _LazyInitContainer(info_lbl, combo)
+        v = QtWidgets.QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(2)
+        v.addWidget(outer_widget)
+        v.addWidget(info_lbl)
+
+        combo.currentIndexChanged.connect(
+            lambda _idx, c=combo, lbl=info_lbl:
+                self._update_dataset_info_label(c, lbl)
+        )
+        return container
+
+    def _update_dataset_info_label(
+        self, combo: QtWidgets.QComboBox, info_lbl: QtWidgets.QLabel
+    ) -> None:
+        """
+        Atualiza o info label sob um dropdown de DATASET com as estatísticas
+        do recurso selecionado. Fonte preferida: sidecar `<stem>_stats.json`
+        ao lado do parquet (gerado on-demand pelo `ResourceInfoWidget` ou
+        pela mesma rotina embutida abaixo). Fallback: payload em memória.
+        """
+        resource_id = combo.currentData()
+        if not resource_id:
+            info_lbl.setVisible(False)
+            info_lbl.setText("")
+            return
+
+        resource = next(
+            (r for r in self._available_resources if r.resource_id == resource_id),
+            None,
+        )
+        if resource is None:
+            info_lbl.setVisible(False)
+            return
+
+        n_imgs: Optional[int] = None
+        n_ids: Optional[int] = None
+        emb_dim: Optional[int] = None
+
+        # 1) Sidecar JSON (rápido — apenas metadata, single I/O). Se
+        # ausente ou stale, computa via DatasetStatsService (pyarrow
+        # metadata) — mesmo padrão usado pelo ResourceInfoWidget — pra
+        # primeira seleção não precisar do usuário clicar antes no recurso
+        # no left panel.
+        artifact_ref = getattr(resource, "artifact_ref", None)
+        if artifact_ref and self._project_root is not None:
+            try:
+                abs_path = self._project_root / artifact_ref.path
+                stats_path = abs_path.parent / (abs_path.stem + "_stats.json")
+                if not stats_path.exists() and abs_path.exists():
+                    self._try_compute_dataset_stats_sidecar(abs_path, stats_path)
+                if stats_path.exists():
+                    data = json.loads(stats_path.read_text(encoding="utf-8"))
+                    n_imgs = data.get("n_imgs")
+                    n_ids = data.get("n_ids")
+                    emb_cols = data.get("embedding_columns", []) or []
+                    if emb_cols and isinstance(emb_cols, list):
+                        first = emb_cols[0] if isinstance(emb_cols[0], dict) else None
+                        if first:
+                            emb_dim = first.get("dim")
+            except Exception:
+                pass
+
+        # 2) Fallback: payload em memória (datasets ainda não persistidos).
+        payload = getattr(resource, "payload", None)
+        if payload is not None:
+            if n_imgs is None:
+                n_imgs = getattr(payload, "n_samples", None) or len(
+                    getattr(payload, "items", None) or []
+                ) or None
+            if n_ids is None:
+                ids_attr = getattr(payload, "identities", None)
+                if ids_attr is not None:
+                    try:
+                        n_ids = len(ids_attr)
+                    except Exception:
+                        n_ids = None
+            if emb_dim is None:
+                items = getattr(payload, "items", None) or []
+                if items:
+                    try:
+                        emb_dim = int(items[0].embedding.shape[0])
+                    except Exception:
+                        emb_dim = None
+
+        if n_imgs is None and n_ids is None and emb_dim is None:
+            info_lbl.setVisible(False)
+            return
+
+        n_imgs_txt = f"{n_imgs:,}".replace(",", ".") if n_imgs is not None else "—"
+        n_ids_txt = f"{n_ids:,}".replace(",", ".") if n_ids is not None else "—"
+        emb_dim_txt = f"{emb_dim}D" if emb_dim is not None else "—"
+        info_lbl.setText(
+            f"N° Amostras: <b>{n_imgs_txt}</b>  •  "
+            f"N° Identidades: <b>{n_ids_txt}</b>  •  "
+            f"Dim. Embedding: <b>{emb_dim_txt}</b>"
+        )
+        info_lbl.setVisible(True)
+
+    @staticmethod
+    def _try_compute_dataset_stats_sidecar(
+        parquet_path: Path, stats_path: Path
+    ) -> None:
+        """
+        Computa o sidecar `<stem>_stats.json` via `DatasetStatsService` (leitura
+        de metadata pyarrow — não materializa o parquet inteiro). Silencioso
+        em caso de falha — o info label simplesmente fica oculto.
+        """
+        try:
+            from faceaudit.services.dataset_stats_service import DatasetStatsService
+
+            stats = DatasetStatsService()._read_parquet_stats(parquet_path)
+            embedding_columns = [
+                {"index": pos, "name": name, "dim": cs.dim}
+                for pos, (name, cs) in enumerate(stats.column_coverage.items())
+                if cs.dim is not None
+            ]
+            payload = {
+                "n_imgs": stats.n_imgs,
+                "n_ids": stats.n_ids,
+                "embedding_columns": embedding_columns,
+                "column_coverage": {
+                    name: cs.to_dict() for name, cs in stats.column_coverage.items()
+                },
+                "last_modified": stats.last_modified,
+            }
+            bm = stats.balance_metrics
+            if bm is not None:
+                payload["balance_metrics"] = {
+                    "n_identities": bm.n_identities,
+                    "min_samples": bm.min_samples,
+                    "max_samples": bm.max_samples,
+                    "mean_samples": bm.mean_samples,
+                    "median_samples": bm.median_samples,
+                    "std_samples": bm.std_samples,
+                    "cv": bm.cv,
+                    "imbalance_ratio": (
+                        bm.imbalance_ratio
+                        if bm.imbalance_ratio != float("inf") else None
+                    ),
+                    "verdict": bm.verdict,
+                }
+            else:
+                payload["balance_metrics"] = None
+            stats_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
     def _on_edit_resource(self, combo: QtWidgets.QComboBox) -> None:
         """
         Solicita ao controller que abra o dialog de edição apropriado para
@@ -1164,6 +1448,218 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             row.name_changed.connect(self._on_output_name_changed)
             self._output_widgets[spec.field_name] = row
             self._outputs_layout.addWidget(row)
+
+    # =========================================================================
+    # SEÇÃO: REGRAS DE VALIDAÇÃO
+    # =========================================================================
+
+    # Sumarizador de params por tipo de regra — devolve texto compacto
+    # exibido sob o nome da regra. Cobertura completa dos 8 tipos da Fase 1.
+    _RULE_PARAM_SUMMARIZERS = {
+        ValidationRuleType.FISHER: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • margem: {p.get('safety_margin_ratio', 0.2)}"
+        ),
+        ValidationRuleType.MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+            f" • mínimo: {p.get('min_required', 2)}"
+            f" • alerta abaixo: {p.get('safety_threshold', 10)}"
+        ),
+        ValidationRuleType.MIN_CALIBRATION_PAIRS: lambda p: (
+            f"scores: <b>{p.get('scores_resource_id', '—')}</b>"
+            f" • min_gen: {p.get('min_genuines', 100)}"
+            f" • min_imp: {p.get('min_impostors', 500)}"
+        ),
+        ValidationRuleType.DATASET_ISOLATION: lambda p: (
+            f"A: <b>{p.get('dataset_a_resource_id', '—')}</b>"
+            f" • B: <b>{p.get('dataset_b_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.DATASET_OVERLAP_REQUIRED: lambda p: (
+            f"A: <b>{p.get('dataset_a_resource_id', '—')}</b>"
+            f" • B: <b>{p.get('dataset_b_resource_id', '—')}</b>"
+            f" • min: {p.get('min_overlap', 1)}"
+        ),
+        ValidationRuleType.HOLDOUT_LEAKAGE: lambda p: (
+            f"holdout: {len(p.get('holdout_resource_ids') or [])} recurso(s)"
+            f" • treino: {len(p.get('train_resource_ids') or [])} recurso(s)"
+        ),
+        ValidationRuleType.DUAL_PIPELINE_DIM_COMPAT: lambda p: (
+            f"source: <b>{p.get('source_config_resource_id', '—')}</b>"
+            f" • target: <b>{p.get('target_config_resource_id', '—')}</b>"
+        ),
+        ValidationRuleType.DUAL_PIPELINE_SUBSEQUENCE: lambda p: (
+            f"source: <b>{p.get('source_config_resource_id', '—')}</b>"
+            f" • target: <b>{p.get('target_config_resource_id', '—')}</b>"
+        ),
+    }
+
+    @classmethod
+    def _summarize_rule_params(cls, rule_type: ValidationRuleType, params: dict) -> str:
+        """
+        Formata os parâmetros de uma regra como string compacta (HTML-friendly,
+        usado no QLabel da linha). Fallback genérico para tipos não cobertos
+        no mapa explícito.
+        """
+        summarizer = cls._RULE_PARAM_SUMMARIZERS.get(rule_type)
+        if summarizer:
+            try:
+                return summarizer(params or {})
+            except Exception:
+                pass
+        items = ", ".join(f"{k}={v}" for k, v in (params or {}).items())
+        return items or "(sem parâmetros)"
+
+    def _clear_validation_layout(self) -> None:
+        while self._validation_layout.count():
+            item = self._validation_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def _rebuild_validation_section(self) -> None:
+        """
+        Limpa e redesenha a lista de regras de validação. Chamada pelo
+        `_rebuild_form` e por handlers de exclusão / restauração.
+        """
+        self._clear_validation_layout()
+
+        instr = self._instruction
+        configs = getattr(instr, "validation_rule_configs", None) or [] if instr else []
+
+        # Estado vazio — mostra mensagem amigável + dica de uso do botão de
+        # restauração.
+        if not configs:
+            empty = QtWidgets.QLabel(
+                "(nenhuma regra ativa) — clique em <b>Restaurar padrões</b> "
+                "para aplicar as regras recomendadas para este tipo de instrução."
+            )
+            empty.setStyleSheet(
+                "color: #888; font-size: 11px; font-style: italic;"
+            )
+            empty.setWordWrap(True)
+            self._validation_layout.addWidget(empty)
+            return
+
+        for idx, cfg in enumerate(configs):
+            self._validation_layout.addWidget(self._make_rule_row(idx, cfg))
+
+    def _make_rule_row(self, index: int, cfg) -> QtWidgets.QWidget:
+        """
+        Constrói uma linha visual para um `ValidationRuleConfig`:
+            [icon] [Rule label]   [params summary]            [🗑]
+        """
+        row = QtWidgets.QFrame()
+        row.setStyleSheet(
+            "QFrame { background: #FFFCF2; border: 1px solid #F3E0B0;"
+            " border-radius: 3px; }"
+        )
+        h = QtWidgets.QHBoxLayout(row)
+        h.setContentsMargins(8, 4, 6, 4)
+        h.setSpacing(8)
+
+        icon = QtWidgets.QLabel("🛡️")
+        icon.setStyleSheet("font-size: 13px;")
+        h.addWidget(icon, 0)
+
+        # Nome + sumário ficam empilhados num layout vertical compacto.
+        v = QtWidgets.QVBoxLayout()
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        rule_type = cfg.rule_type
+        name_lbl = QtWidgets.QLabel(rule_type.label)
+        name_lbl.setStyleSheet(
+            "color: #5D4500; font-size: 11px; font-weight: bold;"
+            " background: transparent; border: none;"
+        )
+        v.addWidget(name_lbl)
+
+        summary = self._summarize_rule_params(rule_type, cfg.params)
+        summary_lbl = QtWidgets.QLabel(summary)
+        summary_lbl.setStyleSheet(
+            "color: #6E5A2E; font-size: 10px;"
+            " background: transparent; border: none;"
+        )
+        summary_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        summary_lbl.setWordWrap(True)
+        v.addWidget(summary_lbl)
+
+        # Tooltip rico (descrição da regra) ajuda o usuário a entender o
+        # que cada regra checa sem precisar abrir documentação.
+        tooltip = rule_type.description
+        if tooltip:
+            row.setToolTip(tooltip)
+
+        col_wrapper = QtWidgets.QWidget()
+        col_wrapper.setLayout(v)
+        h.addWidget(col_wrapper, 1)
+
+        btn_del = QtWidgets.QToolButton()
+        btn_del.setText("🗑")
+        btn_del.setToolTip(
+            "Remover esta regra. Pode ser restaurada via "
+            "'Restaurar padrões' (se for uma regra padrão)."
+        )
+        btn_del.setFixedWidth(28)
+        btn_del.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        btn_del.setStyleSheet(
+            "QToolButton { background: transparent; border: 1px solid #E8A020;"
+            " border-radius: 3px; color: #8B5E00; }"
+            "QToolButton:hover { background: #FFEFC4; }"
+        )
+        btn_del.clicked.connect(
+            lambda _checked=False, i=index: self._on_delete_validation_rule(i)
+        )
+        h.addWidget(btn_del, 0)
+
+        return row
+
+    def _on_delete_validation_rule(self, index: int) -> None:
+        """
+        Remove a regra de validação no índice indicado e rebuilda a seção.
+        Emite `config_changed` para que o controller persista a alteração.
+
+        Marca `validation_rules_user_managed=True` para sinalizar que o
+        usuário assumiu o controle — impede que `_ensure_default_validation_
+        rules` re-popule defaults no próximo reload do projeto, preservando
+        a intenção do usuário entre sessões.
+        """
+        instr = self._instruction
+        if instr is None:
+            return
+
+        configs = getattr(instr, "validation_rule_configs", None)
+        if not configs or index < 0 or index >= len(configs):
+            return
+
+        del configs[index]
+        instr.validation_rules_user_managed = True
+        self._rebuild_validation_section()
+        self.config_changed.emit(instr)
+
+    def _on_restore_default_validation_rules(self) -> None:
+        """
+        Limpa a lista atual e dispara `_ensure_default_validation_rules`
+        (via `_sync_declared_io`) para repopular com os defaults do tipo
+        + estado atual da instrução. Útil para reverter exclusões acidentais
+        ou para aplicar regras quando o usuário acabou de configurar um
+        dataset compatível.
+
+        Reseta `validation_rules_user_managed=False` — devolve o controle
+        ao DTO. O auto-management volta a ficar ativo: na próxima vez que
+        a lista ficar vazia (sem deleção explícita), defaults se repopulam.
+        """
+        instr = self._instruction
+        if instr is None:
+            return
+
+        instr.validation_rule_configs = []
+        instr.validation_rules_user_managed = False
+        if hasattr(instr, "_sync_declared_io"):
+            instr._sync_declared_io()
+
+        self._rebuild_validation_section()
+        self.config_changed.emit(instr)
 
     @staticmethod
     def _get_field_tooltip(instr: StrategyInstructionDefinition, field_name: str) -> Optional[str]:

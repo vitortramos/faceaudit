@@ -30,7 +30,6 @@ class StrategyDefinitionValidator(StrategyDefinitionValidatorProtocol):
         self._validate_instruction_ids(strategy_definition, result)
         self._validate_instruction_inputs(strategy_definition, result)
         self._validate_instruction_outputs(strategy_definition, result)
-        self._validate_instruction_validation_rules(strategy_definition, result)
 
         if result.is_valid and not result.has_warnings:
             result.mark_ok()
@@ -138,30 +137,3 @@ class StrategyDefinitionValidator(StrategyDefinitionValidatorProtocol):
                 else:
                     produced_outputs.add(output_id)
 
-    def _validate_instruction_validation_rules(
-        self,
-        strategy_definition: "LRStrategyDefinition",
-        result: ValidationResult
-    ) -> None:
-        """
-        Verifica se as validation_rule_ids referenciadas pelas instruções existem
-        entre as regras registradas na estratégia.
-        """
-        available_rule_ids = set(strategy_definition.validation_rule_ids)
-
-        if not available_rule_ids:
-            for instruction in strategy_definition.instructions:
-                if instruction.validation_rule_ids:
-                    result.add_warning(
-                        f"A estratégia não possui validation_rule_ids registradas, mas a instrução "
-                        f"'{instruction.name}' ({instruction.instruction_id}) referencia regras de validação."
-                    )
-            return
-
-        for instruction in strategy_definition.instructions:
-            for rule_id in instruction.validation_rule_ids:
-                if rule_id not in available_rule_ids:
-                    result.add_error(
-                        f"A instrução '{instruction.name}' ({instruction.instruction_id}) "
-                        f"referencia uma validation_rule inexistente: '{rule_id}'."
-                    )

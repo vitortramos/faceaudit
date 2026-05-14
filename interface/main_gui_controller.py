@@ -43,8 +43,9 @@ class MainGuiController:
         """
         cfg = self.app_config
 
-        # GPU capability — lida pelo FFService Singleton.
+        # GPU capability + batch size — lidos pelo FFService Singleton.
         self.container.config.ff.use_gpu.from_value(cfg.ff.use_gpu)
+        self.container.config.ff.batch_size.from_value(cfg.ff.batch_size)
 
         # OFIQ executable + data path — lidos pelo OFIQService Singleton.
         self.container.config.ofiq.ofiq_exe_path.from_value(cfg.ofiq.ofiq_exe_path)
@@ -136,6 +137,28 @@ class MainGuiController:
                 self._on_send_dataset_to_strategy
             )
 
+        # Strategy Manager V2 → Dataset Manager: clicou em "Abrir no
+        # Gerenciador" no painel de propriedades de um DATASET primário.
+        # Troca de aba e carrega o parquet do projeto. Save no Dataset
+        # Manager dispara `dataset_saved_to_project` que volta pro V2
+        # via `_on_dataset_saved_to_project` pra atualizar hash + cascade.
+        if (
+            getattr(self, "strategy_manager_v2", None) is not None
+            and self.manager_controller is not None
+            and hasattr(self.manager_controller, "open_dataset_from_path")
+        ):
+            self.strategy_manager_v2.open_dataset_in_manager_requested.connect(
+                self._on_open_dataset_in_manager_requested
+            )
+        if (
+            self.manager_controller is not None
+            and hasattr(self.manager_controller, "dataset_saved_to_project")
+            and getattr(self, "strategy_manager_v2", None) is not None
+        ):
+            self.manager_controller.dataset_saved_to_project.connect(
+                self.strategy_manager_v2.on_external_dataset_saved
+            )
+
         # Sequestra o botão "X" da janela principal
         self.view.closeEvent = self.handle_app_close
 
@@ -153,6 +176,23 @@ class MainGuiController:
             except Exception:
                 pass
         self.strategy_manager_v2.import_dataset_from_path(parquet_path)
+
+    def _on_open_dataset_in_manager_requested(self, parquet_path: str) -> None:
+        """Hook reverso: Strategy Manager V2 → Dataset Manager. Troca de
+        aba e carrega o parquet via `open_dataset_from_path`."""
+        if not parquet_path or self.manager_controller is None:
+            return
+        try:
+            self.view.main_tabs.setCurrentWidget(self.manager_controller.view)
+        except Exception:
+            try:
+                self.view.main_tabs.setCurrentIndex(0)
+            except Exception:
+                pass
+        try:
+            self.manager_controller.open_dataset_from_path(parquet_path)
+        except Exception:
+            pass  # falha de load mostra erro pelo próprio Dataset Manager
 
     def abrir_dialogo_configuracoes(self):
         """Executa o diálogo de configurações."""

@@ -53,7 +53,7 @@ class StrategyListWidget(QtWidgets.QWidget):
         layout.addWidget(header)
 
         # Lista
-        self.list_widget = QtWidgets.QListWidget()
+        self.list_widget = QtWidgets.QListWidget(parent=self)
         # AlternatingRowColors desativado: o tom cinza alternado dava a
         # impressão visual de que o item cinza estava selecionado. Como
         # o highlight de seleção é o azul-claro dedicado, a alternância

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from faceaudit.enums.validation_severity import ValidationSeverity
-from faceaudit.models.embedding_comparison_dataset import EmbeddingComparisonDataset
+from faceaudit.models.similarity.similarity_score_dataset import SimilarityScoreDataset
 from faceaudit.models.validation.validation_result import ValidationResult
 from faceaudit.protocols.strategy_execution_context_protocol import (
     StrategyExecutionContextProtocol,
@@ -22,7 +22,7 @@ class MinCalibrationPairsRule(ValidationRuleBase):
     uma curva estável, produzindo LRs sem significado forense.
 
     Parâmetros configuráveis:
-        scores_resource_id: recurso EmbeddingComparisonDataset com os scores
+        scores_resource_id: recurso SimilarityScoreDataset com os scores
         min_genuines: mínimo de pares genuínos (default: 100)
         min_impostors: mínimo de pares impostores (default: 500)
         warn_ratio_threshold: emite WARNING se genuínos/(genuínos+impostores) < limiar
@@ -71,10 +71,10 @@ class MinCalibrationPairsRule(ValidationRuleBase):
         resource = context.ensure_payload(self._scores_id)
         payload = resource.payload if resource is not None else None
 
-        if not isinstance(payload, EmbeddingComparisonDataset):
+        if not isinstance(payload, SimilarityScoreDataset):
             result.add_error(
-                f"[{self.rule_id}] Recurso '{self._scores_id}' deve ser um "
-                f"EmbeddingComparisonDataset, mas é {type(payload).__name__}."
+                f"[{self.rule_id}] Recurso '{self._scores_id}' deve ser "
+                f"SimilarityScoreDataset, mas é {type(payload).__name__}."
             )
             return result
 

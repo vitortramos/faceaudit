@@ -91,6 +91,16 @@ class _InstructionItemWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # WA_DontShowOnScreen impede o Qt de exibir este widget como
+        # janela top-level enquanto está sendo configurado. Sem esse
+        # cinto-de-segurança, mesmo quando passamos parent=list_widget
+        # no construtor, em algumas plataformas (Windows especialmente)
+        # o widget pode flashear como janela flutuante durante o ciclo
+        # entre criação dos children e o setItemWidget que finaliza o
+        # parent. A flag é automaticamente "desligada" pelo Qt quando o
+        # widget é efetivamente mostrado dentro de um parent visível.
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(0)
@@ -105,6 +115,13 @@ class _InstructionItemWidget(QtWidgets.QWidget):
         )
         self._lbl_outputs.setVisible(False)
         layout.addWidget(self._lbl_outputs)
+
+    def showEvent(self, event):
+        # Remove a flag uma vez que o widget está visível dentro do
+        # parent legítimo — comportamento normal a partir daqui.
+        if self.testAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen):
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, False)
+        super().showEvent(event)
 
     def set_main(self, text: str, color: QtGui.QColor) -> None:
         self._lbl_main.setText(text)
@@ -297,7 +314,16 @@ class InstructionListWidget(QtWidgets.QWidget):
         item.setToolTip(instr.description or "")
         self.list_widget.addItem(item)
 
-        widget = _InstructionItemWidget()
+        # IMPORTANTE: parent já no construtor + setItemWidget ANTES de
+        # qualquer chamada que possa disparar setVisible(True) num filho.
+        # Antes a ordem era:
+        #   widget = _InstructionItemWidget()  # parent=None
+        #   widget.set_outputs_indicator(...)   # pode chamar setVisible(True)
+        #   self.list_widget.setItemWidget(item, widget)  # parenteia agora
+        # Com widget parentless, setVisible(True) num filho fazia o Qt
+        # exibi-lo brevemente como janela flutuante (bug "janelinha
+        # piscando" ao selecionar instrução/estratégia).
+        widget = _InstructionItemWidget(parent=self.list_widget)
         widget.set_main(text, QtGui.QColor("#1a1a1a"))
         total, named = self._count_outputs(instr)
         widget.set_outputs_indicator(total, named)

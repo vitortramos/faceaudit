@@ -70,6 +70,7 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
 
         self.figure = Figure(figsize=(8, 5), dpi=100)
         self.canvas = FigureCanvas(self.figure)
+        self.canvas.setParent(self)
 
         if show_toolbar:
             self.toolbar: Optional[NavigationToolbar] = NavigationToolbar(

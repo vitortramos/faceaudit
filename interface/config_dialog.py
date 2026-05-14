@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QCheckBox, QPushButton, QFormLayout, QDialogButtonBox,
-    QWidget, QFileDialog, QGroupBox,
+    QWidget, QFileDialog, QGroupBox, QSpinBox,
 )
 
 from faceaudit.models.system_config import SystemConfig
@@ -67,6 +67,21 @@ class ConfigDialog(QDialog):
         self.chk_use_gpu = QCheckBox("Usar GPU (CUDA) no ForensicFace")
         self.chk_use_gpu.setChecked(self.config.ff.use_gpu)
         form_hw.addRow(self.chk_use_gpu)
+
+        # Batch size — controla quantas faces o ForensicFace processa
+        # em paralelo numa única chamada ONNX. Maior = mais throughput
+        # (especialmente em GPU), porém mais memória. 1 desliga batching.
+        self.spin_batch_size = QSpinBox()
+        self.spin_batch_size.setRange(1, 1024)
+        self.spin_batch_size.setSingleStep(8)
+        self.spin_batch_size.setValue(int(self.config.ff.batch_size or 32))
+        self.spin_batch_size.setToolTip(
+            "Quantas faces processar em paralelo numa única chamada ONNX "
+            "(extração de embedding / FIQA). Maior = mais throughput, "
+            "porém mais memória. Típico: 32 em GPU, 8-16 em CPU. Use 1 "
+            "para desligar batching (comportamento legado)."
+        )
+        form_hw.addRow("Batch size (ForensicFace):", self.spin_batch_size)
         layout.addWidget(gb_hw)
 
         # ─── OFIQ (paths externos) ──────────────────────────────────────
@@ -115,6 +130,7 @@ class ConfigDialog(QDialog):
         self.config.paths.dir_templates = self.input_dir_templates.text()
 
         self.config.ff.use_gpu = self.chk_use_gpu.isChecked()
+        self.config.ff.batch_size = int(self.spin_batch_size.value())
 
         self.config.ofiq.ofiq_exe_path = self.input_ofiq_exe.text() or ""
         self.config.ofiq.ofiq_data_path = self.input_ofiq_data.text() or ""

@@ -12,6 +12,7 @@ class SectionHeader(QtWidgets.QFrame):
         "identification": ("#F4F6FA", "#555E6D", "#C8D0DC"),
         "configuration":  ("#D6E4F7", "#1A2942", "#2E5090"),
         "outputs":        ("#E8F5E9", "#2E7D32", "#4CAF50"),
+        "validation":     ("#FFF8E8", "#8B5E00", "#E8A020"),
     }
 
     def __init__(self, title: str, variant: str = "identification", parent=None):
@@ -42,9 +43,18 @@ class SectionHeader(QtWidgets.QFrame):
         )
         layout.addWidget(self._label)
         layout.addStretch(1)
+        self._layout = layout
 
     def setTitle(self, title: str) -> None:
         self._label.setText(title.upper())
+
+    def addActionWidget(self, widget: QtWidgets.QWidget) -> None:
+        """
+        Adiciona um widget à direita do título (após o stretch). Útil para
+        botões de ação contextuais à seção (ex: "Restaurar padrões" na
+        seção de regras de validação).
+        """
+        self._layout.addWidget(widget)
 
 
 class ColumnHeader(QtWidgets.QFrame):

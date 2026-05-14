@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Type, TypeVar
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="StrategyInstructionDefinition")
@@ -123,9 +124,29 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
         metadata={"help": "Parâmetros específicos da instrução."}
     )
 
-    validation_rule_ids: List[str] = field(
+    validation_rule_configs: List[ValidationRuleConfig] = field(
         default_factory=list,
-        metadata={"help": "Lista de identificadores das regras de validação associadas."}
+        metadata={"help": (
+            "Lista de regras de validação associadas à instrução. Cada "
+            "config carrega o `rule_type` (enum) + `params` (dict de "
+            "construção). As regras são instanciadas em runtime pelo "
+            "`ValidationRuleFactory` e executadas pelo estágio 2 do "
+            "pipeline de validação. Populadas automaticamente por "
+            "`__post_init__` em DTOs que conhecem seus defaults; podem "
+            "ser editadas/removidas pelo usuário na UI."
+        )}
+    )
+
+    validation_rules_user_managed: bool = field(
+        default=False,
+        metadata={"help": (
+            "Sinaliza que o usuário assumiu o controle das regras de "
+            "validação desta instrução. Quando True, `_ensure_default_"
+            "validation_rules` não re-popula defaults — preserva exclusões "
+            "explícitas entre reloads de projeto. É marcado True quando "
+            "o usuário deleta uma regra na UI; volta a False quando ele "
+            "clica em 'Restaurar padrões'."
+        )}
     )
 
     description: Optional[str] = field(
@@ -204,7 +225,7 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
 
     @property
     def has_validation_rules(self) -> bool:
-        return bool(self.validation_rule_ids)
+        return bool(self.validation_rule_configs)
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -220,6 +241,24 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
         raw_type = processed_data.get("instruction_type")
         if raw_type:
             processed_data["instruction_type"] = StrategyInstructionType.from_str(raw_type)
+
+        # Retrocompat: campo extinto `validation_rule_ids: List[str]` é
+        # descartado em silêncio — defaults vão ser repopulados no
+        # `__post_init__` das instruções que sabem suas regras.
+        processed_data.pop("validation_rule_ids", None)
+
+        # Hidrata configs persistidos (lista de dicts → lista de DTOs).
+        raw_configs = processed_data.get("validation_rule_configs")
+        if isinstance(raw_configs, list):
+            hydrated = []
+            for entry in raw_configs:
+                if isinstance(entry, ValidationRuleConfig):
+                    hydrated.append(entry)
+                elif isinstance(entry, dict):
+                    cfg = ValidationRuleConfig.from_dict(entry)
+                    if cfg is not None:
+                        hydrated.append(cfg)
+            processed_data["validation_rule_configs"] = hydrated
 
         instruction_type = processed_data.get("instruction_type")
 

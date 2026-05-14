@@ -44,6 +44,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
     add_mining_config_requested = QtCore.pyqtSignal()
     add_pipeline_config_requested = QtCore.pyqtSignal()
     remove_resource_requested = QtCore.pyqtSignal(object)  # StrategyResource
+    edit_dataset_in_manager_requested = QtCore.pyqtSignal(str)  # path absoluto
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -77,7 +78,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
         """
 
         # Frame de estratégias
-        strategy_frame = QtWidgets.QFrame()
+        strategy_frame = QtWidgets.QFrame(parent=self)
         strategy_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         strategy_frame.setObjectName("strategyFrame")
         strategy_frame.setStyleSheet(_frame_style % {"name": "strategyFrame"})
@@ -88,7 +89,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
         strategy_frame_layout.addWidget(self.strategy_list)
 
         # Frame de recursos: moldura visual agrupando árvore + info tabulada
-        resource_frame = QtWidgets.QFrame()
+        resource_frame = QtWidgets.QFrame(parent=self)
         resource_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         resource_frame.setObjectName("resourceFrame")
         resource_frame.setStyleSheet(_frame_style % {"name": "resourceFrame"})
@@ -146,6 +147,9 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self.resource_tree.add_mining_config_requested.connect(self.add_mining_config_requested)
         self.resource_tree.add_pipeline_config_requested.connect(self.add_pipeline_config_requested)
         self.resource_tree.remove_resource_requested.connect(self.remove_resource_requested)
+        self.resource_info.edit_dataset_in_manager_requested.connect(
+            self.edit_dataset_in_manager_requested
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 

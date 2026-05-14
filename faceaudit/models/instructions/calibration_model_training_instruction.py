@@ -7,6 +7,7 @@ from typing import Optional, Type, TypeVar
 from faceaudit.enums.calibration_model_type import CalibrationModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.calibration.kde_calibration_model_config import (
     KDECalibrationModelConfig,
 )
@@ -18,6 +19,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="CalibrationModelTrainingInstruction")
@@ -114,6 +116,34 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        # Repopula defaults após o usuário definir o recurso de scores.
+        self._ensure_default_validation_rules()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Popula `validation_rule_configs` com regras padrão se a lista
+        estiver vazia, houver `input_resource_id` definido E o usuário
+        não tiver assumido o controle das regras.
+
+        Default: MIN_CALIBRATION_PAIRS — protege contra calibradores
+        treinados com poucos pares genuínos ou impostores.
+        """
+        if self.validation_rules_user_managed:
+            return
+
+        if self.validation_rule_configs:
+            return
+
+        if not self.input_resource_id:
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
+                params={"scores_resource_id": self.input_resource_id},
+            ),
+        ]
 
     @property
     def uses_logistic_regression(self) -> bool:

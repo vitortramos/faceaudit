@@ -48,6 +48,7 @@ class ProjectToolbar(QFrame):
     close_project_requested = QtCore.pyqtSignal()
     seal_project_requested = QtCore.pyqtSignal()  # PR L2.b — selar projeto
     add_resources_requested = QtCore.pyqtSignal()  # bulk import da biblioteca
+    verify_integrity_requested = QtCore.pyqtSignal()  # re-check on-demand
     pipeline_requested = QtCore.pyqtSignal()
     mining_requested = QtCore.pyqtSignal()
     split_requested = QtCore.pyqtSignal()
@@ -162,6 +163,7 @@ class ProjectToolbar(QFrame):
         self.btn_close = self.projeto_ribbon.btn_close
         self.btn_seal = self.projeto_ribbon.btn_seal
         self.btn_add_resources = self.projeto_ribbon.btn_add_resources
+        self.btn_verify_integrity = self.projeto_ribbon.btn_verify_integrity
         # Biblioteca
         self.btn_pipeline = self.biblioteca_ribbon.btn_pipeline
         self.btn_mining = self.biblioteca_ribbon.btn_mining
@@ -177,6 +179,7 @@ class ProjectToolbar(QFrame):
         self.btn_close.clicked.connect(self.close_project_requested)
         self.btn_seal.clicked.connect(self.seal_project_requested)
         self.btn_add_resources.clicked.connect(self.add_resources_requested)
+        self.btn_verify_integrity.clicked.connect(self.verify_integrity_requested)
         self.btn_pipeline.clicked.connect(self.pipeline_requested)
         self.btn_mining.clicked.connect(self.mining_requested)
         self.btn_split.clicked.connect(self.split_requested)
@@ -201,3 +204,4 @@ class ProjectToolbar(QFrame):
         self.btn_close.setEnabled(is_open)
         self.btn_seal.setEnabled(is_open)  # PR L2.b
         self.btn_add_resources.setEnabled(is_open)
+        self.btn_verify_integrity.setEnabled(is_open)

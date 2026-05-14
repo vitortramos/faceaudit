@@ -33,8 +33,14 @@ class FFConfig(JSONSerializableMixin):
     Parâmetros operacionais (modelo, det_size, extended) foram movidos para
     `DatasetIngestionConfig` — viram escolha por execução (Novo/Enriquecer
     Dataset). Aqui só fica o que é da máquina.
+
+    `batch_size` controla o agrupamento de faces em uma única chamada
+    `onnx_session.run()` durante extração de embedding/FIQA. Maior =
+    mais paralelismo GPU, porém mais memória. `1` desliga batching
+    (comportamento legado, equivalente ao loop face-a-face).
     """
     use_gpu: bool = False
+    batch_size: int = 32
 
     @classmethod
     def from_dict(cls, data: dict) -> "FFConfig":
@@ -44,6 +50,14 @@ class FFConfig(JSONSerializableMixin):
         # silenciosamente; a migração no ConfigLoaderService já reescreveu
         # ou vai reescrever o JSON em formato novo.
         valid = {k: v for k, v in data.items() if k in cls.__annotations__}
+        # Sanitização: batch_size válido é inteiro >= 1. Defensivo contra
+        # JSON malformado (string, negativo, zero).
+        if "batch_size" in valid:
+            try:
+                bs = int(valid["batch_size"])
+                valid["batch_size"] = max(1, bs)
+            except (TypeError, ValueError):
+                del valid["batch_size"]
         return cls(**valid)
 
 

@@ -132,6 +132,16 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 hidden_fields = set(self._dto.get_hidden_fields()) or set()
             except Exception:
                 hidden_fields = set()
+        # Campos visíveis mas trancados (ex: latent_dim em PLDA SIMPLE +
+        # FULL_RANK — valor é ignorado em runtime). Mais informativo que
+        # esconder: usuário VÊ o campo, mas com tooltip explicando que
+        # o valor real vem do dataset.
+        readonly_fields = set()
+        if hasattr(self._dto, "get_readonly_fields"):
+            try:
+                readonly_fields = set(self._dto.get_readonly_fields()) or set()
+            except Exception:
+                readonly_fields = set()
         reactive_fields = set(getattr(self._dto, "REACTIVE_FIELDS", ()) or ())
 
         for f in fields(self._dto):
@@ -271,6 +281,17 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             )
             if help_text:
                 widget.setToolTip(help_text)
+
+            # Campos read-only (via get_readonly_fields) ficam visíveis
+            # mas desabilitados. Sobrescreve o tooltip pra explicar por
+            # que está trancado.
+            if f.name in readonly_fields:
+                widget.setEnabled(False)
+                widget.setToolTip(
+                    "Este campo é determinado automaticamente pelo dataset "
+                    "de treinamento no momento da execução — o valor exibido "
+                    "é apenas referência."
+                )
 
             self._field_widgets[f.name] = widget
             self._fields_layout.addRow(f"{label_text}:", widget)

@@ -58,6 +58,16 @@ class ProjetoRibbon(ResponsiveRibbon):
         layout.addWidget(self.btn_add_resources)
         layout.addWidget(ToolbarSeparator())
 
+        # Re-verificação de integridade on-demand
+        self.btn_verify_integrity = ToolbarButton(
+            "Verificar Integridade", "🔍",
+            tooltip="Re-verifica os arquivos do projeto: detecta arquivos "
+                    "ausentes (MISSING) ou modificados externamente (MODIFIED) "
+                    "desde a última abertura.",
+        )
+        layout.addWidget(self.btn_verify_integrity)
+        layout.addWidget(ToolbarSeparator())
+
         # Empacotamento forense
         self.btn_seal = ToolbarButton(
             "Selar", "🔒",

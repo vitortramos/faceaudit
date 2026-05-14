@@ -7,6 +7,7 @@ from typing import Optional, Type, TypeVar
 from faceaudit.enums.similarity_model_type import SimilarityModelType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ChoiceFieldSpec,
     ResourceFieldSpec,
@@ -15,6 +16,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
 from faceaudit.models.similarity.plda_similarity_model_config import (
     PLDASimilarityModelConfig,
 )
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
 T = TypeVar("T", bound="SimilarityModelTrainingInstruction")
@@ -68,7 +70,50 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         if self.uses_plda and self.similarity_model_config is None:
             self.similarity_model_config = PLDASimilarityModelConfig()
 
+        # _sync_declared_io já chama _ensure_default_validation_rules
+        # internamente, então a inicialização cobre tanto o caso "tudo
+        # informado na construção" quanto "campo atualizado depois".
         self._sync_declared_io()
+
+    def _ensure_default_validation_rules(self) -> None:
+        """
+        Popula `validation_rule_configs` com as regras padrão recomendadas
+        para o estado atual da instrução, **apenas se a lista estiver vazia
+        E o usuário não tiver assumido o controle** das regras.
+
+        Regras default por cenário:
+        - PLDA com `input_dataset_resource_id` preenchido:
+            - FISHER (n_identidades > embedding_dim)
+            - MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES (≥ 2 classes não-singleton)
+        - Cosine: nenhuma regra padrão (modelo stateless).
+
+        Chamado em `__post_init__` e em `_sync_declared_io` — significa que
+        defaults são populados na primeira vez em que o dataset é definido,
+        sem sobrescrever escolhas explícitas do usuário (lista não-vazia OU
+        flag `validation_rules_user_managed=True` é considerada deliberada).
+        """
+        if self.validation_rules_user_managed:
+            return
+
+        if self.validation_rule_configs:
+            return
+
+        if not self.uses_plda:
+            return
+
+        if not self.input_dataset_resource_id:
+            return
+
+        self.validation_rule_configs = [
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.FISHER,
+                params={"dataset_resource_id": self.input_dataset_resource_id},
+            ),
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES,
+                params={"dataset_resource_id": self.input_dataset_resource_id},
+            ),
+        ]
 
     def get_choice_field_specs(self) -> list[ChoiceFieldSpec]:
         triples = SimilarityModelType.choices_with_description()
@@ -117,6 +162,11 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
 
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
+
+        # _sync_declared_io é chamado pelo config panel após cada edição
+        # de campo — bom ponto pra repopular defaults quando o usuário
+        # acabou de definir o dataset (que não existia em __post_init__).
+        self._ensure_default_validation_rules()
 
     @property
     def uses_cosine(self) -> bool:

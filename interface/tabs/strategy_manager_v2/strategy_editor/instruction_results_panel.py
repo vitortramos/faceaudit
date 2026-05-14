@@ -318,11 +318,16 @@ class _ResultsCard(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._scroll = QtWidgets.QScrollArea()
+        # parent=self (o card) em TODOS os widgets internos pra evitar
+        # criação como top-level window mesmo brevemente. Antes vários
+        # eram parentless até addWidget/setWidget reparentá-los — causa
+        # do flash "janelinha" na primeira seleção de cada instrução
+        # (criação lazy do card).
+        self._scroll = QtWidgets.QScrollArea(parent=self)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
 
-        scroll_content = QtWidgets.QWidget()
+        scroll_content = QtWidgets.QWidget(parent=self._scroll)
         self._scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
         self._scroll_layout.setContentsMargins(8, 8, 8, 8)
         self._scroll_layout.setSpacing(6)
@@ -334,7 +339,7 @@ class _ResultsCard(QtWidgets.QWidget):
         self._outputs_layout = QtWidgets.QVBoxLayout()
         self._outputs_layout.setContentsMargins(8, 6, 8, 4)
         self._outputs_layout.setSpacing(6)
-        out_wrapper = QtWidgets.QWidget()
+        out_wrapper = QtWidgets.QWidget(parent=scroll_content)
         out_wrapper.setLayout(self._outputs_layout)
         self._scroll_layout.addWidget(out_wrapper)
 
@@ -395,6 +400,14 @@ class _ResultsCard(QtWidgets.QWidget):
         """Cria o widget de gráfico inline (ou botão de trajetória)."""
         if self._plot_kind == _PLOT_KIND_TRAJECTORY_BUTTON:
             # Trajetória 3D fica como botão (abre dialog GraphViewerDialog).
+            # Empacotado num container próprio (`_trajectory_container`)
+            # pra que `update_state` possa esconder/mostrar conforme
+            # estado da instrução (executada + save_trajectory_data ativo).
+            self._trajectory_container = QtWidgets.QWidget(parent=self)
+            tc_layout = QtWidgets.QVBoxLayout(self._trajectory_container)
+            tc_layout.setContentsMargins(0, 0, 0, 0)
+            tc_layout.setSpacing(2)
+
             row = QtWidgets.QHBoxLayout()
             row.setContentsMargins(8, 4, 8, 4)
             self._btn_trajectory = QtWidgets.QPushButton(
@@ -408,7 +421,6 @@ class _ResultsCard(QtWidgets.QWidget):
                 "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
                 " border: 1px solid #ccc; }"
             )
-            self._btn_trajectory.setEnabled(True)
             self._btn_trajectory.clicked.connect(
                 lambda: self.view_trajectory_requested.emit(self._instruction)
             )
@@ -422,18 +434,32 @@ class _ResultsCard(QtWidgets.QWidget):
             note.setWordWrap(True)
             row.addWidget(self._btn_trajectory)
             row.addStretch(1)
-            self._scroll_layout.addLayout(row)
-            self._scroll_layout.addWidget(note)
+            tc_layout.addLayout(row)
+            tc_layout.addWidget(note)
+
+            # Mensagens alternativas mostradas QUANDO o botão não aparece —
+            # explica ao usuário POR QUE a trajetória está indisponível
+            # ("ainda não executou" vs "save_trajectory_data está OFF").
+            self._trajectory_disabled_msg = QtWidgets.QLabel()
+            self._trajectory_disabled_msg.setWordWrap(True)
+            self._trajectory_disabled_msg.setStyleSheet(
+                "font-size: 11px; color: #888; font-style: italic;"
+                " padding: 8px 12px;"
+            )
+            self._trajectory_disabled_msg.setVisible(False)
+
+            self._scroll_layout.addWidget(self._trajectory_container)
+            self._scroll_layout.addWidget(self._trajectory_disabled_msg)
             return
 
         # Gráficos 2D inline + botão expandir.
         # Container vai num QStackedWidget interno: index 0 é placeholder/botão
         # de hidratação, index 1 é o widget renderizado.
-        self._plot_stack = QtWidgets.QStackedWidget()
+        self._plot_stack = QtWidgets.QStackedWidget(parent=self)
         self._scroll_layout.addWidget(self._plot_stack, 1)
 
         # ── Página 0: placeholder/loading ──────────────────────────────────
-        placeholder_page = QtWidgets.QWidget()
+        placeholder_page = QtWidgets.QWidget(parent=self._plot_stack)
         ph_layout = QtWidgets.QVBoxLayout(placeholder_page)
         ph_layout.setContentsMargins(8, 12, 8, 8)
         ph_layout.setSpacing(6)
@@ -465,7 +491,7 @@ class _ResultsCard(QtWidgets.QWidget):
         self._plot_stack.addWidget(placeholder_page)  # index 0
 
         # ── Página 1: widget de gráfico inline + botão expandir ────────────
-        plot_page = QtWidgets.QWidget()
+        plot_page = QtWidgets.QWidget(parent=self._plot_stack)
         pp_layout = QtWidgets.QVBoxLayout(plot_page)
         pp_layout.setContentsMargins(0, 0, 0, 0)
         pp_layout.setSpacing(2)
@@ -548,7 +574,7 @@ class _ResultsCard(QtWidgets.QWidget):
             # baseados em _PngSnapshotWidget puro ficavam direto no fundo
             # cinza-escuro do painel, enquanto STRATEGY_EVALUATION (QTabWidget)
             # já trazia branco da Qt default — daí a inconsistência.
-            plot_card = QtWidgets.QFrame()
+            plot_card = QtWidgets.QFrame(parent=plot_page)
             plot_card.setObjectName("plot_card")
             plot_card.setStyleSheet(
                 "QFrame#plot_card {"
@@ -612,6 +638,14 @@ class _ResultsCard(QtWidgets.QWidget):
                 context,
                 project_root=project_root,
             )
+
+        # Caminho do botão de Trajetória 3D (PIPELINE_APPLICATION): só
+        # exibe quando a instrução já foi executada E
+        # `application_policy.save_trajectory_data=True`. Caso contrário,
+        # mostra mensagem explicando o porquê.
+        if self._plot_kind == _PLOT_KIND_TRAJECTORY_BUTTON:
+            self._update_trajectory_button_visibility(executed)
+            return
 
         if self._plot_widget is None:
             return  # sem plot inline; nada a fazer
@@ -740,6 +774,46 @@ class _ResultsCard(QtWidgets.QWidget):
             if hasattr(self, "_plot_stack"):
                 self._btn_hydrate.setVisible(False)
                 self._plot_stack.setCurrentIndex(1)
+
+    def _update_trajectory_button_visibility(self, executed: bool) -> None:
+        """Decide se mostra o botão Visualizar Trajetória 3D.
+
+        Regras (PIPELINE_APPLICATION):
+        - Instrução NÃO executada → botão escondido + mensagem
+          orientando a executar.
+        - Executada + `application_policy.save_trajectory_data=False` →
+          botão escondido + mensagem explicando que precisa marcar a
+          opção na config e re-executar.
+        - Executada + `save_trajectory_data=True` → botão visível.
+
+        Sem isso, o botão aparecia sempre e clicar antes de executar
+        (ou com a opção off) abria um diálogo vazio/erro.
+        """
+        # Checagem defensiva — só PIPELINE_APPLICATION tem
+        # application_policy. Se outro tipo cair aqui por engano,
+        # esconde tudo.
+        policy = getattr(self._instruction, "application_policy", None)
+        save_trajectory = bool(
+            policy is not None
+            and getattr(policy, "save_trajectory_data", False)
+        )
+
+        if not executed:
+            self._trajectory_container.setVisible(False)
+            self._trajectory_disabled_msg.setText(
+                "ℹ️ Execute esta instrução para visualizar a trajetória 3D."
+            )
+            self._trajectory_disabled_msg.setVisible(True)
+        elif not save_trajectory:
+            self._trajectory_container.setVisible(False)
+            self._trajectory_disabled_msg.setText(
+                "ℹ️ Trajetória 3D não disponível: ative <b>Salvar dados de "
+                "trajetória</b> na configuração da instrução e re-execute."
+            )
+            self._trajectory_disabled_msg.setVisible(True)
+        else:
+            self._trajectory_container.setVisible(True)
+            self._trajectory_disabled_msg.setVisible(False)
 
     def _update_snapshot_state(
         self,

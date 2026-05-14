@@ -52,6 +52,7 @@ class FFService:
         det_size: int = 320,
         use_gpu: bool = False,
         extended: bool = True,
+        batch_size: int = 32,
     ):
         if ForensicFace is None:
             raise ImportError("A biblioteca 'forensicface' não foi encontrada.")
@@ -85,6 +86,12 @@ class FFService:
         self._det_size = det_size
         self._use_gpu = use_gpu
         self._extended = extended
+        # Batch size pra inferência paralela de embedding/FIQA. Sanitizado
+        # pra inteiro >= 1; 1 desliga batching (loop legado).
+        try:
+            self._batch_size: int = max(1, int(batch_size))
+        except (TypeError, ValueError):
+            self._batch_size = 32
 
         # Carrega uma ForensicFace independente por modelo.
         # Cada engine fica com `models=[<um>]`, então só esse encoder roda
@@ -385,6 +392,122 @@ class FFService:
 
         return ff_data
 
+    def extract_embeddings_from_aligned_faces_batch(
+        self,
+        bgr_aligned_faces: np.ndarray,
+        *,
+        models: Optional[List[str]] = None,
+    ) -> List[Optional[FFInfo]]:
+        """Extrai embeddings + FIQA de **N faces alinhadas em paralelo**
+        numa única chamada por modelo ao ONNX Runtime.
+
+        Diferente do `extract_embeddings_from_aligned_face` (single):
+        - Recebe `(N, 112, 112, 3)` BGR uint8 — N faces empilhadas.
+        - Stackeia → `(N, 3, 112, 112)` float32 normalizado.
+        - Roda `rec_session.run()` UMA vez por modelo (em vez de N).
+        - Roda `ort_fiqa.run()` UMA vez (em vez de N).
+        - Retorna lista de `FFInfo` (uma por entrada) com embedding +
+          fiqa_score já distribuídos.
+
+        Performance: speedup escala com o batch size — 5-15× em GPU,
+        1.5-3× em CPU pra batch≥32. Modelo ONNX precisa ter sido
+        exportado com primeira dim de input dinâmica (confirmado:
+        sepaelv2 e CR-FIQA da forensicface 0.5.1 são).
+
+        Args:
+            bgr_aligned_faces: array `(N, 112, 112, 3)` BGR uint8.
+            models: lista de modelos a extrair. Default = `_default_model`.
+
+        Returns:
+            Lista de length N. Posições com erro são `None`. FIQA score
+            é populado a partir do primeiro engine (todos retornam o
+            mesmo — é função do FIQA network, não do encoder).
+        """
+        if bgr_aligned_faces is None or bgr_aligned_faces.size == 0:
+            return []
+        n = int(bgr_aligned_faces.shape[0])
+        if n == 0:
+            return []
+        if bgr_aligned_faces.shape[1:] != (112, 112, 3):
+            raise ValueError(
+                f"extract_embeddings_from_aligned_faces_batch espera shape "
+                f"(N, 112, 112, 3); recebeu {bgr_aligned_faces.shape}."
+            )
+
+        target_models: List[str]
+        if models:
+            target_models = list(models)
+        else:
+            target_models = [self._default_model]
+
+        # Pré-processa o batch inteiro de uma vez:
+        # `_to_input_ada` legado: (x/255 - 0.5)/0.5 + transpose pra CHW.
+        # Versão batch: opera sobre (N, H, W, C) → (N, C, H, W).
+        batched = bgr_aligned_faces.astype(np.float32)
+        batched = ((batched / 255.0) - 0.5) / 0.5
+        # (N, H, W, C) → (N, C, H, W)
+        batched_input = batched.transpose(0, 3, 1, 2).copy()
+
+        results: List[Optional[FFInfo]] = [None] * n
+        fiqa_run_done = False
+
+        for m in target_models:
+            try:
+                model_name, engine = self._resolve_engine(m)
+            except Exception as e:
+                print(
+                    f"[FFService.batch] resolve_engine falhou pra '{m}': {e}"
+                )
+                continue
+
+            # Inferência batch do encoder.
+            try:
+                rec = engine.rec_inference_sessions[0]
+                rec_input_name = rec.get_inputs()[0].name
+                rec_out = rec.run(None, {rec_input_name: batched_input})
+                # Padrão do forensicface: 2 outputs (normed_embedding, norm)
+                # ou 1 output (embedding).
+                if len(rec_out) == 2:
+                    embeddings = rec_out[0] * rec_out[1]
+                else:
+                    embeddings = rec_out[0]
+            except Exception as e:
+                print(
+                    f"[FFService.batch] inferência batch falhou pra "
+                    f"'{model_name}': {e}"
+                )
+                continue
+
+            # FIQA é feito UMA vez total (mesmo encoder em todos os engines).
+            fiqa_scores: Optional[np.ndarray] = None
+            if not fiqa_run_done and self._extended:
+                try:
+                    ort_fiqa = engine.ort_fiqa
+                    if ort_fiqa is not None:
+                        fiqa_in = ort_fiqa.get_inputs()[0].name
+                        _, fiqa_out = ort_fiqa.run(
+                            None, {fiqa_in: batched_input}
+                        )
+                        fiqa_scores = fiqa_out  # shape (N, 1)
+                        fiqa_run_done = True
+                except Exception as e:
+                    print(f"[FFService.batch] inferência FIQA falhou: {e}")
+
+            # Distribui resultados.
+            slot = self._slot_for_model(model_name)
+            for i in range(n):
+                ff = results[i]
+                if ff is None:
+                    fiqa_val = (
+                        float(fiqa_scores[i][0])
+                        if fiqa_scores is not None else None
+                    )
+                    ff = FFInfo(fiqa_score=fiqa_val)
+                    results[i] = ff
+                setattr(ff, slot, embeddings[i])
+
+        return results
+
     def process_face_aligned(
         self,
         face_info: FaceInfo,
@@ -569,35 +692,54 @@ class FFService:
         )
 
         # 1. Extração biométrica (até 95% do progresso)
-        # PR L1b — propaga `dataset` pra `process_face*` resolver paths
-        # corretamente quando o dataset estiver em modo RELATIVE.
-        # Quando `dataset.is_aligned=True` (ex: output do Image Pipeline
-        # com input_source=ALIGNED_FACE), usa `process_face_aligned` que
-        # pula detect+norm_crop — mais rápido e correto (evita
-        # re-detectar a face dentro do crop 112×112 já alinhado).
+        # Três caminhos por prioridade:
+        # - `is_aligned=True`: faces em 112×112 no disco (Image Pipeline
+        #   COPY_ALIGNED). Lê crops do disco, batch inference. ⚡
+        # - **Cache hit**: faces com `ff_info.aligned_face` populado de
+        #   execução anterior (caso enrichment: usuário adicionou
+        #   sepaelv4 num dataset que já tem sepaelv2). Pula detect+align
+        #   (já cacheado), batch da extração. ⚡
+        # - Foto original sem cache: detect+align+extract por-face.
+        #   Batch real exigiria acessar internas do ForensicFace; ROI
+        #   menor.
         is_aligned = bool(getattr(dataset, "is_aligned", False))
+        all_have_cached_aligned = (
+            total_faces > 0
+            and all(
+                f.ff_info is not None
+                and getattr(f.ff_info, "aligned_face", None) is not None
+                for f in dataset
+            )
+        )
+
         if is_aligned:
             print(
-                "🔄 [FFService] Dataset marcado como is_aligned — usando "
-                "process_face_aligned (pula detect+align)."
+                f"[FFService] Dataset is_aligned=True - batch inference "
+                f"(batch_size={self._batch_size})."
             )
-        for idx, face in enumerate(
-            tqdm(dataset, desc=f"Processando {dataset.name}", unit="face")
-        ):
-            if is_aligned:
-                self.process_face_aligned(
-                    face, model=model, models=models, dataset=dataset,
-                )
-            else:
+            self._process_dataset_aligned_batched(
+                dataset, total_faces, model, models, progress_callback,
+            )
+        elif all_have_cached_aligned:
+            print(
+                f"[FFService] Todas as faces tem aligned_face cacheado - "
+                f"batch via cache (batch_size={self._batch_size})."
+            )
+            self._process_dataset_cached_aligned_batched(
+                dataset, total_faces, model, models, progress_callback,
+            )
+        else:
+            for idx, face in enumerate(
+                tqdm(dataset, desc=f"Processando {dataset.name}", unit="face")
+            ):
                 self.process_face(
                     face, model=model, models=models, dataset=dataset,
                 )
-
-            if progress_callback:
-                pct = int(((idx + 1) / total_faces) * 95)
-                progress_callback(
-                    f"Extraindo biometria ({idx + 1}/{total_faces})...", pct
-                )
+                if progress_callback:
+                    pct = int(((idx + 1) / total_faces) * 95)
+                    progress_callback(
+                        f"Extraindo biometria ({idx + 1}/{total_faces})...", pct
+                    )
 
         # 2. Pós-processamento: consenso de gênero por identidade (5%)
         if progress_callback:
@@ -609,6 +751,198 @@ class FFService:
             progress_callback("Concluído", 100)
 
         return dataset
+
+    def _process_dataset_cached_aligned_batched(
+        self,
+        dataset: "FaceDataset",
+        total_faces: int,
+        model: Optional[str],
+        models: Optional[List[str]],
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> None:
+        """Batch usando `face.ff_info.aligned_face` já cacheado.
+
+        Caso de uso típico: enrichment com modelo adicional. As faces já
+        foram processadas antes (têm ff_info.aligned_face em RGB), o
+        usuário pediu pra adicionar um novo embedding (ex: sepaelv4
+        sobre dataset que já tem sepaelv2). Pulamos detect+align (já
+        cacheado), só batch a extração do novo modelo.
+
+        O aligned_face fica em RGB no FFInfo (per `_assemble_result`
+        do forensicface); convertemos pra BGR antes do batch — mesma
+        convenção do path is_aligned.
+        """
+        target_models: List[str]
+        if models:
+            target_models = list(models)
+        elif model is not None:
+            target_models = [model]
+        else:
+            target_models = [self._default_model]
+
+        buffer_crops: List[np.ndarray] = []
+        buffer_faces: List[FaceInfo] = []
+
+        def flush() -> None:
+            if not buffer_crops:
+                return
+            arr = np.stack(buffer_crops, axis=0)
+            try:
+                ff_infos = self.extract_embeddings_from_aligned_faces_batch(
+                    arr, models=target_models,
+                )
+            except Exception as e:
+                print(
+                    f"[FFService] Falha no batch de tamanho {len(arr)}: {e}"
+                )
+                ff_infos = [None] * len(buffer_faces)
+            for face, new_ff in zip(buffer_faces, ff_infos):
+                if new_ff is None:
+                    continue
+                existing = face.ff_info  # já existe (gate do caller)
+                # MERGE: novo modelo sobrescreve só o slot dele +
+                # fiqa_score (FIQA score é mesmo entre engines).
+                for key in (
+                    "fiqa_score",
+                    "embedding_sepaelv2", "embedding_sepaelv4",
+                ):
+                    val = getattr(new_ff, key, None)
+                    if val is not None:
+                        setattr(existing, key, val)
+            buffer_crops.clear()
+            buffer_faces.clear()
+
+        processed = 0
+        for face in tqdm(
+            dataset, desc=f"Processando {dataset.name} (cache+batch)",
+            unit="face",
+        ):
+            processed += 1
+            ff = face.ff_info
+            aligned_rgb = (
+                getattr(ff, "aligned_face", None) if ff is not None else None
+            )
+            if aligned_rgb is None or aligned_rgb.shape != (112, 112, 3):
+                # Cache inválido — pula. (Não deveria acontecer pois o
+                # caller já garantiu, mas defensivo contra shapes
+                # estranhos vindos de payloads legados.)
+                continue
+            # RGB → BGR pro batch helper (espera BGR, consistente com
+            # `extract_embeddings_from_aligned_face`).
+            aligned_bgr = aligned_rgb[..., ::-1].copy()
+            buffer_crops.append(aligned_bgr)
+            buffer_faces.append(face)
+
+            if len(buffer_crops) >= self._batch_size:
+                flush()
+
+            if progress_callback:
+                pct = int((processed / total_faces) * 95)
+                progress_callback(
+                    f"Extraindo embedding ({processed}/{total_faces}) "
+                    f"[cache+batch={self._batch_size}]...", pct,
+                )
+
+        flush()
+
+    def _process_dataset_aligned_batched(
+        self,
+        dataset: "FaceDataset",
+        total_faces: int,
+        model: Optional[str],
+        models: Optional[List[str]],
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> None:
+        """Processa um dataset is_aligned=True em batches.
+
+        Loop: lê crops 112×112 do disco sequencialmente, acumula em
+        buffer; quando o buffer enche (ou no fim), chama
+        `extract_embeddings_from_aligned_faces_batch` UMA vez por modelo.
+
+        Falhas individuais (arquivo ausente, crop com shape errado)
+        viram None no resultado — face mantém `ff_info=None`, igual ao
+        caminho legado por-face. Logs explicam o motivo.
+        """
+        target_models: List[str]
+        if models:
+            target_models = list(models)
+        elif model is not None:
+            target_models = [model]
+        else:
+            target_models = [self._default_model]
+
+        # Buffers paralelos: crops carregados + ponteiros pras FaceInfo
+        # correspondentes. Flush quando atinge `_batch_size`.
+        buffer_crops: List[np.ndarray] = []
+        buffer_faces: List[FaceInfo] = []
+
+        def flush() -> None:
+            if not buffer_crops:
+                return
+            arr = np.stack(buffer_crops, axis=0)  # (N, 112, 112, 3)
+            try:
+                ff_infos = self.extract_embeddings_from_aligned_faces_batch(
+                    arr, models=target_models,
+                )
+            except Exception as e:
+                print(
+                    f"[FFService] Falha no batch de tamanho {len(arr)}: {e}"
+                )
+                ff_infos = [None] * len(buffer_faces)
+            for face, new_ff in zip(buffer_faces, ff_infos):
+                if new_ff is None:
+                    continue
+                # MERGE em vez de REPLACE — preserva campos vindos de runs
+                # anteriores (mesma semântica do process_face_aligned).
+                existing = face.ff_info
+                if existing is None:
+                    face.ff_info = new_ff
+                    continue
+                for key in (
+                    "ipd", "fiqa_score", "det_score", "gender", "age",
+                    "yaw", "pitch", "roll", "bbox", "keypoints",
+                    "aligned_face", "embedding_sepaelv2", "embedding_sepaelv4",
+                ):
+                    val = getattr(new_ff, key, None)
+                    if val is not None:
+                        setattr(existing, key, val)
+            buffer_crops.clear()
+            buffer_faces.clear()
+
+        processed = 0
+        for face in tqdm(
+            dataset, desc=f"Processando {dataset.name} (batch)", unit="face"
+        ):
+            image_path = str(dataset.resolve_image_path(face))
+            crop = self._safe_read_image(image_path)
+            processed += 1
+
+            if crop is None:
+                # Face inválida — pula do batch (mantém ff_info=None).
+                pass
+            elif crop.shape != (112, 112, 3):
+                # Shape inesperado: dataset marcado is_aligned mas o
+                # arquivo não é um crop 112×112. Avisa e pula.
+                print(
+                    f"[FFService] Crop com shape {crop.shape} ignorado "
+                    f"(esperado (112,112,3)): {image_path}"
+                )
+            else:
+                buffer_crops.append(crop)
+                buffer_faces.append(face)
+
+            if len(buffer_crops) >= self._batch_size:
+                flush()
+
+            if progress_callback:
+                pct = int((processed / total_faces) * 95)
+                progress_callback(
+                    f"Extraindo biometria ({processed}/{total_faces}) "
+                    f"[batch={self._batch_size}]...", pct,
+                )
+
+        # Flush final.
+        flush()
 
     def process_batch(
         self,
