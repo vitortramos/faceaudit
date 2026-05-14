@@ -307,6 +307,22 @@ class StrategyExecutor:
                             calibrated=is_calibrated,
                         )
                         resource.payload.write_distribution_png(png_path)
+
+                        # CALIBRATED_SCORES também ganha um PNG da curva de
+                        # calibração (raw_score × log-LR). Exibida em aba
+                        # separada do painel de resultados pra diagnosticar
+                        # forma da função: crossover LR=1, saturação,
+                        # não-monotonicidade de KDE mal-configurada.
+                        if is_calibrated:
+                            from faceaudit.models.similarity.calibration_curve_plot import (
+                                calibration_curve_png_path,
+                            )
+                            curve_png_path = calibration_curve_png_path(
+                                project_root, strategy_id, resource.resource_id,
+                            )
+                            resource.payload.write_calibration_curve_png(
+                                curve_png_path,
+                            )
                 elif (
                     resource.resource_type
                     == StrategyResourceType.CASEWORK_VISUALIZATION

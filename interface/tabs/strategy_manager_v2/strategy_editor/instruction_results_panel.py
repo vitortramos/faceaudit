@@ -416,12 +416,25 @@ class _ResultsCard(QtWidgets.QWidget):
             # sem rodar gaussian_kde de novo). Ambas produzem
             # `SIMILARITY_SCORES`, então o executor já cuida do PNG no
             # `persist_produced_resource`. SCORE_CALIBRATION (output
-            # `CALIBRATED_SCORES`) segue usando o widget vivo via sidecar
-            # `_dist.json`.
+            # `CALIBRATED_SCORES`) tem DUAS vistas em abas: distribuição
+            # de log-LR + curva de calibração (raw_score × log-LR).
             if self._uses_png_snapshot_inline():
-                self._plot_widget = _PngSnapshotWidget(
-                    parent=plot_page,
-                )
+                if (
+                    self._instruction.instruction_type
+                    == StrategyInstructionType.SCORE_CALIBRATION
+                ):
+                    self._plot_widget = _TabbedPngSnapshotWidget(
+                        tab_keys=("distribution", "curve"),
+                        tab_titles={
+                            "distribution": "Distribuição",
+                            "curve": "Curva de Calibração",
+                        },
+                        parent=plot_page,
+                    )
+                else:
+                    self._plot_widget = _PngSnapshotWidget(
+                        parent=plot_page,
+                    )
             else:
                 self._plot_widget = ScoreDistributionWidget(
                     parent=plot_page, score_dataset=None,
@@ -742,16 +755,19 @@ class _ResultsCard(QtWidgets.QWidget):
         loaded = False
 
         if isinstance(widget, _TabbedPngSnapshotWidget):
-            # STRATEGY_EVALUATION: 4 PNGs separados.
+            # Multi-PNG: STRATEGY_EVALUATION (4 PNGs) ou SCORE_CALIBRATION
+            # (2 PNGs: distribuição + curva de calibração).
             paths_dict = self._resolve_png_paths_dict(
                 definition, target_resource_id or "", resource_loader,
             )
             if paths_dict:
                 loaded = widget.show_images(paths_dict) > 0
             if not loaded:
-                widget.show_placeholder(
-                    "Execute para gerar visualização da validação"
-                )
+                if self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
+                    placeholder_msg = "Execute para gerar visualização da validação"
+                else:
+                    placeholder_msg = "Execute para gerar visualização da calibração"
+                widget.show_placeholder(placeholder_msg)
         elif isinstance(widget, _PngSnapshotWidget):
             # Plot único.
             png_path = self._resolve_png_path(
@@ -779,8 +795,12 @@ class _ResultsCard(QtWidgets.QWidget):
         resource_loader: Any,
     ):
         """Versão "multi-PNG" do `_resolve_png_path` — usada pelo tabbed
-        snapshot widget de STRATEGY_EVALUATION. Retorna dict
-        `{plot_key: Path}` ou None se faltam dados."""
+        snapshot widget. Retorna dict `{plot_key: Path}` ou None se
+        faltam dados.
+
+        Hoje cobre dois casos: STRATEGY_EVALUATION (4 PNGs) e
+        SCORE_CALIBRATION (2 PNGs: distribuição + curva de calibração).
+        """
         if resource_loader is None or definition is None or not resource_id:
             return None
         storage = getattr(resource_loader, "_storage", None)
@@ -795,6 +815,26 @@ class _ResultsCard(QtWidgets.QWidget):
             return validation_result_png_paths(
                 project_root, strategy_id, resource_id,
             )
+        if (
+            self._plot_kind == _PLOT_KIND_SCORE_DISTRIBUTION
+            and self._instruction.instruction_type
+            == StrategyInstructionType.SCORE_CALIBRATION
+        ):
+            from faceaudit.models.similarity.distribution_plot import (
+                score_distribution_png_path,
+            )
+            from faceaudit.models.similarity.calibration_curve_plot import (
+                calibration_curve_png_path,
+            )
+            return {
+                "distribution": score_distribution_png_path(
+                    project_root, strategy_id, resource_id,
+                    calibrated=True,
+                ),
+                "curve": calibration_curve_png_path(
+                    project_root, strategy_id, resource_id,
+                ),
+            }
         return None
 
     def invalidate(self) -> None:
@@ -810,9 +850,11 @@ class _ResultsCard(QtWidgets.QWidget):
         from .result_widgets import HubnessReportWidget, HubnessAblationWidget
         try:
             if isinstance(self._plot_widget, _TabbedPngSnapshotWidget):
-                self._plot_widget.show_placeholder(
-                    "Execute para gerar visualização da validação"
-                )
+                if self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
+                    placeholder_msg = "Execute para gerar visualização da validação"
+                else:
+                    placeholder_msg = "Execute para gerar visualização da calibração"
+                self._plot_widget.show_placeholder(placeholder_msg)
             elif isinstance(self._plot_widget, _PngSnapshotWidget):
                 self._plot_widget.show_placeholder(
                     "Execute para gerar visualização"

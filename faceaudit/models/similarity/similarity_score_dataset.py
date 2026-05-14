@@ -457,6 +457,29 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         except Exception:
             return False
 
+    def write_calibration_curve_png(self, target_png_path: Path) -> bool:
+        """Renderiza a curva de calibração (raw_score × log-LR) como PNG.
+
+        Faz sentido apenas para datasets calibrados — ou seja, com
+        `metadata["log_lr"]` populado nos samples (output de
+        SCORE_CALIBRATION). Para datasets de scores brutos, retorna
+        False sem erro.
+
+        Falha NÃO levanta — caller (executor) decide se quer logar.
+        """
+        try:
+            from faceaudit.models.similarity.calibration_curve_plot import (
+                compute_calibration_curve_summary,
+                render_calibration_curve_png,
+            )
+            summary = compute_calibration_curve_summary(self.items)
+            if summary is None:
+                return False
+            render_calibration_curve_png(summary, target_png_path)
+            return True
+        except Exception:
+            return False
+
     @staticmethod
     def try_load_distribution_summary(parquet_path: Union[str, Path]) -> Optional[dict]:
         """

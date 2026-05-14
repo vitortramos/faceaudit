@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import time
 from typing import List
 
@@ -89,30 +90,38 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                     f"{n_samples} samples — tamanhos incompatíveis."
                 )
 
-            # Popula log_lr nos samples in-place, em chunks com micro-pausa.
+            # Constrói samples NOVOS para o output em chunks com micro-pausa.
             #
-            # ANTES: `copy.copy(sample)` + criação de novo dict de metadata
-            # para cada um dos N samples (5M+). Operação Python-pura segurando
-            # a GIL por dezenas de segundos → main thread Qt starved → UI
-            # travava ("Não respondendo").
+            # Premissa errada da versão anterior: "mutação in-place é segura
+            # porque o input não será reusado depois". Falha porque o Run All
+            # passa por `_persist_trained_model_resources_inline`, que itera
+            # `trained_resources` (TODOS os recursos no contexto, inclusive o
+            # input) e regrava os que ainda não tinham `artifact_ref` no
+            # início da execução. Como a mutação adicionou `log_lr` no
+            # metadata dos items compartilhados, o parquet do input ia parar
+            # no disco com a coluna `log_lr` populada — fazendo a validação
+            # `SCORE_CALIBRATION_STATE(RAW)` falhar na próxima execução.
             #
-            # AGORA: mutação direta de `sample.metadata["log_lr"]` em chunks
-            # de 50k com `time.sleep(0)` entre eles — libera a GIL
-            # periodicamente para a main thread processar eventos. O input
-            # dataset compartilha referências dos samples com o output, mas
-            # ambos terão `log_lr` populado, o que é o resultado desejado
-            # mesmo (o input não será reusado depois sem este campo).
-            output_items: List = list(score_dataset.items)
-            n = len(output_items)
+            # Solução: shallow copy de cada sample + dict de metadata NOVO.
+            # `copy.copy` em ~5M samples leva poucos segundos com chunked
+            # sleep — mesma ordem de grandeza da mutação in-place — e libera
+            # a GIL periodicamente, evitando o freeze da UI relatado no
+            # comentário antigo.
+            n = len(score_dataset.items)
+            output_items: List = [None] * n
             CHUNK = 50_000
             log_lrs_view = log_lrs  # ndarray indexável
             for chunk_start in range(0, n, CHUNK):
                 chunk_end = min(chunk_start + CHUNK, n)
                 for j in range(chunk_start, chunk_end):
-                    s = output_items[j]
-                    md = s.metadata if isinstance(s.metadata, dict) else {}
-                    md["log_lr"] = float(log_lrs_view[j])
-                    s.metadata = md
+                    src = score_dataset.items[j]
+                    new_sample = copy.copy(src)
+                    old_md = src.metadata if isinstance(src.metadata, dict) else {}
+                    new_sample.metadata = {
+                        **old_md,
+                        "log_lr": float(log_lrs_view[j]),
+                    }
+                    output_items[j] = new_sample
                 # Micro-pausa: cede GIL à main thread para drenar eventos Qt.
                 time.sleep(0)
 
