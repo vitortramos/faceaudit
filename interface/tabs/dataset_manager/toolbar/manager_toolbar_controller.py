@@ -31,6 +31,8 @@ class ManagerToolbarController(QtCore.QObject):
 
     # PR 8 — Spreadsheet UX
     action_add_column = QtCore.pyqtSignal()
+    # Edição centralizada de metadados (nome, descrição, is_aligned, specs).
+    action_metadata = QtCore.pyqtSignal()
 
     # PR 15 — Modo galeria
     action_toggle_gallery = QtCore.pyqtSignal(bool)  # bool = is_gallery_mode
@@ -76,6 +78,7 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_filter.clicked.connect(self.action_filter.emit)
         self.view.btn_clear_filter.clicked.connect(self.action_clear_filter.emit)
         self.view.btn_add_column.clicked.connect(self.action_add_column.emit)  # PR 8
+        self.view.btn_metadata.clicked.connect(self.action_metadata.emit)
         # PR 15: toggled emite com checked state — controller pode tratar
         # como flag (gallery on/off) sem precisar consultar o botão.
         self.view.btn_toggle_gallery.toggled.connect(self.action_toggle_gallery.emit)

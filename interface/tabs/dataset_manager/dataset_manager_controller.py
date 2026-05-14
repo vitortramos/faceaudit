@@ -146,6 +146,8 @@ class DatasetManagerController(QtCore.QObject):
         # PR 8 — Spreadsheet UX
         if hasattr(self.toolbar_ctrl, "action_add_column"):
             self.toolbar_ctrl.action_add_column.connect(self.fluxo_adicionar_coluna)
+        if hasattr(self.toolbar_ctrl, "action_metadata"):
+            self.toolbar_ctrl.action_metadata.connect(self.fluxo_editar_metadados)
         if hasattr(self.table_ctrl, "schema_changed"):
             self.table_ctrl.schema_changed.connect(self._on_schema_changed)
 
@@ -261,6 +263,74 @@ class DatasetManagerController(QtCore.QObject):
         # garantimos a atribuição explícita em caso de refactor futuro.
         self.dataset.column_specs = dict(self.table_ctrl.model.column_specs)
         self.set_dirty(True)
+
+    def fluxo_editar_metadados(self):
+        """Abre o DatasetMetadataEditorDialog (visão global).
+
+        Aplica em sucesso:
+        - Campos do dataset (name, description, is_aligned).
+        - column_specs alterados → `update_column_spec(name, new_spec)` por coluna.
+
+        Em seguida: reinstala vocabulary delegates + emite schema_changed
+        (sincroniza specs do model com o dataset + marca dirty).
+        """
+        if self.dataset is None:
+            return
+        from PyQt6.QtWidgets import QMessageBox
+
+        if not self.table_ctrl.model.column_specs:
+            QMessageBox.warning(
+                self.view, "Schema legado",
+                "Este dataset foi carregado de um parquet sem column_specs "
+                "na metadata. Salve-o primeiro (Salvar) para atualizar para "
+                "o novo formato — depois você pode editar metadados.",
+            )
+            return
+
+        from .column_dialogs.dataset_metadata_editor_dialog import (
+            DatasetMetadataEditorDialog,
+        )
+        from .table.vocabulary_combo_delegate import install_vocabulary_delegates
+
+        dialog = DatasetMetadataEditorDialog(self.dataset, parent=self.view)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        ds_changes, col_changes = dialog.get_result()
+
+        # Aplica dataset-level
+        for field_name, new_value in ds_changes.items():
+            setattr(self.dataset, field_name, new_value)
+
+        # Aplica por-coluna via model (mantém modelo em sync e reset adequado)
+        applied: List[str] = []
+        for name, new_spec in col_changes.items():
+            if self.table_ctrl.model.update_column_spec(name, new_spec):
+                applied.append(name)
+
+        # Re-instala delegates (vocabularies podem ter mudado), refresca
+        # specs no dataset e marca dirty.
+        install_vocabulary_delegates(self.table_ctrl.view, self.table_ctrl.model)
+        self.table_ctrl.view.resizeColumnsToContents()
+        self._on_schema_changed()
+
+        # PR 25 (Tema 5.4) — registra a edição se houve mudanças.
+        if ds_changes or applied:
+            summary_parts = []
+            if ds_changes:
+                summary_parts.append(
+                    "dataset: " + ", ".join(sorted(ds_changes.keys()))
+                )
+            if applied:
+                summary_parts.append(f"colunas: {', '.join(sorted(applied))}")
+            self._audit(
+                AuditOperation.EDIT_SCHEMA,
+                "Metadados editados — " + "; ".join(summary_parts),
+                metadata={
+                    "dataset_fields": sorted(ds_changes.keys()),
+                    "columns": sorted(applied),
+                },
+            )
 
     def fluxo_adicionar_coluna(self):
         """Abre o AddColumnDialog. Se aceito, adiciona a coluna ao model

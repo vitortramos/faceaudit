@@ -148,6 +148,7 @@ class ManagerToolbarView(QFrame):
         self.btn_filter = self.dataset_ribbon.btn_filter
         self.btn_clear_filter = self.dataset_ribbon.btn_clear_filter
         self.btn_add_column = self.dataset_ribbon.btn_add_column
+        self.btn_metadata = self.dataset_ribbon.btn_metadata
 
         # Exibir (movidos de Dataset → Exibir)
         self.btn_toggle_gallery = self.exibir_ribbon.btn_toggle_gallery
@@ -174,7 +175,8 @@ class ManagerToolbarView(QFrame):
             self.btn_stats, self.btn_analyze,
             self.btn_schema_report, self.btn_audit_log,
             self.btn_localize, self.btn_filter,
-            self.btn_add_column, self.btn_toggle_gallery,
+            self.btn_add_column, self.btn_metadata,
+            self.btn_toggle_gallery,
             self.btn_send_to_strategy,
             # Imagens (PR I2 — Editor; PR I5 — Processar)
             self.btn_image_pipeline_editor,

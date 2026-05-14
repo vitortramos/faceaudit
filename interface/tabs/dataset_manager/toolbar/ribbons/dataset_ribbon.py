@@ -59,8 +59,14 @@ class DatasetRibbon(ResponsiveRibbon):
             "Coluna", "➕📋",
             tooltip="Adicionar coluna custom ao dataset (anotação livre)",
         )
+        self.btn_metadata = ToolbarButton(
+            "Metadados", "🏷️",
+            tooltip="Editar metadados do dataset (nome, descrição, "
+                    "rótulos de coluna, roles, vocabulários...) num único diálogo.",
+        )
         layout.addWidget(self.btn_enrich)
         layout.addWidget(self.btn_add_column)
+        layout.addWidget(self.btn_metadata)
         layout.addWidget(ToolbarSeparator())
 
         # ── Juntar / Dividir / Balancear (mutações estruturais) ──

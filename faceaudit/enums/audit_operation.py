@@ -28,6 +28,7 @@ class AuditOperation(str, Enum):
 
     # Mutações de dados
     EDIT_LABEL = "edit_label"
+    EDIT_SCHEMA = "edit_schema"  # edição global de metadados/specs via diálogo
     ADD_COLUMN = "add_column"
     REMOVE_COLUMN = "remove_column"
     RENAME_COLUMN = "rename_column"
@@ -56,6 +57,7 @@ class AuditOperation(str, Enum):
             "save_as": "💾",
             "close": "🚪",
             "edit_label": "✏️",
+            "edit_schema": "🏷️",
             "add_column": "➕",
             "remove_column": "➖",
             "rename_column": "✏️",
@@ -78,6 +80,7 @@ class AuditOperation(str, Enum):
             "save_as": "Salvar como",
             "close": "Fechamento",
             "edit_label": "Edição de rótulo",
+            "edit_schema": "Edição de metadados",
             "add_column": "Coluna adicionada",
             "remove_column": "Coluna removida",
             "rename_column": "Coluna renomeada",

@@ -1,12 +1,17 @@
 import pandas as pd
 import numpy as np
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 from PyQt6.QtCore import Qt
 
 from faceaudit.enums.dataset_columns import DatasetColumns
+
+
+# Background sutil pra células com valor fora do vocabulário definido.
+# Amarelo claro — chama atenção sem ofuscar a leitura.
+_OUT_OF_VOCAB_BRUSH = QtGui.QBrush(QtGui.QColor("#FFF5C2"))
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,11 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         # antes de consultar o tooltip_cache (sem isso, datasets do
         # Image Pipeline mostram tooltip vazio porque o path é relativo).
         self._dataset: Optional[Any] = None
+        # Cache de vocabulários por nome de coluna — usado em BackgroundRole
+        # pra flagar valores fora-de-vocab. Construído lazy a partir dos
+        # specs; invalidado em set_column_specs/update_column_spec/etc.
+        # Cada entrada vai como `frozenset[str]` pra lookup O(1).
+        self._vocab_cache: Optional[Dict[str, frozenset]] = None
 
     def set_dataset(self, dataset: Optional[Any]) -> None:
         """Recebe referência ao dataset corrente. Cache de tooltip
@@ -95,6 +105,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         Quando `specs` é vazio (None ou {}), volta ao fallback do enum.
         Chamar isto sempre que um dataset novo for carregado.
         """
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self._column_specs = dict(specs) if specs else {}
         if self._column_specs:
@@ -131,6 +142,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         except Exception:
             return False
 
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self.visible_columns = _columns_from_specs(self._column_specs)
         self.endResetModel()
@@ -163,6 +175,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
             if k not in visible_set:
                 new_specs[k] = spec
 
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self._column_specs = new_specs
         self.visible_columns = _columns_from_specs(self._column_specs)
@@ -182,6 +195,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
             return False
         self._column_specs[name] = new_spec
 
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self.visible_columns = _columns_from_specs(self._column_specs)
         self.endResetModel()
@@ -230,6 +244,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         if name in self._df.columns:
             self._df = self._df.drop(columns=[name])
 
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self.visible_columns = _columns_from_specs(self._column_specs)
         self.endResetModel()
@@ -317,6 +332,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         if not computed_expr and name not in self._df.columns:
             self._df[name] = default_value
 
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         self.visible_columns = _columns_from_specs(self._column_specs)
         self.endResetModel()
@@ -328,12 +344,38 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
     def columnCount(self, parent=None):
         return len(self.visible_columns)
 
+    def _get_vocab_for_column(self, name: str) -> Optional[frozenset]:
+        """Retorna o frozenset de vocab pra coluna `name`, ou None se a
+        coluna não tem vocabulário definido. Cache lazy invalidado nos
+        métodos que mexem em `_column_specs`."""
+        if self._vocab_cache is None:
+            cache: Dict[str, frozenset] = {}
+            for col_name, spec in (self._column_specs or {}).items():
+                vocab = getattr(spec, "vocabulary", None)
+                if vocab:
+                    cache[col_name] = frozenset(str(v) for v in vocab)
+            self._vocab_cache = cache
+        return self._vocab_cache.get(name)
+
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
 
         col = self.visible_columns[index.column()]
         key = col.key
+
+        # BackgroundRole — flag visual quando valor fora do vocab definido.
+        # Política tolerante: o valor permanece aceito; só fica destacado
+        # em amarelo claro pra inspeção visual + tooltip "fora do vocab".
+        if role == Qt.ItemDataRole.BackgroundRole:
+            vocab = self._get_vocab_for_column(key)
+            if vocab and key in self._df.columns:
+                val = self._df.iloc[index.row()][key]
+                if val is not None and not (isinstance(val, float) and pd.isna(val)):
+                    str_val = str(val).strip()
+                    if str_val and str_val not in vocab:
+                        return _OUT_OF_VOCAB_BRUSH
+            return None
 
         if role == Qt.ItemDataRole.DisplayRole or role == Qt.ItemDataRole.EditRole:
             # PR 23 (Tema 4.3) — coluna computada: avalia a fórmula on-the-fly
@@ -489,6 +531,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         colunas continuavam visíveis apesar das linhas vazias, dando
         impressão visual de que o dataset ainda está aberto.
         """
+        self._vocab_cache = None  # invalida cache de vocab por coluna
         self.beginResetModel()
         if df is None:
             self._df = pd.DataFrame()
