@@ -435,10 +435,12 @@ NESTED_DTO_ATTRS: Tuple[Tuple[str, str], ...] = (
     ("mining_config", "dialog"),
     # Configs embutidas das instruções de modelo de similaridade/calibração —
     # exibidas inline quando o tipo correspondente está selecionado.
-    # O painel filtra qual aparecer via uses_plda / uses_logistic_regression / uses_kde.
+    # O painel filtra qual aparecer via uses_plda / uses_logistic_regression /
+    # uses_kde / uses_bigauss.
     ("similarity_model_config", "inline"),
     ("logreg_config", "inline"),
     ("kde_config", "inline"),
+    ("bigauss_config", "inline"),
 )
 
 
@@ -629,6 +631,68 @@ _KDE_CONFIG_TOOLTIPS = {
 }
 
 
+_BIGAUSS_CONFIG_LABELS = {
+    "target_metric":           "Métrica do σ alvo",
+    "initial_calibrator":      "Calibrador inicial",
+    "inversion_method":        "Método de inversão da CDF",
+    "sigma_shrinkage_factor":  "Fator de encolhimento (σ)",
+    "min_log_lr":              "log-LR mínimo (clipping)",
+    "max_log_lr":              "log-LR máximo (clipping)",
+    "interpolation_points":    "Pontos da interpolação (INTERP1D)",
+    "brent_xtol":              "Tolerância do Brent",
+    "brent_search_range":      "Range simétrico do Brent",
+    "initial_logreg_C":        "C da LogReg inicial",
+    "initial_kde_bandwidth":   "Bandwidth do KDE inicial (0=auto)",
+    "random_seed":             "Semente aleatória",
+}
+
+_BIGAUSS_CONFIG_TOOLTIPS = {
+    "target_metric":
+        "CLLR (padrão): numérico, fit ln(Cllr) = b·(exp(-c·σ²)-1) — "
+        "Eq. (8) do paper. Usa toda a informação dos scores; recomendado "
+        "quando há ≥ 50 fontes.\n\n"
+        "EER: analítico, σ = -2·Φ⁻¹(EER) — Eq. (10). Mais ruidoso com "
+        "poucas same-source samples (discretiza em passos 1/N).",
+    "initial_calibrator":
+        "NONE (padrão): scores já em espaço de ln(Λ) (caso PLDA log-LR). "
+        "Cllr/EER calculados direto.\n"
+        "LOGREG: calibração linear inicial, rápida.\n"
+        "KDE: §3.6 do paper — robusto a outliers, ~15× mais lento.\n\n"
+        "Só afeta a derivação do σ² alvo; o mapeamento final sempre usa "
+        "a CDF empírica.",
+    "inversion_method":
+        "INTERP1D (padrão): grid pré-computado + interpolação linear. "
+        "O(N) total. Preciso o bastante na prática.\n\n"
+        "BRENT_ROOT: root-finding por ponto via Brent. Mais preciso nas "
+        "caudas, ~50–100× mais lento.",
+    "sigma_shrinkage_factor":
+        "§3.5 do paper. 1.0 = sem encolhimento; 0.9 = 90% do σ calculado, "
+        "puxa LRs grandes pra perto de 1. Útil quando há pouco treino e "
+        "preocupa-se com extrapolação.",
+    "min_log_lr":
+        "Limite inferior do log-LR calibrado (clipping de saída).",
+    "max_log_lr":
+        "Limite superior do log-LR calibrado (clipping de saída).",
+    "interpolation_points":
+        "Quantidade de pontos do grid usado pra construir G(x) (CDF empírica) "
+        "e F⁻¹ (inversa da mistura). Só aplica se inversion_method=INTERP1D.",
+    "brent_xtol":
+        "Tolerância absoluta do scipy.optimize.brentq. Só aplica se "
+        "inversion_method=BRENT_ROOT.",
+    "brent_search_range":
+        "Range simétrico [-R, +R] em ln(Λ) usado como bracket inicial do "
+        "Brent. Default 50 cobre LR de até e^50.",
+    "initial_logreg_C":
+        "Parâmetro C (regularização inversa) da LogReg inicial. "
+        "Só aplica se initial_calibrator=LOGREG.",
+    "initial_kde_bandwidth":
+        "Bandwidth do KDE inicial. 0.0 = automático via Silverman (padrão "
+        "do paper). Só aplica se initial_calibrator=KDE.",
+    "random_seed":
+        "Semente para amostragens internas (reprodutibilidade).",
+}
+
+
 def get_inline_field_labels(attr_name: str) -> Dict[str, str]:
     """Retorna o mapa de field_name → label legível para o DTO inline conhecido."""
     if attr_name == "training_policy":
@@ -641,6 +705,8 @@ def get_inline_field_labels(attr_name: str) -> Dict[str, str]:
         return _LOGREG_CONFIG_LABELS
     if attr_name == "kde_config":
         return _KDE_CONFIG_LABELS
+    if attr_name == "bigauss_config":
+        return _BIGAUSS_CONFIG_LABELS
     return {}
 
 
@@ -656,6 +722,8 @@ def get_inline_field_tooltips(attr_name: str) -> Dict[str, str]:
         return _LOGREG_CONFIG_TOOLTIPS
     if attr_name == "kde_config":
         return _KDE_CONFIG_TOOLTIPS
+    if attr_name == "bigauss_config":
+        return _BIGAUSS_CONFIG_TOOLTIPS
     return {}
 
 
@@ -687,6 +755,16 @@ _INLINE_INTRO_TEXTS = {
         "fechada — sem EM. Padrão da literatura forense; ignora plda_mode "
         "e latent_dim, mas aceita `regularization` para estabilizar."
     ),
+    "bigauss_config": (
+        "Calibrador Bi-Gaussianized (Morrison 2024, Law, Probability and Risk). "
+        "Mapeia scores para um sistema bi-gaussiano perfeitamente calibrado com "
+        "σ² alvo derivado de Cllr ou EER do treino, via CDF empírica + inversão "
+        "da mistura 0.5·N(+σ²/2,σ²) + 0.5·N(-σ²/2,σ²).\n\n"
+        "💡 Defaults sensatos: target_metric=CLLR, initial_calibrator=NONE "
+        "(adequado para PLDA log-LR), inversion_method=INTERP1D. Mude apenas "
+        "se souber o que está fazendo — passe o mouse sobre cada campo para "
+        "ver detalhes."
+    ),
 }
 
 
@@ -706,6 +784,8 @@ def get_inline_title(attr_name: str) -> str:
         return "Config Logistic Regression"
     if attr_name == "kde_config":
         return "Config KDE"
+    if attr_name == "bigauss_config":
+        return "Config Bi-Gaussianized"
     return attr_name.replace("_", " ").title()
 
 
@@ -732,6 +812,11 @@ def make_default_dto(attr_name: str) -> Any:
             KDECalibrationModelConfig,
         )
         return KDECalibrationModelConfig()
+    if attr_name == "bigauss_config":
+        from faceaudit.models.calibration.bi_gaussianized_calibration_model_config import (
+            BiGaussianizedCalibrationModelConfig,
+        )
+        return BiGaussianizedCalibrationModelConfig()
     return None
 
 

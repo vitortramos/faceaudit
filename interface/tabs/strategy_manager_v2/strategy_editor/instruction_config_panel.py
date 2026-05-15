@@ -910,6 +910,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 instr, "uses_kde", False
             ):
                 continue
+            if attr_name == "bigauss_config" and not getattr(
+                instr, "uses_bigauss", False
+            ):
+                continue
 
             current_dto = getattr(instr, attr_name, None)
 
