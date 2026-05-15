@@ -108,8 +108,11 @@ class StrategyEvaluationInstruction(StrategyInstructionDefinition):
         """
         if self.validation_rules_user_managed:
             return
-        if self.validation_rule_configs:
-            return
+
+        # Reset & repopulate: params apontam pro input_calibrated_scores_resource_id.
+        # `user_managed=True` (acima) preserva escolha explícita do usuário.
+        self.validation_rule_configs = []
+
         if not self.input_calibrated_scores_resource_id:
             return
 

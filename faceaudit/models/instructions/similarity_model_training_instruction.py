@@ -95,8 +95,10 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         if self.validation_rules_user_managed:
             return
 
-        if self.validation_rule_configs:
-            return
+        # Reset & repopulate: params apontam pro input dataset E pro
+        # similarity_model_type (Cosine vs PLDA). `user_managed=True` (acima)
+        # preserva escolha explícita do usuário.
+        self.validation_rule_configs = []
 
         if not self.uses_plda:
             return

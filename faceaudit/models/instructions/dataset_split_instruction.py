@@ -418,8 +418,12 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
         """
         if self.validation_rules_user_managed:
             return
-        if self.validation_rule_configs:
-            return
+
+        # Reset & repopulate: params apontam pros input fields E pro
+        # split_mode, então qualquer mudança tem que rebobinar os defaults.
+        # `user_managed=True` (acima) preserva escolha explícita do usuário.
+        self.validation_rule_configs = []
+
         if not self.dataset_resource_id:
             return
 
@@ -456,8 +460,7 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
                     },
                 ))
 
-        if cfgs:
-            self.validation_rule_configs = cfgs
+        self.validation_rule_configs = cfgs
 
     @property
     def uses_identity_ratio(self) -> bool:

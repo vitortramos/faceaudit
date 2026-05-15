@@ -246,8 +246,12 @@ class PairedDatasetSplitInstruction(StrategyInstructionDefinition):
         """
         if self.validation_rules_user_managed:
             return
-        if self.validation_rule_configs:
-            return
+
+        # Reset & repopulate: os params apontam pros input fields, então
+        # quando o usuário troca o recurso a regra tem que acompanhar.
+        # `user_managed=True` (acima) preserva escolha do usuário.
+        self.validation_rule_configs = []
+
         if not (
             self.primary_dataset_resource_id
             and self.secondary_dataset_resource_id

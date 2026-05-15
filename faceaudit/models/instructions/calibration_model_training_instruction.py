@@ -145,8 +145,10 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         if self.validation_rules_user_managed:
             return
 
-        if self.validation_rule_configs:
-            return
+        # Reset & repopulate: params apontam pro input field, então mudança
+        # de recurso tem que refletir nos defaults. Quando user_managed=True
+        # (acima), a lista do usuário é preservada.
+        self.validation_rule_configs = []
 
         if not self.input_resource_id:
             return

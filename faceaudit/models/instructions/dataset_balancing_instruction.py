@@ -318,8 +318,12 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
         """
         if self.validation_rules_user_managed:
             return
-        if self.validation_rule_configs:
-            return
+
+        # Reset & repopulate: params apontam pros input fields E pro
+        # selection_criterion. `user_managed=True` (acima) preserva escolha
+        # explícita do usuário.
+        self.validation_rule_configs = []
+
         if not self.dataset_resource_id:
             return
 
