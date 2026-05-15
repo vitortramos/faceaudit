@@ -84,18 +84,23 @@ class StrategyEmbeddingConsistencyRule(ValidationRuleBase):
                 # (existência), aqui só pulamos.
                 continue
 
-            # Derivados ainda-não-produzidos (placeholders sem payload nem
-            # artifact_ref) são pulados: serão produzidos por outra instrução
-            # da própria estratégia ao longo do Run All e herdam o embedding
-            # da entrada (que é validada separadamente). Sem esse skip, Run
-            # All falha aqui mesmo quando rodar instrução-por-instrução
-            # funcionaria (instrução upstream produz o derivado on-the-fly).
-            is_pending_derived = (
-                getattr(resource, "category", None) == ResourceCategory.DERIVED
-                and not resource.has_payload
-                and not resource.has_artifact
-            )
-            if is_pending_derived:
+            # Skip de TODOS os datasets DERIVED (independentemente de já
+            # terem sido produzidos ou não). Justificativa:
+            #
+            # Datasets derivados são produtos intermediários da própria
+            # estratégia (ex: output de PIPELINE_APPLICATION, DATASET_SPLIT,
+            # DATASET_MERGE). Sua coluna de embedding é determinada pelo
+            # pipeline upstream — tipicamente o pipeline transforma a coluna
+            # `embedding_v2` (input) em `embedding` (output). Logo, exigir
+            # que o derivado contenha a `embedding_column` original da
+            # estratégia é incorreto: ele NÃO vai conter, justamente porque
+            # foi transformado.
+            #
+            # A consistência de embedding é validada nos PRIMARIES (datasets
+            # importados pelo usuário) — esses precisam compartilhar a
+            # mesma coluna e o mesmo `model_name`. Derivados herdam
+            # implicitamente a consistência via lineage de execução.
+            if getattr(resource, "category", None) == ResourceCategory.DERIVED:
                 continue
 
             payload = resource.payload
