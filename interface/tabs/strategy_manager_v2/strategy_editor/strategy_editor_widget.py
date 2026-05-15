@@ -479,9 +479,26 @@ class StrategyEditorWidget(QtWidgets.QWidget):
     def _on_add_instruction(self, instr_type: StrategyInstructionType, phase_key: str) -> None:
         if not self._definition:
             return
+        # Auto-sufixa o nome se já existe outra instrução com o nome default
+        # do mesmo tipo na estratégia. Sem isso, duas PIPELINE_APPLICATION
+        # aparecem na lista como rótulos idênticos e usuário não consegue
+        # diferenciar visualmente.
+        existing_names = {
+            getattr(i, "name", None)
+            for i in self._definition.instructions
+            if getattr(i, "name", None)
+        }
+        base_name = instr_type.value
+        new_name = base_name
+        if new_name in existing_names:
+            suffix = 2
+            while f"{base_name} ({suffix})" in existing_names:
+                suffix += 1
+            new_name = f"{base_name} ({suffix})"
+
         new_instr = StrategyInstructionDefinition.from_dict({
             "instruction_id": str(uuid.uuid4())[:8],
-            "name": instr_type.value,
+            "name": new_name,
             "instruction_type": instr_type.value,
         })
         self._definition._get_phase_list(phase_key).append(new_instr)

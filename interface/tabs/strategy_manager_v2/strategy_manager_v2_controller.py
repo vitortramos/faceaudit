@@ -2259,6 +2259,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if any_invalidated:
             self._executed_instruction_ids.discard(instruction.instruction_id)
             self._save_current_definition()
+            # Cascade downstream: instruções que consumiam os outputs
+            # invalidados precisam perder o ✅ E ter seus próprios outputs
+            # apagados. Sem isso, Y permanece marcada como executada apesar
+            # dos inputs estarem zerados — UI mente sobre o estado válido
+            # da estratégia. _invalidate_dependents_of salva as definitions
+            # afetadas e dispara os refreshes visuais ao final.
+            for output_id in output_ids:
+                self._invalidate_dependents_of(output_id)
             # Recursos foram invalidados — instruções DOWNSTREAM que dependem
             # delas precisam ser revalidadas pelo gate de dependência.
             self._refresh_instruction_states()
@@ -2300,6 +2308,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     pass
 
         self._executed_instruction_ids.discard(instruction.instruction_id)
+
+        # Cascade downstream: invalida instruções (qualquer estratégia) que
+        # consumiam os outputs dessa instrução como input. Sem isso, Y
+        # permanece com ✅ apesar dos seus inputs terem sumido — UI mostra
+        # estado válido falso, execuções subsequentes falham tardio.
+        # _invalidate_dependents_of já salva as definitions afetadas e
+        # dispara os refreshes visuais (✅/🔒 + tree + produced resources).
+        for output_id in output_ids:
+            self._invalidate_dependents_of(output_id)
+
         # NÃO chamamos `_save_current_definition()` aqui — o save virá em
         # seguida via `_on_strategy_modified` (emitido pelo widget logo
         # depois desse signal). Salvar duas vezes seria redundante.
