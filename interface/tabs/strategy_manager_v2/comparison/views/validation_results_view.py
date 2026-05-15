@@ -3,10 +3,11 @@
 """
 View do tipo VALIDATION_RESULTS.
 
-Estrutura: QVBoxLayout pai com 3 linhas
+Estrutura: QVBoxLayout pai com 4 linhas
     [0] Tabela de métricas (sizePolicy Maximum vertical)
     [1] FlowLayout com 3 cells overlay (DET, Tippett, ECE)
     [2] FlowLayout com N cells de distribuição log-LR
+    [3] FlowLayout com N cells de Curva de Calibração
 
 Cada cell de plot tem tamanho fixo CELL_WIDTH×CELL_HEIGHT — todos visualmente
 iguais. Os FlowLayouts cuidam do reflow automático em mudanças de largura.
@@ -15,6 +16,12 @@ Plots usam `figure.set_layout_engine("constrained")` — o constrained layout
 do matplotlib ajusta automaticamente xlabel, ticks, legendas externas
 (incluindo bbox_to_anchor) sem sobreposição e sem deixar espaço branco.
 Substitui o frágil `tight_layout(rect=[...])`.
+
+A distribuição de log-LR e a curva de calibração ficam em seções separadas
+(uma cell por estratégia) porque cada estratégia tem sua própria escala de
+raw_score (Cosine vs PLDA produzem ranges diferentes) — overlay seria
+ininteligível. Ambas reaproveitam os PNGs snapshot gerados pelo
+STRATEGY_EVALUATION via `validation_result_png_paths`.
 """
 
 from __future__ import annotations
@@ -121,8 +128,38 @@ class ValidationResultsView(QtWidgets.QWidget):
             self._build_flow_section(
                 title="Distribuição de log-LR por estratégia",
                 cells=[
-                    self._build_lr_cell(item, result, idx)
-                    for idx, (item, result) in enumerate(self._loaded)
+                    self._build_png_cell(
+                        item,
+                        idx,
+                        png_key="lr_distribution",
+                        placeholder_msg=(
+                            "PNG não disponível — execute a instrução"
+                            " STRATEGY_EVALUATION."
+                        ),
+                    )
+                    for idx, (item, _result) in enumerate(self._loaded)
+                ],
+            )
+        )
+
+        # Linha 4: curva de calibração (raw_score × log-LR) por estratégia.
+        # Mesma lógica das cells de log-LR: PNG snapshot per-strategy + borda
+        # esquerda colorida pra cross-reference visual com a tabela.
+        content_layout.addWidget(
+            self._build_flow_section(
+                title="Curva de Calibração por estratégia",
+                cells=[
+                    self._build_png_cell(
+                        item,
+                        idx,
+                        png_key="curve",
+                        placeholder_msg=(
+                            "Curva indisponível — pickle pré-curva ou"
+                            " STRATEGY_EVALUATION antigo. Re-execute"
+                            " a instrução."
+                        ),
+                    )
+                    for idx, (item, _result) in enumerate(self._loaded)
                 ],
             )
         )
@@ -322,12 +359,22 @@ class ValidationResultsView(QtWidgets.QWidget):
         canvas.draw_idle()
         return cell
 
-    def _build_lr_cell(
-        self, item: ComparisonItem, result: Any, idx: int = 0,
+    def _build_png_cell(
+        self,
+        item: ComparisonItem,
+        idx: int,
+        *,
+        png_key: str,
+        placeholder_msg: str,
     ) -> QtWidgets.QWidget:
         """
-        Cell de distribuição log-LR — usa o PNG snapshot gravado pelo
-        executor de STRATEGY_EVALUATION em vez de reconstruir matplotlib.
+        Cell per-strategy que exibe um PNG snapshot do STRATEGY_EVALUATION.
+
+        Usado tanto pela seção de distribuição log-LR (`png_key`
+        ``"lr_distribution"``) quanto pela curva de calibração
+        (`png_key` ``"curve"``). Reproduz o PNG já gravado pelo executor
+        em vez de reconstruir matplotlib — mantém o visual idêntico ao
+        do widget inline.
 
         Recebe `idx` pra colorir a borda esquerda com a mesma cor da
         paleta usada na linha correspondente da tabela e nos overlays
@@ -364,17 +411,20 @@ class ValidationResultsView(QtWidgets.QWidget):
         widget = PngSnapshotWidget(parent=cell)
         cell_layout.addWidget(widget, 1)
 
-        png_path = self._resolve_lr_distribution_png(item)
+        png_path = self._resolve_validation_png(item, png_key)
         if png_path is None or not widget.show_image(png_path):
-            widget.show_placeholder(
-                "PNG não disponível — execute a instrução STRATEGY_EVALUATION."
-            )
+            widget.show_placeholder(placeholder_msg)
         return cell
 
-    def _resolve_lr_distribution_png(
-        self, item: ComparisonItem,
+    def _resolve_validation_png(
+        self, item: ComparisonItem, png_key: str,
     ) -> Optional[Path]:
-        """Path do PNG `lr_distribution` do `STRATEGY_EVALUATION` output."""
+        """Path absoluto do PNG snapshot do output de STRATEGY_EVALUATION.
+
+        `png_key` é uma das chaves canônicas de
+        `validation_result_plot.PLOT_KEYS` (`lr_distribution`, `tippett`,
+        `det`, `ece`, `curve`).
+        """
         if (
             self._project_root is None
             or not item.strategy_id
@@ -383,7 +433,7 @@ class ValidationResultsView(QtWidgets.QWidget):
             return None
         return validation_result_png_paths(
             self._project_root, item.strategy_id, item.resource_id,
-        ).get("lr_distribution")
+        ).get(png_key)
 
     # ── Plot drawing functions (overlays) ────────────────────────────────────
 
