@@ -18,12 +18,14 @@ class ValidationMathService:
     pela ENFSI (European Network of Forensic Science Institutes).
     """
 
-    def calculate_metrics(self, 
-                          strategy_id: str, 
-                          strategy_name: str, 
-                          strategy_type: str, 
-                          genuine_scores: List[float], 
-                          impostor_scores: List[float]) -> StrategyValidationResult:
+    def calculate_metrics(self,
+                          strategy_id: str,
+                          strategy_name: str,
+                          strategy_type: str,
+                          genuine_scores: List[float],
+                          impostor_scores: List[float],
+                          genuine_raw_scores: List[float] = None,
+                          impostor_raw_scores: List[float] = None) -> StrategyValidationResult:
         """
         Orquestra o cálculo de todas as métricas de validação e gera os vetores
         necessários para a plotagem dos gráficos de desempenho.
@@ -85,6 +87,19 @@ class ValidationMathService:
             auc=roc_auc
         )
         
+        # Raw scores opcionais — quando passados, viabilizam o plot da
+        # Curva de Calibração (raw × log-LR) na 5ª aba do
+        # ValidationResultWidget. Quando None/vazios, a aba renderiza
+        # placeholder.
+        gen_raw_arr = (
+            np.asarray(genuine_raw_scores, dtype=np.float64)
+            if genuine_raw_scores is not None else np.array([])
+        )
+        imp_raw_arr = (
+            np.asarray(impostor_raw_scores, dtype=np.float64)
+            if impostor_raw_scores is not None else np.array([])
+        )
+
         # Montagem do DTO Vetorial para Plotagem
         plot_data = ValidationPlotData(
             genuine_log_lrs=gen_arr,
@@ -93,7 +108,9 @@ class ValidationMathService:
             fnr_array=fnr,
             ece_prior_log_odds=ece_x,
             ece_values=ece_y,
-            ece_min_values=ece_min_y
+            ece_min_values=ece_min_y,
+            genuine_raw_scores=gen_raw_arr,
+            impostor_raw_scores=imp_raw_arr,
         )
         
         return StrategyValidationResult(

@@ -297,13 +297,35 @@ class StrategyResourceLoaderService:
         # Esta é a fonte autoritativa — a inferência via `same_person`
         # mais abaixo só serve como fallback pra parquets antigos
         # gerados antes desse flag ser persistido.
+        # `is_fused` segue o mesmo padrão (gravado por SCORE_FUSION); quando
+        # presente, reconstruímos `metadata["fused_features_matrix"]` a
+        # partir das colunas `fused_feature_*`.
         is_casework_explicit = False
+        is_fused_explicit = False
+        fused_dim_meta = 0
+        fused_sources_meta: list = []
         try:
             import pyarrow.parquet as pq
             schema_meta = pq.read_schema(path).metadata or {}
             is_casework_explicit = (
                 schema_meta.get(b"faceaudit:is_casework") == b"true"
             )
+            is_fused_explicit = (
+                schema_meta.get(b"faceaudit:is_fused") == b"true"
+            )
+            if is_fused_explicit:
+                try:
+                    fused_dim_meta = int(
+                        schema_meta.get(b"faceaudit:fused_dim", b"0").decode()
+                    )
+                except Exception:
+                    fused_dim_meta = 0
+                src_raw = schema_meta.get(b"faceaudit:fused_sources")
+                if src_raw:
+                    try:
+                        fused_sources_meta = src_raw.decode().split(",")
+                    except Exception:
+                        fused_sources_meta = []
         except Exception:
             pass  # parquet sem metadata, ou erro — cai na inferência
 
@@ -394,7 +416,44 @@ class StrategyResourceLoaderService:
             len(items) > 0
             and all(s.same_person is None for s in items)
         )
-        ds_metadata = {"is_casework": True} if is_casework else {}
+        ds_metadata: dict = {}
+        if is_casework:
+            ds_metadata["is_casework"] = True
+
+        # Reconstrói o fused_features_matrix das colunas `fused_feature_*`
+        # quando o parquet veio do SCORE_FUSION. Vetorizado via numpy
+        # column_stack — não passa pelos samples (compat com a migração
+        # pra storage canônico em `dataset.metadata`).
+        if is_fused_explicit:
+            ds_metadata["is_fused"] = True
+            if fused_sources_meta:
+                ds_metadata["fused_source_resources"] = fused_sources_meta
+
+            fused_cols = (
+                [f"fused_feature_{d}" for d in range(fused_dim_meta)]
+                if fused_dim_meta > 0
+                else sorted(
+                    c for c in df.columns if c.startswith("fused_feature_")
+                )
+            )
+            present = [c for c in fused_cols if c in df.columns]
+            if present:
+                fused_arr = np.column_stack(
+                    [df[c].to_numpy(dtype=np.float64, na_value=np.nan)
+                     for c in present]
+                )
+                ds_metadata[
+                    SimilarityScoreDataset.FUSED_FEATURES_MATRIX_KEY
+                ] = fused_arr
+                ds_metadata["fused_n_features"] = int(fused_arr.shape[1])
+            else:
+                # Flag presente mas sem colunas — defensive, log silencioso.
+                msg = (
+                    f"parquet '{path}' marcado como is_fused mas sem "
+                    "colunas fused_feature_*; matrix não reconstruído."
+                )
+                self._last_error = msg
+                warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
 
         return SimilarityScoreDataset(
             name=name,

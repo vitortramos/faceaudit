@@ -15,6 +15,37 @@ from faceaudit.models.similarity.similarity_score_sample import SimilarityScoreS
 T = TypeVar("T", bound="SimilarityScoreDataset")
 
 
+def _per_class_stats(arr: np.ndarray) -> dict:
+    """Resumo numérico de uma classe pra `class_stats` do sidecar `_dist.json`.
+
+    Retorna `{n, mean, std, p5, p25, p50, p75, p95}` ou `{n: 0}` se vazio.
+    Std=0 quando n<2 (sem grau de liberdade pra ddof=1). Percentis usam
+    interpolação linear (default do numpy).
+    """
+    n = int(arr.size)
+    if n == 0:
+        return {"n": 0}
+    out: dict = {
+        "n": n,
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr, ddof=1)) if n > 1 else 0.0,
+    }
+    if n >= 2:
+        p5, p25, p50, p75, p95 = np.percentile(arr, [5, 25, 50, 75, 95])
+        out.update({
+            "p5":  float(p5),
+            "p25": float(p25),
+            "p50": float(p50),
+            "p75": float(p75),
+            "p95": float(p95),
+        })
+    else:
+        # Single sample — não tem distribuição; relata só como mediana=valor.
+        v = float(arr[0])
+        out.update({"p5": v, "p25": v, "p50": v, "p75": v, "p95": v})
+    return out
+
+
 @dataclass
 class SimilarityScoreDataset(JSONSerializableMixin):
     """
@@ -88,6 +119,87 @@ class SimilarityScoreDataset(JSONSerializableMixin):
     @property
     def scores(self) -> np.ndarray:
         return np.asarray([float(item.raw_score) for item in self.items], dtype=np.float64)
+
+    @property
+    def is_fused(self) -> bool:
+        """True quando o dataset foi produzido por SCORE_FUSION.
+
+        Equivalente a `bool(self.metadata.get("is_fused"))` — propriedade
+        existe pra evitar typos no literal de chave em pontos críticos
+        (executors de calibração e score calibration).
+        """
+        return bool(self.metadata.get("is_fused", False))
+
+    # Chave canônica do matrix `(N, D)` armazenado em `dataset.metadata`.
+    # Compartilhada entre o produtor (ScoreFusionInstructionExecutor) e
+    # consumidores (extract_fused_features, to_parquet, loader).
+    FUSED_FEATURES_MATRIX_KEY = "fused_features_matrix"
+
+    # Chave legada — mantida apenas para hidratar pickles/datasets antigos
+    # que armazenavam o vetor por sample em vez de uma matriz contígua.
+    _FUSED_FEATURES_LEGACY_SAMPLE_KEY = "fused_features"
+
+    def extract_fused_features(self) -> np.ndarray:
+        """Matriz `(N, D)` de features fundidas (apenas para datasets `is_fused`).
+
+        Storage canônico (a partir do refactor #197): numpy 2D contíguo em
+        `self.metadata["fused_features_matrix"]` — uma alocação só pra todo
+        o dataset.
+
+        Fallback retrocompat: itera os samples lendo
+        `sample.metadata["fused_features"]` (formato legado de cada sample
+        carregar uma `List[float]`). Quando esse caminho é usado, a matriz
+        reconstruída é cacheada em `dataset.metadata` para que próximas
+        chamadas vejam o storage canônico.
+
+        Levanta `ValueError` se o dataset não está marcado como fundido
+        ou se nem o storage canônico nem o legado estão disponíveis.
+        """
+        if not self.is_fused:
+            raise ValueError(
+                "extract_fused_features() requer dataset.metadata['is_fused']=True; "
+                "este dataset não foi produzido por SCORE_FUSION."
+            )
+
+        cached = self.metadata.get(self.FUSED_FEATURES_MATRIX_KEY)
+        if cached is not None:
+            arr = np.asarray(cached, dtype=np.float64)
+            if arr.ndim != 2:
+                raise ValueError(
+                    f"{self.FUSED_FEATURES_MATRIX_KEY} deveria ser matriz "
+                    f"(N, D); got shape={arr.shape}."
+                )
+            if arr.shape[0] != len(self.items):
+                raise ValueError(
+                    f"{self.FUSED_FEATURES_MATRIX_KEY} tem N={arr.shape[0]} "
+                    f"mas dataset tem {len(self.items)} items — out of sync."
+                )
+            return arr
+
+        # Caminho legado — percorre samples uma vez e cacheia o resultado
+        # em metadata pro próximo extract não precisar iterar de novo.
+        legacy_rows: list = []
+        for sample in self.items:
+            f = (
+                sample.metadata.get(self._FUSED_FEATURES_LEGACY_SAMPLE_KEY)
+                if sample.metadata else None
+            )
+            if f is None:
+                raise ValueError(
+                    "Dataset marcado como is_fused mas não tem "
+                    f"'{self.FUSED_FEATURES_MATRIX_KEY}' em metadata, nem "
+                    f"'{self._FUSED_FEATURES_LEGACY_SAMPLE_KEY}' em sample."
+                )
+            legacy_rows.append(f)
+        arr = np.asarray(legacy_rows, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError(
+                f"fused_features deveria produzir matriz (N, D); got shape={arr.shape}."
+            )
+        # Promove pro storage canônico — próxima leitura é O(1) e libera
+        # as Lists Python por sample para o GC.
+        self.metadata[self.FUSED_FEATURES_MATRIX_KEY] = arr
+        return arr
 
     @property
     def labels(self) -> np.ndarray:
@@ -180,6 +292,24 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             for s in self.items
         )
 
+        # Datasets fundidos (SCORE_FUSION) carregam uma matriz `(N, D)` em
+        # `metadata["fused_features_matrix"]`. Persistimos como D colunas
+        # `fused_feature_0..D-1` (uma por sistema combinado) — preserva
+        # type-safety do parquet e evita storage opaco BLOB. O loader
+        # detecta as colunas via prefixo + flag no schema metadata e
+        # reconstrói o matrix na hora.
+        fused_matrix: Optional[np.ndarray] = None
+        if self.is_fused:
+            cached = self.metadata.get(self.FUSED_FEATURES_MATRIX_KEY)
+            if cached is not None:
+                fused_matrix = np.asarray(cached, dtype=np.float64)
+                if fused_matrix.ndim != 2 or fused_matrix.shape[0] != n:
+                    raise ValueError(
+                        f"to_parquet: {self.FUSED_FEATURES_MATRIX_KEY} tem "
+                        f"shape {fused_matrix.shape}; esperado (N={n}, D)."
+                    )
+        fused_dim = int(fused_matrix.shape[1]) if fused_matrix is not None else 0
+
         fields = [
             ("similarity_score_dataset_name", pa.string()),
             ("probe_identity",     pa.string()),
@@ -192,15 +322,28 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             fields.insert(1, ("similarity_score_dataset_description", pa.string()))
         if has_log_lr:
             fields.append(("log_lr", pa.float64()))
+        for d in range(fused_dim):
+            fields.append((f"fused_feature_{d}", pa.float64()))
 
         # Schema metadata — flags do dataset que não cabem como coluna
         # (constantes pra todas as linhas). `is_casework` é crítico:
         # sem persistir explicitamente, o loader cai numa inferência
         # frágil baseada em `all(same_person is None)`, que pode falhar
         # silenciosamente (pd.NA vs None, valores residuais, etc).
+        # `is_fused` segue o mesmo padrão — sem ele, o loader não saberia
+        # reconstruir `metadata["fused_features_matrix"]` mesmo encontrando
+        # as colunas (poderiam ser interpretadas como features arbitrárias).
         schema_metadata = {}
         if bool(self.metadata.get("is_casework", False)):
             schema_metadata[b"faceaudit:is_casework"] = b"true"
+        if self.is_fused:
+            schema_metadata[b"faceaudit:is_fused"] = b"true"
+            schema_metadata[b"faceaudit:fused_dim"] = str(fused_dim).encode()
+            sources = self.metadata.get("fused_source_resources")
+            if isinstance(sources, (list, tuple)):
+                schema_metadata[b"faceaudit:fused_sources"] = ",".join(
+                    str(s) for s in sources
+                ).encode()
         schema = pa.schema(fields, metadata=schema_metadata or None)
 
         if n == 0:
@@ -263,6 +406,12 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                         )
                     if has_log_lr:
                         cols["log_lr"] = pa.array(log_lr_arr, type=pa.float64())
+                    if fused_matrix is not None:
+                        chunk_block = fused_matrix[chunk_start:chunk_end]
+                        for d in range(fused_dim):
+                            cols[f"fused_feature_{d}"] = pa.array(
+                                chunk_block[:, d], type=pa.float64()
+                            )
 
                     writer.write_table(pa.table(cols, schema=schema))
 
@@ -320,13 +469,20 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
         Detecta automaticamente o tipo de score relevante:
         - se há `metadata["log_lr"]` em pelo menos um sample → modo "log_lr"
-          (output de SCORE_CALIBRATION)
-        - caso contrário → modo "raw" (output de SIMILARITY_SCORING / PAIR_MINING)
+          (output de SCORE_CALIBRATION) — o histograma/KDE/eixo são em log_lr.
+        - caso contrário → modo "raw" (output de SIMILARITY_SCORING /
+          PAIR_MINING) — eixo em raw_score.
+
+        Schema v3 (atual) adiciona `class_stats` por classe (gen/imp/case)
+        com N, mean, std, e percentis P5/P25/P50/P75/P95. Para datasets
+        calibrados, computa stats em DUAS escalas (raw_score e log_lr) —
+        permite comparação "antes/depois da calibração" no painel de
+        info do recurso e nas saídas das instruções.
         """
         if not self.items:
             return None
 
-        # Decide o eixo X com base na presença de log_lr.
+        # Detecta presença de log_lr nos metadata.
         has_log_lr = any(
             isinstance(getattr(s, "metadata", None), dict)
             and s.metadata.get("log_lr") is not None
@@ -334,28 +490,35 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         )
         score_type = "log_lr" if has_log_lr else "raw"
 
+        # Single-pass: coleta valores por classe, em DUAS escalas quando
+        # aplicável. `vals` (ativo) alimenta histograma/KDE; `raw_vals`
+        # (sempre) alimenta `class_stats["raw"]`. Pra datasets calibrados,
+        # `vals == log_lr_vals` e raw_vals coexistem.
         gen_vals: list = []
         imp_vals: list = []
-        # case_vals = pares casework (sem ground truth — `same_person is None`).
-        # SIMILARITY_SCORING em modo casework produz dataset puramente case;
-        # sem incluí-los aqui, o widget renderizava "Total: 0 pares".
         case_vals: list = []
+        gen_raw: list = []
+        imp_raw: list = []
+        case_raw: list = []
         for s in self.items:
             sp = s.same_person
             if sp is True:
-                arr = gen_vals
+                vals_arr, raw_arr = gen_vals, gen_raw
             elif sp is False:
-                arr = imp_vals
+                vals_arr, raw_arr = imp_vals, imp_raw
             else:
-                arr = case_vals
+                vals_arr, raw_arr = case_vals, case_raw
+
+            raw_arr.append(float(s.raw_score))
+
             if has_log_lr:
                 md = getattr(s, "metadata", None)
                 v = md.get("log_lr") if isinstance(md, dict) else None
                 if v is None:
                     continue
-                arr.append(float(v))
+                vals_arr.append(float(v))
             else:
-                arr.append(float(s.raw_score))
+                vals_arr.append(float(s.raw_score))
 
         gen_arr = np.asarray(gen_vals, dtype=np.float64)
         imp_arr = np.asarray(imp_vals, dtype=np.float64)
@@ -414,8 +577,26 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         except Exception:
             pass
 
+        # Stats por classe (N, mean, std, percentis) — schema v3.
+        # Sempre em raw_score; também em log_lr quando disponível.
+        class_stats: dict = {
+            "raw": {
+                "gen": _per_class_stats(np.asarray(gen_raw, dtype=np.float64)),
+                "imp": _per_class_stats(np.asarray(imp_raw, dtype=np.float64)),
+                "case": _per_class_stats(np.asarray(case_raw, dtype=np.float64)),
+            },
+        }
+        if has_log_lr:
+            # Reusa os arrays gen_arr/imp_arr/case_arr que já são log_lr
+            # nesse caso (vals_arr == log_lr quando has_log_lr=True).
+            class_stats["log_lr"] = {
+                "gen": _per_class_stats(gen_arr),
+                "imp": _per_class_stats(imp_arr),
+                "case": _per_class_stats(case_arr),
+            }
+
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "score_type": score_type,
             "name": self.name,
             "n_gen": n_gen,
@@ -432,6 +613,7 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             "kde_gen_y": kde_gen_y,
             "kde_imp_y": kde_imp_y,
             "kde_case_y": kde_case_y,
+            "class_stats": class_stats,
         }
 
     def write_distribution_png(self, target_png_path: Path) -> bool:
@@ -502,14 +684,12 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             if p.exists() and p.stat().st_mtime > sidecar_path.stat().st_mtime + 1.0:
                 return None
             data = json.loads(sidecar_path.read_text(encoding="utf-8"))
-            # Aceita v1 (legacy) e v2 (atual com case_*). Os consumidores
-            # leem case_* via `.get(..., default)`, então a leitura de
-            # sidecar v1 fica compatível. Rejeição estrita a "== 1" era
-            # um bug — toda escrita atual cria v2 (ver
-            # `_compute_distribution_summary`), e a leitura jogava fora
-            # o sidecar, forçando "n/a" nas tabelas que dependem dele.
+            # Aceita v1 (legacy), v2 (com case_*) e v3 (com class_stats).
+            # Consumidores leem campos opcionais via `.get(..., default)`,
+            # então a compatibilidade é natural — v3 só ADICIONA
+            # `class_stats` ao dict.
             schema_version = data.get("schema_version")
-            if schema_version not in (1, 2):
+            if schema_version not in (1, 2, 3):
                 return None
             return data
         except Exception:

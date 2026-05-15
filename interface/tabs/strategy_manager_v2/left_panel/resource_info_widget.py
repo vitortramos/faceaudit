@@ -404,6 +404,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             scores_form.addRow(lbl, value_lbl)
 
         scores_layout.addLayout(scores_form)
+
+        # Tabela compacta de stats por classe (N, mean, std, P5..P95).
+        # Renderizada sob demanda em `_render_class_stats_tables`. Para
+        # CALIBRATED_SCORES, mostra DUAS tabelas (raw_score e log-LR);
+        # pra SIMILARITY_SCORES (incl. PAIR_MINING), só uma (raw_score).
+        # Container vazio até `_load_scores_details` chamar o render.
+        self._class_stats_container = QtWidgets.QWidget(parent=self._scores_section)
+        self._class_stats_layout = QtWidgets.QVBoxLayout(self._class_stats_container)
+        self._class_stats_layout.setContentsMargins(0, 6, 0, 0)
+        self._class_stats_layout.setSpacing(4)
+        scores_layout.addWidget(self._class_stats_container)
+
         props_layout.addWidget(self._scores_section)
 
         # Detalhes de Pipeline TREINADO (visível para TRAINED_PIPELINE)
@@ -1370,6 +1382,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 n_ref_ids=n_ref_ids,
                 is_casework=is_casework,
             )
+            # Stats por classe (preferência: sidecar v3 stale-check > live).
+            stats = self._load_class_stats(abs_path)
+            if stats is None:
+                stats = self._compute_class_stats_live(payload)
+            self._render_class_stats_tables(stats)
             return
 
         # Caminho 2/3: precisa do parquet.
@@ -1406,6 +1423,9 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                         n_probe_ids=data.get("n_probe_ids"),
                         n_ref_ids=data.get("n_ref_ids"),
                         is_casework=bool(data.get("is_casework", False)),
+                    )
+                    self._render_class_stats_tables(
+                        self._load_class_stats(abs_path)
                     )
                     return
             except Exception:
@@ -1488,6 +1508,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 n_ref_ids=n_ref_ids,
                 is_casework=is_casework,
             )
+            # Stats por classe vêm do sidecar `_dist.json` (v3+) gerado
+            # pela persistência. Se não existir (parquet antigo, sidecar
+            # ausente), fica oculta — a tabela só aparece quando o usuário
+            # re-executar a instrução com o código novo.
+            self._render_class_stats_tables(self._load_class_stats(abs_path))
 
             # Cacheia.
             try:
@@ -1607,6 +1632,165 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_scores_impostor.setText("—")
         self.lbl_scores_identities.setText("—")
         self.lbl_scores_calibrated.setText("—")
+        self._render_class_stats_tables(None)
+
+    # ── class_stats: tabela de N/média/std/percentis por classe ────────────
+
+    def _load_class_stats(self, abs_path: Optional[Path]) -> Optional[dict]:
+        """Lê `class_stats` do sidecar `_dist.json` (schema v3+).
+
+        Retorna `None` se o sidecar é ausente, mais antigo que o parquet
+        (stale), ou de schema v<3 (sem class_stats). Reaproveita o mesmo
+        sidecar usado pelo widget de distribuição — sem custo extra de I/O
+        quando o usuário já abriu o plot.
+        """
+        if not abs_path or not abs_path.exists():
+            return None
+        sidecar = abs_path.parent / (abs_path.stem + "_dist.json")
+        if not sidecar.exists():
+            return None
+        try:
+            if abs_path.stat().st_mtime > sidecar.stat().st_mtime + 1.0:
+                return None
+            data = json.loads(sidecar.read_text(encoding="utf-8"))
+            return data.get("class_stats")
+        except Exception:
+            return None
+
+    def _compute_class_stats_live(self, payload: Any) -> Optional[dict]:
+        """Computa class_stats em tempo real do payload em memória.
+
+        Útil quando o sidecar não existe ainda (recurso recém-produzido,
+        ainda não persistido) ou está stale. Iteração O(N) — pra datasets
+        com 5M+ samples leva ~1s, aceitável no contexto de info widget.
+        """
+        if payload is None:
+            return None
+        try:
+            items = getattr(payload, "items", None) or []
+            if not items:
+                return None
+            gen_raw, imp_raw, case_raw = [], [], []
+            gen_lr, imp_lr, case_lr = [], [], []
+            has_log_lr = False
+            for s in items:
+                sp = s.same_person
+                if sp is True:
+                    raw_arr, lr_arr = gen_raw, gen_lr
+                elif sp is False:
+                    raw_arr, lr_arr = imp_raw, imp_lr
+                else:
+                    raw_arr, lr_arr = case_raw, case_lr
+                raw_arr.append(float(s.raw_score))
+                md = getattr(s, "metadata", None)
+                if isinstance(md, dict):
+                    v = md.get("log_lr")
+                    if v is not None:
+                        has_log_lr = True
+                        lr_arr.append(float(v))
+            from faceaudit.models.similarity.similarity_score_dataset import (
+                _per_class_stats,
+            )
+            import numpy as np
+            out = {
+                "raw": {
+                    "gen": _per_class_stats(np.asarray(gen_raw, dtype=np.float64)),
+                    "imp": _per_class_stats(np.asarray(imp_raw, dtype=np.float64)),
+                    "case": _per_class_stats(np.asarray(case_raw, dtype=np.float64)),
+                },
+            }
+            if has_log_lr:
+                out["log_lr"] = {
+                    "gen": _per_class_stats(np.asarray(gen_lr, dtype=np.float64)),
+                    "imp": _per_class_stats(np.asarray(imp_lr, dtype=np.float64)),
+                    "case": _per_class_stats(np.asarray(case_lr, dtype=np.float64)),
+                }
+            return out
+        except Exception:
+            return None
+
+    def _render_class_stats_tables(self, class_stats: Optional[dict]) -> None:
+        """Reconstrói o conteúdo do container de stats. Limpa antes."""
+        # Limpa widgets anteriores.
+        while self._class_stats_layout.count():
+            item = self._class_stats_layout.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.deleteLater()
+        if not class_stats:
+            return
+        # Itera scales na ordem fixa (raw primeiro, log_lr depois).
+        for scale in ("raw", "log_lr"):
+            data = class_stats.get(scale)
+            if not data:
+                continue
+            self._class_stats_layout.addWidget(
+                self._build_class_stats_table(scale, data)
+            )
+
+    def _build_class_stats_table(self, scale: str, data: dict) -> QtWidgets.QWidget:
+        """Constrói uma tabela compacta 4-col (Métrica × Gen/Imp/Caso).
+
+        `scale` é "raw" ou "log_lr". `data` é o dict com chaves 'gen',
+        'imp', 'case', cada uma com {n, mean, std, p5, p25, p50, p75, p95}.
+        """
+        container = QtWidgets.QWidget(parent=self._scores_section)
+        v = QtWidgets.QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(2)
+
+        title_text = "raw_score" if scale == "raw" else "log-LR (calibrado)"
+        title = QtWidgets.QLabel(
+            f"<b>Em {title_text}</b>", parent=container,
+        )
+        title.setStyleSheet("font-size: 10px; color: #555;")
+        v.addWidget(title)
+
+        grid = QtWidgets.QGridLayout()
+        grid.setSpacing(3)
+        grid.setContentsMargins(8, 0, 0, 0)
+
+        header_style = "font-size: 10px; color: #666; font-weight: bold;"
+        cell_style = "font-size: 10px; color: #333;"
+        name_style = "font-size: 10px; color: #555;"
+
+        for col, name in enumerate(["", "Gen (Hp)", "Imp (Hd)", "Caso"]):
+            lbl = QtWidgets.QLabel(name, parent=container)
+            lbl.setStyleSheet(header_style)
+            if col > 0:
+                lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+            grid.addWidget(lbl, 0, col)
+
+        rows = [
+            ("N",     "n",   "{:,d}"),
+            ("Média", "mean", "{:.3f}"),
+            ("Std",   "std",  "{:.3f}"),
+            ("P5",    "p5",   "{:.3f}"),
+            ("P25",   "p25",  "{:.3f}"),
+            ("P50",   "p50",  "{:.3f}"),
+            ("P75",   "p75",  "{:.3f}"),
+            ("P95",   "p95",  "{:.3f}"),
+        ]
+        for r, (label, key, fmt) in enumerate(rows, start=1):
+            nm = QtWidgets.QLabel(label, parent=container)
+            nm.setStyleSheet(name_style)
+            grid.addWidget(nm, r, 0)
+            for c, cls in enumerate(("gen", "imp", "case"), start=1):
+                cls_data = data.get(cls, {}) or {}
+                n = cls_data.get("n", 0)
+                if n == 0 or key not in cls_data:
+                    txt = "—"
+                elif key == "n":
+                    txt = f"{int(cls_data[key]):,}".replace(",", ".")
+                else:
+                    txt = fmt.format(float(cls_data[key]))
+                val = QtWidgets.QLabel(txt, parent=container)
+                val.setStyleSheet(cell_style)
+                val.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+                grid.addWidget(val, r, c)
+
+        v.addLayout(grid)
+        return container
 
     # ── TRAINED_PIPELINE ────────────────────────────────────────────────────
 

@@ -33,15 +33,16 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
     Executor da instrução SCORE_FUSION.
 
     Recebe dois SimilarityScoreDataset com os mesmos pares e produz um terceiro
-    onde cada amostra carrega um vetor de scores em `metadata["fused_features"]`.
-    O `raw_score` do output é o do primeiro input (preservar utilidade em mining
-    e casework_viz que esperam score escalar 1D).
+    com o vetor de scores fundidos persistido como **uma única matriz `(N, D)`
+    contígua** em `dataset.metadata["fused_features_matrix"]` — uma alocação
+    pra todo o dataset em vez de N alocações de `List[float]` por sample
+    (relevante pra datasets com milhões de pares: GC pressure baixa, zero-copy
+    pro sklearn). O `raw_score` do output é o do primeiro input (preserva
+    utilidade em mining e casework_viz que esperam score escalar 1D).
 
     O CalibrationModelTrainingInstructionExecutor detecta `is_fused=True` no
     dataset.metadata e extrai features multivariadas pra treinar o calibrador.
     """
-
-    _FUSED_FEATURES_KEY = "fused_features"
 
     def execute(
         self,
@@ -64,16 +65,12 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
         )
 
         try:
-            res_a = context.get_resource(instruction.input_a_resource_id)
-            res_b = context.get_resource(instruction.input_b_resource_id)
-            ds_a = res_a.payload
-            ds_b = res_b.payload
+            input_ids = instruction.all_input_resource_ids()
+            datasets = [context.get_resource(rid).payload for rid in input_ids]
 
             fused_dataset, n_pairs, n_features = self._build_fused_dataset(
-                ds_a=ds_a,
-                ds_b=ds_b,
-                source_a_id=instruction.input_a_resource_id,
-                source_b_id=instruction.input_b_resource_id,
+                datasets=datasets,
+                source_ids=input_ids,
                 require_pair_match=instruction.require_pair_match,
                 output_name=(
                     instruction.output_dataset_name
@@ -103,8 +100,7 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                 metadata={
                     "instruction_id": instruction.instruction_id,
                     "instruction_name": instruction.name,
-                    "input_a_resource_id": instruction.input_a_resource_id,
-                    "input_b_resource_id": instruction.input_b_resource_id,
+                    "input_resource_ids": input_ids,
                     "output_resource_id": output_id,
                     "n_pairs": int(n_pairs),
                     "n_features": int(n_features),
@@ -132,6 +128,7 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
             )
             return result
 
+        # A e B continuam canônicos (obrigatórios). Extras são opcionais.
         for field_name, rid in (
             ("input_a_resource_id", instruction.input_a_resource_id),
             ("input_b_resource_id", instruction.input_b_resource_id),
@@ -143,10 +140,29 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                     f"O recurso de entrada não foi encontrado: '{rid}'."
                 )
 
-        if instruction.input_a_resource_id == instruction.input_b_resource_id:
+        for rid in instruction.extra_input_resource_ids:
+            if not rid:
+                continue  # entrada vazia ignorada (whitespace na CSV da UI)
+            if not context.has_resource(rid):
+                result.add_error(
+                    f"Recurso extra não encontrado no contexto: '{rid}'."
+                )
+
+        # Duplicatas e fusão "consigo mesmo" não fazem sentido.
+        all_inputs = instruction.all_input_resource_ids()
+        if len(all_inputs) >= 2:
+            seen: set = set()
+            for rid in all_inputs:
+                if rid in seen:
+                    result.add_error(
+                        f"Input '{rid}' aparece mais de uma vez — fusão "
+                        "exige sistemas distintos."
+                    )
+                seen.add(rid)
+        if instruction.input_a_resource_id and instruction.input_a_resource_id == instruction.input_b_resource_id:
             result.add_error(
-                "input_a_resource_id e input_b_resource_id não podem ser o mesmo "
-                "recurso (fusão exige dois sistemas distintos)."
+                "input_a_resource_id e input_b_resource_id não podem ser o "
+                "mesmo recurso (fusão exige dois sistemas distintos)."
             )
 
         if not instruction.output_resource_id:
@@ -154,17 +170,14 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                 "A instrução deve definir 'output_resource_id'."
             )
 
-        # Verifica que os payloads são SimilarityScoreDataset
-        for field_name, rid in (
-            ("A", instruction.input_a_resource_id),
-            ("B", instruction.input_b_resource_id),
-        ):
+        # Verifica que TODOS os payloads são SimilarityScoreDataset.
+        for rid in all_inputs:
             if rid and context.has_resource(rid):
                 payload = context.get_resource(rid).payload
                 if payload is not None and not isinstance(payload, SimilarityScoreDataset):
                     result.add_error(
-                        f"Recurso '{rid}' (sistema {field_name}) não é um "
-                        f"SimilarityScoreDataset (got {type(payload).__name__})."
+                        f"Recurso '{rid}' não é um SimilarityScoreDataset "
+                        f"(got {type(payload).__name__})."
                     )
 
         if result.is_valid and not result.has_warnings:
@@ -175,83 +188,150 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
 
     def _build_fused_dataset(
         self,
-        ds_a: SimilarityScoreDataset,
-        ds_b: SimilarityScoreDataset,
-        source_a_id: str,
-        source_b_id: str,
+        datasets: List[SimilarityScoreDataset],
+        source_ids: List[str],
         require_pair_match: bool,
         output_name: str,
         context: StrategyExecutionContextProtocol,
     ) -> Tuple[SimilarityScoreDataset, int, int]:
         """
-        Constrói o SimilarityScoreDataset fundido.
+        Constrói o SimilarityScoreDataset fundido a partir de **N (≥2) inputs**.
 
-        Cada sample herda do A (probe, reference, same_person, metadata)
-        e ganha `metadata["fused_features"] = [score_A, score_B]`.
+        Algoritmo:
+        1. O primeiro dataset (`datasets[0]`) é o **anchor** — define a ordem
+           dos pares e doa `probe/reference/same_person/raw_score`.
+        2. Cada dataset subsequente é alinhado contra o anchor:
+           - `require_pair_match=True`: exige mesma quantidade e mesma
+             sequência de `(probe.face_hash, reference.face_hash)`. Falha
+             com mensagem mostrando primeiras divergências.
+           - `require_pair_match=False`: reordena via hash → sample dict.
+        3. Concatena as colunas de scores num matrix `(N_pairs, D)` em
+           `metadata["fused_features_matrix"]`. D = len(datasets).
 
-        Se require_pair_match=True, exige ordem idêntica e mesma quantidade
-        em A e B. Senão, reordena B por (probe.face_hash, reference.face_hash)
-        para casar com A.
+        Cada sample do output é a instância original de `datasets[0]` (sem
+        mutação), preservando metadata por sample. A fusão vive 100% no
+        `dataset.metadata` — nada em `sample.metadata`.
         """
-        n_a = len(ds_a.items)
-        n_b = len(ds_b.items)
-
-        if n_a == 0 or n_b == 0:
+        if len(datasets) < 2 or len(source_ids) < 2:
             raise ValueError(
-                f"Score fusion requer ambos os datasets não vazios "
-                f"(n_a={n_a}, n_b={n_b})."
+                f"Score fusion requer pelo menos 2 inputs "
+                f"(got {len(datasets)})."
+            )
+        if len(datasets) != len(source_ids):
+            raise ValueError(
+                f"datasets ({len(datasets)}) e source_ids ({len(source_ids)}) "
+                "devem ter o mesmo tamanho."
             )
 
-        if require_pair_match:
-            if n_a != n_b:
-                raise ValueError(
-                    f"Datasets têm tamanhos diferentes "
-                    f"({n_a} vs {n_b}) — defina require_pair_match=False "
-                    f"para reordenar B por hash."
-                )
-            # Valida ordem
-            for i, (sa, sb) in enumerate(zip(ds_a.items, ds_b.items)):
-                if self._pair_key(sa) != self._pair_key(sb):
+        sizes = [len(ds.items) for ds in datasets]
+        if any(s == 0 for s in sizes):
+            raise ValueError(
+                f"Score fusion requer todos os datasets não vazios "
+                f"(sizes={sizes})."
+            )
+
+        anchor = datasets[0]
+        anchor_id = source_ids[0]
+        n = sizes[0]
+
+        # Alinha cada input != anchor contra ele.
+        aligned_items_per_input: List[List[SimilarityScoreSample]] = [anchor.items]
+        for other, other_id in zip(datasets[1:], source_ids[1:]):
+            if require_pair_match:
+                if len(other.items) != n:
                     raise ValueError(
-                        f"Pares em posição {i} não batem entre A e B "
-                        f"(probe.face_hash ou reference.face_hash diferentes). "
-                        f"Defina require_pair_match=False para reordenar."
+                        f"Dataset '{other_id}' tem {len(other.items)} pares, "
+                        f"anchor '{anchor_id}' tem {n} — defina "
+                        "require_pair_match=False para reordenar por hash."
                     )
-            items_b_aligned = ds_b.items
-        else:
-            items_b_aligned = self._reorder_b_to_match_a(ds_a, ds_b)
+                self._validate_strict_pair_alignment(
+                    anchor=anchor, other=other,
+                    anchor_id=anchor_id, other_id=other_id,
+                )
+                aligned_items_per_input.append(other.items)
+            else:
+                aligned_items_per_input.append(
+                    self._reorder_to_match_anchor(
+                        anchor=anchor, other=other,
+                        anchor_id=anchor_id, other_id=other_id,
+                    )
+                )
 
-        fused_items: List[SimilarityScoreSample] = []
-        for sa, sb in zip(ds_a.items, items_b_aligned):
-            sample_meta = dict(sa.metadata) if sa.metadata else {}
-            sample_meta[self._FUSED_FEATURES_KEY] = [
-                float(sa.raw_score),
-                float(sb.raw_score),
-            ]
-            fused_items.append(SimilarityScoreSample(
-                probe=sa.probe,
-                reference=sa.reference,
-                raw_score=float(sa.raw_score),  # mantém escalar do A
-                same_person=sa.same_person,
-                metadata=sample_meta,
-            ))
+        # Extrai os vetores de score em UMA passada por dataset, sem mutar
+        # nenhum sample. Cada coluna é uma alocação numpy de tamanho N — D
+        # alocações totais em vez de N×D floats Python em metadata.
+        score_columns = [
+            np.fromiter(
+                (float(s.raw_score) for s in items),
+                dtype=np.float64, count=n,
+            )
+            for items in aligned_items_per_input
+        ]
+        fused_matrix = np.column_stack(score_columns)
 
-        dataset_metadata = dict(ds_a.metadata) if ds_a.metadata else {}
+        # Reusa as instâncias originais do anchor — preserva
+        # same_person, identidades, raw_score e metadata individuais.
+        fused_items: List[SimilarityScoreSample] = list(anchor.items)
+
+        dataset_metadata = dict(anchor.metadata) if anchor.metadata else {}
         dataset_metadata["is_fused"] = True
-        dataset_metadata["fused_source_resources"] = [source_a_id, source_b_id]
-        dataset_metadata["fused_n_features"] = 2
+        dataset_metadata["fused_source_resources"] = list(source_ids)
+        dataset_metadata["fused_n_features"] = int(fused_matrix.shape[1])
+        dataset_metadata[
+            SimilarityScoreDataset.FUSED_FEATURES_MATRIX_KEY
+        ] = fused_matrix
 
+        sources_str = " + ".join(f"'{sid}'" for sid in source_ids)
         fused = SimilarityScoreDataset(
             name=output_name,
             description=(
-                f"Score fusion de '{source_a_id}' (A) + '{source_b_id}' (B). "
-                f"Cada sample carrega vetor [score_A, score_B] em "
-                f"metadata['fused_features']. raw_score = score_A."
+                f"Score fusion de {sources_str} ({len(source_ids)} sistemas). "
+                f"Features fundidas em metadata['fused_features_matrix'] "
+                f"(numpy {fused_matrix.shape}); raw_score = score do anchor "
+                f"('{anchor_id}')."
             ),
             items=fused_items,
             metadata=dataset_metadata,
         )
-        return fused, len(fused_items), 2
+        return fused, n, int(fused_matrix.shape[1])
+
+    def _validate_strict_pair_alignment(
+        self,
+        anchor: SimilarityScoreDataset,
+        other: SimilarityScoreDataset,
+        anchor_id: str,
+        other_id: str,
+    ) -> None:
+        """Verifica que `other.items` tem a mesma sequência de pares
+        `(probe.face_hash, reference.face_hash)` que `anchor.items`.
+
+        Quando difere, levanta ValueError mostrando as primeiras 5
+        posições divergentes com hashes truncados — diagnóstico útil
+        em vez da mensagem genérica anterior.
+        """
+        mismatches: List[Tuple[int, Tuple[str, str], Tuple[str, str]]] = []
+        MAX_MISMATCH_EXAMPLES = 5
+        for i, (sa, so) in enumerate(zip(anchor.items, other.items)):
+            key_a = self._pair_key(sa)
+            key_o = self._pair_key(so)
+            if key_a != key_o:
+                mismatches.append((i, key_a, key_o))
+                if len(mismatches) >= MAX_MISMATCH_EXAMPLES:
+                    break
+        if mismatches:
+            rendered = "; ".join(
+                f"pos {i}: anchor={a[0][:8]}..→{a[1][:8]}.. vs "
+                f"other={o[0][:8]}..→{o[1][:8]}.."
+                for i, a, o in mismatches
+            )
+            raise ValueError(
+                f"Pares não batem entre '{anchor_id}' (anchor) e "
+                f"'{other_id}' em posições alinhadas (primeiros "
+                f"{len(mismatches)} divergentes — {rendered}). "
+                "Defina require_pair_match=False para reordenar por hash, "
+                "ou verifique que ambos os sistemas processaram o mesmo "
+                "conjunto de pares na mesma ordem."
+            )
 
     @staticmethod
     def _pair_key(sample: SimilarityScoreSample) -> Tuple[str, str]:
@@ -260,24 +340,25 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
         ref_hash = getattr(sample.reference, "face_hash", None) or ""
         return (str(probe_hash), str(ref_hash))
 
-    def _reorder_b_to_match_a(
+    def _reorder_to_match_anchor(
         self,
-        ds_a: SimilarityScoreDataset,
-        ds_b: SimilarityScoreDataset,
+        anchor: SimilarityScoreDataset,
+        other: SimilarityScoreDataset,
+        anchor_id: str,
+        other_id: str,
     ) -> List[SimilarityScoreSample]:
-        """Reordena B para casar com A por (probe.face_hash, reference.face_hash).
+        """Reordena `other` para casar com `anchor` por
+        `(probe.face_hash, reference.face_hash)`.
 
-        Falha se algum par de A não estiver em B. B pode ter pares extras —
-        eles são ignorados.
+        Falha se algum par do anchor não estiver em `other`. `other`
+        pode ter pares extras — são silenciosamente descartados.
         """
-        index_b = {
-            self._pair_key(s): s for s in ds_b.items
-        }
+        index_other = {self._pair_key(s): s for s in other.items}
         aligned: List[SimilarityScoreSample] = []
-        missing = []
-        for sa in ds_a.items:
+        missing: List[Tuple[str, str]] = []
+        for sa in anchor.items:
             key = self._pair_key(sa)
-            sb = index_b.get(key)
+            sb = index_other.get(key)
             if sb is None:
                 missing.append(key)
                 if len(missing) > 5:
@@ -285,9 +366,12 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
             else:
                 aligned.append(sb)
         if missing:
-            sample_str = ", ".join(f"{m[0][:8]}..→{m[1][:8]}.." for m in missing[:5])
+            sample_str = ", ".join(
+                f"{m[0][:8]}..→{m[1][:8]}.." for m in missing[:5]
+            )
             raise ValueError(
-                f"{len(missing)}+ pares de A não estão em B (ex: {sample_str}). "
-                "Verifique que os dois sistemas processaram o mesmo conjunto de pares."
+                f"{len(missing)}+ pares do anchor '{anchor_id}' não estão "
+                f"em '{other_id}' (ex: {sample_str}). Verifique que ambos "
+                "os sistemas processaram o mesmo conjunto de pares."
             )
         return aligned

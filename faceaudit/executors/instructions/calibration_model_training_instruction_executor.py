@@ -288,10 +288,11 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             }
         """
         if isinstance(payload, SimilarityScoreDataset):
-            if payload.metadata.get("is_fused"):
-                scores = self._extract_fused_features(payload)
-            else:
-                scores = payload.scores
+            scores = (
+                payload.extract_fused_features()
+                if payload.is_fused
+                else payload.scores
+            )
             labels = payload.labels
             return self._validate_extracted_arrays(scores, labels)
 
@@ -309,29 +310,6 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         raise TypeError(
             "payload de calibração deve ser SimilarityScoreDataset ou dict com 'scores' e 'labels'."
         )
-
-    @staticmethod
-    def _extract_fused_features(payload: SimilarityScoreDataset) -> np.ndarray:
-        """
-        Extrai a matriz (N, D) de features fundidas de um SimilarityScoreDataset
-        produzido por SCORE_FUSION. Cada `sample.metadata["fused_features"]` é
-        uma lista de D floats representando os scores dos sistemas combinados.
-        """
-        features = []
-        for sample in payload.items:
-            f = sample.metadata.get("fused_features") if sample.metadata else None
-            if f is None:
-                raise ValueError(
-                    "Dataset marcado como is_fused mas sample não contém "
-                    "metadata['fused_features']."
-                )
-            features.append(f)
-        arr = np.asarray(features, dtype=np.float64)
-        if arr.ndim != 2:
-            raise ValueError(
-                f"fused_features deveria produzir matriz (N, D); got shape={arr.shape}."
-            )
-        return arr
 
     def _validate_extracted_arrays(
         self,

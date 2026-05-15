@@ -152,7 +152,7 @@ class ValidationResultWidget(QtWidgets.QWidget):
         self._header_label.setText(text)
 
     def _setup_tabs(self) -> None:
-        """Cria as 4 abas vazias (figures populadas on-demand)."""
+        """Cria as 5 abas vazias (figures populadas on-demand)."""
         self._add_lazy_tab("Distribuição de LRs",
                            self._draw_lr_distribution,
                            self._lr_distribution_help() if self._show_help else "")
@@ -165,6 +165,9 @@ class ValidationResultWidget(QtWidgets.QWidget):
         self._add_lazy_tab("Calibração (ECE)",
                            self._draw_ece,
                            self._ece_help() if self._show_help else "")
+        self._add_lazy_tab("Curva de Calibração",
+                           self._draw_calibration_curve,
+                           self._calibration_curve_help() if self._show_help else "")
 
     def _add_lazy_tab(
         self, title: str, draw_fn: Callable[[Figure], None], help_html: str = ""
@@ -294,6 +297,10 @@ class ValidationResultWidget(QtWidgets.QWidget):
         from faceaudit.models.validation_result_plot import draw_ece
         draw_ece(figure, self._result)
 
+    def _draw_calibration_curve(self, figure: Figure) -> None:
+        from faceaudit.models.validation_result_plot import draw_calibration_curve
+        draw_calibration_curve(figure, self._result)
+
     # ── Help text ─────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -393,4 +400,32 @@ class ValidationResultWidget(QtWidgets.QWidget):
             "• Se a curva azul fica acima de 1.0 em alguma região, o sistema "
             "<b>perde informação</b> nesse cenário — relatar LR=1 (evidência "
             "neutra) seria melhor que usar o modelo lá."
+        )
+
+    @staticmethod
+    def _calibration_curve_help() -> str:
+        return (
+            "<b>O que mostra:</b> a função de calibração — para cada par da "
+            "validação, plota o <i>raw_score</i> que entrou no calibrador "
+            "(eixo X) contra o <i>log-LR calibrado</i> que saiu (eixo Y), "
+            "colorido por classe (verde = genuínos, vermelho = impostores). "
+            "Linha pontilhada em log-LR=0 marca o crossover LR=1."
+            "<br><br>"
+            "<b>Como interpretar:</b><br>"
+            "• <b>Forma da curva</b>: linear pura = LogReg sigmoidal; "
+            "monotônica com inflexão na overlap = BiGauss; com degraus = "
+            "calibrador KDE com poucas amostras de treino.<br>"
+            "• <b>Crossover</b>: o ponto onde a curva cruza log-LR=0 "
+            "indica o limiar de raw_score que separa Hp de Hd. Útil pra "
+            "checar se a calibração movimentou o limite pra um lugar "
+            "razoável.<br>"
+            "• <b>Saturação</b> (curva achatada nos extremos): calibrador "
+            "comprime LRs grandes/pequenos pra perto de zero — pode ser "
+            "desejado (regularização forense) ou indicar problema "
+            "(input não-Gaussian que LogReg não modela bem).<br>"
+            "• <b>Não-monotonicidade</b>: nunca deveria acontecer. Se "
+            "aparecer, é bug no calibrador.<br>"
+            "• <b>Para mais de 20 mil pares por classe</b>, é mostrada uma "
+            "amostra aleatória de 20k — a forma agregada é preservada "
+            "(mesmo padrão das outras visualizações da curva)."
         )

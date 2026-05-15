@@ -65,12 +65,16 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
             )
             score_dataset: SimilarityScoreDataset = scores_resource.payload
 
-            # Separa log-LRs por classe a partir de sample.label e
-            # sample.metadata["log_lr"]. Iteração em CHUNKS com micro-pausa
-            # entre eles para liberar a GIL e manter a UI responsiva
-            # durante datasets de milhões de pares.
+            # Separa log-LRs E raw_scores por classe a partir de sample.label
+            # e sample.metadata["log_lr"]. Iteração em CHUNKS com micro-pausa
+            # entre eles para liberar a GIL e manter a UI responsiva durante
+            # datasets de milhões de pares. Raw_scores ficam alinhados aos
+            # log_lrs (mesmos índices i) — viabilizam a Curva de Calibração
+            # (5ª aba do ValidationResultWidget).
             gen_log_lrs: List[float] = []
             imp_log_lrs: List[float] = []
+            gen_raw_scores: List[float] = []
+            imp_raw_scores: List[float] = []
             n_skipped = 0
             items = score_dataset.items
             n = len(items)
@@ -84,10 +88,13 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                     if v is None:
                         n_skipped += 1
                         continue
+                    raw = float(sample.raw_score)
                     if sample.label == 1:
                         gen_log_lrs.append(float(v))
+                        gen_raw_scores.append(raw)
                     else:
                         imp_log_lrs.append(float(v))
+                        imp_raw_scores.append(raw)
                 # Micro-pausa: cede GIL à main thread.
                 time.sleep(0)
 
@@ -122,6 +129,8 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 strategy_type="V2",
                 genuine_scores=gen_log_lrs,
                 impostor_scores=imp_log_lrs,
+                genuine_raw_scores=gen_raw_scores,
+                impostor_raw_scores=imp_raw_scores,
             )
 
             output_resource_id = instruction.output_validation_result_resource_id

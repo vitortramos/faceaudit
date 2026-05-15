@@ -293,6 +293,33 @@ class ValidationRuleFactory:
                 max_samples=int(params.get("max_samples", 100_000)),
             )
 
+        if rule_type == ValidationRuleType.FUSED_PAIR_COMPATIBILITY:
+            from faceaudit.validation_rules.fused_pair_compatibility_rule import (
+                FusedPairCompatibilityRule,
+            )
+            # Aceita o formato canônico (lista) ou o legado (par A/B) pra
+            # compat com configs JSON salvos antes da generalização N-input.
+            ids_param = params.get("input_resource_ids")
+            if isinstance(ids_param, (list, tuple)) and ids_param:
+                input_ids = [str(x) for x in ids_param]
+            else:
+                input_ids = [
+                    ValidationRuleFactory._req_str(
+                        params, "input_a_resource_id", rule_type
+                    ),
+                    ValidationRuleFactory._req_str(
+                        params, "input_b_resource_id", rule_type
+                    ),
+                ]
+                extras = params.get("extra_input_resource_ids")
+                if isinstance(extras, (list, tuple)):
+                    input_ids.extend(str(x) for x in extras)
+            return FusedPairCompatibilityRule(
+                rule_id=rule_id,
+                input_resource_ids=input_ids,
+                max_examples=int(params.get("max_examples", 5)),
+            )
+
         raise ValueError(
             f"ValidationRuleFactory: tipo de regra não suportado: {rule_type}."
         )

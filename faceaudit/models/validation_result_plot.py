@@ -24,7 +24,7 @@ from faceaudit.enums.project_folder import ProjectFolder
 
 
 # Chaves canônicas usadas no dict de paths e na ordem das abas (UI).
-PLOT_KEYS = ("lr_distribution", "tippett", "det", "ece")
+PLOT_KEYS = ("lr_distribution", "tippett", "det", "ece", "curve")
 
 # Sufixo de cada plot no nome do arquivo PNG.
 _PLOT_SUFFIX = {
@@ -32,6 +32,7 @@ _PLOT_SUFFIX = {
     "tippett":         "_tippett",
     "det":             "_det",
     "ece":             "_ece",
+    "curve":           "_calibration_curve",
 }
 
 # Título legível pra cada aba (UI inline + dialog).
@@ -40,6 +41,7 @@ PLOT_TAB_TITLE = {
     "tippett":         "Tippett",
     "det":             "Curva DET",
     "ece":             "Calibração (ECE)",
+    "curve":           "Curva de Calibração",
 }
 
 
@@ -230,11 +232,77 @@ def draw_ece(figure: Figure, result: Any) -> None:
     figure.tight_layout()
 
 
+def draw_calibration_curve(figure: Figure, result: Any) -> None:
+    """Curva de Calibração: scatter raw_score × log-LR colorido por classe.
+
+    Reusa a infraestrutura do `calibration_curve_plot` (mesmo helper já
+    usado pra renderizar a aba do SCORE_CALIBRATION). Requer que o
+    `result.plot_data` tenha `genuine_raw_scores` e `impostor_raw_scores`
+    populados — campos opcionais adicionados em conjunto com a 5ª aba.
+    Pickles antigos (sem esses campos) caem em placeholder gracioso.
+    """
+    figure.clear()
+    ax = figure.add_subplot(111)
+
+    pd = result.plot_data
+    gen_raw = np.asarray(getattr(pd, "genuine_raw_scores", []), dtype=np.float64)
+    imp_raw = np.asarray(getattr(pd, "impostor_raw_scores", []), dtype=np.float64)
+    gen_lr = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+    imp_lr = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+
+    if gen_raw.size == 0 and imp_raw.size == 0:
+        ax.text(
+            0.5, 0.5,
+            "(curva indisponível — pickle pré-curva,\n"
+            "re-execute STRATEGY_EVALUATION)",
+            ha="center", va="center", transform=ax.transAxes,
+            color="#888", fontsize=10,
+        )
+        return
+
+    # Reusa o renderer canônico de calibration_curve_plot pra manter
+    # visual idéntico ao da aba do SCORE_CALIBRATION. Constrói o summary
+    # no formato esperado (idêntico ao output de
+    # `compute_calibration_curve_summary` para uma lista de samples).
+    from faceaudit.models.similarity.calibration_curve_plot import (
+        draw_calibration_curve_from_summary,
+    )
+
+    rng = np.random.default_rng(0)
+    MAX_PER_CLASS = 20_000
+
+    def _maybe_sample(raw: np.ndarray, lr: np.ndarray):
+        n = min(raw.size, lr.size)
+        if n <= MAX_PER_CLASS:
+            return raw[:n].tolist(), lr[:n].tolist(), n
+        idx = rng.choice(n, size=MAX_PER_CLASS, replace=False)
+        return raw[idx].tolist(), lr[idx].tolist(), n
+
+    gen_x_s, gen_y_s, n_gen_total = _maybe_sample(gen_raw, gen_lr)
+    imp_x_s, imp_y_s, n_imp_total = _maybe_sample(imp_raw, imp_lr)
+
+    summary = {
+        "schema_version": 1,
+        "n_gen": len(gen_x_s),
+        "n_imp": len(imp_x_s),
+        "n_case": 0,
+        "n_gen_total": n_gen_total,
+        "n_imp_total": n_imp_total,
+        "n_case_total": 0,
+        "max_points_per_class": MAX_PER_CLASS,
+        "gen_x": gen_x_s, "gen_y": gen_y_s,
+        "imp_x": imp_x_s, "imp_y": imp_y_s,
+        "case_x": [], "case_y": [],
+    }
+    draw_calibration_curve_from_summary(figure, summary, show_title=True)
+
+
 _DRAW_FN = {
     "lr_distribution": draw_lr_distribution,
     "tippett":         draw_tippett,
     "det":             draw_det_curve,
     "ece":             draw_ece,
+    "curve":           draw_calibration_curve,
 }
 
 
