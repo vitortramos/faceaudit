@@ -79,16 +79,22 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
     ) -> None:
         """
         Treina o calibrador a partir de scores brutos e labels binários.
+
+        Suporta:
+        - vetor 1D `(N,)` — calibração univariada de score → log-LR
+        - matriz 2D `(N, D)` — calibração multivariada (score fusion):
+          D features por amostra, LogReg aprende um peso por feature
+          (Brümmer & du Preez 2006 score fusion).
         """
         scores_arr = np.asarray(scores, dtype=np.float64)
         labels_arr = np.asarray(labels, dtype=np.int32)
 
-        if scores_arr.ndim == 2 and scores_arr.shape[1] == 1:
-            X = scores_arr
+        if scores_arr.ndim == 2:
+            X = scores_arr   # (N, 1) ou (N, D) — sklearn aceita
         elif scores_arr.ndim == 1:
             X = scores_arr.reshape(-1, 1)
         else:
-            raise ValueError("scores deve ser vetor 1D ou matriz (N, 1).")
+            raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
 
         if labels_arr.ndim != 1:
             raise ValueError("labels deve ser vetor 1D.")
@@ -178,12 +184,12 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
 
         scores_arr = np.asarray(scores, dtype=np.float64)
 
-        if scores_arr.ndim == 2 and scores_arr.shape[1] == 1:
+        if scores_arr.ndim == 2:
             X = scores_arr
         elif scores_arr.ndim == 1:
             X = scores_arr.reshape(-1, 1)
         else:
-            raise ValueError("scores deve ser vetor 1D ou matriz (N, 1).")
+            raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
 
         probs = self.logreg.predict_proba(X)
         return np.asarray(probs, dtype=np.float64)

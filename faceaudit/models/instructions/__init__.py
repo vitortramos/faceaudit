@@ -7,8 +7,9 @@ from .dataset_merge_instruction import DatasetMergeInstruction
 from .similarity_model_training_instruction import SimilarityModelTrainingInstruction
 from .calibration_model_training_instruction import CalibrationModelTrainingInstruction
 from .similarity_scoring_instruction import SimilarityScoringInstruction
+from .score_fusion_instruction import ScoreFusionInstruction
 
-__all__ = ["InstructionExecutionResult", 
+__all__ = ["InstructionExecutionResult",
            "StrategyInstructionDefinition",
            "PipelineTrainingInstruction",
            "PipelineApplicationInstruction",
@@ -16,5 +17,6 @@ __all__ = ["InstructionExecutionResult",
            "DatasetMergeInstruction",
            "SimilarityModelTrainingInstruction",
            "CalibrationModelTrainingInstruction",
-           "SimilarityScoringInstruction"
+           "SimilarityScoringInstruction",
+           "ScoreFusionInstruction",
            ]

@@ -278,15 +278,20 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         Extrai scores e labels do recurso de entrada.
 
         Formatos aceitos:
-        1. SimilarityScoreDataset
+        1. SimilarityScoreDataset (com flag `is_fused` no metadata para
+           datasets produzidos por SCORE_FUSION — neste caso scores tem
+           shape (N, D) com D features por amostra em vez de scores 1D).
         2. dict:
             {
-                "scores": [...],
+                "scores": [...],   # 1D ou 2D (N, D)
                 "labels": [...]
             }
         """
         if isinstance(payload, SimilarityScoreDataset):
-            scores = payload.scores
+            if payload.metadata.get("is_fused"):
+                scores = self._extract_fused_features(payload)
+            else:
+                scores = payload.scores
             labels = payload.labels
             return self._validate_extracted_arrays(scores, labels)
 
@@ -305,13 +310,36 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             "payload de calibração deve ser SimilarityScoreDataset ou dict com 'scores' e 'labels'."
         )
 
+    @staticmethod
+    def _extract_fused_features(payload: SimilarityScoreDataset) -> np.ndarray:
+        """
+        Extrai a matriz (N, D) de features fundidas de um SimilarityScoreDataset
+        produzido por SCORE_FUSION. Cada `sample.metadata["fused_features"]` é
+        uma lista de D floats representando os scores dos sistemas combinados.
+        """
+        features = []
+        for sample in payload.items:
+            f = sample.metadata.get("fused_features") if sample.metadata else None
+            if f is None:
+                raise ValueError(
+                    "Dataset marcado como is_fused mas sample não contém "
+                    "metadata['fused_features']."
+                )
+            features.append(f)
+        arr = np.asarray(features, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError(
+                f"fused_features deveria produzir matriz (N, D); got shape={arr.shape}."
+            )
+        return arr
+
     def _validate_extracted_arrays(
         self,
         scores: np.ndarray,
         labels: np.ndarray,
     ) -> tuple[np.ndarray, np.ndarray]:
         if scores.ndim not in (1, 2):
-            raise ValueError("scores deve ser vetor 1D ou matriz (N, 1).")
+            raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
 
         if labels.ndim != 1:
             raise ValueError("labels deve ser vetor 1D.")

@@ -23,6 +23,7 @@ _INSTRUCTION_ICONS = {
     StrategyInstructionType.SIMILARITY_SCORING: "📊",
     StrategyInstructionType.CALIBRATION_MODEL_TRAINING: "🎯",
     StrategyInstructionType.SCORE_CALIBRATION: "🎚️",
+    StrategyInstructionType.SCORE_FUSION: "🧬",
     StrategyInstructionType.STRATEGY_EVALUATION: "📈",
     StrategyInstructionType.CASEWORK_VISUALIZATION: "🎯",
 }

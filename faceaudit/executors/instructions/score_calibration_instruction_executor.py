@@ -79,7 +79,12 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
             )
 
             # Vetorização: scores e calibração em um único passe.
-            raw_scores = score_dataset.scores  # np.ndarray float64
+            # Para datasets produzidos por SCORE_FUSION, extraímos a matriz
+            # (N, D) de features fundidas em vez do raw_score escalar.
+            if score_dataset.metadata.get("is_fused"):
+                raw_scores = self._extract_fused_features(score_dataset)
+            else:
+                raw_scores = score_dataset.scores  # np.ndarray float64
             log_lrs = np.asarray(
                 calibrator.calibrate_scores(raw_scores), dtype=np.float64
             )
@@ -198,6 +203,29 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 f"{instruction.instruction_id}: {exc}"
             )
             return self._failure_result(str(exc))
+
+    @staticmethod
+    def _extract_fused_features(payload: SimilarityScoreDataset) -> np.ndarray:
+        """
+        Extrai matriz (N, D) de features fundidas para datasets produzidos
+        por SCORE_FUSION. Mantém a mesma semântica do extrator do
+        CalibrationModelTrainingInstructionExecutor.
+        """
+        features = []
+        for sample in payload.items:
+            f = sample.metadata.get("fused_features") if sample.metadata else None
+            if f is None:
+                raise ValueError(
+                    "Dataset marcado como is_fused mas sample não contém "
+                    "metadata['fused_features']."
+                )
+            features.append(f)
+        arr = np.asarray(features, dtype=np.float64)
+        if arr.ndim != 2:
+            raise ValueError(
+                f"fused_features deveria produzir matriz (N, D); got shape={arr.shape}."
+            )
+        return arr
 
     def _validate_instruction_specifics(
         self,
