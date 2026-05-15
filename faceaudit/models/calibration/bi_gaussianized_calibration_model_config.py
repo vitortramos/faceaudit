@@ -88,6 +88,26 @@ class BiGaussInversionMethod(Enum):
             return cls.INTERP1D
 
 
+class BiGaussGxMethod(Enum):
+    """Método pra construir a CDF empírica G(x) — passo 5 do paper Morrison §2.7."""
+    EMPIRICAL_LINEAR = "EMPIRICAL_LINEAR"  # piecewise linear nos breakpoints (paper default)
+    KDE_SMOOTHED     = "KDE_SMOOTHED"      # G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) via KDE Gaussiana
+
+    def to_str(self) -> str:
+        return self.value
+
+    @classmethod
+    def from_str(cls, value) -> "BiGaussGxMethod":
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            return cls.EMPIRICAL_LINEAR
+        try:
+            return cls(str(value).upper())
+        except ValueError:
+            return cls.EMPIRICAL_LINEAR
+
+
 @dataclass
 class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
     """
@@ -216,6 +236,70 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         metadata={"help": "Semente para amostragens internas."}
     )
 
+    # ── G(x) — construção da CDF empírica ───────────────────────────────────
+    gx_method: BiGaussGxMethod = field(
+        default=BiGaussGxMethod.EMPIRICAL_LINEAR,
+        metadata={
+            "help": (
+                "<html><b>Método pra construir G(x)</b> (CDF empírica do passo 5)."
+                "<ul>"
+                "<li><b>EMPIRICAL_LINEAR</b> (padrão, paper Morrison §2.7) — "
+                "soma cumulativa ponderada nos breakpoints + interpolação linear. "
+                "Preserva exatamente os dados; pode produzir <i>stairsteps</i> "
+                "no output quando há poucos genuínos no treino.</li>"
+                "<li><b>KDE_SMOOTHED</b> — variante deste projeto. "
+                "G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x), com F̂ obtidas por integração "
+                "analítica de KDEs Gaussianos. Elimina <i>stairsteps</i> mas "
+                "introduz bandwidth; pode levemente distorcer mapeamento em "
+                "regiões de transição abrupta.</li>"
+                "</ul></html>"
+            )
+        },
+    )
+
+    gx_kde_bandwidth_gen: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "Bandwidth do KDE dos genuínos pra construir G(x). "
+                "0.0 = Silverman automático. Só aplica se gx_method=KDE_SMOOTHED."
+            )
+        },
+    )
+
+    gx_kde_bandwidth_imp: float = field(
+        default=0.0,
+        metadata={
+            "help": (
+                "Bandwidth do KDE dos impostores pra construir G(x). "
+                "0.0 = Silverman automático. Só aplica se gx_method=KDE_SMOOTHED."
+            )
+        },
+    )
+
+    gx_clamp_to_training_range: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Preserva a propriedade do paper §2.7: scores fora do range do "
+                "treino recebem o G(x_min) ou G(x_max). Recomendado True para "
+                "evitar extrapolação confiante em regiões não-treinadas. "
+                "Só aplica se gx_method=KDE_SMOOTHED."
+            )
+        },
+    )
+
+    gx_grid_points: int = field(
+        default=2000,
+        metadata={
+            "help": (
+                "Quantidade de pontos do grid usado pra cachear G(x). "
+                "2000 é suficiente — o resto vem da interpolação linear do "
+                "scipy. Só aplica se gx_method=KDE_SMOOTHED."
+            )
+        },
+    )
+
     def __post_init__(self) -> None:
         # Normaliza enums vindos de string (caso from_dict externo)
         if not isinstance(self.target_metric, BiGaussTargetMetric):
@@ -224,6 +308,8 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
             self.initial_calibrator = BiGaussInitialCalibrator.from_str(self.initial_calibrator)
         if not isinstance(self.inversion_method, BiGaussInversionMethod):
             self.inversion_method = BiGaussInversionMethod.from_str(self.inversion_method)
+        if not isinstance(self.gx_method, BiGaussGxMethod):
+            self.gx_method = BiGaussGxMethod.from_str(self.gx_method)
 
         if not (0.0 < self.sigma_shrinkage_factor <= 1.0):
             raise ValueError("sigma_shrinkage_factor deve estar em (0, 1].")
@@ -239,6 +325,12 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
             raise ValueError("initial_logreg_C deve ser positivo.")
         if self.initial_kde_bandwidth < 0:
             raise ValueError("initial_kde_bandwidth não pode ser negativo.")
+        if self.gx_kde_bandwidth_gen < 0:
+            raise ValueError("gx_kde_bandwidth_gen não pode ser negativo.")
+        if self.gx_kde_bandwidth_imp < 0:
+            raise ValueError("gx_kde_bandwidth_imp não pode ser negativo.")
+        if self.gx_grid_points < 100:
+            raise ValueError("gx_grid_points deve ser pelo menos 100.")
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -257,4 +349,6 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
             payload["inversion_method"] = BiGaussInversionMethod.from_str(
                 payload["inversion_method"]
             )
+        if "gx_method" in payload:
+            payload["gx_method"] = BiGaussGxMethod.from_str(payload["gx_method"])
         return cls(**payload)

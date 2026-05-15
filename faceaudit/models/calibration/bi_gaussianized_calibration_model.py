@@ -28,6 +28,7 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 
 from faceaudit.models.calibration.bi_gaussianized_calibration_model_config import (
+    BiGaussGxMethod,
     BiGaussianizedCalibrationModelConfig,
     BiGaussInitialCalibrator,
     BiGaussInversionMethod,
@@ -151,7 +152,7 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         )
 
         # ── Passo 5: CDF empírica G(x) ─────────────────────────────────────────
-        self._build_empirical_cdf(scores_arr, labels_arr)
+        self._build_g_cdf(scores_arr, labels_arr)
 
         # ── Pré-computa F⁻¹ da mistura se INTERP1D ─────────────────────────────
         if self.config.inversion_method == BiGaussInversionMethod.INTERP1D:
@@ -166,6 +167,7 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             "target_metric": self.config.target_metric.value,
             "initial_calibrator": self.config.initial_calibrator.value,
             "inversion_method": self.config.inversion_method.value,
+            "gx_method": self.config.gx_method.value,
             "shrinkage_factor": float(self.config.sigma_shrinkage_factor),
             "n_genuine": n_gen,
             "n_impostor": n_imp,
@@ -379,10 +381,18 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
     # CDF EMPÍRICA G(x)
     # =========================================================================
 
-    def _build_empirical_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
-        """Constrói G(x) com peso 0.5/(Nd+1) por imp e 0.5/(Ns+1) por gen.
+    def _build_g_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
+        """Dispatcher: constrói G(x) conforme `config.gx_method`."""
+        if self.config.gx_method == BiGaussGxMethod.KDE_SMOOTHED:
+            self._build_smoothed_cdf(scores, labels)
+        else:
+            self._build_empirical_cdf(scores, labels)
 
-        Pesos somam < 1 para evitar G(x_max) = 1 exato (Morrison §2.7).
+    def _build_empirical_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
+        """G(x) via CDF empírica piecewise-linear (paper Morrison §2.7).
+
+        Peso 0.5/(Nd+1) por imp e 0.5/(Ns+1) por gen; pesos somam < 1 para
+        evitar G(x_max) = 1 exato.
         """
         n_pos = int((labels == 1).sum())
         n_neg = int((labels == 0).sum())
@@ -413,6 +423,106 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             fill_value=(float(gy[0]), float(gy[-1])),
             assume_sorted=True,
         )
+
+    def _build_smoothed_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
+        """G(x) via KDE-smoothing (variante deste projeto, não-canônica).
+
+        Constrói G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) onde F̂_c é a CDF do KDE
+        Gaussiano por classe (kernel Φ tem CDF de forma fechada). Bandwidth
+        independente por classe via Silverman (default) ou config.
+
+        Vantagem: elimina stairsteps no output quando há poucos genuínos.
+        Custo: introduz bandwidth como hiperparâmetro; pode levemente
+        distorcer regiões de transição abrupta.
+
+        Compatibilidade com paper §2.7:
+        - Pesos 0.5/0.5 entre classes preservados.
+        - Não-extrapolação preservada se `gx_clamp_to_training_range=True`
+          (interp1d.fill_value clampa nos extremos do grid).
+        """
+        gen = scores[labels == 1]
+        imp = scores[labels == 0]
+
+        bw_gen = float(self.config.gx_kde_bandwidth_gen)
+        if bw_gen <= 0:
+            bw_gen = self._silverman_bandwidth(gen)
+        bw_imp = float(self.config.gx_kde_bandwidth_imp)
+        if bw_imp <= 0:
+            bw_imp = self._silverman_bandwidth(imp)
+
+        x_min = float(scores.min())
+        x_max = float(scores.max())
+        n_grid = int(self.config.gx_grid_points)
+        clamp = bool(self.config.gx_clamp_to_training_range)
+
+        if clamp:
+            # Grid exatamente no range do treino — interp1d.fill_value clampa
+            # nos boundary values, preservando a não-extrapolação do paper.
+            grid_lo, grid_hi = x_min, x_max
+        else:
+            # Estende grid em ±5·max(h) pra captar a cauda do KDE; valores
+            # ainda mais distantes recebem 0/1 via fill_value.
+            margin = 5.0 * max(bw_gen, bw_imp, 1e-6)
+            grid_lo = x_min - margin
+            grid_hi = x_max + margin
+
+        x_grid = np.linspace(grid_lo, grid_hi, n_grid)
+
+        # G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) onde F̂_c = (1/N_c) Σ Φ((x - x_ci)/h_c).
+        # Broadcasting é O(N_grid · N_c) — chunkado pra evitar matrizes grandes.
+        f_gen = self._kernel_cdf_grid(x_grid, gen, bw_gen)
+        f_imp = self._kernel_cdf_grid(x_grid, imp, bw_imp)
+        g_grid = 0.5 * f_gen + 0.5 * f_imp
+
+        # Garante monotonia estrita (proteção numérica)
+        g_grid = np.maximum.accumulate(g_grid)
+
+        # Re-normaliza pra preservar a propriedade do paper §2.7 de que
+        # G(x_max) < 1.0 (com a margem 0.5/(N+1) somando 1 - eps).
+        # Aqui usamos o equivalente: força G(x_max) = 1 - 0.5/(N_total + 1).
+        n_total = scores.size
+        eps_top = 0.5 / (n_total + 1)
+        eps_bot = eps_top
+        # Rescala linear pra [eps_bot, 1 - eps_top]
+        g_min = float(g_grid[0])
+        g_max = float(g_grid[-1])
+        if g_max - g_min > _EPS:
+            g_grid = eps_bot + (g_grid - g_min) * (1.0 - eps_top - eps_bot) / (g_max - g_min)
+        else:
+            g_grid = np.full_like(g_grid, 0.5)
+
+        self._x_min = x_min
+        self._x_max = x_max
+        self._g_interp = interp1d(
+            x_grid, g_grid,
+            kind="linear",
+            bounds_error=False,
+            fill_value=(float(g_grid[0]), float(g_grid[-1])),
+            assume_sorted=True,
+        )
+
+    @staticmethod
+    def _kernel_cdf_grid(
+        x_grid: np.ndarray,
+        samples: np.ndarray,
+        bw: float,
+        chunk_size: int = 256,
+    ) -> np.ndarray:
+        """F̂(x) = (1/N) Σ_i Φ((x - x_i)/bw) computada em chunks pra economizar RAM.
+
+        Memory cap aproximado: chunk_size × len(samples) × 8 bytes.
+        Com chunk=256 e samples=10k, ~20MB por chunk — seguro.
+        """
+        from scipy.stats import norm
+        out = np.empty(len(x_grid), dtype=np.float64)
+        n = samples.size
+        if n == 0 or bw <= 0:
+            return np.full_like(x_grid, 0.5, dtype=np.float64)
+        for i in range(0, len(x_grid), chunk_size):
+            chunk = x_grid[i:i + chunk_size]
+            z = (chunk[:, None] - samples[None, :]) / bw
+            out[i:i + chunk_size] = norm.cdf(z).mean(axis=1)
+        return out
 
     def _g_apply(self, x: np.ndarray) -> np.ndarray:
         return np.asarray(self._g_interp(x), dtype=np.float64)

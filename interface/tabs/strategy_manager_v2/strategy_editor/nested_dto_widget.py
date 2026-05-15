@@ -644,6 +644,11 @@ _BIGAUSS_CONFIG_LABELS = {
     "initial_logreg_C":        "C da LogReg inicial",
     "initial_kde_bandwidth":   "Bandwidth do KDE inicial (0=auto)",
     "random_seed":             "Semente aleatória",
+    "gx_method":                  "Método de G(x)",
+    "gx_kde_bandwidth_gen":       "Bandwidth G(x) genuínos (0=auto)",
+    "gx_kde_bandwidth_imp":       "Bandwidth G(x) impostores (0=auto)",
+    "gx_clamp_to_training_range": "Clampar G(x) ao range do treino",
+    "gx_grid_points":             "Pontos do grid G(x)",
 }
 
 _BIGAUSS_CONFIG_TOOLTIPS = {
@@ -690,6 +695,26 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
         "do paper). Só aplica se initial_calibrator=KDE.",
     "random_seed":
         "Semente para amostragens internas (reprodutibilidade).",
+    "gx_method":
+        "EMPIRICAL_LINEAR (padrão, paper §2.7): soma cumulativa nos breakpoints "
+        "+ interpolação linear. Preserva exatamente os dados; pode produzir "
+        "stairsteps visíveis quando há poucos genuínos no treino.\n\n"
+        "KDE_SMOOTHED: variante deste projeto. G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) "
+        "via integração analítica de KDEs Gaussianos por classe. Elimina "
+        "stairsteps mas introduz bandwidth como hiperparâmetro.",
+    "gx_kde_bandwidth_gen":
+        "Bandwidth do KDE dos genuínos pra construir G(x). 0.0 = Silverman "
+        "automático. Só aplica se gx_method=KDE_SMOOTHED.",
+    "gx_kde_bandwidth_imp":
+        "Bandwidth do KDE dos impostores pra construir G(x). 0.0 = Silverman "
+        "automático. Só aplica se gx_method=KDE_SMOOTHED.",
+    "gx_clamp_to_training_range":
+        "Preserva a propriedade do paper §2.7: scores fora do range do treino "
+        "recebem G(x_min) ou G(x_max). Recomendado True. False permite que o "
+        "KDE extrapole suavemente nas caudas. Só aplica se gx_method=KDE_SMOOTHED.",
+    "gx_grid_points":
+        "Quantidade de pontos do grid usado pra cachear G(x). 2000 é suficiente. "
+        "Só aplica se gx_method=KDE_SMOOTHED.",
 }
 
 
