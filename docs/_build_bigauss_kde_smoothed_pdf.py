@@ -45,6 +45,115 @@ from faceaudit.models.calibration.bi_gaussianized_calibration_model_config impor
 )
 
 
+# ── Registro de fonte com cobertura Unicode ampla ─────────────────────────
+# Helvetica (fonte default da Reportlab) não tem cobertura de matemática,
+# grego, setas etc. → caracteres como Σ Φ σ → ≤ ≈ • ✓ saem como □ no PDF.
+# Registramos Arial (Windows nativo) como fonte de body. Fallback pra
+# DejaVu Sans (Linux/macOS comum) e Helvetica (último recurso).
+
+from reportlab.pdfbase import pdfmetrics  # noqa: E402
+from reportlab.pdfbase.ttfonts import TTFont  # noqa: E402
+
+
+_FONT_BODY = "Helvetica"        # fallback final
+_FONT_BODY_BOLD = "Helvetica-Bold"
+_FONT_BODY_ITALIC = "Helvetica-Oblique"
+_FONT_BODY_BOLDITALIC = "Helvetica-BoldOblique"
+_FONT_SYMBOL: str | None = None  # fonte de fallback pra glyphs ausentes em
+                                  # Arial (✓ ⁻ ∝ etc.). Setada por
+                                  # _register_symbol_font().
+
+# Glyphs de matemática/dingbats ausentes em Arial.ttf — quando aparecem no
+# texto, são automaticamente embrulhados em <font face=_FONT_SYMBOL>...</font>
+# pelo helper _wrap_unicode().
+_ARIAL_MISSING_CHARS = frozenset({
+    "✓",   # ✓ check mark
+    "⁻",   # ⁻ superscript minus
+    "∝",   # ∝ proportional to
+})
+
+
+def _register_body_font() -> None:
+    """Registra família com cobertura Unicode ampla. Tenta Arial,
+    depois DejaVu Sans, mantém Helvetica se nada disponível."""
+    global _FONT_BODY, _FONT_BODY_BOLD, _FONT_BODY_ITALIC, _FONT_BODY_BOLDITALIC
+
+    candidates = [
+        ("Arial", "Arial-Bold", "Arial-Italic", "Arial-BoldItalic", [
+            r"C:\Windows\Fonts\arial.ttf",
+            r"C:\Windows\Fonts\arialbd.ttf",
+            r"C:\Windows\Fonts\ariali.ttf",
+            r"C:\Windows\Fonts\arialbi.ttf",
+        ]),
+        ("DejaVuSans", "DejaVuSans-Bold", "DejaVuSans-Oblique", "DejaVuSans-BoldOblique", [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+        ]),
+    ]
+
+    for normal, bold, italic, bolditalic, paths in candidates:
+        if not all(Path(p).exists() for p in paths):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(normal, paths[0]))
+            pdfmetrics.registerFont(TTFont(bold, paths[1]))
+            pdfmetrics.registerFont(TTFont(italic, paths[2]))
+            pdfmetrics.registerFont(TTFont(bolditalic, paths[3]))
+            pdfmetrics.registerFontFamily(
+                normal, normal=normal, bold=bold,
+                italic=italic, boldItalic=bolditalic,
+            )
+            _FONT_BODY = normal
+            _FONT_BODY_BOLD = bold
+            _FONT_BODY_ITALIC = italic
+            _FONT_BODY_BOLDITALIC = bolditalic
+            return
+        except Exception:
+            continue
+
+
+_register_body_font()
+
+
+def _register_symbol_font() -> None:
+    """Registra uma fonte com cobertura ampla de símbolos (✓ ⁻ ∝ etc.)
+    pra usar como fallback nos chars que Arial não tem."""
+    global _FONT_SYMBOL
+    candidates = [
+        ("SymbolFont", r"C:\Windows\Fonts\seguisym.ttf"),     # Win Segoe UI Symbol
+        ("SymbolFont", r"C:\Windows\Fonts\arialuni.ttf"),     # Arial Unicode MS (raro)
+        ("SymbolFont", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),  # Linux fallback
+    ]
+    for name, path in candidates:
+        if not Path(path).exists():
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont(name, path))
+            _FONT_SYMBOL = name
+            return
+        except Exception:
+            continue
+
+
+_register_symbol_font()
+
+
+def _wrap_unicode(text: str) -> str:
+    """Embrulha caracteres ausentes em Arial com <font face=_FONT_SYMBOL>.
+    Aplica-se ANTES do XML markup do Reportlab — só toca chars puros."""
+    if not _FONT_SYMBOL or not text:
+        return text
+    out = []
+    for ch in text:
+        if ch in _ARIAL_MISSING_CHARS:
+            out.append(f"<font face='{_FONT_SYMBOL}'>{ch}</font>")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 # ── Estilos ───────────────────────────────────────────────────────────────
 
 styles = getSampleStyleSheet()
@@ -61,42 +170,52 @@ PALETTE = {
 
 TITLE = ParagraphStyle(
     "Title", parent=styles["Title"],
+    fontName=_FONT_BODY_BOLD,
     fontSize=22, textColor=PALETTE["primary"],
     spaceAfter=8, alignment=1,
 )
 SUBTITLE = ParagraphStyle(
     "Subtitle", parent=styles["Normal"],
+    fontName=_FONT_BODY,
     fontSize=13, textColor=PALETTE["muted"],
     alignment=1, spaceAfter=4,
 )
 H1 = ParagraphStyle(
     "H1", parent=styles["Heading1"],
+    fontName=_FONT_BODY_BOLD,
     fontSize=17, textColor=PALETTE["primary"],
     spaceAfter=10, spaceBefore=14,
 )
 H2 = ParagraphStyle(
     "H2", parent=styles["Heading2"],
+    fontName=_FONT_BODY_BOLD,
     fontSize=13, textColor=PALETTE["primary"],
     spaceAfter=6, spaceBefore=12,
 )
 H3 = ParagraphStyle(
     "H3", parent=styles["Heading3"],
+    fontName=_FONT_BODY_BOLD,
     fontSize=11, textColor=PALETTE["muted"],
     spaceAfter=4, spaceBefore=8,
 )
 BODY = ParagraphStyle(
     "Body", parent=styles["BodyText"],
+    fontName=_FONT_BODY,
     fontSize=10, leading=14, spaceAfter=6, alignment=4,  # justified
 )
 BULLET = ParagraphStyle(
     "Bullet", parent=BODY,
+    fontName=_FONT_BODY,
     leftIndent=14, bulletIndent=4, spaceAfter=2, alignment=0,
 )
 SMALL = ParagraphStyle(
-    "Small", parent=BODY, fontSize=8.5, textColor=PALETTE["muted"], alignment=0,
+    "Small", parent=BODY,
+    fontName=_FONT_BODY,
+    fontSize=8.5, textColor=PALETTE["muted"], alignment=0,
 )
 CAPTION = ParagraphStyle(
     "Caption", parent=BODY,
+    fontName=_FONT_BODY_ITALIC,
     fontSize=9, textColor=PALETTE["muted"], alignment=1, spaceBefore=2, spaceAfter=10,
 )
 CODE = ParagraphStyle(
@@ -105,32 +224,38 @@ CODE = ParagraphStyle(
     backColor=PALETTE["soft"], spaceAfter=8, spaceBefore=4,
 )
 NOTE = ParagraphStyle(
-    "Note", parent=BODY, leftIndent=12, rightIndent=12,
+    "Note", parent=BODY,
+    fontName=_FONT_BODY,
+    leftIndent=12, rightIndent=12,
     backColor=PALETTE["warn"], spaceAfter=10, borderPadding=6,
 )
 TABLE_CELL = ParagraphStyle(
-    "TableCell", parent=BODY, fontSize=9, leading=12, spaceAfter=0, alignment=0,
+    "TableCell", parent=BODY,
+    fontName=_FONT_BODY,
+    fontSize=9, leading=12, spaceAfter=0, alignment=0,
 )
 TABLE_HEADER = ParagraphStyle(
-    "TableHeader", parent=TABLE_CELL, textColor=colors.white,
+    "TableHeader", parent=TABLE_CELL,
+    fontName=_FONT_BODY_BOLD,
+    textColor=colors.white,
 )
 
 
 def heading(text, level=1):
     style = {1: H1, 2: H2, 3: H3}[level]
-    return Paragraph(text, style)
+    return Paragraph(_wrap_unicode(text), style)
 
 
 def p(text):
-    return Paragraph(text, BODY)
+    return Paragraph(_wrap_unicode(text), BODY)
 
 
 def small(text):
-    return Paragraph(text, SMALL)
+    return Paragraph(_wrap_unicode(text), SMALL)
 
 
 def caption(text):
-    return Paragraph(text, CAPTION)
+    return Paragraph(_wrap_unicode(text), CAPTION)
 
 
 def code(text):
@@ -140,16 +265,16 @@ def code(text):
 
 
 def note(text):
-    return Paragraph(text, NOTE)
+    return Paragraph(_wrap_unicode(text), NOTE)
 
 
 def bullet(text):
-    return Paragraph(f"• {text}", BULLET)
+    return Paragraph(f"• {_wrap_unicode(text)}", BULLET)
 
 
 def table_from_rows(headers, rows, col_widths):
-    head = [Paragraph(f"<b>{h}</b>", TABLE_HEADER) for h in headers]
-    body_rows = [[Paragraph(c, TABLE_CELL) for c in row] for row in rows]
+    head = [Paragraph(f"<b>{_wrap_unicode(h)}</b>", TABLE_HEADER) for h in headers]
+    body_rows = [[Paragraph(_wrap_unicode(c), TABLE_CELL) for c in row] for row in rows]
     tbl = Table([head] + body_rows, colWidths=col_widths, repeatRows=1)
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), PALETTE["primary"]),
@@ -185,6 +310,50 @@ def _fig_to_image(fig, width_cm=16.0):
     buf.seek(0)
     img = Image(buf, width=width_cm * cm, height=width_cm * 0.6 * cm, kind="proportional")
     return img
+
+
+def _png_path_to_image(path: Path, width_cm: float = 8.0):
+    """Carrega um PNG do disco e retorna como Reportlab Image proporcional."""
+    if not path.exists():
+        return Paragraph(
+            f"<i>(arquivo não encontrado: {path.name})</i>", BODY,
+        )
+    return Image(
+        str(path),
+        width=width_cm * cm,
+        height=width_cm * 0.6 * cm,
+        kind="proportional",
+    )
+
+
+# ── Real-world graphics paths (Projeto 1 - PLDA) ──────────────────────────
+
+_PROJECT_GFX_ROOT = _REPO_ROOT / "Projeto 1 - PLDA" / "graphics"
+_REAL_LINEAR_ID = "262a0beb-4def-43bc-9f19-475da1eea0c5"   # PLDA L2 - BI GAUSS - KDE
+_REAL_SMOOTHED_ID = "2955310a-a5df-4882-921c-8a22619ca87c"  # PLDA L2 - BI GAUSS - KDE SMOOTHED
+
+
+def _real_pair_table(filename_under_subfolder: str, subfolder: str) -> Table:
+    """Lado-a-lado dos plots de LINEAR e SMOOTHED do Projeto 1 - PLDA."""
+    lin = _PROJECT_GFX_ROOT / _REAL_LINEAR_ID / subfolder / filename_under_subfolder
+    sm = _PROJECT_GFX_ROOT / _REAL_SMOOTHED_ID / subfolder / filename_under_subfolder
+    img_lin = _png_path_to_image(lin, width_cm=8.0)
+    img_sm = _png_path_to_image(sm, width_cm=8.0)
+    cap_lin = Paragraph("<b>EMPIRICAL_LINEAR</b> (paper)", CAPTION)
+    cap_sm = Paragraph("<b>KDE_SMOOTHED</b> (variante)", CAPTION)
+    tbl = Table(
+        [[img_lin, img_sm], [cap_lin, cap_sm]],
+        colWidths=[8.5 * cm, 8.5 * cm],
+    )
+    tbl.setStyle(TableStyle([
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ]))
+    return tbl
 
 
 def make_fig_stairsteps_vs_smooth():
@@ -970,6 +1139,121 @@ def build_story():
         "o gap entre Bi-Gaussianized e LogReg em ECE de ~0.02 para ~0.005-0.01 bits, "
         "preservando o argumento epistemológico do biGauss. LogReg continua "
         "minimamente melhor em ECE, mas a diferença não é mais material."
+    ))
+
+    story.append(PageBreak())
+
+    # =========================================================================
+    # §7.2 — VISUALIZAÇÃO LADO A LADO (caso real)
+    # =========================================================================
+    story.append(heading("7.2 Visualização lado a lado (caso real do projeto)", level=2))
+    story.append(p(
+        "Os 4 pares de gráficos abaixo vêm das duas estratégias do "
+        "<b>Projeto 1 - PLDA</b>: <i>PLDA L2 - BI GAUSS - KDE</i> "
+        "(<font face='Courier'>gx_method=EMPIRICAL_LINEAR</font>) "
+        "e <i>PLDA L2 - BI GAUSS - KDE SMOOTHED</i> "
+        "(<font face='Courier'>gx_method=KDE_SMOOTHED</font>). Configs idênticas "
+        "exceto pelo método de G(x); ambas com "
+        "<font face='Courier'>initial_calibrator=KDE</font>, "
+        "<font face='Courier'>min/max_log_lr=±30</font>, e o mesmo discriminador "
+        "PLDA upstream (hashes idênticos do PLDA MODEL e SCORES VALID PLDA RAW). "
+        "É um A/B controlado: qualquer diferença vista nos plots é exclusivamente "
+        "atribuível à variante de G(x)."
+    ))
+    story.append(note(
+        "Nota sobre o clipping (<font face='Courier'>min/max_log_lr=±30</font>): "
+        "valores anteriores eram ±20, que empilhavam impostores extremos no piso. "
+        "Ampliar para ±30 deslocou o ponto de clipping para fora da cauda "
+        "principal da distribuição de impostores, eliminando o pico artificial em "
+        "−20 visto em execuções anteriores. Recomenda-se ajustar este parâmetro "
+        "ao range esperado do log-LR no seu sistema."
+    ))
+
+    # ─── Par 1: Curva de calibração ────────────────────────────────────────
+    story.append(heading("Par 1 — Curva de calibração", level=3))
+    story.append(_real_pair_table(
+        "SCORES_VALID_PLDA_CALIBRATED_curve.png", "calibrated_scores",
+    ))
+    story.append(caption(
+        "Mapeamento score-bruto → log-LR calibrado. Aspecto agregado quase "
+        "idêntico — os dois métodos buscam a mesma propriedade (G(x) que casa "
+        "com a CDF alvo). Diferenças locais aparecem nas distribuições."
+    ))
+    story.append(PageBreak())
+
+    # ─── Par 2: Distribuição de log-LR (a mais informativa) ────────────────
+    story.append(heading("Par 2 — Distribuição de log-LR  (o resultado-chave)", level=3))
+    story.append(_real_pair_table(
+        "BFW_-_VALIDATION_lr_distribution.png", "validation_result",
+    ))
+    story.append(caption(
+        "Histograma + KDE do log-LR resultante na validação BFW (4.315 genuínos, "
+        "486.435 impostores). À esquerda, EMPIRICAL_LINEAR exibe 3–4 picos "
+        "discretos nos genuínos — assinatura dos stairsteps causados pelos 890 "
+        "breakpoints da CDF empírica do treino. À direita, KDE_SMOOTHED produz "
+        "uma única gaussiana suave centrada em log-LR ≈ +6 — exatamente a forma "
+        "esperada do alvo bi-gaussiano. Os impostores mantêm forma idêntica "
+        "(já eram suaves graças aos 30k samples de treino)."
+    ))
+    story.append(PageBreak())
+
+    # ─── Par 3: Tippett ────────────────────────────────────────────────────
+    story.append(heading("Par 3 — Tippett Plot", level=3))
+    story.append(_real_pair_table(
+        "BFW_-_VALIDATION_tippett.png", "validation_result",
+    ))
+    story.append(caption(
+        "Curvas cumulativas: verde = P(log-LR ≤ x | Hp), vermelha = "
+        "P(log-LR > x | Hd). À esquerda, a curva verde exibe degraus visíveis "
+        "(efeito direto dos picos discretos do plot anterior). À direita, "
+        "ambas as curvas são suaves. A curva vermelha é praticamente idêntica "
+        "entre os dois métodos. <b>A assimetria intrínseca do support PLDA "
+        "persiste em ambos</b> — KDE_SMOOTHED suaviza a forma, mas não cria "
+        "simetria que não está nos dados brutos."
+    ))
+    story.append(PageBreak())
+
+    # ─── Par 4: ECE ────────────────────────────────────────────────────────
+    story.append(heading("Par 4 — Empirical Cross-Entropy (ECE)", level=3))
+    story.append(_real_pair_table(
+        "BFW_-_VALIDATION_ece.png", "validation_result",
+    ))
+    story.append(caption(
+        "Curva azul = Cllr efetivo do modelo; tracejada verde = Cllr_min via "
+        "PAVA. Área âmbar = perda de calibração. Visualmente quase idênticos "
+        "(ambos com max ≈ 0,105 bits e mesmo gap pra PAVA). <b>Confirma a "
+        "promessa do commit message: \"Cllr não degrada\"</b> — KDE_SMOOTHED "
+        "elimina os stairsteps sem custo de discriminação."
+    ))
+
+    story.append(heading("7.3 Conclusão do A/B real", level=2))
+    story.append(p(
+        "O experimento controlado confirma o esperado pelos cenários sintéticos "
+        "da §7 e pela documentação do commit:"
+    ))
+    story.append(bullet(
+        "✓ Stairsteps eliminados no caso real (não só sintético) — Par 2 mostra "
+        "a evidência mais clara."
+    ))
+    story.append(bullet(
+        "✓ Discriminação preservada — EER 1,41% idêntico, ECE visualmente igual."
+    ))
+    story.append(bullet(
+        "✓ Tippett do KDE_SMOOTHED fica visualmente mais limpo — sem os "
+        "degraus do LINEAR — embora não simétrico (limitação intrínseca do "
+        "support assimétrico do PLDA, não do calibrador)."
+    ))
+    story.append(bullet(
+        "≈ ECE máximo essencialmente igual — diferença abaixo do limiar visual "
+        "nos plots. A previsão de melhora de 0,015 bits em §7.1 é otimista; "
+        "em prática a diferença é menor."
+    ))
+    story.append(p(
+        "<b>Recomendação operacional para Projeto 1 - PLDA:</b> se for usar "
+        "Bi-Gaussianized, prefira <font face='Courier'>KDE_SMOOTHED</font> — "
+        "produz output esteticamente correto sem custo numérico. Se busca "
+        "mínimo absoluto de ECE, LogReg continua sendo a escolha (ver "
+        "documento separado de comparação)."
     ))
 
     story.append(PageBreak())
