@@ -1916,6 +1916,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
     # ── Apply / Validate ──────────────────────────────────────────────────────
 
+    def apply_pending(self) -> None:
+        """Aplica mudanças pendentes do form ao DTO. Idempotente — se nada
+        mudou desde o último apply (snapshot check em `_on_apply`), no-op.
+
+        Chamado externamente pelo `StrategyEditorWidget` antes de propagar
+        Run: garante que widgets editados mas não-aplicados sejam commitados
+        no DTO em vez de serem silenciosamente descartados (Run usaria o DTO
+        no estado salvo, rodando com input antigo).
+        """
+        self._on_apply()
+
     def _on_apply(self) -> None:
         if not self._instruction:
             return

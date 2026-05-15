@@ -522,6 +522,17 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             self.strategy_modified.emit(self._definition)
 
     def _on_run_instruction_requested(self, instr: StrategyInstructionDefinition) -> None:
+        # Auto-aplica mudanças pendentes no panel que mostra esta instrução
+        # antes de propagar o Run. Sem isso, edições em dropdowns/value fields
+        # ainda não-aplicadas (sem clique em "Aplicar") seriam silenciosamente
+        # descartadas — Run usaria o DTO no estado salvo e rodaria com input
+        # antigo. `apply_pending` é idempotente via snapshot diff (no-op se
+        # nada mudou desde o último apply).
+        for phase_key, _ in _PHASES:
+            _, config_panel, _ = self._phase_widgets[phase_key]
+            if getattr(config_panel, "_instruction", None) is instr:
+                config_panel.apply_pending()
+                break
         self.run_instruction_requested.emit(instr)
 
     def _on_validate_instruction_requested(self, instr: StrategyInstructionDefinition) -> None:
