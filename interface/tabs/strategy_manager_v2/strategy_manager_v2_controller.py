@@ -1991,6 +1991,83 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._executor = None
         self._refresh_instruction_states()
 
+    def _delete_persisted_resource_files(
+        self,
+        resource: StrategyResource,
+        strategy_id: Optional[str] = None,
+    ) -> None:
+        """Apaga do disco artefato + sidecars + PNGs de UM recurso persistido.
+
+        Não mexe em `definition.resources` nem em contexto vivo — caller decide.
+        Falhas individuais são engolidas: uma sidecar/PNG faltante ou bloqueada
+        não pode abortar a varredura maior.
+
+        `strategy_id` opcional — caller passa quando a estratégia dona não é
+        a atual (cascade cross-strategy). Default: estratégia atual.
+        """
+        if not self._project or resource is None:
+            return
+        ref = resource.artifact_ref
+        if ref is None or not ref.path:
+            return
+
+        project_root = self._project.storage.project_root
+        if strategy_id is None and self._current_definition is not None:
+            strategy_id = self._current_definition.strategy_id
+
+        try:
+            abs_path = project_root / ref.path
+            if abs_path.exists():
+                abs_path.unlink()
+            stem = abs_path.stem
+            parent = abs_path.parent
+            for suffix in ("_stats.json", "_dist.json", "_metrics.json"):
+                sc = parent / (stem + suffix)
+                if sc.exists():
+                    sc.unlink()
+
+            if not strategy_id:
+                return
+
+            # PNGs em `<project>/graphics/<strategy_id>/...` — gating
+            # por resource_type, mesmo padrão que o executor usa pra gravar.
+            if resource.resource_type in (
+                StrategyResourceType.SIMILARITY_SCORES,
+                StrategyResourceType.CALIBRATED_SCORES,
+            ):
+                from faceaudit.models.similarity.distribution_plot import (
+                    score_distribution_png_path,
+                )
+                png_path = score_distribution_png_path(
+                    project_root, strategy_id, resource.resource_id,
+                    calibrated=(
+                        resource.resource_type
+                        == StrategyResourceType.CALIBRATED_SCORES
+                    ),
+                )
+                if png_path.exists():
+                    png_path.unlink()
+            elif resource.resource_type == StrategyResourceType.CASEWORK_VISUALIZATION:
+                from faceaudit.models.casework_visualization_plot import (
+                    casework_visualization_png_path,
+                )
+                png_path = casework_visualization_png_path(
+                    project_root, strategy_id, resource.resource_id,
+                )
+                if png_path.exists():
+                    png_path.unlink()
+            elif resource.resource_type == StrategyResourceType.VALIDATION_RESULT:
+                from faceaudit.models.validation_result_plot import (
+                    validation_result_png_paths,
+                )
+                for png in validation_result_png_paths(
+                    project_root, strategy_id, resource.resource_id,
+                ).values():
+                    if png.exists():
+                        png.unlink()
+        except Exception:
+            pass  # falha individual não aborta a varredura
+
     def _delete_instruction_output_files(
         self,
         instruction: StrategyInstructionDefinition,
@@ -2023,7 +2100,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
         except Exception:
             return []
 
-        project_root = self._project.storage.project_root
         strategy_id = definition.strategy_id
         touched: List[str] = []
 
@@ -2038,67 +2114,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             existing = definition.get_resource_by_id(output_id)
             if existing is None:
                 continue
-            old_ref = existing.artifact_ref
-            if old_ref is None or not old_ref.path:
-                continue
-
-            try:
-                abs_path = project_root / old_ref.path
-                if abs_path.exists():
-                    abs_path.unlink()
-                # Sidecars genéricos ao lado do artefato.
-                stem = abs_path.stem
-                parent = abs_path.parent
-                for suffix in ("_stats.json", "_dist.json", "_metrics.json"):
-                    sc = parent / (stem + suffix)
-                    if sc.exists():
-                        sc.unlink()
-
-                # PNGs em `<project>/graphics/<strategy_id>/...` — gating
-                # por resource_type, mesmo padrão que o executor usa pra
-                # gravar.
-                if existing.resource_type in (
-                    StrategyResourceType.SIMILARITY_SCORES,
-                    StrategyResourceType.CALIBRATED_SCORES,
-                ):
-                    from faceaudit.models.similarity.distribution_plot import (
-                        score_distribution_png_path,
-                    )
-                    png_path = score_distribution_png_path(
-                        project_root, strategy_id, output_id,
-                        calibrated=(
-                            existing.resource_type
-                            == StrategyResourceType.CALIBRATED_SCORES
-                        ),
-                    )
-                    if png_path.exists():
-                        png_path.unlink()
-                elif (
-                    existing.resource_type
-                    == StrategyResourceType.CASEWORK_VISUALIZATION
-                ):
-                    from faceaudit.models.casework_visualization_plot import (
-                        casework_visualization_png_path,
-                    )
-                    png_path = casework_visualization_png_path(
-                        project_root, strategy_id, output_id,
-                    )
-                    if png_path.exists():
-                        png_path.unlink()
-                elif (
-                    existing.resource_type
-                    == StrategyResourceType.VALIDATION_RESULT
-                ):
-                    from faceaudit.models.validation_result_plot import (
-                        validation_result_png_paths,
-                    )
-                    for png in validation_result_png_paths(
-                        project_root, strategy_id, output_id,
-                    ).values():
-                        if png.exists():
-                            png.unlink()
-            except Exception:
-                pass  # falha individual não aborta a varredura
+            self._delete_persisted_resource_files(existing, strategy_id=strategy_id)
 
         return touched
 
@@ -3978,6 +3994,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 # worker — aqui só sincronizamos os artifact_refs já gravados
                 # com a definição em memória (operação rápida, sem I/O).
                 self._sync_persisted_resources_to_definition(result.produced_resource_ids)
+                # Apaga recursos órfãos: outputs persistidos que deixaram
+                # de ser declarados (ex: usuário renomeou A→B antes de
+                # re-executar). Sem isso, A.<ext> + sidecars + PNG ficam
+                # no disco como lixo, e A continua em definition.resources.
+                self._cleanup_orphan_persisted_resources()
                 dialog.finish(True)
             else:
                 dialog.finish(False)
@@ -4577,6 +4598,76 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 if not resource.has_payload and not resource.has_artifact:
                     self._current_definition.remove_resource(resource.resource_id)
 
+    def _cleanup_orphan_persisted_resources(self) -> None:
+        """Apaga do disco e remove de `definition.resources` recursos
+        persistidos que não são mais output declarado de NENHUMA instrução
+        da estratégia atual.
+
+        Cobre três cenários equivalentes:
+          1. Output de instrução renomeado (A→B): "A" sobrevivia ao
+             `_sync_all_output_placeholders` (guard exige `not has_artifact`).
+          2. Instrução removida cujos outputs estavam persistidos.
+          3. `apply_to_training_datasets` em PIPELINE_TRAINING desligado
+             depois de já ter rodado: outputs deixam de ser declarados.
+
+        NUNCA toca em recursos do tipo "projeto" (DATASET, PIPELINE_CONFIG,
+        SPLIT_CONFIG, MERGE_CONFIG, SIMILARITY_MODEL_CONFIG,
+        CALIBRATION_MODEL_CONFIG) — são primários, não outputs de instrução.
+
+        NUNCA apaga recurso cujo `resource_id` ainda é declarado por
+        OUTRA instrução da estratégia (edge case raro mas possível com
+        DTOs de projetos antigos). A união cross-instrução em
+        `declared_output_ids` cobre isso.
+
+        Deve rodar na main thread (faz disco I/O e mutaciona estado).
+        Chamado pelos handlers de pós-execução (single + Run All) — não
+        chamar em `_on_strategy_modified` porque o usuário pode estar
+        digitando o novo nome do output mid-keystroke.
+        """
+        if not self._project or not self._current_definition:
+            return
+
+        definition = self._current_definition
+
+        declared_output_ids: Set[str] = set()
+        for instr in definition.instructions:
+            try:
+                for placeholder in instr.get_output_resource_placeholders():
+                    declared_output_ids.add(placeholder.resource_id)
+            except Exception:
+                pass
+
+        _project_resource_types = {
+            StrategyResourceType.DATASET,
+            StrategyResourceType.PIPELINE_CONFIG,
+            StrategyResourceType.SPLIT_CONFIG,
+            StrategyResourceType.MERGE_CONFIG,
+            StrategyResourceType.SIMILARITY_MODEL_CONFIG,
+            StrategyResourceType.CALIBRATION_MODEL_CONFIG,
+        }
+
+        removed_any = False
+        for resource in list(definition.resources):
+            if resource.resource_type in _project_resource_types:
+                continue
+            if resource.resource_id in declared_output_ids:
+                continue
+
+            self._delete_persisted_resource_files(resource)
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(resource.resource_id)
+            ):
+                try:
+                    self._execution_context.remove_resource(resource.resource_id)
+                except Exception:
+                    pass
+            definition.remove_resource(resource.resource_id)
+            removed_any = True
+
+        if removed_any:
+            self._save_current_definition()
+
     def _sync_trained_model_to_definition(self, model) -> None:
         """
         Sincroniza recursos do LRStrategyTrainedModel já persistidos pelo
@@ -4625,6 +4716,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 except Exception:
                     pass
 
+        # Run All: limpa órfãos por rename/remoção/toggle antes do save
+        # final (mesma lógica que o caminho single-instruction usa via
+        # `on_finished` no `_run_instruction_worker`).
+        self._cleanup_orphan_persisted_resources()
         self._save_current_definition()
 
     def _sync_persisted_resources_to_definition(self, resource_ids: list) -> None:
