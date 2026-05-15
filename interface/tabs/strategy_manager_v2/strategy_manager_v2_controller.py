@@ -1772,6 +1772,20 @@ class StrategyManagerV2Controller(QtCore.QObject):
         cloned = copy.deepcopy(definition)
         cloned.strategy_id = str(uuid.uuid4())
         cloned.name = f"{definition.name} (cópia)"
+
+        # CRÍTICO: zerar artifact_ref e payload de TODOS os recursos DERIVED
+        # do clone. Sem isso, o clone herda refs apontando para arquivos
+        # com o UUID da estratégia ORIGINAL — se o usuário depois deletar
+        # o clone, `_on_remove_strategy` percorreria essas refs e
+        # APAGARIA OS ARQUIVOS DA ORIGINAL (porque o cleanup vai pelo
+        # `artifact_ref.path`, não pelo UUID do dono). Recursos PRIMARY
+        # (datasets/configs importados) mantêm os refs porque vivem na
+        # biblioteca compartilhada do projeto.
+        for res in cloned.resources:
+            if res.category == ResourceCategory.DERIVED:
+                res.artifact_ref = None
+                res.payload = None
+
         try:
             self._project.definition_repository.save_definition(cloned)
             self._is_dirty = False
@@ -1862,6 +1876,17 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 if res.category != ResourceCategory.DERIVED:
                     continue
                 if res.artifact_ref is None or not res.artifact_ref.path:
+                    continue
+                # GUARD: só apaga se o path do artefato pertencer a ESTA
+                # estratégia (UUID dela aparece no caminho). Defesa contra
+                # refs órfãs herdadas de duplicates antigos (anteriores ao
+                # fix de _on_duplicate_strategy que zera DERIVED refs):
+                # se uma estratégia duplicada manteve refs apontando pro
+                # UUID da original, deletar a duplicata NÃO PODE apagar
+                # arquivos da original. Arquivos órfãos com este caso
+                # ficarão para o próximo open detectar via integrity check.
+                rel_path = res.artifact_ref.path.replace("\\", "/")
+                if strategy_id not in rel_path:
                     continue
                 try:
                     abs_path = project_root / res.artifact_ref.path
