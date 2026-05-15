@@ -47,12 +47,12 @@ class StrategyFileType(Enum):
     TRAINED_SIMILARITY_MODEL = (
         ".pkl",
         ProjectFolder.ARTIFACTS,
-        "{strategy_id}_similarity_model",
+        "{strategy_id}_{resource_id}_similarity_model",
     )
     TRAINED_CALIBRATION_MODEL = (
         ".pkl",
         ProjectFolder.ARTIFACTS,
-        "{strategy_id}_calibration_model",
+        "{strategy_id}_{resource_id}_calibration_model",
     )
 
     # --- DATASETS ---
