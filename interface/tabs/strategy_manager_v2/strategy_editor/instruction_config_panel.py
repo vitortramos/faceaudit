@@ -686,7 +686,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # ─── Seção Identificação ────────────────────────────────────────
         # Tipo + ID exibidos como campos read-only dentro da Identificação,
         # em vez de num header competindo com o título da coluna.
-        type_lbl = QtWidgets.QLabel(str(instr.instruction_type.value))
+        type_lbl = QtWidgets.QLabel(instr.instruction_type.label_pt)
         type_lbl.setStyleSheet(
             "color: #1A2942; font-size: 11px; font-weight: bold;"
             " padding: 2px 0px;"

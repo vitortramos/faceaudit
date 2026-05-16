@@ -768,7 +768,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                             role = "output" if role is None else "input/output"
                         if role:
                             self.usage_list.addItem(
-                                f"{defn.name}  ›  {instr.instruction_type.value}  [{role}]"
+                                f"{defn.name}  ›  {instr.instruction_type.label_pt}  [{role}]"
                             )
 
             if self.usage_list.count() == 0:

@@ -295,7 +295,7 @@ class InstructionListWidget(QtWidgets.QWidget):
                 prefix = "🔒"
                 color = QtGui.QColor("#999")
 
-            text = f"{prefix}  {instr.name}  [{instr.instruction_type.value}]"
+            text = f"{prefix}  {instr.name}  [{instr.instruction_type.label_pt}]"
             widget.set_main(text, color)
             # Recalcula indicador de outputs — a contagem nomeada pode ter
             # mudado entre chamadas (ex: usuário digitou nome de output e o
@@ -308,7 +308,7 @@ class InstructionListWidget(QtWidgets.QWidget):
 
     def _add_list_item(self, instr: StrategyInstructionDefinition) -> None:
         icon = _INSTRUCTION_ICONS.get(instr.instruction_type, "▪")
-        text = f"{icon}  {instr.name}  [{instr.instruction_type.value}]"
+        text = f"{icon}  {instr.name}  [{instr.instruction_type.label_pt}]"
 
         item = QtWidgets.QListWidgetItem()
         item.setData(QtCore.Qt.ItemDataRole.UserRole, instr)
@@ -385,8 +385,9 @@ class InstructionListWidget(QtWidgets.QWidget):
         menu = QtWidgets.QMenu(self)
         for instr_type in _allowed_types_for_phase(self._phase):
             icon = _INSTRUCTION_ICONS.get(instr_type, "▪")
-            action = menu.addAction(f"{icon}  {instr_type.value}")
+            action = menu.addAction(f"{icon}  {instr_type.label_pt}")
             action.setData(instr_type)
+            action.setToolTip(instr_type.description)
         chosen = menu.exec(self.btn_add.mapToGlobal(
             self.btn_add.rect().bottomLeft()
         ))
