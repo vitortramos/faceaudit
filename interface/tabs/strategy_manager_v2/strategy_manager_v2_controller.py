@@ -1782,10 +1782,23 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # `artifact_ref.path`, não pelo UUID do dono). Recursos PRIMARY
         # (datasets/configs importados) mantêm os refs porque vivem na
         # biblioteca compartilhada do projeto.
+        #
+        # Regenerar `id` dos DERIVED (Fase 5): `copy.deepcopy` literalmente
+        # duplica os ids. Se mantivéssemos os mesmos ids, quando ambas as
+        # estratégias (original + clone) fossem carregadas num mesmo
+        # contexto de execução (caso raro mas possível em Run All
+        # cross-strategy), `set_resource` do clone sobrescreveria o do
+        # original no `_id_to_resource_id_index`. Regenerar o id garante
+        # unicidade global em todo o projeto. PRIMARY mantém id porque
+        # representa a mesma identidade física do recurso compartilhado.
+        from faceaudit.models.strategy.resource_id_generator import (
+            generate_resource_id,
+        )
         for res in cloned.resources:
             if res.category == ResourceCategory.DERIVED:
                 res.artifact_ref = None
                 res.payload = None
+                res.id = generate_resource_id(res.resource_type)
 
         try:
             self._project.definition_repository.save_definition(cloned)
@@ -4931,6 +4944,19 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         existing.resource_type = resource.resource_type
                         existing.artifact_ref = artifact_ref
                         existing.payload = resource.payload
+                        # Re-execução: preserva o `id` antigo da definição
+                        # propagando-o de volta pro resource recém-produzido
+                        # no contexto. Sem isso, defn fica com id DS-aaa
+                        # (estável) e context fica com id DS-bbb (novo a
+                        # cada execução), causando drift visual no tree.
+                        # O `set_resource` abaixo re-indexa corretamente
+                        # — limpa o id órfão automaticamente (ver
+                        # StrategyExecutionContext.set_resource).
+                        if getattr(existing, "id", None):
+                            resource.id = existing.id
+                            if self._execution_context is not None:
+                                # Re-registra pro index refletir o id final.
+                                self._execution_context.set_resource(resource)
                     else:
                         self._current_definition.add_resource(resource)
 

@@ -97,6 +97,18 @@ class StrategyExecutionContext(JSONSerializableMixin):
         if resource is None:
             raise ValueError("O recurso não pode ser nulo.")
         rid = resource.resource_id
+
+        # Antes de sobrescrever, limpa o id do resource antigo do index
+        # (evita órfão em `_id_to_resource_id_index` quando o resource
+        # no slot é re-criado com um id diferente — caso comum em
+        # re-execução de instruções).
+        old_resource = self.resources.get(rid)
+        if old_resource is not None:
+            old_id = getattr(old_resource, "id", None)
+            new_id = getattr(resource, "id", None)
+            if old_id and old_id != new_id:
+                self._id_to_resource_id_index.pop(old_id, None)
+
         stats_id = f"{rid}_stats"
         # Safeguard: ao registrar o próprio recurso de stats (id já termina
         # em `_stats`), não tentamos invalidar uma chave `{stats_id}_stats`
