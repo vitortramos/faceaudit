@@ -32,6 +32,14 @@ class StrategyExecutionContext(JSONSerializableMixin):
     execution_logs: List[str] = field(default_factory=list)
     execution_metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Secondary index pra lookup por StrategyResource.id (DS-xxxxxxxx).
+    # A chave primária de `resources` continua sendo `resource_id` (legado)
+    # pra retrocompat com 50+ call sites que passam resource_id direto.
+    # Este index permite que code novo possa fazer `get_resource(res.id)`
+    # e cair no mesmo recurso. Populado/mantido pelo `set_resource` /
+    # `remove_resource`. Não persistido no JSON.
+    _id_to_resource_id_index: Dict[str, str] = field(default_factory=dict)
+
     # Listeners de log — invocados em tempo real a cada chamada de log().
     # Usado pelos workers de UI (PyQt) para refletir progresso no dialog
     # de execução enquanto o executor está rodando. Não persistido no JSON
@@ -49,11 +57,25 @@ class StrategyExecutionContext(JSONSerializableMixin):
     # RECURSOS
     # =========================================================================
 
-    def get_resource(self, resource_id: str) -> Optional[StrategyResource]:
+    def get_resource(self, key: str) -> Optional[StrategyResource]:
         """
         Retorna o recurso correspondente ao identificador informado.
+
+        Aceita ambos:
+        - `resource_id` legado (ex: 'foo', 'meu_dataset').
+        - `id` técnico (ex: 'DS-8f3a1b2c').
+
+        O lookup primário usa `resources` indexado por `resource_id`. Se
+        não encontrar, consulta `_id_to_resource_id_index` (Fase 4 da
+        migração id/name).
         """
-        return self.resources.get(resource_id)
+        if key in self.resources:
+            return self.resources[key]
+        # Fallback: lookup por id técnico (DS-xxxxxxxx).
+        legacy_key = self._id_to_resource_id_index.get(key)
+        if legacy_key is not None:
+            return self.resources.get(legacy_key)
+        return None
 
     def set_resource(self, resource: StrategyResource) -> None:
         """
@@ -68,6 +90,9 @@ class StrategyExecutionContext(JSONSerializableMixin):
         A invalidação é incondicional — recomputar stats é barato (leitura
         de metadata pyarrow) e a comparação de payloads para detectar
         "realmente mudou" seria complexa e propensa a falsos negativos.
+
+        Secondary index: atualiza `_id_to_resource_id_index` pra permitir
+        `get_resource(resource.id)` além de `get_resource(resource.resource_id)`.
         """
         if resource is None:
             raise ValueError("O recurso não pode ser nulo.")
@@ -79,19 +104,47 @@ class StrategyExecutionContext(JSONSerializableMixin):
         # deixa a intenção explícita.
         if not rid.endswith("_stats"):
             self.resources.pop(stats_id, None)
+            # Limpa também o índice do stats antigo, se existir.
+            old_stats = self.resources.get(stats_id)
+            if old_stats is not None and getattr(old_stats, "id", None):
+                self._id_to_resource_id_index.pop(old_stats.id, None)
         self.resources[rid] = resource
+        # Indexa por id técnico (Fase 4). Quando `resource.id` é igual ao
+        # `resource_id` (caso raro de migração), o mapeamento é redundante
+        # mas inofensivo.
+        if getattr(resource, "id", None):
+            self._id_to_resource_id_index[resource.id] = rid
 
-    def has_resource(self, resource_id: str) -> bool:
+    def has_resource(self, key: str) -> bool:
         """
         Retorna True se o recurso existir no contexto.
-        """
-        return resource_id in self.resources
 
-    def remove_resource(self, resource_id: str) -> None:
+        Aceita `resource_id` legado OU `id` técnico (Fase 4).
+        """
+        if key in self.resources:
+            return True
+        return key in self._id_to_resource_id_index
+
+    def remove_resource(self, key: str) -> None:
         """
         Remove um recurso do contexto, se existir.
+
+        Aceita `resource_id` legado OU `id` técnico. Quando remove, limpa
+        ambos os índices (resources primário + _id_to_resource_id_index).
         """
-        self.resources.pop(resource_id, None)
+        # Resolve a chave canônica (resource_id) primeiro, mesmo se foi
+        # passado o id técnico.
+        if key in self.resources:
+            legacy_key = key
+        else:
+            legacy_key = self._id_to_resource_id_index.get(key)
+            if legacy_key is None:
+                return
+        # Limpa o índice do id técnico associado, se houver.
+        res = self.resources.get(legacy_key)
+        if res is not None and getattr(res, "id", None):
+            self._id_to_resource_id_index.pop(res.id, None)
+        self.resources.pop(legacy_key, None)
 
     def list_resources(self) -> List[StrategyResource]:
         """
@@ -113,7 +166,8 @@ class StrategyExecutionContext(JSONSerializableMixin):
         Se não há loader registrado, retorna o resource como está (payload=None) —
         consumidores precisam tratar como erro de validação normal.
         """
-        resource = self.resources.get(resource_id)
+        # Lookup tolerante a id técnico (DS-xxx) ou resource_id legado.
+        resource = self.get_resource(resource_id)
         if resource is None:
             return None
         if resource.payload is not None:
@@ -288,7 +342,14 @@ class StrategyExecutionContext(JSONSerializableMixin):
         (objeto de serviço), embedding_column (estado de runtime).
         """
         data = super().to_dict()
-        for runtime_key in ("log_listeners", "resource_loader", "embedding_column"):
+        # `_id_to_resource_id_index` é runtime — reconstruído a cada
+        # `set_resource`. Persistir seria desperdício e fonte de drift.
+        for runtime_key in (
+            "log_listeners",
+            "resource_loader",
+            "embedding_column",
+            "_id_to_resource_id_index",
+        ):
             data.pop(runtime_key, None)
         return data
 
@@ -325,7 +386,19 @@ class StrategyExecutionContext(JSONSerializableMixin):
             processed_data["validation_rules"] = {}
 
         # Campos runtime-only nunca vêm do JSON
-        for runtime_key in ("resource_loader", "embedding_column", "log_listeners"):
+        for runtime_key in (
+            "resource_loader",
+            "embedding_column",
+            "log_listeners",
+            "_id_to_resource_id_index",
+        ):
             processed_data.pop(runtime_key, None)
 
-        return cls(**processed_data)
+        ctx = cls(**processed_data)
+        # Reconstrói o secondary index a partir dos resources carregados
+        # (set_resource já popula, mas aqui criamos do zero pra cobrir o
+        # caminho de hidratação direta via dataclass kwargs).
+        for res in ctx.resources.values():
+            if getattr(res, "id", None):
+                ctx._id_to_resource_id_index[res.id] = res.resource_id
+        return ctx

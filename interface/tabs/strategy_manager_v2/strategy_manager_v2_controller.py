@@ -162,6 +162,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._left_panel.add_mining_config_requested.connect(self._add_mining_config)
         self._left_panel.add_pipeline_config_requested.connect(self._add_pipeline_config)
         self._left_panel.remove_resource_requested.connect(self._on_remove_resource)
+        self._left_panel.rename_resource_requested.connect(self._on_rename_resource)
         self._left_panel.edit_dataset_in_manager_requested.connect(
             self.open_dataset_in_manager_requested
         )
@@ -4549,6 +4550,47 @@ class StrategyManagerV2Controller(QtCore.QObject):
             )
         except Exception:
             pass  # stats são opcionais; não bloquear importação
+
+    def _on_rename_resource(
+        self, resource: StrategyResource, new_name: str,
+    ) -> None:
+        """Renomeia o `name` de um recurso (Fase 4 da migração id/name).
+
+        O `id` técnico permanece imutável — nenhuma referência interna a
+        estratégias quebra. Os campos `input_resource_id`/`output_resource_id`
+        das instruções continuam apontando pro mesmo `resource_id` legado.
+
+        Salva todas as definitions que contêm a INSTÂNCIA `resource` (via
+        `id(res)` no resource_to_strategy map). Em projeto fresh é só uma,
+        mas recursos PRIMARY podem aparecer em várias estratégias quando
+        coletados via _collect_project_resources com mesma identidade.
+        """
+        if not self._project or not resource:
+            return
+        new_name = (new_name or "").strip()
+        if not new_name or new_name == resource.name:
+            return
+
+        # Mutação direta da instância — todas as definitions que a têm
+        # em `resources` veem a mudança imediata.
+        resource.name = new_name
+
+        # Persiste todas as definitions que contêm essa instância.
+        touched_strategy_ids: list = []
+        for defn in self._definitions:
+            if any(res is resource for res in defn.resources):
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                    touched_strategy_ids.append(defn.strategy_id)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.critical(
+                        self._view,
+                        "Falha ao salvar renomeação",
+                        f"Erro ao salvar a estratégia '{defn.name}':\n{exc}",
+                    )
+
+        # Refresh do left panel pra mostrar o novo name (id) imediatamente.
+        self._refresh_left_panel()
 
     def _on_remove_resource(self, resource: StrategyResource) -> None:
         """

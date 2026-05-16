@@ -103,6 +103,9 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     add_mining_config_requested = QtCore.pyqtSignal()
     add_pipeline_config_requested = QtCore.pyqtSignal()
     remove_resource_requested = QtCore.pyqtSignal(object)
+    # Fase 4 — renomeação de `name` (o id técnico nunca muda).
+    # Args: (StrategyResource, novo_name).
+    rename_requested = QtCore.pyqtSignal(object, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -199,7 +202,57 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         tree.setAlternatingRowColors(True)
         tree.setStyleSheet(_TREE_STYLESHEET)
         tree.itemClicked.connect(self._on_item_clicked)
+        # Context menu pra renomear name (Fase 4 da migração id/name).
+        tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        tree.customContextMenuRequested.connect(
+            lambda pos, t=tree: self._on_tree_context_menu(t, pos)
+        )
         return tree
+
+    def _on_tree_context_menu(
+        self, tree: QtWidgets.QTreeWidget, pos: QtCore.QPoint,
+    ) -> None:
+        """Menu de contexto sobre nó de recurso — opção Renomear name.
+
+        Só ativa em folhas (StrategyResource no UserRole); nós internos
+        (grupo por estratégia, agrupador por tipo) são ignorados.
+        """
+        from faceaudit.models.strategy.strategy_resource import StrategyResource
+        item = tree.itemAt(pos)
+        if item is None:
+            return
+        res = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if not isinstance(res, StrategyResource):
+            return
+        menu = QtWidgets.QMenu(self)
+        rename_action = menu.addAction("✎  Renomear…")
+        rename_action.triggered.connect(
+            lambda _checked, r=res: self._prompt_rename(r)
+        )
+        menu.exec(tree.viewport().mapToGlobal(pos))
+
+    def _prompt_rename(self, res) -> None:
+        """Abre prompt pra editar `res.name` e emite `rename_requested`.
+
+        O id técnico (DS-xxxxxxxx) NÃO muda — só o display name. Nenhuma
+        ref interna nas estratégias quebra.
+        """
+        current = res.name or res.resource_id or ""
+        new_name, ok = QtWidgets.QInputDialog.getText(
+            self,
+            "Renomear recurso",
+            f"Novo nome para o recurso:\n\n"
+            f"ID técnico (não muda): {res.id or '(legado)'}\n"
+            f"Nome atual: {current}",
+            QtWidgets.QLineEdit.EchoMode.Normal,
+            current,
+        )
+        if not ok:
+            return
+        new_name = new_name.strip()
+        if not new_name or new_name == current:
+            return
+        self.rename_requested.emit(res, new_name)
 
     # ── Public API ────────────────────────────────────────────────────────────
 

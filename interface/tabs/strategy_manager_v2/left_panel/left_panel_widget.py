@@ -44,6 +44,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
     add_mining_config_requested = QtCore.pyqtSignal()
     add_pipeline_config_requested = QtCore.pyqtSignal()
     remove_resource_requested = QtCore.pyqtSignal(object)  # StrategyResource
+    rename_resource_requested = QtCore.pyqtSignal(object, str)  # (res, new_name) — Fase 4
     edit_dataset_in_manager_requested = QtCore.pyqtSignal(str)  # path absoluto
 
     def __init__(self, parent=None):
@@ -147,6 +148,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self.resource_tree.add_mining_config_requested.connect(self.add_mining_config_requested)
         self.resource_tree.add_pipeline_config_requested.connect(self.add_pipeline_config_requested)
         self.resource_tree.remove_resource_requested.connect(self.remove_resource_requested)
+        self.resource_tree.rename_requested.connect(self.rename_resource_requested)
         self.resource_info.edit_dataset_in_manager_requested.connect(
             self.edit_dataset_in_manager_requested
         )
