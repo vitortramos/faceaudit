@@ -3430,6 +3430,25 @@ class StrategyManagerV2Controller(QtCore.QObject):
             return False
         return True
 
+    @staticmethod
+    def _definition_uses_resource(defn, resource_id: str) -> bool:
+        """True se alguma instrução da definition referencia o recurso
+        via `input_resource_ids`. Usado pelo upsert do
+        `_persist_edited_config_resource` pra detectar quando uma
+        config global (PIPELINE/MINING/SPLIT) precisa ser registrada
+        em `defn.resources` com hash atualizado mesmo que ela só viva
+        no scan de disco do projeto.
+        """
+        try:
+            instructions = list(defn.instructions)
+        except Exception:
+            return False
+        for instr in instructions:
+            inputs = getattr(instr, "input_resource_ids", None) or []
+            if resource_id in inputs:
+                return True
+        return False
+
     def _persist_edited_config_resource(
         self,
         target_resource,
@@ -3471,26 +3490,57 @@ class StrategyManagerV2Controller(QtCore.QObject):
             )
             return False
 
-        # Propaga novo hash a qualquer definition que referencie o recurso.
-        # Erros de persistência são surfaceados — não dá pra "silenciar" um
-        # save falho aqui: deixaria o JSON em disco com hash antigo, e o
-        # check_integrity do próximo `open` flagaria o arquivo como
-        # MODIFICADO mesmo sem o usuário ter editado nada externamente.
+        # Propaga novo hash a TODAS as definitions que referenciam o
+        # recurso — direto via `defn.resources` ou indireto via
+        # `instruction.input_resource_ids`. UPSERT cobre o caso comum
+        # de configs globais (PIPELINE/MINING/SPLIT) que vivem só nas
+        # pastas do projeto e são referenciadas por id (string) pelas
+        # instruções, sem placeholder em `defn.resources`. Sem o UPSERT,
+        # o hash novo se perdia: target_resource vinha sintético do
+        # `_collect_project_resources` (scan de disco), nenhuma defn
+        # tinha o recurso pra atualizar, e o próximo check_integrity
+        # via "MODIFICADO" indevidamente.
+        from faceaudit.models.strategy.strategy_resource import StrategyResource
+        from faceaudit.enums.resource_category import ResourceCategory
+
         save_errors: List[str] = []
-        propagated_to_any_defn = False
+        n_updated = 0
+        n_upserted = 0
         for defn in self._definitions:
-            touched = False
-            for res in defn.resources:
-                if res.resource_id == resource_id:
-                    res.payload = new_config
-                    res.artifact_ref = new_ref
-                    touched = True
+            existing_res = defn.get_resource_by_id(resource_id)
+            if existing_res is not None:
+                # (a) Defn já declara o recurso — atualiza in-place.
+                existing_res.payload = new_config
+                existing_res.artifact_ref = new_ref
+                touched = True
+                n_updated += 1
+            elif self._definition_uses_resource(defn, resource_id):
+                # (b) Defn usa o recurso via input_resource_ids de alguma
+                # instrução mas não declara em resources — adiciona como
+                # primary pra registrar o hash sob essa estratégia.
+                # Propaga o `id` técnico do target pra manter consistência
+                # cross-definition (mesma config = mesmo id em todas).
+                defn.resources.append(StrategyResource(
+                    resource_id=resource_id,
+                    name=target_resource.name or resource_id,
+                    resource_type=target_resource.resource_type,
+                    payload=new_config,
+                    artifact_ref=new_ref,
+                    category=ResourceCategory.PRIMARY,
+                    id=getattr(target_resource, "id", None),
+                ))
+                touched = True
+                n_upserted += 1
+            else:
+                touched = False
+
             if touched:
-                propagated_to_any_defn = True
                 try:
                     self._project.definition_repository.save_definition(defn)
                 except Exception as exc:
-                    save_errors.append(f"  • {defn.name} ({defn.strategy_id}): {exc}")
+                    save_errors.append(
+                        f"  • {defn.name} ({defn.strategy_id}): {exc}"
+                    )
 
         if save_errors:
             QtWidgets.QMessageBox.critical(
@@ -3501,28 +3551,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 "reabrir o projeto, o arquivo aparecerá como MODIFICADO:\n\n"
                 + "\n".join(save_errors),
             )
-
-        # Defesa contra `self._definitions` desatualizado: se a estratégia
-        # atual existe e tem o recurso mas não foi tocada na propagação
-        # (lista em memória ficou stale por algum motivo), força save.
-        if (
-            not propagated_to_any_defn
-            and self._current_definition is not None
-            and self._current_definition.get_resource_by_id(resource_id) is not None
-        ):
-            existing = self._current_definition.get_resource_by_id(resource_id)
-            existing.payload = new_config
-            existing.artifact_ref = new_ref
-            try:
-                self._project.definition_repository.save_definition(
-                    self._current_definition
-                )
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view,
-                    "Erro ao persistir definição",
-                    f"Falha ao salvar a estratégia atual após edição:\n{exc}",
-                )
+        else:
+            print(
+                f"[edit config] hash propagado: "
+                f"{n_updated} defn(s) atualizada(s), "
+                f"{n_upserted} defn(s) com recurso novo (upsert) — "
+                f"id={resource_id}"
+            )
 
         # Invalida em cascata qualquer instrução que dependa do recurso
         # editado — em qualquer estratégia do projeto. Sem isso, modelos
