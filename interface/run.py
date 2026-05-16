@@ -51,9 +51,18 @@ if sys.platform == "darwin":
         if _info is not None and not _info.get("CFBundleIdentifier"):
             _info["CFBundleIdentifier"] = "org.faceaudit.faceaudit"
         _MACOS_NATIVE_DIALOGS_OK = True
-    except Exception:
+        print(
+            f"[macOS] CFBundleIdentifier injetado: "
+            f"{_info.get('CFBundleIdentifier')!r} — NSOpenPanel nativo ativo."
+        )
+    except Exception as _e:
         # pyobjc não instalado → fallback abaixo via QApplication attr.
-        pass
+        print(
+            f"[macOS] pyobjc indisponível ({type(_e).__name__}: {_e}). "
+            f"Usando picker Qt-widget. Instale com "
+            f"`pip install pyobjc-framework-Cocoa` pra voltar ao "
+            f"NSOpenPanel nativo."
+        )
 
 # --- AJUSTE DE PATHS ---
 CURRENT_DIR = Path(__file__).resolve().parent
