@@ -8,6 +8,11 @@ from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
+from faceaudit.models.strategy.resource_id_generator import (
+    generate_resource_id,
+    is_valid_resource_id,
+    migrate_resource_id,
+)
 
 
 T = TypeVar("T", bound="StrategyResource")
@@ -26,10 +31,22 @@ class StrategyResource(JSONSerializableMixin):
     - qualquer outro objeto reutilizável dentro da estratégia
 
     Atributos:
+        id:
+            Identificador único técnico do recurso (formato `DS-8f3a1b2c`).
+            Gerado automaticamente quando o recurso é criado pela primeira vez.
+            Estável: nunca muda mesmo se `name` for renomeado pelo usuário.
+            Migração de projetos antigos: derivado deterministicamente do
+            `resource_id` legado (hash SHA-256[:8]) — garante mesmo id em
+            qualquer máquina onde o projeto seja aberto.
         resource_id:
-            Identificador único do recurso dentro da estratégia.
+            **DEPRECATED — manter por retrocompat até a Fase 4 da migração.**
+            Antigo identificador único do recurso. Hoje é usado em paralelo
+            com `id` durante a transição. Pode ser igual ao `name` ou ao
+            stem do arquivo. Novos códigos devem usar `id`.
         name:
-            Nome amigável para exibição e referência humana.
+            Nome amigável para exibição e referência humana. EDITÁVEL pelo
+            usuário sem afetar `id`. Pode haver dois recursos com mesmo
+            `name` (em pastas/contextos diferentes) — IDs garantem unicidade.
         resource_type:
             Tipo lógico do recurso.
         payload:
@@ -40,10 +57,16 @@ class StrategyResource(JSONSerializableMixin):
     """
 
     resource_id: str = field(
-        metadata={"help": "Identificador único do recurso dentro da estratégia."}
+        metadata={
+            "help": (
+                "DEPRECATED desde Fase 2 da migração id/name. Use `id` "
+                "para chave técnica e `name` para display. Mantido por "
+                "retrocompat — será removido na Fase 4."
+            ),
+        }
     )
     name: str = field(
-        metadata={"help": "Nome amigável do recurso."}
+        metadata={"help": "Nome amigável do recurso (editável)."}
     )
     resource_type: StrategyResourceType = field(
         metadata={"help": "Tipo lógico do recurso."}
@@ -67,6 +90,38 @@ class StrategyResource(JSONSerializableMixin):
             ),
         },
     )
+    id: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Identificador único técnico no formato `DS-8f3a1b2c`. "
+                "Gerado automaticamente em __post_init__ se não informado. "
+                "Estável (não muda em rename do `name`). "
+                "Em migração de projeto antigo, derivado deterministicamente "
+                "do `resource_id` legado via hash SHA-256."
+            ),
+        },
+    )
+
+    def __post_init__(self) -> None:
+        """Garante que `id` esteja preenchido.
+
+        Três cenários:
+
+        1. **Recurso novo com `id` explícito**: aceita o valor (caller é
+           responsável por usar `generate_resource_id` ou similar).
+        2. **Recurso novo sem `id`**: gera aleatório baseado em `resource_type`.
+        3. **Migração de JSON antigo** (id ausente, resource_id presente):
+           gera id determinístico a partir do `resource_id` + tipo, garantindo
+           consistência cross-machine.
+        """
+        if self.id is None or not is_valid_resource_id(self.id):
+            if self.resource_id:
+                # Migração: deriva id determinístico do legacy resource_id.
+                self.id = migrate_resource_id(self.resource_id, self.resource_type)
+            else:
+                # Recurso novo sem resource_id — gera aleatório.
+                self.id = generate_resource_id(self.resource_type)
 
     @property
     def has_payload(self) -> bool:
@@ -116,7 +171,8 @@ class StrategyResource(JSONSerializableMixin):
             )
         )
         return {
-            "resource_id": self.resource_id,
+            "id": self.id,                       # Fase 2: id técnico estável
+            "resource_id": self.resource_id,     # DEPRECATED — mantido até Fase 4
             "name": self.name,
             "resource_type": resource_type_data,
             "artifact_ref": artifact_ref_data,
