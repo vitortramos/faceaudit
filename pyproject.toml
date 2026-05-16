@@ -40,6 +40,11 @@ dependencies = [
     # Architecture wiring
     "dependency-injector",
     "loguru",
+    # macOS: injeta CFBundleIdentifier em runtime pra que QFileDialog
+    # nativo (NSOpenPanel) funcione sem precisar empacotar como .app.
+    # QTBUG-135882 — sem isso, todos os file dialogs travam
+    # silenciosamente no macOS Sequoia/Tahoe + Qt 6.9.x.
+    'pyobjc-framework-Cocoa; sys_platform == "darwin"',
 ]
 
 [project.optional-dependencies]

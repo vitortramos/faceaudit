@@ -27,6 +27,34 @@ if sys.platform == "win32":
         # Falha aqui é puramente cosmética — não impede a app de subir.
         pass
 
+# ─── macOS: injeta CFBundleIdentifier antes do Qt subir ─────────────────────
+#
+# QTBUG-135882: macOS Sequoia/Tahoe + Qt 6.9.x recusa-se a mostrar
+# NSOpenPanel/NSSavePanel quando o processo não tem `CFBundleIdentifier`
+# definido. Como rodamos via `python interface/run.py` (sem `.app`
+# bundle), entramos exatamente nesse caso e todos os QFileDialog
+# travam silenciosamente.
+#
+# Workaround: injeta o `CFBundleIdentifier` no `infoDictionary` do
+# bundle principal ANTES de QApplication ser criado (no momento da
+# criação do QApplication, o Qt cacheia o id pra usar quando montar
+# NSOpenPanel). Mantém a UX nativa do macOS.
+#
+# Fallback: se `pyobjc-framework-Cocoa` não estiver instalado, cai pro
+# `AA_DontUseNativeDialogs` no QApplication (picker baseado em widgets
+# Qt em vez do Finder). Funcional, só não é o picker nativo bonito.
+_MACOS_NATIVE_DIALOGS_OK = False
+if sys.platform == "darwin":
+    try:
+        from Foundation import NSBundle
+        _info = NSBundle.mainBundle().infoDictionary()
+        if _info is not None and not _info.get("CFBundleIdentifier"):
+            _info["CFBundleIdentifier"] = "org.faceaudit.faceaudit"
+        _MACOS_NATIVE_DIALOGS_OK = True
+    except Exception:
+        # pyobjc não instalado → fallback abaixo via QApplication attr.
+        pass
+
 # --- AJUSTE DE PATHS ---
 CURRENT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = CURRENT_DIR.parent
@@ -110,17 +138,13 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     _apply_light_palette(app)
 
-    # QTBUG-135882 — workaround pra macOS Sequoia/Tahoe + Qt 6.9.x.
-    # Sem CFBundleIdentifier (a app é lançada via `python interface/
-    # run.py`, sem bundle .app), o Cocoa silenciosamente recusa-se a
-    # mostrar NSOpenPanel/NSSavePanel — o `QFileDialog` nativo trava
-    # com cursor de espera e o usuário não consegue abrir
-    # projetos/datasets/configs. Forçar o picker baseado em Qt-widgets
-    # resolve sem precisar empacotar a app como .app. UX cosmética:
-    # picker próprio do Qt em vez do Finder. Quando empacotarmos a
-    # app com Info.plist + CFBundleIdentifier setado, dá pra remover
-    # essa linha e voltar pro NSOpenPanel.
-    if sys.platform == "darwin":
+    # QTBUG-135882 — fallback quando pyobjc não está disponível.
+    # Caminho preferido (acima, antes da criação do QApplication):
+    # injeção do CFBundleIdentifier via pyobjc.Foundation, preserva
+    # o NSOpenPanel nativo do macOS. Se pyobjc falhou na importação,
+    # `_MACOS_NATIVE_DIALOGS_OK` ficou False e caímos aqui — picker
+    # baseado em widgets Qt em vez do Finder (funcional, só feio).
+    if sys.platform == "darwin" and not _MACOS_NATIVE_DIALOGS_OK:
         app.setAttribute(
             QtCore.Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True,
         )
