@@ -17,12 +17,6 @@ class MainGuiView(QtWidgets.QMainWindow):
             raise RuntimeError(f"Falha crítica ao carregar arquivo de interface (.ui): {e}")
 
         self.main_tabs = self.findChild(QtWidgets.QTabWidget)
-        # Permite a janela encolher abaixo do sizeHint do conteúdo
-        # (telas pequenas tipo MacBook 14" 1512px). Por default o Qt
-        # impede a janela de ficar menor que o sizeHint mínimo dos
-        # filhos — em telas estreitas isso fazia parte da app ficar
-        # cortada à direita.
-        self.setMinimumSize(QtCore.QSize(800, 600))
         self._apply_main_tabs_style()
         self._setup_corner_config_button()
 
