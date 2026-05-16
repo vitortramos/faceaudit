@@ -213,7 +213,13 @@ class GlobalLibraryStorage(ArtifactStorageProtocol):
             if not folder_path.exists():
                 continue
 
-            for path in folder_path.glob(f"*{file_type.extension}"):
+            # rglob percorre subpastas — usuário pode organizar a biblioteca
+            # em subdiretórios (ex: datasets/cfp_frontal/, datasets/cfp_lateral/)
+            # pra facilitar navegação quando há muitos recursos. O path relativo
+            # preserva a hierarquia (ex: "datasets/cfp_frontal/foo.parquet").
+            for path in folder_path.rglob(f"*{file_type.extension}"):
+                if not path.is_file():
+                    continue
                 try:
                     relative = path.relative_to(self._root)
                     found.append(
