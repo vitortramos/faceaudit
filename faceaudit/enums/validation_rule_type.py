@@ -160,10 +160,13 @@ class ValidationRuleType(Enum):
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label
+        # label_pt alias — `label` já está em PT-BR. Mantido por consistência
+        # de API com outros enums do projeto.
+        self.label_pt = label
         self.description = description
 
     def __str__(self) -> str:
-        return self.label
+        return self.label_pt
 
     def to_str(self) -> str:
         return self.value

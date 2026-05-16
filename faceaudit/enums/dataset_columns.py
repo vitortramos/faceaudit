@@ -62,14 +62,17 @@ class DatasetColumns(Enum):
 
     def __init__(self, key: str, label: str, show_in_table: bool, editable: bool, order: int):
         self._value_ = key # A key do DataFrame é o valor real do Enum
-        self.key = key  
+        self.key = key
         self.label = label
+        # label_pt alias — `label` já está em PT-BR. Mantido por consistência
+        # de API com outros enums do projeto.
+        self.label_pt = label
         self.show_in_table = show_in_table
         self.editable = editable
         self.order = order
 
     def __str__(self) -> str:
-        return self.label
+        return self.label_pt
 
     # --- Interface de Serialização ---
 

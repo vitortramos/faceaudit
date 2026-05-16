@@ -31,12 +31,15 @@ class CoralEstimatorType(Enum):
         obj = object.__new__(cls)
         obj._value_ = value
         obj.label = label
+        # label_pt alias preservando o label original (já em PT-BR neste enum).
+        # Mantido por consistência de API com outros enums do projeto.
+        obj.label_pt = label
         obj.description = description
         return obj
 
     def __str__(self) -> str:
         """Retorna o label amigável para exibição em combos e logs."""
-        return self.label
+        return self.label_pt
 
     # --- Interface de Serialização ---
 

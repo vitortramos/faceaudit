@@ -41,6 +41,9 @@ class LogRegGridScoringMetric(Enum):
         obj = object.__new__(cls)
         obj._value_ = value
         obj.label = label
+        # label_pt alias — `label` já está em PT-BR. Mantido por consistência
+        # de API com outros enums do projeto.
+        obj.label_pt = label
         obj.description = description
         return obj
 

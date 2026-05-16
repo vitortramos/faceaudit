@@ -35,6 +35,10 @@ class ScoreBasedStrategyMode(Enum):
     def __init__(self, value: str, label: str, summary: str):
         self._value_ = value
         self.label = label
+        # label_pt alias — labels deste enum são identificadores técnicos
+        # (STANDARD, HARD_IMPOSTORS, ...). Mantido por consistência de
+        # API com outros enums do projeto.
+        self.label_pt = label
         self.summary = summary
 
     @property
@@ -43,7 +47,7 @@ class ScoreBasedStrategyMode(Enum):
         return ScoreModeInfo(self.label, self.summary)
 
     def __str__(self) -> str:
-        return self.label
+        return self.label_pt
 
     # --- Interface de Serialização ---
 

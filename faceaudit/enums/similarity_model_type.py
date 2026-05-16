@@ -12,11 +12,18 @@ class SimilarityModelType(Enum):
     Este enum identifica explicitamente qual família de modelo de similaridade
     a instrução pretende usar, evitando inferência implícita por tipo de DTO
     ou presença/ausência de configuração.
+
+    Estrutura de cada membro:
+    - `value`: chave canônica (persistida em JSON).
+    - `label`: rótulo em inglês técnico (docs/logs).
+    - `label_pt`: rótulo em português para apresentação na UI.
+    - `description`: descrição longa em PT-BR (tooltip/help).
     """
 
     COSINE = (
         "COSINE",
         "Cosine Similarity",
+        "Similaridade Cosseno",
         "Usa similaridade cosseno como função de scoring. "
         "Normalmente não exige treino real de modelo.",
     )
@@ -24,21 +31,19 @@ class SimilarityModelType(Enum):
     PLDA = (
         "PLDA",
         "Probabilistic Linear Discriminant Analysis",
+        "PLDA (Análise Discriminante Linear Probabilística)",
         "Usa um modelo PLDA treinado sobre embeddings e identidades para produzir scores de similaridade.",
     )
 
-    def __init__(self, value: str, label: str, description: str):
+    def __init__(self, value: str, label: str, label_pt: str, description: str):
         self._value_ = value
         self.label = label
+        self.label_pt = label_pt
         self.description = description
 
     def __str__(self) -> str:
-        """Retorna o label amigável para a interface."""
-        return self.label
-
-    # =========================================================================
-    # SERIALIZAÇÃO
-    # =========================================================================
+        """Retorna o label PT-BR para a interface."""
+        return self.label_pt
 
     def to_str(self) -> str:
         """Retorna a chave string persistível."""
@@ -46,9 +51,6 @@ class SimilarityModelType(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> SimilarityModelType:
-        """
-        Reconstrói o enum a partir de string com fallback seguro.
-        """
         if not value:
             return cls.COSINE
 
@@ -65,16 +67,12 @@ class SimilarityModelType(Enum):
                     return item
             return cls.COSINE
 
-    # =========================================================================
-    # HELPERS PARA UI
-    # =========================================================================
-
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:
-        """Útil para combos simples: [(value, label), ...]."""
-        return [(item.value, item.label) for item in cls]
+        """Útil para combos simples: [(value, label_pt), ...]."""
+        return [(item.value, item.label_pt) for item in cls]
 
     @classmethod
     def choices_with_description(cls) -> List[Tuple[str, str, str]]:
-        """Útil para UI com tooltips: [(value, label, description), ...]."""
-        return [(item.value, item.label, item.description) for item in cls]
+        """Útil para UI com tooltips: [(value, label_pt, description), ...]."""
+        return [(item.value, item.label_pt, item.description) for item in cls]
