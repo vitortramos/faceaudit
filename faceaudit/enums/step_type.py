@@ -17,6 +17,20 @@ class StepType(Enum):
     RADIAL_GAUSSIANIZATION = "RADIAL_GAUSSIANIZATION"
     UNKNOWN     = "UNKNOWN"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "RAW":         "Bruto",
+            "WHITENING":   "Branqueamento",
+            "CORAL":       "CORAL",
+            "LDA":         "LDA",
+            "L2_NORM":     "Normalização L2",
+            "CENTERING":   "Centralização",
+            "AGGREGATION": "Agregação",
+            "RADIAL_GAUSSIANIZATION": "Gaussianização Radial",
+            "UNKNOWN":     "Desconhecido",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o nome técnico da etapa."""
         return self.value

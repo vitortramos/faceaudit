@@ -11,6 +11,13 @@ class LRModelType(Enum):
     KDE_STRATEGY = "KDEStrategy"
     # Adicione outros modelos de LR aqui conforme forem criados (ex: WEIBULL_STRATEGY)
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "PLDAStrategy": "Estratégia PLDA",
+            "KDEStrategy":  "Estratégia KDE",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o valor identificador da estratégia (ex: 'PLDAStrategy')."""
         return self.value

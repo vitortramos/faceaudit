@@ -18,6 +18,13 @@ class DatasetBalancingSelection(Enum):
     RANDOM = "random"
     BY_QUALITY = "by_quality"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "random":     "Aleatório",
+            "by_quality": "Por qualidade",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         return self.value
 

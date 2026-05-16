@@ -58,6 +58,31 @@ class StrategyResourceType(Enum):
     ARTIFACT = "ARTIFACT"
     UNKNOWN = "UNKNOWN"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "DATASET":                  "Dataset",
+            "PIPELINE_CONFIG":          "Configuração de Pipeline",
+            "SPLIT_CONFIG":             "Configuração de Divisão",
+            "MINING_CONFIG":            "Configuração de Mineração",
+            "MERGE_CONFIG":             "Configuração de Mesclagem",
+            "SIMILARITY_MODEL_CONFIG":  "Configuração de Modelo de Similaridade",
+            "CALIBRATION_MODEL_CONFIG": "Configuração de Calibrador",
+            "TRAINED_PIPELINE":         "Pipeline Treinado",
+            "TRAINED_SIMILARITY_MODEL": "Modelo de Similaridade Treinado",
+            "TRAINED_CALIBRATION_MODEL":"Calibrador Treinado",
+            "SIMILARITY_SCORES":        "Scores de Similaridade",
+            "CALIBRATED_SCORES":        "Scores Calibrados (log-LR)",
+            "TRAJECTORY_DATA":          "Trajetória de Pipeline",
+            "VALIDATION_RESULT":        "Resultado de Validação",
+            "CASEWORK_VISUALIZATION":   "Visualização Forense",
+            "HUBNESS_REPORT":           "Relatório de Hubness",
+            "HUBNESS_ABLATION_RESULT":  "Resultado de Ablação Hubness",
+            "DATASET_STATS":            "Estatísticas do Dataset",
+            "ARTIFACT":                 "Artefato",
+            "UNKNOWN":                  "Desconhecido",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o nome técnico do tipo de recurso."""
         return self.value

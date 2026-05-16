@@ -26,3 +26,11 @@ class LocalizationMode(str, Enum):
     REWRITE_RELATIVE = "rewrite_relative"
     COPY_ORIGINALS = "copy_originals"
     REBASE_PREFIX = "rebase_prefix"
+
+    @property
+    def label_pt(self) -> str:
+        return {
+            "rewrite_relative": "Reescrever como relativo (sem copiar)",
+            "copy_originals":   "Copiar originais (portátil)",
+            "rebase_prefix":    "Substituir prefixo de path",
+        }.get(self.value, self.value)

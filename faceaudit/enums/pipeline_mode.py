@@ -20,6 +20,13 @@ class PipelineMode(Enum):
     LINEAR = "linear"
     DUAL = "dual"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "linear": "Linear (sem adaptação)",
+            "dual":   "Dual (source + target, com adaptação)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o identificador textual do modo."""
         return self.value

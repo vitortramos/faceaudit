@@ -20,6 +20,17 @@ class DatasetSplitMode(Enum):
     BY_INDEX_LIST = "by_index_list"
     BY_SUPERVISED_ADAPTATION = "by_supervised_adaptation"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "by_identity_ratio":       "Por identidade (proporção)",
+            "by_identity_list":        "Por identidade (lista explícita)",
+            "by_identity_absolute":    "Por identidade (contagem absoluta)",
+            "by_index_ratio":          "Por índice (proporção)",
+            "by_index_list":           "Por índice (lista explícita)",
+            "by_supervised_adaptation": "Adaptação supervisionada (source/target)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o identificador textual do modo."""
         return self.value

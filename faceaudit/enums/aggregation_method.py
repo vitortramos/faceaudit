@@ -30,6 +30,13 @@ class AggregationMethod(Enum):
     """
 
     @property
+    def label_pt(self) -> str:
+        return {
+            "centroid":      "Centróide Global (template único)",
+            "combinatorial": "Combinatória (múltiplos templates sintéticos)",
+        }.get(self.value, self.value)
+
+    @property
     def info(self) -> AggregationMethodInfo:
         """Retorna metadados ricos para interface e relatórios."""
         if self is AggregationMethod.CENTROID:

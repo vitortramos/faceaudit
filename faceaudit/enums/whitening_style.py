@@ -13,6 +13,13 @@ class WhiteningStyle(Enum):
     PCA = "pca"
     ZCA = "zca"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "pca": "PCA (rotação aos eixos principais)",
+            "zca": "ZCA (mantém orientação original)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o valor técnico em minúsculas (ex: 'pca')."""
         return self.value

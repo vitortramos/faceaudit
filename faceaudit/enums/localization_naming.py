@@ -23,3 +23,11 @@ class NamingStrategy(str, Enum):
     PRESERVE = "preserve"
     HASH = "hash"
     BY_IDENTITY = "by_identity"
+
+    @property
+    def label_pt(self) -> str:
+        return {
+            "preserve":    "Preservar nome original (sufixar em colisão)",
+            "hash":        "Hash SHA-256 (16 chars) como nome",
+            "by_identity": "Subpasta por identidade",
+        }.get(self.value, self.value)

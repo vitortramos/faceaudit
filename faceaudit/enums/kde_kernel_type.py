@@ -20,6 +20,16 @@ class KDEKernelType(Enum):
     LINEAR = "linear"
 
     @property
+    def label_pt(self) -> str:
+        return {
+            "gaussian":     "Gaussiano (Normal)",
+            "tophat":       "Tophat (Box)",
+            "epanechnikov": "Epanechnikov (Parabólico)",
+            "exponential":  "Exponencial",
+            "linear":       "Linear",
+        }.get(self.value, self.value)
+
+    @property
     def info(self) -> KernelTypeInfo:
         """Retorna metadados descritivos e o mapeamento para o scikit-learn."""
         if self is KDEKernelType.GAUSSIAN:

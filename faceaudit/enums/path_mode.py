@@ -27,3 +27,10 @@ class PathMode(str, Enum):
     """
     ABSOLUTE = "absolute"
     RELATIVE = "relative"
+
+    @property
+    def label_pt(self) -> str:
+        return {
+            "absolute": "Absoluto",
+            "relative": "Relativo (portátil)",
+        }.get(self.value, self.value)

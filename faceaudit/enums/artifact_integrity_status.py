@@ -27,6 +27,16 @@ class ArtifactIntegrityStatus(Enum):
     ORPHAN = "ORPHAN"
     """Arquivo presente em subpasta auditada, mas não referenciado por nenhuma estratégia do projeto."""
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "OK":               "Íntegro",
+            "MODIFIED":         "Modificado (hash mudou)",
+            "MISSING":          "Ausente",
+            "HASH_UNAVAILABLE": "Hash indisponível",
+            "ORPHAN":           "Órfão (não referenciado)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         return self.value
 

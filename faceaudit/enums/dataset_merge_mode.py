@@ -18,6 +18,15 @@ class DatasetMergeMode(Enum):
     REPLACE_BY_INDEX_LIST = "replace_by_index_list"
     UPDATE_BY_INDEX_LIST = "update_by_index_list"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "concat":                "Concatenar",
+            "concat_preserve_order": "Concatenar (preservar ordem)",
+            "replace_by_index_list": "Substituir por lista de índices",
+            "update_by_index_list":  "Atualizar por lista de índices",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         """Retorna o identificador textual do modo."""
         return self.value

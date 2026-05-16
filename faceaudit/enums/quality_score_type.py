@@ -55,11 +55,14 @@ class QualityScoreType(Enum):
         Note: O valor do Enum (self.value) será a tupla inteira.
         """
         self.display_name = display_name
+        # label_pt alias — `display_name` já está em PT-BR. Mantido por
+        # consistência de API com outros enums do projeto.
+        self.label_pt = display_name
         self.value_range = value_range
         self._extractor = extractor
 
     def __str__(self) -> str:
-        return self.display_name
+        return self.label_pt
 
     def extract_from(self, face_info: Any) -> Optional[float]:
         """Extrai o valor numérico do objeto FaceInfo de forma segura."""

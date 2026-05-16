@@ -18,6 +18,13 @@ class HubnessAblationMode(Enum):
     BY_QUANTITY = "by_quantity"
     BY_POSE = "by_pose"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "by_quantity": "Por quantidade (top-N por qualidade)",
+            "by_pose":     "Por pose (top-N mais frontais)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         return self.value
 

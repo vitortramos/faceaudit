@@ -13,6 +13,11 @@ class LRMethodType(Enum):
     SCORE_BASED = "Baseada no escore de similaridade"
     FEATURE_BASED = "Baseada no vetor de características"
 
+    @property
+    def label_pt(self) -> str:
+        """Alias para `value` (já em PT-BR). Mantido por consistência de API."""
+        return self.value
+
     def __str__(self) -> str:
         """Retorna a descrição amigável do método."""
         return self.value

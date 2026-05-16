@@ -21,6 +21,14 @@ class DatasetBalancingMode(Enum):
     FLOOR_AND_CAP = "floor_and_cap"
     AUTO_MIN_BALANCE = "auto_min_balance"
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "cap_only":         "Só teto (limita máximo por identidade)",
+            "floor_and_cap":    "Piso e teto (descarta identidades pequenas)",
+            "auto_min_balance": "Auto-mínimo (balanceamento perfeito)",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         return self.value
 

@@ -17,6 +17,13 @@ class ScoreMetric(Enum):
     EUCLIDEAN = "euclidean"
 
     @property
+    def label_pt(self) -> str:
+        return {
+            "cosine":    "Similaridade de Cosseno",
+            "euclidean": "Distância Euclidiana (L2)",
+        }.get(self.value, self.value)
+
+    @property
     def info(self) -> ScoreMetricInfo:
         """Retorna metadados ricos para UI e Laudos Técnicos."""
         if self is ScoreMetric.COSINE:

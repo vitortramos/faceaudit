@@ -12,6 +12,15 @@ class ValidationSeverity(Enum):
     CRITICAL = "critical" # Vermelho: Erro Matemático ou Lógico (Bloqueia execução)
     NEUTRAL = "neutral"   # Cinza: Estado inicial / Aguardando dados
 
+    @property
+    def label_pt(self) -> str:
+        return {
+            "ok":       "OK",
+            "warning":  "Atenção",
+            "critical": "Crítico",
+            "neutral":  "Neutro",
+        }.get(self.value, self.value)
+
     def __str__(self) -> str:
         return self.value
 

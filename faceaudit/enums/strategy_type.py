@@ -14,6 +14,13 @@ class StrategyType(Enum):
     KDE = "KDE"
 
     @property
+    def label_pt(self) -> str:
+        return {
+            "PLDA": "Estratégia PLDA",
+            "KDE":  "Estratégia KDE",
+        }.get(self.value, self.value)
+
+    @property
     def strategy_class(self) -> Type['StrategyManagerProtocol']:
         """Lookup do Manager associado — removido na Fase 3 da migração.
         Os managers (PLDAManager/KDEManager) foram movidos para

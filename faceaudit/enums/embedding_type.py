@@ -10,6 +10,11 @@ class DistanceMetric(Enum):
     COSINE = "Similaridade de Cosseno"
     EUCLIDEAN = "Distância Euclidiana"
 
+    @property
+    def label_pt(self) -> str:
+        """Alias para `value` (já em PT-BR). Mantido por consistência de API."""
+        return self.value
+
     def to_str(self) -> str:
         return self.name
 
@@ -55,6 +60,9 @@ class EmbeddingType(Enum):
                  default_threshold: float,
                  extractor: Callable[[Any], Any]):
         self.display_name = display_name
+        # label_pt alias — `display_name` já está em PT-BR. Mantido por
+        # consistência de API com outros enums do projeto.
+        self.label_pt = display_name
         self.architecture = architecture
         self.dimensions = dimensions
         self.distance_metric = distance_metric
