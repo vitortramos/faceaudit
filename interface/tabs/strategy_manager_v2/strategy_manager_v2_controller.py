@@ -4347,32 +4347,46 @@ class StrategyManagerV2Controller(QtCore.QObject):
         skipped_conflicts: List[str] = []
         failed: List[str] = []
 
+        renamed_in_conflict: List[tuple[str, str]] = []  # (original, sufixado)
+
         for key, refs in selections.items():
             if not refs:
                 continue
             artifact_type, id_kwarg = spec_by_key[key]
             for ref in refs:
-                resource_id = Path(ref.path).stem
+                # `resource_id` desejado = stem do arquivo da biblioteca.
+                # Quando a biblioteca tem subpastas com mesmos stems
+                # (ex: grupo_a/foo.parquet + grupo_b/foo.parquet), os dois
+                # têm `desired_id="foo"` e o segundo colidiria no projeto.
+                # Aqui auto-sufixamos numericamente (foo, foo_2, foo_3...)
+                # pra preservar ambos como recursos distintos. O `name`
+                # do recurso fica como o stem original (sem sufixo) —
+                # o user pode editar depois pra desambiguar.
+                desired_id = Path(ref.path).stem
                 source_path = (lib_root / ref.path) if lib_root else None
                 if source_path is None or not source_path.exists():
-                    failed.append(f"{resource_id} (arquivo de origem ausente)")
+                    failed.append(f"{desired_id} (arquivo de origem ausente)")
                     continue
 
-                # Detecta conflito: destino calculado pelo template do tipo
-                # mapeado pro projeto. Se já existe, pula sem sobrescrever.
+                # Detecta conflito de destino físico e resolve por sufixo.
                 try:
                     from faceaudit.enums.strategy_file_type import (
                         StrategyFileType,
                     )
                     dest_file_type = StrategyFileType.for_artifact(artifact_type)
+                    resource_id = self._resolve_unique_resource_id(
+                        desired_stem=desired_id,
+                        dest_file_type=dest_file_type,
+                        id_kwarg=id_kwarg,
+                    )
                     dest_rel = dest_file_type.build_path(**{id_kwarg: resource_id})
                     dest_abs = self._project.storage.project_root / dest_rel
                 except Exception:
+                    resource_id = desired_id
                     dest_abs = None
 
-                if dest_abs is not None and dest_abs.exists():
-                    skipped_conflicts.append(resource_id)
-                    continue
+                if resource_id != desired_id:
+                    renamed_in_conflict.append((desired_id, resource_id))
 
                 try:
                     if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
@@ -4406,6 +4420,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
         parts: List[str] = []
         if added:
             parts.append(f"✓ {len(added)} adicionado(s): {', '.join(added)}")
+        if renamed_in_conflict:
+            renames_str = ", ".join(
+                f"{orig}→{final}" for orig, final in renamed_in_conflict
+            )
+            parts.append(
+                f"ℹ {len(renamed_in_conflict)} renomeado(s) por conflito de "
+                f"nome no projeto: {renames_str}"
+            )
         if skipped_conflicts:
             parts.append(
                 f"⚠ {len(skipped_conflicts)} pulado(s) (já existem no "
@@ -4431,6 +4453,52 @@ class StrategyManagerV2Controller(QtCore.QObject):
         msg.exec()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _resolve_unique_resource_id(
+        self,
+        desired_stem: str,
+        dest_file_type,
+        id_kwarg: str,
+        max_attempts: int = 999,
+    ) -> str:
+        """Resolve um resource_id que não colide com arquivos existentes no projeto.
+
+        Quando dois recursos da biblioteca têm o mesmo stem (ex:
+        `grupo_a/foo.parquet` e `grupo_b/foo.parquet`), o segundo colide
+        com o primeiro no destino. Aqui auto-sufixamos numericamente
+        (foo, foo_2, foo_3, ...) até achar um nome livre. Mantém ambos
+        os recursos como entradas distintas no projeto sem precisar
+        interromper o user.
+
+        O `name` do recurso (em `StrategyResource.name`) continua sendo
+        o stem ORIGINAL (sem sufixo) — o user vê "foo" duas vezes na
+        árvore mas o `id` (DS-xxxxxxxx) e o `resource_id` (com sufixo)
+        os diferenciam.
+
+        Args:
+            desired_stem: stem original (ex: "foo").
+            dest_file_type: StrategyFileType pra calcular o path.
+            id_kwarg: nome do kwarg do template ("dataset_id", "config_id").
+            max_attempts: limite de sufixos antes de abortar (segurança).
+
+        Returns:
+            Stem único — `desired_stem` se livre, senão `{stem}_2`, `_3`, etc.
+
+        Raises:
+            RuntimeError se exceder `max_attempts` (cenário patológico).
+        """
+        project_root = self._project.storage.project_root
+        candidate = desired_stem
+        for attempt in range(1, max_attempts + 1):
+            rel = dest_file_type.build_path(**{id_kwarg: candidate})
+            if not (project_root / rel).exists():
+                return candidate
+            candidate = f"{desired_stem}_{attempt + 1}"
+        raise RuntimeError(
+            f"Não foi possível resolver nome único pra '{desired_stem}' "
+            f"em {max_attempts} tentativas — diretório com colisões "
+            "incompatíveis."
+        )
 
     def _compute_and_save_dataset_stats(self, abs_path: Path) -> None:
         """

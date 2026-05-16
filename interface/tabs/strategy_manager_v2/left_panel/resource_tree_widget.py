@@ -414,9 +414,23 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     ) -> None:
         path_str = res.artifact_ref.path if res.artifact_ref else "(sem arquivo)"
         display_name = res.name if res.name else res.resource_id
-        child = QtWidgets.QTreeWidgetItem([display_name])
+        # Display padrão: `nome (ID)`. O ID (DS-xxxxxxxx) sempre acompanha
+        # o nome — garante distinguibilidade quando há recursos com mesmo
+        # nome em pastas diferentes. Pré-Fase 2, id era None — fallback
+        # gracioso pra só name pra recursos sem id.
+        if res.id:
+            display_label = f"{display_name}  ({res.id})"
+        else:
+            display_label = display_name
+        child = QtWidgets.QTreeWidgetItem([display_label])
         child.setData(0, QtCore.Qt.ItemDataRole.UserRole, res)
-        child.setToolTip(0, f"ID: {res.resource_id}\nPath: {path_str}")
+        child.setToolTip(
+            0,
+            f"ID técnico: {res.id or '(sem id)'}\n"
+            f"Resource ID (legado): {res.resource_id}\n"
+            f"Nome: {res.name}\n"
+            f"Path: {path_str}",
+        )
         parent_item.addChild(child)
 
     def _on_item_clicked(self, item: QtWidgets.QTreeWidgetItem, _col: int) -> None:
