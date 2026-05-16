@@ -335,9 +335,17 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
         ]
 
         if self.selection_criterion == DatasetBalancingSelection.BY_QUALITY:
+            # Usa `.name` (string identificadora — "FIQA"/"OFIQ"/"SERFIQ"/
+            # "EMBEDDING_NORM"), NÃO `.value`: `QualityScoreType` é um
+            # Smart Enum cujo `value` é a tupla `(display_name, range,
+            # extractor_lambda)` definida no __init__. Antes, .value
+            # vazava o lambda pro `params` e quebrava o save da
+            # definition em JSON ("Object of type function is not JSON
+            # serializable" — visto em invalidação cascata de projetos
+            # antigos com BY_QUALITY).
             metric_str = (
-                self.quality_metric.value
-                if hasattr(self.quality_metric, "value")
+                self.quality_metric.name
+                if hasattr(self.quality_metric, "name")
                 else str(self.quality_metric)
             )
             cfgs.append(ValidationRuleConfig(
