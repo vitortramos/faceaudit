@@ -191,7 +191,7 @@ class InstructionListWidget(QtWidgets.QWidget):
         self.list_widget.setDefaultDropAction(QtCore.Qt.DropAction.MoveAction)
         self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
-        self.list_widget.setMinimumWidth(220)
+        self.list_widget.setMinimumWidth(160)
         # Espaçamento confortável para itens com sub-linha.
         self.list_widget.setSpacing(1)
         # Cor de seleção clara — o texto do item pode ser verde (executado),

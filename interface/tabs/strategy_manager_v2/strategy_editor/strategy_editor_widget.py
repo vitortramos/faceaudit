@@ -125,7 +125,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         # projeto. Sem datasets, fica desabilitado com placeholder.
         self.combo_embedding_column = QtWidgets.QComboBox()
         self.combo_embedding_column.setStyleSheet("font-size: 11px;")
-        self.combo_embedding_column.setMinimumWidth(220)
+        self.combo_embedding_column.setMinimumWidth(160)
         self.combo_embedding_column.setToolTip(
             "Coluna de embedding usada por toda a estratégia. "
             "Apenas datasets que tenham essa coluna ficam disponíveis nas "
@@ -161,13 +161,16 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             results_panel = InstructionResultsPanel()
 
             splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-            splitter.setChildrenCollapsible(False)
+            # Permite colapsar painéis em telas pequenas (MacBook 14").
+            # Usuário arrasta o handle pra "esconder" um painel.
+            splitter.setChildrenCollapsible(True)
             splitter.addWidget(instr_list)
             splitter.addWidget(config_panel)
             splitter.addWidget(results_panel)
-            # Tamanhos default: lista compacta / config médio / resultados largo
-            # (gráficos precisam de espaço).
-            splitter.setSizes([200, 400, 600])
+            # Tamanhos default: lista compacta / config médio / resultados
+            # largo (gráficos precisam de espaço). Reduzidos pra caber
+            # em MacBook 14" (1512px - 220 left panel = ~1290px).
+            splitter.setSizes([180, 340, 500])
 
             self._tabs.addTab(splitter, phase_label)
             self._phase_widgets[phase_key] = (instr_list, config_panel, results_panel)

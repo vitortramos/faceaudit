@@ -49,7 +49,9 @@ class LeftPanelWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(220)
+        # Mínimo enxuto pra caber em telas pequenas (MacBook 14"
+        # 1512px). O painel ainda é colapsável via Cmd+B.
+        self.setMinimumWidth(180)
         self.setMaximumWidth(380)
         self._project_root: Optional[Path] = None
         self._definitions: List[LRStrategyDefinition] = []
