@@ -149,12 +149,12 @@ class ValidationRuleType(Enum):
         "ou similar). Usado em HUBNESS_ANALYSIS e HUBNESS_ABLATION.",
     )
 
-    FUSED_PAIR_COMPATIBILITY = (
-        "FUSED_PAIR_COMPATIBILITY",
-        "Compatibilidade de pares (SCORE_FUSION)",
-        "Verifica que dois SimilarityScoreDataset compartilham o mesmo "
-        "conjunto de pares (probe.face_hash + reference.face_hash) — "
-        "pré-condição pra fusão score-level via SCORE_FUSION.",
+    SCORE_VECTOR_PAIR_COMPATIBILITY = (
+        "SCORE_VECTOR_PAIR_COMPATIBILITY",
+        "Compatibilidade de pares (SCORE_VECTORIZATION)",
+        "Verifica que dois ou mais SimilarityScoreDataset compartilham o "
+        "mesmo conjunto de pares (probe.face_hash + reference.face_hash) — "
+        "pré-condição pra combinar via SCORE_VECTORIZATION.",
     )
 
     def __init__(self, value: str, label: str, description: str):

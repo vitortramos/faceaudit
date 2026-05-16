@@ -121,84 +121,55 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         return np.asarray([float(item.raw_score) for item in self.items], dtype=np.float64)
 
     @property
-    def is_fused(self) -> bool:
-        """True quando o dataset foi produzido por SCORE_FUSION.
+    def is_score_vector(self) -> bool:
+        """True quando o dataset foi produzido por SCORE_VECTORIZATION.
 
-        Equivalente a `bool(self.metadata.get("is_fused"))` — propriedade
+        Equivalente a `bool(self.metadata.get("is_score_vector"))` — propriedade
         existe pra evitar typos no literal de chave em pontos críticos
         (executors de calibração e score calibration).
         """
-        return bool(self.metadata.get("is_fused", False))
+        return bool(self.metadata.get("is_score_vector", False))
 
     # Chave canônica do matrix `(N, D)` armazenado em `dataset.metadata`.
-    # Compartilhada entre o produtor (ScoreFusionInstructionExecutor) e
-    # consumidores (extract_fused_features, to_parquet, loader).
-    FUSED_FEATURES_MATRIX_KEY = "fused_features_matrix"
+    # Compartilhada entre o produtor (ScoreVectorizationInstructionExecutor) e
+    # consumidores (extract_score_vector, to_parquet, loader).
+    SCORE_VECTOR_MATRIX_KEY = "score_vector_matrix"
 
-    # Chave legada — mantida apenas para hidratar pickles/datasets antigos
-    # que armazenavam o vetor por sample em vez de uma matriz contígua.
-    _FUSED_FEATURES_LEGACY_SAMPLE_KEY = "fused_features"
+    def extract_score_vector(self) -> np.ndarray:
+        """Matriz `(N, D)` do vetor de scores por par (apenas para datasets
+        `is_score_vector`).
 
-    def extract_fused_features(self) -> np.ndarray:
-        """Matriz `(N, D)` de features fundidas (apenas para datasets `is_fused`).
-
-        Storage canônico (a partir do refactor #197): numpy 2D contíguo em
-        `self.metadata["fused_features_matrix"]` — uma alocação só pra todo
+        Storage canônico: numpy 2D contíguo em
+        `self.metadata["score_vector_matrix"]` — uma alocação só pra todo
         o dataset.
 
-        Fallback retrocompat: itera os samples lendo
-        `sample.metadata["fused_features"]` (formato legado de cada sample
-        carregar uma `List[float]`). Quando esse caminho é usado, a matriz
-        reconstruída é cacheada em `dataset.metadata` para que próximas
-        chamadas vejam o storage canônico.
-
-        Levanta `ValueError` se o dataset não está marcado como fundido
-        ou se nem o storage canônico nem o legado estão disponíveis.
+        Levanta `ValueError` se o dataset não está marcado como vetorizado
+        ou se o storage canônico não está disponível.
         """
-        if not self.is_fused:
+        if not self.is_score_vector:
             raise ValueError(
-                "extract_fused_features() requer dataset.metadata['is_fused']=True; "
-                "este dataset não foi produzido por SCORE_FUSION."
+                "extract_score_vector() requer dataset.metadata['is_score_vector']=True; "
+                "este dataset não foi produzido por SCORE_VECTORIZATION."
             )
 
-        cached = self.metadata.get(self.FUSED_FEATURES_MATRIX_KEY)
-        if cached is not None:
-            arr = np.asarray(cached, dtype=np.float64)
-            if arr.ndim != 2:
-                raise ValueError(
-                    f"{self.FUSED_FEATURES_MATRIX_KEY} deveria ser matriz "
-                    f"(N, D); got shape={arr.shape}."
-                )
-            if arr.shape[0] != len(self.items):
-                raise ValueError(
-                    f"{self.FUSED_FEATURES_MATRIX_KEY} tem N={arr.shape[0]} "
-                    f"mas dataset tem {len(self.items)} items — out of sync."
-                )
-            return arr
-
-        # Caminho legado — percorre samples uma vez e cacheia o resultado
-        # em metadata pro próximo extract não precisar iterar de novo.
-        legacy_rows: list = []
-        for sample in self.items:
-            f = (
-                sample.metadata.get(self._FUSED_FEATURES_LEGACY_SAMPLE_KEY)
-                if sample.metadata else None
+        cached = self.metadata.get(self.SCORE_VECTOR_MATRIX_KEY)
+        if cached is None:
+            raise ValueError(
+                "Dataset marcado como is_score_vector mas não tem "
+                f"'{self.SCORE_VECTOR_MATRIX_KEY}' em metadata."
             )
-            if f is None:
-                raise ValueError(
-                    "Dataset marcado como is_fused mas não tem "
-                    f"'{self.FUSED_FEATURES_MATRIX_KEY}' em metadata, nem "
-                    f"'{self._FUSED_FEATURES_LEGACY_SAMPLE_KEY}' em sample."
-                )
-            legacy_rows.append(f)
-        arr = np.asarray(legacy_rows, dtype=np.float64)
+
+        arr = np.asarray(cached, dtype=np.float64)
         if arr.ndim != 2:
             raise ValueError(
-                f"fused_features deveria produzir matriz (N, D); got shape={arr.shape}."
+                f"{self.SCORE_VECTOR_MATRIX_KEY} deveria ser matriz "
+                f"(N, D); got shape={arr.shape}."
             )
-        # Promove pro storage canônico — próxima leitura é O(1) e libera
-        # as Lists Python por sample para o GC.
-        self.metadata[self.FUSED_FEATURES_MATRIX_KEY] = arr
+        if arr.shape[0] != len(self.items):
+            raise ValueError(
+                f"{self.SCORE_VECTOR_MATRIX_KEY} tem N={arr.shape[0]} "
+                f"mas dataset tem {len(self.items)} items — out of sync."
+            )
         return arr
 
     @property
@@ -292,23 +263,23 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             for s in self.items
         )
 
-        # Datasets fundidos (SCORE_FUSION) carregam uma matriz `(N, D)` em
-        # `metadata["fused_features_matrix"]`. Persistimos como D colunas
-        # `fused_feature_0..D-1` (uma por sistema combinado) — preserva
-        # type-safety do parquet e evita storage opaco BLOB. O loader
-        # detecta as colunas via prefixo + flag no schema metadata e
-        # reconstrói o matrix na hora.
-        fused_matrix: Optional[np.ndarray] = None
-        if self.is_fused:
-            cached = self.metadata.get(self.FUSED_FEATURES_MATRIX_KEY)
+        # Datasets vetorizados (SCORE_VECTORIZATION) carregam uma matriz
+        # `(N, D)` em `metadata["score_vector_matrix"]`. Persistimos como
+        # D colunas `score_vector_0..D-1` (uma por sistema combinado) —
+        # preserva type-safety do parquet e evita storage opaco BLOB.
+        # O loader detecta as colunas via prefixo + flag no schema
+        # metadata e reconstrói o matrix na hora.
+        sv_matrix: Optional[np.ndarray] = None
+        if self.is_score_vector:
+            cached = self.metadata.get(self.SCORE_VECTOR_MATRIX_KEY)
             if cached is not None:
-                fused_matrix = np.asarray(cached, dtype=np.float64)
-                if fused_matrix.ndim != 2 or fused_matrix.shape[0] != n:
+                sv_matrix = np.asarray(cached, dtype=np.float64)
+                if sv_matrix.ndim != 2 or sv_matrix.shape[0] != n:
                     raise ValueError(
-                        f"to_parquet: {self.FUSED_FEATURES_MATRIX_KEY} tem "
-                        f"shape {fused_matrix.shape}; esperado (N={n}, D)."
+                        f"to_parquet: {self.SCORE_VECTOR_MATRIX_KEY} tem "
+                        f"shape {sv_matrix.shape}; esperado (N={n}, D)."
                     )
-        fused_dim = int(fused_matrix.shape[1]) if fused_matrix is not None else 0
+        sv_dim = int(sv_matrix.shape[1]) if sv_matrix is not None else 0
 
         fields = [
             ("similarity_score_dataset_name", pa.string()),
@@ -322,26 +293,26 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             fields.insert(1, ("similarity_score_dataset_description", pa.string()))
         if has_log_lr:
             fields.append(("log_lr", pa.float64()))
-        for d in range(fused_dim):
-            fields.append((f"fused_feature_{d}", pa.float64()))
+        for d in range(sv_dim):
+            fields.append((f"score_vector_{d}", pa.float64()))
 
         # Schema metadata — flags do dataset que não cabem como coluna
         # (constantes pra todas as linhas). `is_casework` é crítico:
         # sem persistir explicitamente, o loader cai numa inferência
         # frágil baseada em `all(same_person is None)`, que pode falhar
         # silenciosamente (pd.NA vs None, valores residuais, etc).
-        # `is_fused` segue o mesmo padrão — sem ele, o loader não saberia
-        # reconstruir `metadata["fused_features_matrix"]` mesmo encontrando
+        # `is_score_vector` segue o mesmo padrão — sem ele, o loader não saberia
+        # reconstruir `metadata["score_vector_matrix"]` mesmo encontrando
         # as colunas (poderiam ser interpretadas como features arbitrárias).
         schema_metadata = {}
         if bool(self.metadata.get("is_casework", False)):
             schema_metadata[b"faceaudit:is_casework"] = b"true"
-        if self.is_fused:
-            schema_metadata[b"faceaudit:is_fused"] = b"true"
-            schema_metadata[b"faceaudit:fused_dim"] = str(fused_dim).encode()
-            sources = self.metadata.get("fused_source_resources")
+        if self.is_score_vector:
+            schema_metadata[b"faceaudit:is_score_vector"] = b"true"
+            schema_metadata[b"faceaudit:score_vector_dim"] = str(sv_dim).encode()
+            sources = self.metadata.get("score_vector_source_resources")
             if isinstance(sources, (list, tuple)):
-                schema_metadata[b"faceaudit:fused_sources"] = ",".join(
+                schema_metadata[b"faceaudit:score_vector_sources"] = ",".join(
                     str(s) for s in sources
                 ).encode()
         schema = pa.schema(fields, metadata=schema_metadata or None)
@@ -406,10 +377,10 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                         )
                     if has_log_lr:
                         cols["log_lr"] = pa.array(log_lr_arr, type=pa.float64())
-                    if fused_matrix is not None:
-                        chunk_block = fused_matrix[chunk_start:chunk_end]
-                        for d in range(fused_dim):
-                            cols[f"fused_feature_{d}"] = pa.array(
+                    if sv_matrix is not None:
+                        chunk_block = sv_matrix[chunk_start:chunk_end]
+                        for d in range(sv_dim):
+                            cols[f"score_vector_{d}"] = pa.array(
                                 chunk_block[:, d], type=pa.float64()
                             )
 

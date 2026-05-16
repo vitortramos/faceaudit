@@ -271,13 +271,13 @@ alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 |---|---|
 | `SIMILARITY_MODEL_TRAINING` | Prepara/treina modelo de similaridade. Cosseno (stateless) ou PLDA (SIMPLE via SpeechBrain ou TWO_COVARIANCE em forma fechada Brümmer-de Villiers 2010) |
 | `SIMILARITY_SCORING` | Aplica modelo treinado a um dataset (self-comparison) ou par (cross-comparison); produz `SimilarityScoreDataset` |
-| `SCORE_FUSION` | **Score-level fusion** (Brümmer & du Preez 2006): combina dois ou mais `SimilarityScoreDataset` (mesmos pares) em features multivariadas para calibrador 2D+ |
+| `SCORE_VECTORIZATION` | **Score-level combination** (Brümmer & du Preez 2006): combina dois ou mais `SimilarityScoreDataset` (mesmos pares) em features multivariadas para calibrador 2D+ |
 
 #### Calibração
 
 | Tipo | Função |
 |---|---|
-| `CALIBRATION_MODEL_TRAINING` | Treina calibrador a partir de scores + labels. Famílias: **Logistic Regression** (com GridSearch e suporte a features multivariadas pós-fusion), **KDE** (com Fisher transform e GridSearch de bandwidth), **Bi-Gaussianized** (Morrison 2024, com variante `KDE_SMOOTHED` própria do projeto para eliminar stairsteps) |
+| `CALIBRATION_MODEL_TRAINING` | Treina calibrador a partir de scores + labels. Famílias: **Logistic Regression** (com GridSearch e suporte a features multivariadas pós-vectorization), **KDE** (com Fisher transform e GridSearch de bandwidth), **Bi-Gaussianized** (Morrison 2024, com variante `KDE_SMOOTHED` própria do projeto para eliminar stairsteps) |
 | `SCORE_CALIBRATION` | Aplica calibrador treinado a um `SimilarityScoreDataset`, produz log-LR por par |
 
 #### Avaliação forense
@@ -320,7 +320,7 @@ Antes de executar, cada instrução passa por validação em 4 estágios:
    `DATASET_OVERLAP_REQUIRED`, `MAX_SAMPLES_WARNING`).
 3. **Dinâmica** — regras intrínsecas que não fazem sentido desabilitar
    (`MODEL_FITTED`, `EMBEDDING_DIM_MATCHES_MODEL`, `SCORE_CALIBRATION_STATE`,
-   `DUAL_PIPELINE_SUBSEQUENCE`, `FUSED_PAIR_COMPATIBILITY`).
+   `DUAL_PIPELINE_SUBSEQUENCE`, `SCORE_VECTOR_PAIR_COMPATIBILITY`).
 4. **Executor-specific** — checagens hard-coded por executor.
 
 ### Comparação de Estratégias
@@ -398,7 +398,7 @@ A implementação dos calibradores e do framework de avaliação segue literatur
 forense estabelecida:
 
 - **Brümmer & du Preez (2006)** — *Application Independent Evaluation of
-  Speaker Detection* (Cllr, score fusion).
+  Speaker Detection* (Cllr, score-level combination).
 - **Brümmer & de Villiers (2010)** — PLDA two-covariance, forma fechada.
 - **Lyu & Simoncelli (2009)** — *Nonlinear Extraction of Independent
   Components of Natural Images Using Radial Gaussianization*.
@@ -417,7 +417,7 @@ forense estabelecida:
 
 Versão **0.1.0** — em desenvolvimento ativo. Os componentes core (engine
 declarativa, calibração tripla LogReg/KDE/biGauss, PLDA dual-variante, score
-fusion multivariado, hubness diagnostics, dataset management com
+score vectorization multivariado, hubness diagnostics, dataset management com
 schema-by-role e auditoria forense) estão maduros. A documentação técnica
 está em construção.
 

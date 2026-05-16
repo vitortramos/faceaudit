@@ -1,4 +1,4 @@
-# faceaudit/executors/instructions/score_fusion_instruction_executor.py
+# faceaudit/executors/instructions/score_vectorization_instruction_executor.py
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from faceaudit.executors.instructions.strategy_instruction_executor_base import 
 from faceaudit.models.instructions.instruction_execution_result import (
     InstructionExecutionResult,
 )
-from faceaudit.models.instructions.score_fusion_instruction import (
-    ScoreFusionInstruction,
+from faceaudit.models.instructions.score_vectorization_instruction import (
+    ScoreVectorizationInstruction,
 )
 from faceaudit.models.instructions.strategy_instruction_definition import (
     StrategyInstructionDefinition,
@@ -28,20 +28,22 @@ from faceaudit.protocols.strategy_execution_context_protocol import (
 )
 
 
-class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
+class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
     """
-    Executor da instrução SCORE_FUSION.
+    Executor da instrução SCORE_VECTORIZATION.
 
-    Recebe dois SimilarityScoreDataset com os mesmos pares e produz um terceiro
-    com o vetor de scores fundidos persistido como **uma única matriz `(N, D)`
-    contígua** em `dataset.metadata["fused_features_matrix"]` — uma alocação
-    pra todo o dataset em vez de N alocações de `List[float]` por sample
-    (relevante pra datasets com milhões de pares: GC pressure baixa, zero-copy
-    pro sklearn). O `raw_score` do output é o do primeiro input (preserva
-    utilidade em mining e casework_viz que esperam score escalar 1D).
+    Recebe N (≥2) SimilarityScoreDataset com os mesmos pares e produz um
+    novo dataset com o vetor de scores persistido como **uma única matriz
+    `(N_pairs, D)` contígua** em `dataset.metadata["score_vector_matrix"]`
+    — uma alocação pra todo o dataset em vez de N alocações de
+    `List[float]` por sample (relevante pra datasets com milhões de pares:
+    GC pressure baixa, zero-copy pro sklearn). O `raw_score` do output é
+    o do primeiro input (preserva utilidade em mining e casework_viz que
+    esperam score escalar 1D).
 
-    O CalibrationModelTrainingInstructionExecutor detecta `is_fused=True` no
-    dataset.metadata e extrai features multivariadas pra treinar o calibrador.
+    O CalibrationModelTrainingInstructionExecutor detecta
+    `is_score_vector=True` no dataset.metadata e extrai features
+    multivariadas pra treinar o calibrador.
     """
 
     def execute(
@@ -53,14 +55,14 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
         if not validation.is_valid:
             return self._failure_result(*validation.errors)
 
-        if not isinstance(instruction, ScoreFusionInstruction):
+        if not isinstance(instruction, ScoreVectorizationInstruction):
             return self._failure_result(
-                "Instrução incompatível com ScoreFusionInstructionExecutor."
+                "Instrução incompatível com ScoreVectorizationInstructionExecutor."
             )
 
         self._log(
             context,
-            f"▶ Iniciando SCORE_FUSION: "
+            f"▶ Iniciando SCORE_VECTORIZATION: "
             f"{instruction.name} ({instruction.instruction_id})"
         )
 
@@ -68,7 +70,7 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
             input_ids = instruction.all_input_resource_ids()
             datasets = [context.get_resource(rid).payload for rid in input_ids]
 
-            fused_dataset, n_pairs, n_features = self._build_fused_dataset(
+            vectorized_dataset, n_pairs, n_features = self._build_vectorized_dataset(
                 datasets=datasets,
                 source_ids=input_ids,
                 require_pair_match=instruction.require_pair_match,
@@ -84,14 +86,14 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                 resource_id=output_id,
                 name=output_id,
                 resource_type=StrategyResourceType.SIMILARITY_SCORES,
-                payload=fused_dataset,
+                payload=vectorized_dataset,
                 artifact_ref=None,
             )
             context.set_resource(output_resource)
 
             self._log(
                 context,
-                f"✅ Score fusion produzido: '{output_id}' "
+                f"✅ Score vectorization produzido: '{output_id}' "
                 f"(n_pairs={n_pairs}, dim_features={n_features})"
             )
 
@@ -104,14 +106,14 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                     "output_resource_id": output_id,
                     "n_pairs": int(n_pairs),
                     "n_features": int(n_features),
-                    "is_fused": True,
+                    "is_score_vector": True,
                 },
             )
 
         except Exception as e:
             self._log(
                 context,
-                f"❌ Erro em SCORE_FUSION ({instruction.instruction_id}): {e}"
+                f"❌ Erro em SCORE_VECTORIZATION ({instruction.instruction_id}): {e}"
             )
             return self._failure_result(str(e))
 
@@ -122,9 +124,9 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
     ) -> ValidationResult:
         result = ValidationResult.neutral()
 
-        if not isinstance(instruction, ScoreFusionInstruction):
+        if not isinstance(instruction, ScoreVectorizationInstruction):
             result.add_error(
-                "A instrução informada não é do tipo ScoreFusionInstruction."
+                "A instrução informada não é do tipo ScoreVectorizationInstruction."
             )
             return result
 
@@ -148,21 +150,21 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
                     f"Recurso extra não encontrado no contexto: '{rid}'."
                 )
 
-        # Duplicatas e fusão "consigo mesmo" não fazem sentido.
+        # Duplicatas e vetorização "consigo mesmo" não fazem sentido.
         all_inputs = instruction.all_input_resource_ids()
         if len(all_inputs) >= 2:
             seen: set = set()
             for rid in all_inputs:
                 if rid in seen:
                     result.add_error(
-                        f"Input '{rid}' aparece mais de uma vez — fusão "
-                        "exige sistemas distintos."
+                        f"Input '{rid}' aparece mais de uma vez — score "
+                        "vectorization exige sistemas distintos."
                     )
                 seen.add(rid)
         if instruction.input_a_resource_id and instruction.input_a_resource_id == instruction.input_b_resource_id:
             result.add_error(
                 "input_a_resource_id e input_b_resource_id não podem ser o "
-                "mesmo recurso (fusão exige dois sistemas distintos)."
+                "mesmo recurso (score vectorization exige dois sistemas distintos)."
             )
 
         if not instruction.output_resource_id:
@@ -184,9 +186,9 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
             result.mark_ok()
         return result
 
-    # ─── Núcleo da fusão ────────────────────────────────────────────────────
+    # ─── Núcleo da vetorização ──────────────────────────────────────────────
 
-    def _build_fused_dataset(
+    def _build_vectorized_dataset(
         self,
         datasets: List[SimilarityScoreDataset],
         source_ids: List[str],
@@ -195,7 +197,8 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
         context: StrategyExecutionContextProtocol,
     ) -> Tuple[SimilarityScoreDataset, int, int]:
         """
-        Constrói o SimilarityScoreDataset fundido a partir de **N (≥2) inputs**.
+        Constrói o SimilarityScoreDataset vetorizado a partir de
+        **N (≥2) inputs**.
 
         Algoritmo:
         1. O primeiro dataset (`datasets[0]`) é o **anchor** — define a ordem
@@ -206,15 +209,15 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
              com mensagem mostrando primeiras divergências.
            - `require_pair_match=False`: reordena via hash → sample dict.
         3. Concatena as colunas de scores num matrix `(N_pairs, D)` em
-           `metadata["fused_features_matrix"]`. D = len(datasets).
+           `metadata["score_vector_matrix"]`. D = len(datasets).
 
         Cada sample do output é a instância original de `datasets[0]` (sem
-        mutação), preservando metadata por sample. A fusão vive 100% no
+        mutação), preservando metadata por sample. O vetor vive 100% no
         `dataset.metadata` — nada em `sample.metadata`.
         """
         if len(datasets) < 2 or len(source_ids) < 2:
             raise ValueError(
-                f"Score fusion requer pelo menos 2 inputs "
+                f"Score vectorization requer pelo menos 2 inputs "
                 f"(got {len(datasets)})."
             )
         if len(datasets) != len(source_ids):
@@ -226,7 +229,7 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
         sizes = [len(ds.items) for ds in datasets]
         if any(s == 0 for s in sizes):
             raise ValueError(
-                f"Score fusion requer todos os datasets não vazios "
+                f"Score vectorization requer todos os datasets não vazios "
                 f"(sizes={sizes})."
             )
 
@@ -267,33 +270,33 @@ class ScoreFusionInstructionExecutor(StrategyInstructionExecutorBase):
             )
             for items in aligned_items_per_input
         ]
-        fused_matrix = np.column_stack(score_columns)
+        score_vector_matrix = np.column_stack(score_columns)
 
         # Reusa as instâncias originais do anchor — preserva
         # same_person, identidades, raw_score e metadata individuais.
-        fused_items: List[SimilarityScoreSample] = list(anchor.items)
+        vectorized_items: List[SimilarityScoreSample] = list(anchor.items)
 
         dataset_metadata = dict(anchor.metadata) if anchor.metadata else {}
-        dataset_metadata["is_fused"] = True
-        dataset_metadata["fused_source_resources"] = list(source_ids)
-        dataset_metadata["fused_n_features"] = int(fused_matrix.shape[1])
+        dataset_metadata["is_score_vector"] = True
+        dataset_metadata["score_vector_source_resources"] = list(source_ids)
+        dataset_metadata["score_vector_n_features"] = int(score_vector_matrix.shape[1])
         dataset_metadata[
-            SimilarityScoreDataset.FUSED_FEATURES_MATRIX_KEY
-        ] = fused_matrix
+            SimilarityScoreDataset.SCORE_VECTOR_MATRIX_KEY
+        ] = score_vector_matrix
 
         sources_str = " + ".join(f"'{sid}'" for sid in source_ids)
-        fused = SimilarityScoreDataset(
+        vectorized = SimilarityScoreDataset(
             name=output_name,
             description=(
-                f"Score fusion de {sources_str} ({len(source_ids)} sistemas). "
-                f"Features fundidas em metadata['fused_features_matrix'] "
-                f"(numpy {fused_matrix.shape}); raw_score = score do anchor "
-                f"('{anchor_id}')."
+                f"Score vectorization de {sources_str} ({len(source_ids)} sistemas). "
+                f"Vetor de scores em metadata['score_vector_matrix'] "
+                f"(numpy {score_vector_matrix.shape}); raw_score = score "
+                f"do anchor ('{anchor_id}')."
             ),
-            items=fused_items,
+            items=vectorized_items,
             metadata=dataset_metadata,
         )
-        return fused, n, int(fused_matrix.shape[1])
+        return vectorized, n, int(score_vector_matrix.shape[1])
 
     def _validate_strict_pair_alignment(
         self,

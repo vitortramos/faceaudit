@@ -79,11 +79,11 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
             )
 
             # Vetorização: scores e calibração em um único passe.
-            # Para datasets produzidos por SCORE_FUSION, extraímos a matriz
-            # (N, D) de features fundidas em vez do raw_score escalar.
+            # Para datasets produzidos por SCORE_VECTORIZATION, extraímos
+            # a matriz (N, D) do vetor de scores em vez do raw_score escalar.
             raw_scores = (
-                score_dataset.extract_fused_features()
-                if score_dataset.is_fused
+                score_dataset.extract_score_vector()
+                if score_dataset.is_score_vector
                 else score_dataset.scores  # np.ndarray float64
             )
             log_lrs = np.asarray(

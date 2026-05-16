@@ -82,9 +82,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
 
         Suporta:
         - vetor 1D `(N,)` — calibração univariada de score → log-LR
-        - matriz 2D `(N, D)` — calibração multivariada (score fusion):
-          D features por amostra, LogReg aprende um peso por feature
-          (Brümmer & du Preez 2006 score fusion).
+        - matriz 2D `(N, D)` — calibração multivariada (alimentada por
+          SCORE_VECTORIZATION): D features por amostra, LogReg aprende
+          um peso por feature (Brümmer & du Preez 2006 score-level
+          combination).
         """
         scores_arr = np.asarray(scores, dtype=np.float64)
         labels_arr = np.asarray(labels, dtype=np.int32)

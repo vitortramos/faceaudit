@@ -293,9 +293,9 @@ class ValidationRuleFactory:
                 max_samples=int(params.get("max_samples", 100_000)),
             )
 
-        if rule_type == ValidationRuleType.FUSED_PAIR_COMPATIBILITY:
-            from faceaudit.validation_rules.fused_pair_compatibility_rule import (
-                FusedPairCompatibilityRule,
+        if rule_type == ValidationRuleType.SCORE_VECTOR_PAIR_COMPATIBILITY:
+            from faceaudit.validation_rules.score_vector_pair_compatibility_rule import (
+                ScoreVectorPairCompatibilityRule,
             )
             # Aceita o formato canônico (lista) ou o legado (par A/B) pra
             # compat com configs JSON salvos antes da generalização N-input.
@@ -314,7 +314,7 @@ class ValidationRuleFactory:
                 extras = params.get("extra_input_resource_ids")
                 if isinstance(extras, (list, tuple)):
                     input_ids.extend(str(x) for x in extras)
-            return FusedPairCompatibilityRule(
+            return ScoreVectorPairCompatibilityRule(
                 rule_id=rule_id,
                 input_resource_ids=input_ids,
                 max_examples=int(params.get("max_examples", 5)),

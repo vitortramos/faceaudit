@@ -322,11 +322,11 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return ScoreCalibrationInstruction.from_dict(processed_data)
 
-        if instruction_type == StrategyInstructionType.SCORE_FUSION:
-            from faceaudit.models.instructions.score_fusion_instruction import (
-                ScoreFusionInstruction,
+        if instruction_type == StrategyInstructionType.SCORE_VECTORIZATION:
+            from faceaudit.models.instructions.score_vectorization_instruction import (
+                ScoreVectorizationInstruction,
             )
-            return ScoreFusionInstruction.from_dict(processed_data)
+            return ScoreVectorizationInstruction.from_dict(processed_data)
 
         if instruction_type == StrategyInstructionType.STRATEGY_EVALUATION:
             from faceaudit.models.instructions.strategy_evaluation_instruction import (

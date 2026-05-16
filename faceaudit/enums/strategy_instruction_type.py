@@ -74,13 +74,14 @@ class StrategyInstructionType(Enum):
         "produzindo log-LR por par.",
     )
 
-    SCORE_FUSION = (
-        "SCORE_FUSION",
-        "Score Fusion",
-        "Combina dois ou mais SimilarityScoreDataset (mesmos pares) em um "
-        "único dataset onde cada amostra carrega um vetor de scores. Permite "
-        "treinar calibrador multivariado (LogReg 2D+) que aprende pesos "
-        "ótimos por sistema. Score fusion forense — Brümmer & du Preez 2006.",
+    SCORE_VECTORIZATION = (
+        "SCORE_VECTORIZATION",
+        "Score Vectorization",
+        "Combina dois ou mais SimilarityScoreDataset (mesmos pares) num "
+        "único dataset onde cada amostra carrega um vetor de scores. "
+        "Permite treinar calibrador multivariado (LogReg 2D+) que aprende "
+        "pesos ótimos por sistema. Score-level combination forense — "
+        "Brümmer & du Preez 2006.",
     )
 
     STRATEGY_EVALUATION = (

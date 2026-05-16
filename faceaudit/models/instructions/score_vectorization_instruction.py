@@ -1,4 +1,4 @@
-# faceaudit/models/instructions/score_fusion_instruction.py
+# faceaudit/models/instructions/score_vectorization_instruction.py
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -15,31 +15,38 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
 from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
 
-T = TypeVar("T", bound="ScoreFusionInstruction")
+T = TypeVar("T", bound="ScoreVectorizationInstruction")
 
 
 @dataclass
-class ScoreFusionInstruction(StrategyInstructionDefinition):
+class ScoreVectorizationInstruction(StrategyInstructionDefinition):
     """
-    Instrução declarativa para fusão score-level de **N (≥2)** SimilarityScoreDataset.
+    Instrução declarativa para vetorização score-level de **N (≥2)**
+    SimilarityScoreDataset.
 
     Recebe inputs com os MESMOS pares (probe + reference) e produz um novo
     SimilarityScoreDataset com a matriz `(N_pairs, D)` em
-    `metadata["fused_features_matrix"]` (D = nº de sistemas combinados).
+    `metadata["score_vector_matrix"]` (D = nº de sistemas combinados).
     O `raw_score` do output é o do input A (preserva utilidade em mining
     e casework_viz que esperam score escalar).
 
     Os campos canônicos são `input_a_resource_id` (obrigatório) e
-    `input_b_resource_id` (obrigatório, mínimo 2 sistemas). Para fundir 3+
-    sistemas (ex: Cosseno + PLDA + Quality), preencha
+    `input_b_resource_id` (obrigatório, mínimo 2 sistemas). Para combinar
+    3+ sistemas (ex: Cosseno + PLDA + Quality), preencha
     `extra_input_resource_ids` com os IDs adicionais.
 
-    O dataset resultante tem `metadata["is_fused"] = True` e é consumido
-    pelo CalibrationModelTrainingInstruction com LogReg multivariado, que
-    aprende um peso por sistema (Brümmer & du Preez 2006). Como os
-    sistemas tipicamente compartilham o mesmo embedding base (não são
-    condicionalmente independentes), score fusion via LogReg captura a
-    correlação melhor do que soma simples de log-LRs.
+    O dataset resultante tem `metadata["is_score_vector"] = True` e é
+    consumido pelo CalibrationModelTrainingInstruction com LogReg
+    multivariado, que aprende um peso por sistema (Brümmer & du Preez
+    2006). Como os sistemas tipicamente compartilham o mesmo embedding
+    base (não são condicionalmente independentes), score-level
+    combination via LogReg captura a correlação melhor do que soma
+    simples de log-LRs.
+
+    Nota sobre nomenclatura: o termo "vectorization" enfatiza que a
+    operação PREPARA features multivariadas — a combinação propriamente
+    dita (aprendizado de pesos por sistema) acontece dentro do
+    calibrador downstream, não nesta instrução.
     """
 
     input_a_resource_id: Optional[str] = field(
@@ -55,21 +62,21 @@ class ScoreFusionInstruction(StrategyInstructionDefinition):
     extra_input_resource_ids: List[str] = field(
         default_factory=list,
         metadata={"help": (
-            "Inputs adicionais para fundir 3+ sistemas (lista de "
+            "Inputs adicionais para combinar 3+ sistemas (lista de "
             "resource_ids separados por vírgula na UI). Cada ID deve ser "
             "um recurso SIMILARITY_SCORES com os mesmos pares de A/B. "
-            "Vazio = fusão simples A+B (caso comum)."
+            "Vazio = vetorização simples A+B (caso comum)."
         )},
     )
 
     output_resource_id: Optional[str] = field(
         default=None,
-        metadata={"help": "Recurso de saída SIMILARITY_SCORES fundido."}
+        metadata={"help": "Recurso de saída SIMILARITY_SCORES vetorizado."}
     )
 
     output_dataset_name: Optional[str] = field(
         default=None,
-        metadata={"help": "Nome do dataset fundido (opcional)."}
+        metadata={"help": "Nome do dataset vetorizado (opcional)."}
     )
 
     require_pair_match: bool = field(
@@ -86,10 +93,10 @@ class ScoreFusionInstruction(StrategyInstructionDefinition):
     )
 
     def __post_init__(self) -> None:
-        self.instruction_type = StrategyInstructionType.SCORE_FUSION
+        self.instruction_type = StrategyInstructionType.SCORE_VECTORIZATION
 
         if not self.name:
-            self.name = "Score Fusion"
+            self.name = "Score Vectorization"
 
         self._sync_declared_io()
         self._ensure_default_validation_rules()
@@ -101,7 +108,7 @@ class ScoreFusionInstruction(StrategyInstructionDefinition):
             ResourceFieldSpec("input_a_resource_id", "Sistema A", IN),
             ResourceFieldSpec("input_b_resource_id", "Sistema B", IN),
             ResourceFieldSpec(
-                "output_resource_id", "Scores Fundidos", OUT, is_output=True,
+                "output_resource_id", "Scores Vetorizados", OUT, is_output=True,
             ),
         ]
 
@@ -147,11 +154,12 @@ class ScoreFusionInstruction(StrategyInstructionDefinition):
         assumiu o controle das regras.
 
         Default:
-        - **MIN_CALIBRATION_PAIRS** no input A — protege contra fusão
-          de datasets com pares insuficientes pra alimentar a calibração
+        - **MIN_CALIBRATION_PAIRS** no input A — protege contra combinar
+          datasets com pares insuficientes pra alimentar a calibração
           downstream (LogReg multivariado precisa de gen+imp suficientes).
-          Vale só pra A porque a regra dinâmica `FUSED_PAIR_COMPATIBILITY`
-          já garante que B tem o mesmo conjunto.
+          Vale só pra A porque a regra dinâmica
+          `SCORE_VECTOR_PAIR_COMPATIBILITY` já garante que B tem o mesmo
+          conjunto.
         """
         if self.validation_rules_user_managed:
             return
@@ -173,20 +181,20 @@ class ScoreFusionInstruction(StrategyInstructionDefinition):
     def build_validation_rules(self) -> list:
         """Regras dinâmicas (não persistidas):
 
-        - **FUSED_PAIR_COMPATIBILITY** — todos os inputs (A, B, extras)
-          compartilham exatamente o mesmo conjunto de pares
+        - **SCORE_VECTOR_PAIR_COMPATIBILITY** — todos os inputs (A, B,
+          extras) compartilham exatamente o mesmo conjunto de pares
           `(probe.face_hash, reference.face_hash)`. Catch antecipado pra
           evitar ValueError tardio do executor.
         """
-        from faceaudit.validation_rules.fused_pair_compatibility_rule import (
-            FusedPairCompatibilityRule,
+        from faceaudit.validation_rules.score_vector_pair_compatibility_rule import (
+            ScoreVectorPairCompatibilityRule,
         )
 
         rules: list = []
         all_inputs = self.all_input_resource_ids()
         if len(all_inputs) >= 2:
-            rules.append(FusedPairCompatibilityRule(
-                rule_id=f"{self.instruction_id}_fused_pair_compatibility",
+            rules.append(ScoreVectorPairCompatibilityRule(
+                rule_id=f"{self.instruction_id}_score_vector_pair_compatibility",
                 input_resource_ids=all_inputs,
             ))
         return rules

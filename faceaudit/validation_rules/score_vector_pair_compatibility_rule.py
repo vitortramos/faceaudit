@@ -1,4 +1,4 @@
-# faceaudit/validation_rules/fused_pair_compatibility_rule.py
+# faceaudit/validation_rules/score_vector_pair_compatibility_rule.py
 
 from __future__ import annotations
 
@@ -18,18 +18,18 @@ from faceaudit.protocols.strategy_execution_context_protocol import (
 from faceaudit.validation_rules.validation_rule_base import ValidationRuleBase
 
 
-class FusedPairCompatibilityRule(ValidationRuleBase):
+class ScoreVectorPairCompatibilityRule(ValidationRuleBase):
     """
     Verifica que **N (≥2) SimilarityScoreDataset** compartilham
     EXATAMENTE o mesmo conjunto de pares
     `(probe.face_hash, reference.face_hash)`.
 
     Catch antecipado pra evitar erro tardio do
-    `ScoreFusionInstructionExecutor._build_fused_dataset` (que levanta
-    ValueError no meio da execução). Quando todos os sistemas processaram
-    o mesmo conjunto de pares, fusão é segura; qualquer divergência
-    pode indicar que o usuário cruzou splits diferentes ou usou
-    PAIR_MINING em apenas um dos lados.
+    `ScoreVectorizationInstructionExecutor._build_vectorized_dataset` (que
+    levanta ValueError no meio da execução). Quando todos os sistemas
+    processaram o mesmo conjunto de pares, a combinação score-vector é
+    segura; qualquer divergência pode indicar que o usuário cruzou splits
+    diferentes ou usou PAIR_MINING em apenas um dos lados.
 
     Algoritmo: o primeiro input é o **anchor**; cada input subsequente
     é comparado contra o anchor. Diferenças mostradas com hashes truncados
@@ -47,13 +47,13 @@ class FusedPairCompatibilityRule(ValidationRuleBase):
         rule_id: str,
         input_resource_ids: Sequence[str],
         max_examples: int = 5,
-        name: str = "Compatibilidade de pares (SCORE_FUSION)",
+        name: str = "Compatibilidade de pares (SCORE_VECTORIZATION)",
         description: Optional[str] = None,
     ) -> None:
         ids = list(input_resource_ids)
         if len(ids) < 2:
             raise ValueError(
-                "FusedPairCompatibilityRule exige pelo menos 2 input_resource_ids."
+                "ScoreVectorPairCompatibilityRule exige pelo menos 2 input_resource_ids."
             )
         super().__init__(
             rule_id=rule_id,
@@ -116,8 +116,8 @@ class FusedPairCompatibilityRule(ValidationRuleBase):
             if not isinstance(payload, SimilarityScoreDataset):
                 result.add_error(
                     f"[{self.rule_id}] '{rid}' não é SimilarityScoreDataset "
-                    f"(got {type(payload).__name__}) — fusão exige datasets "
-                    "de score."
+                    f"(got {type(payload).__name__}) — score vectorization "
+                    "exige datasets de score."
                 )
                 return result
             payloads.append(payload)
@@ -129,7 +129,7 @@ class FusedPairCompatibilityRule(ValidationRuleBase):
             if not keys:
                 result.add_error(
                     f"[{self.rule_id}] Dataset '{rid}' está vazio — score "
-                    "fusion exige todos os inputs não-vazios."
+                    "vectorization exige todos os inputs não-vazios."
                 )
                 return result
             keys_per_input.append(keys)
@@ -162,9 +162,10 @@ class FusedPairCompatibilityRule(ValidationRuleBase):
             result.add_error(
                 f"[{self.rule_id}] Os {len(self._ids)} inputs não "
                 f"compartilham o mesmo conjunto de pares (anchor: "
-                f"'{anchor_id}'). {joined}. Score fusion exige que TODOS "
-                "os sistemas tenham processado exatamente os mesmos pares "
-                "(mesmo SCORING input, sem PAIR_MINING em apenas um lado)."
+                f"'{anchor_id}'). {joined}. Score vectorization exige "
+                "que TODOS os sistemas tenham processado exatamente os "
+                "mesmos pares (mesmo SCORING input, sem PAIR_MINING em "
+                "apenas um lado)."
             )
             return result
 

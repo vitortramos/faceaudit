@@ -278,9 +278,10 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         Extrai scores e labels do recurso de entrada.
 
         Formatos aceitos:
-        1. SimilarityScoreDataset (com flag `is_fused` no metadata para
-           datasets produzidos por SCORE_FUSION — neste caso scores tem
-           shape (N, D) com D features por amostra em vez de scores 1D).
+        1. SimilarityScoreDataset (com flag `is_score_vector` no metadata
+           para datasets produzidos por SCORE_VECTORIZATION — neste caso
+           scores tem shape (N, D) com D features por amostra em vez de
+           scores 1D).
         2. dict:
             {
                 "scores": [...],   # 1D ou 2D (N, D)
@@ -289,8 +290,8 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         """
         if isinstance(payload, SimilarityScoreDataset):
             scores = (
-                payload.extract_fused_features()
-                if payload.is_fused
+                payload.extract_score_vector()
+                if payload.is_score_vector
                 else payload.scores
             )
             labels = payload.labels

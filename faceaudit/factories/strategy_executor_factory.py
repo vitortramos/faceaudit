@@ -34,8 +34,8 @@ from faceaudit.executors.instructions.similarity_model_training_instruction_exec
 from faceaudit.executors.instructions.score_calibration_instruction_executor import (
     ScoreCalibrationInstructionExecutor,
 )
-from faceaudit.executors.instructions.score_fusion_instruction_executor import (
-    ScoreFusionInstructionExecutor,
+from faceaudit.executors.instructions.score_vectorization_instruction_executor import (
+    ScoreVectorizationInstructionExecutor,
 )
 from faceaudit.executors.instructions.strategy_evaluation_instruction_executor import (
     StrategyEvaluationInstructionExecutor,
@@ -142,8 +142,8 @@ class StrategyExecutorFactory:
         )
 
         registry.register(
-            StrategyInstructionType.SCORE_FUSION,
-            ScoreFusionInstructionExecutor(),
+            StrategyInstructionType.SCORE_VECTORIZATION,
+            ScoreVectorizationInstructionExecutor(),
         )
 
         registry.register(
