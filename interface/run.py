@@ -110,6 +110,21 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     _apply_light_palette(app)
 
+    # QTBUG-135882 — workaround pra macOS Sequoia/Tahoe + Qt 6.9.x.
+    # Sem CFBundleIdentifier (a app é lançada via `python interface/
+    # run.py`, sem bundle .app), o Cocoa silenciosamente recusa-se a
+    # mostrar NSOpenPanel/NSSavePanel — o `QFileDialog` nativo trava
+    # com cursor de espera e o usuário não consegue abrir
+    # projetos/datasets/configs. Forçar o picker baseado em Qt-widgets
+    # resolve sem precisar empacotar a app como .app. UX cosmética:
+    # picker próprio do Qt em vez do Finder. Quando empacotarmos a
+    # app com Info.plist + CFBundleIdentifier setado, dá pra remover
+    # essa linha e voltar pro NSOpenPanel.
+    if sys.platform == "darwin":
+        app.setAttribute(
+            QtCore.Qt.ApplicationAttribute.AA_DontUseNativeDialogs, True,
+        )
+
     # 1) Garante que o JSON existe
     bootstrap_configuration(APP_CONFIG_JSON)
 
