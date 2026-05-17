@@ -157,6 +157,16 @@ class ValidationRuleType(Enum):
         "pré-condição pra combinar via SCORE_VECTORIZATION.",
     )
 
+    SCORE_VECTOR_ORDER_CONSISTENCY = (
+        "SCORE_VECTOR_ORDER_CONSISTENCY",
+        "Ordem dos sistemas no vetor (SCORE_CALIBRATION)",
+        "Em SCORE_CALIBRATION com calibrador treinado sobre score vector, "
+        "verifica que a ordem dos modelos de similaridade que produziram "
+        "cada coluna bate com a ordem usada no treino do calibrador. "
+        "Ordens diferentes silenciosamente trocam os pesos do LogReg "
+        "multivariado e geram log-LRs sem sentido (EER/Cllr explodem).",
+    )
+
     def __init__(self, value: str, label: str, description: str):
         self._value_ = value
         self.label = label

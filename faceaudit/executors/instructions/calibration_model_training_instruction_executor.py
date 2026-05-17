@@ -124,6 +124,22 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                     f"{instruction.calibration_model_type}"
                 )
 
+            # Quando o treino foi sobre um score vetorizado, propaga a
+            # lista ordenada de modelos de similaridade que produziram
+            # cada coluna pro modelo treinado. A regra
+            # SCORE_VECTOR_ORDER_CONSISTENCY usa isso em `SCORE_CALIBRATION`
+            # pra alertar quando a ordem dos sistemas no dataset de
+            # validação diverge da ordem usada no treino do calibrador.
+            if (
+                isinstance(input_payload, SimilarityScoreDataset)
+                and input_payload.is_score_vector
+            ):
+                model_ids = (input_payload.metadata or {}).get(
+                    "score_vector_model_ids"
+                )
+                if model_ids is not None:
+                    setattr(trained_model, "score_vector_model_ids", list(model_ids))
+
             output_resource_id = instruction.trained_calibration_model_resource_id
             trained_resource = StrategyResource(
                 resource_id=output_resource_id,

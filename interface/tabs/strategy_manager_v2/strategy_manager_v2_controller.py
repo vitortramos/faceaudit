@@ -1268,6 +1268,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
             project_root=self._project.storage.project_root,
             resource_loader=loader,
             parent=self.view,
+            # Re-lê do disco no botão "Atualizar" — sem isso o snapshot
+            # passado aqui congela e a janela nunca enxerga execuções
+            # feitas depois da abertura.
+            definitions_provider=lambda: list(
+                self._project.definition_repository.list_definitions()
+            ) if self._project else [],
         )
         # Abre maximizada — alinha com o comportamento da janela principal
         # do app. O usuário ainda pode des-maximizar pelo botão da decoração.
@@ -2138,19 +2144,33 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         return touched
 
-    def _invalidate_dependents_of(self, root_resource_id: str) -> None:
-        """Invalida em cascata todas as instruções (em qualquer estratégia
-        do projeto) que dependem direta ou transitivamente do recurso
-        editado.
+    def _invalidate_dependents_of(
+        self,
+        root_resource_id: str,
+        origin_strategy_id: Optional[str] = None,
+    ) -> None:
+        """Invalida em cascata todas as instruções que dependem direta ou
+        transitivamente do recurso editado.
 
         Algoritmo BFS sobre o grafo de dependência: começa com {root},
         encontra instruções cujos `input_resource_ids` tocam o conjunto
         dirty, invalida seus outputs (apaga arquivos + zera artifact_ref/
         payload), adiciona esses outputs ao dirty, repete até estabilizar.
 
-        Usado pelo `_persist_edited_config_resource` após edição inline
-        via ✎ — sem isso, modelos/datasets produzidos com versões antigas
-        da config ficariam marcados como ✅ apesar de estarem desatualizados.
+        Escopo via `origin_strategy_id`:
+        - **None (default)** — cross-strategy. Usado por edição de config
+          compartilhada (PIPELINE_CONFIG/MINING_CONFIG/SPLIT_CONFIG via ✎)
+          e por re-save de dataset primário: o arquivo físico é único e
+          referenciado por várias estratégias, então invalidar em todas
+          é correto.
+        - **<strategy_id>** — intra-strategy. Usado por Apply Alterações
+          e remoção de instrução: o `resource_id` é label do usuário
+          (escopo intencional: dentro DA estratégia), e duas estratégias
+          podem ter o MESMO `resource_id` por acaso (caso típico:
+          duplicate strategy preserva labels). Sem o filtro, uma re-
+          execução na MISTA com output `PLDA_TRAIN_MERGED` (label igual
+          à da estratégia PLDA original) apagaria o `PLDA_MODEL` treinado
+          na PLDA por engano.
         """
         if not self._project or not root_resource_id:
             return
@@ -2167,6 +2187,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
             processed |= to_process
 
             for defn in self._definitions:
+                if (
+                    origin_strategy_id is not None
+                    and defn.strategy_id != origin_strategy_id
+                ):
+                    continue
                 for instr in defn.instructions:
                     inputs = set(getattr(instr, "input_resource_ids", []) or [])
                     if not (inputs & to_process):
@@ -2285,8 +2310,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
             # dos inputs estarem zerados — UI mente sobre o estado válido
             # da estratégia. _invalidate_dependents_of salva as definitions
             # afetadas e dispara os refreshes visuais ao final.
+            # `origin_strategy_id` restringe o cascade à estratégia
+            # atual — `resource_id` é label dentro da estratégia, e
+            # outras estratégias podem ter labels iguais por acaso
+            # (caso típico: duplicate preserva os labels).
+            origin = (
+                self._current_definition.strategy_id
+                if self._current_definition is not None else None
+            )
             for output_id in output_ids:
-                self._invalidate_dependents_of(output_id)
+                self._invalidate_dependents_of(output_id, origin_strategy_id=origin)
             # Recursos foram invalidados — instruções DOWNSTREAM que dependem
             # delas precisam ser revalidadas pelo gate de dependência.
             self._refresh_instruction_states()
@@ -2329,14 +2362,21 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         self._executed_instruction_ids.discard(instruction.instruction_id)
 
-        # Cascade downstream: invalida instruções (qualquer estratégia) que
-        # consumiam os outputs dessa instrução como input. Sem isso, Y
-        # permanece com ✅ apesar dos seus inputs terem sumido — UI mostra
-        # estado válido falso, execuções subsequentes falham tardio.
+        # Cascade downstream: invalida instruções que consumiam os outputs
+        # dessa instrução como input. Sem isso, Y permanece com ✅ apesar
+        # dos seus inputs terem sumido — UI mostra estado válido falso,
+        # execuções subsequentes falham tardio.
+        # `origin_strategy_id` restringe o cascade à estratégia atual —
+        # `resource_id` é label intra-estratégia, e outras estratégias
+        # podem ter labels iguais por acaso (duplicate preserva labels).
         # _invalidate_dependents_of já salva as definitions afetadas e
         # dispara os refreshes visuais (✅/🔒 + tree + produced resources).
+        origin = (
+            self._current_definition.strategy_id
+            if self._current_definition is not None else None
+        )
         for output_id in output_ids:
-            self._invalidate_dependents_of(output_id)
+            self._invalidate_dependents_of(output_id, origin_strategy_id=origin)
 
         # NÃO chamamos `_save_current_definition()` aqui — o save virá em
         # seguida via `_on_strategy_modified` (emitido pelo widget logo

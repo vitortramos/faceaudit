@@ -320,6 +320,20 @@ class ValidationRuleFactory:
                 max_examples=int(params.get("max_examples", 5)),
             )
 
+        if rule_type == ValidationRuleType.SCORE_VECTOR_ORDER_CONSISTENCY:
+            from faceaudit.validation_rules.score_vector_order_consistency_rule import (
+                ScoreVectorOrderConsistencyRule,
+            )
+            return ScoreVectorOrderConsistencyRule(
+                rule_id=rule_id,
+                scores_resource_id=ValidationRuleFactory._req_str(
+                    params, "scores_resource_id", rule_type
+                ),
+                calibrator_resource_id=ValidationRuleFactory._req_str(
+                    params, "calibrator_resource_id", rule_type
+                ),
+            )
+
         raise ValueError(
             f"ValidationRuleFactory: tipo de regra não suportado: {rule_type}."
         )

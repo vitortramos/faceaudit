@@ -96,10 +96,16 @@ class ScoreCalibrationInstruction(StrategyInstructionDefinition):
         Regras dinâmicas (não persistidas):
         - MODEL_FITTED no calibrador
         - SCORE_CALIBRATION_STATE(RAW) no input — evita dupla calibração
+        - SCORE_VECTOR_ORDER_CONSISTENCY — quando o calibrador foi
+          treinado em score vector, verifica que a ordem dos sistemas
+          do input bate com a do treino.
         """
         from faceaudit.validation_rules.model_fitted_rule import ModelFittedRule
         from faceaudit.validation_rules.score_calibration_state_rule import (
             ScoreCalibrationStateRule,
+        )
+        from faceaudit.validation_rules.score_vector_order_consistency_rule import (
+            ScoreVectorOrderConsistencyRule,
         )
 
         rules: list = []
@@ -113,6 +119,15 @@ class ScoreCalibrationInstruction(StrategyInstructionDefinition):
                 rule_id=f"{self.instruction_id}_scores_raw",
                 scores_resource_id=self.input_similarity_scores_resource_id,
                 expected="RAW",
+            ))
+        if (
+            self.trained_calibration_model_resource_id
+            and self.input_similarity_scores_resource_id
+        ):
+            rules.append(ScoreVectorOrderConsistencyRule(
+                rule_id=f"{self.instruction_id}_score_vector_order_consistency",
+                scores_resource_id=self.input_similarity_scores_resource_id,
+                calibrator_resource_id=self.trained_calibration_model_resource_id,
             ))
         return rules
 

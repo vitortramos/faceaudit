@@ -280,6 +280,14 @@ class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
         dataset_metadata["is_score_vector"] = True
         dataset_metadata["score_vector_source_resources"] = list(source_ids)
         dataset_metadata["score_vector_n_features"] = int(score_vector_matrix.shape[1])
+        # Procedência ordenada de cada coluna do vetor: ID do modelo de
+        # similaridade que produziu o score original. Posições None quando
+        # algum dataset de entrada veio de uma execução anterior à
+        # introdução do rastreio (legacy). A regra de consistência ignora
+        # silenciosamente se houver None em qualquer posição.
+        dataset_metadata["score_vector_model_ids"] = [
+            (ds.metadata or {}).get("similarity_model_id") for ds in datasets
+        ]
         dataset_metadata[
             SimilarityScoreDataset.SCORE_VECTOR_MATRIX_KEY
         ] = score_vector_matrix

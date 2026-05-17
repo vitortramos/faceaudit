@@ -95,6 +95,16 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     "e opcionalmente reference_dataset_resource_id."
                 )
 
+            # Rastreabilidade do modelo de similaridade que produziu
+            # estes scores. Consumido por `SCORE_VECTORIZATION` pra
+            # registrar a procedência ordenada de cada coluna, e
+            # eventualmente pela regra de consistência que detecta
+            # ordem de sistemas trocada entre treino do calibrador
+            # multivariado e a aplicação.
+            score_dataset.metadata["similarity_model_id"] = (
+                instruction.trained_similarity_model_resource_id
+            )
+
             # Modo casework: marca o dataset como sem ground truth e zera
             # `same_person` em todos os samples (sobrescreve qualquer
             # inferência feita pelo __post_init__ a partir das identidades

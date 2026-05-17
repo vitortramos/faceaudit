@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -49,11 +49,20 @@ class ComparisonWindow(QtWidgets.QDialog):
         project_root: Optional[Path] = None,
         resource_loader: Any = None,
         parent: Optional[QtWidgets.QWidget] = None,
+        definitions_provider: Optional[
+            Callable[[], List[LRStrategyDefinition]]
+        ] = None,
     ):
         super().__init__(parent)
         self._definitions = list(definitions)
         self._project_root = project_root
         self._resource_loader = resource_loader
+        # Callable que retorna a lista atual de definitions, re-lendo do
+        # disco. Quando setado, `_reload_items` re-pega antes de resolver
+        # os items disponíveis — assim o botão "Atualizar" reflete
+        # instruções executadas no editor depois da janela ter sido aberta.
+        # Sem isso, o snapshot inicial congelava a vista pra sempre.
+        self._definitions_provider = definitions_provider
 
         # State runtime.
         self._current_kind: Optional[ComparisonKind] = None
@@ -180,6 +189,14 @@ class ComparisonWindow(QtWidgets.QDialog):
         if self._current_kind is None or self._project_root is None:
             self._left_panel.populate_items([])
             return
+        # Re-lê do disco quando o provider está disponível. Sem isso, o
+        # snapshot do __init__ permanece congelado e o botão "Atualizar"
+        # não enxerga novos resultados produzidos por execuções no editor.
+        if self._definitions_provider is not None:
+            try:
+                self._definitions = list(self._definitions_provider())
+            except Exception:
+                pass
         items = list_available_items(
             self._current_kind, self._definitions, Path(self._project_root)
         )
