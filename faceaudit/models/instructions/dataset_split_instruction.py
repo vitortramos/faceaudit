@@ -378,6 +378,35 @@ class DatasetSplitInstruction(StrategyInstructionDefinition):
             )
         return None
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera campos que não pertencem ao `split_mode` atual:
+        - `target_dataset_resource_id` só em SDA (BY_SUPERVISED_ADAPTATION).
+        - `split_ratio` só em modos *_RATIO.
+        - `identity_list` só em BY_IDENTITY_LIST.
+        - `index_list` só em BY_INDEX_LIST.
+        - `cluster_size`/`grouping_strategy` só fazem sentido em modos
+          identity-capable; em modos índice viram lixo.
+
+        Chamado só no Apply pra não perder dados durante edição.
+        """
+        if not self.uses_supervised_adaptation:
+            self.target_dataset_resource_id = None
+        if not (self.uses_identity_ratio or self.uses_index_ratio):
+            # SDA também usa ratio internamente — manter quando True.
+            if not self.uses_supervised_adaptation:
+                self.split_ratio = 0.8  # default neutro (não acidentalmente 0)
+        if not self.uses_identity_list:
+            self.identity_list = []
+        if not self.uses_index_list:
+            self.index_list = []
+        if not self.uses_identity_grouping_capable:
+            # `grouping_strategy` e `cluster_size` voltam ao default —
+            # não são usados em modos índice.
+            from faceaudit.enums.grouping_strategy import GroupingStrategy
+            self.grouping_strategy = GroupingStrategy.RANDOM_IDENTITIES
+            self.cluster_size = 3
+
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos

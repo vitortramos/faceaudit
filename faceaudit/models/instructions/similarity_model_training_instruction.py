@@ -145,6 +145,16 @@ class SimilarityModelTrainingInstruction(StrategyInstructionDefinition):
         ))
         return specs
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera `input_dataset_resource_id` e `similarity_model_config`
+        quando o tipo escolhido é COSINE (stateless, sem treino, sem
+        hyperparams). Chamado só no Apply.
+        """
+        if self.uses_cosine:
+            self.input_dataset_resource_id = None
+            self.similarity_model_config = None
+
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos específicos

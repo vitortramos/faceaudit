@@ -201,6 +201,31 @@ class PipelineApplicationInstruction(StrategyInstructionDefinition):
 
         return specs
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera campos do modo OPOSTO ao `pipeline_mode` atual.
+
+        Cenário típico: instrução clonada via duplicate em modo DUAL,
+        usuário muda `pipeline_mode` pra LINEAR. Os campos
+        `source/target/transformed_source/transformed_target` continuam
+        preenchidos no DTO mas são ignorados pelo modo LINEAR; o
+        executor então reclama de `dataset_resource_id`/
+        `transformed_dataset_resource_id` (campos LINEAR) vazios sem
+        explicar que tem lixo DUAL ainda pendurado.
+
+        Chamado apenas quando o usuário clica "Aplicar alterações" no
+        config panel — `_sync_declared_io` (que roda a cada keystroke)
+        NÃO chama isso pra não perder dados durante edição.
+        """
+        if self.is_linear:
+            self.source_dataset_resource_id = None
+            self.target_dataset_resource_id = None
+            self.transformed_source_dataset_resource_id = None
+            self.transformed_target_dataset_resource_id = None
+        else:
+            self.dataset_resource_id = None
+            self.transformed_dataset_resource_id = None
+
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos específicos

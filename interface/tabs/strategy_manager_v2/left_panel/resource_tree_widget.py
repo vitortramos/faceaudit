@@ -11,6 +11,13 @@ from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 
 
+# Custom item role pra guardar o nome da estratégia no top-level item da
+# árvore de derivados. Usado pra preservar o estado de colapso/expansão
+# através de rebuilds (UserRole+0 é reservado pro StrategyResource das
+# folhas; o lookup `_find_item_for_resource` quebraria se mexer nele).
+_STRATEGY_NAME_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+
+
 # Rótulos legíveis por tipo. DATASET cobre tanto primário ("Datasets")
 # quanto derivado ("Datasets") — a aba já cinde a categoria, então o
 # rótulo pode ser o mesmo nas duas abas.
@@ -110,6 +117,9 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._current_resource: Optional[StrategyResource] = None
+        # Estado de colapso por nome de estratégia, preservado entre
+        # rebuilds da árvore de derivados.
+        self._collapsed_strategy_names: set = set()
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -274,6 +284,20 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         deve refletir "o que existe". Quando o usuário executa a instrução,
         o placeholder ganha artifact_ref e reaparece automaticamente.
         """
+        # Preserva o estado de colapso por estratégia ANTES do rebuild.
+        # Sem isso, qualquer execução que dispare repopulação volta todos
+        # os grupos de estratégia pra expandido, atrapalhando o usuário
+        # que tinha colapsado as outras estratégias pra ver só a atual.
+        collapsed_strategies: set = set()
+        for i in range(self.tree_derived.topLevelItemCount()):
+            top = self.tree_derived.topLevelItem(i)
+            if top is None or top.isExpanded():
+                continue
+            name = top.data(0, _STRATEGY_NAME_ROLE)
+            if name:
+                collapsed_strategies.add(name)
+        self._collapsed_strategy_names = collapsed_strategies
+
         self.tree_primary.clear()
         self.tree_derived.clear()
         resource_to_strategy = resource_to_strategy or {}
@@ -441,6 +465,9 @@ class ResourceTreeWidget(QtWidgets.QWidget):
                 [f"📋 {strategy_name} ({total})"]
             )
             strategy_item.setData(0, QtCore.Qt.ItemDataRole.UserRole, None)
+            # Nome da estratégia gravado num role separado pra que o
+            # rebuild possa restaurar o estado de colapso.
+            strategy_item.setData(0, _STRATEGY_NAME_ROLE, strategy_name)
             tree.addTopLevelItem(strategy_item)
 
             # Itera tipos na ordem de `_TYPE_LABELS` pra consistência visual
@@ -458,7 +485,10 @@ class ResourceTreeWidget(QtWidgets.QWidget):
                     self._add_resource_child(type_item, res)
                 type_item.setExpanded(True)
 
-            strategy_item.setExpanded(True)
+            # Restaura estado de colapso (default: expandido).
+            strategy_item.setExpanded(
+                strategy_name not in self._collapsed_strategy_names
+            )
 
     def _add_resource_child(
         self,

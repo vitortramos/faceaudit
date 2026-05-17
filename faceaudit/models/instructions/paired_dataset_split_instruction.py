@@ -219,6 +219,15 @@ class PairedDatasetSplitInstruction(StrategyInstructionDefinition):
             "de identidades antes desta instrução."
         )
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera `cluster_size` quando `grouping_strategy=RANDOM_IDENTITIES`
+        (cluster_size só faz sentido pra PRESERVE_LOOKALIKES). Chamado
+        só no Apply.
+        """
+        if not self.uses_lookalikes:
+            self.cluster_size = 3  # default neutro
+
     def _sync_declared_io(self) -> None:
         inputs = []
         outputs = []

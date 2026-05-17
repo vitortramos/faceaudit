@@ -187,6 +187,22 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
         """
         return []
 
+    def prune_unused_fields(self) -> None:
+        """
+        Limpa campos do DTO que não são usados na configuração atual.
+
+        Default no-op. Override em DTOs cujos campos relevantes variam com
+        um choice field (ex: PipelineApplicationInstruction tem campos
+        específicos pra LINEAR e outros pra DUAL; trocar de modo deixa o
+        conjunto não usado pendurado, e o executor reclama de campos
+        obrigatórios vazios enquanto há lixo do modo oposto preenchido).
+
+        Chamado apenas quando o usuário clica "Aplicar alterações" — NÃO
+        no `_sync_declared_io` (que roda a cada interação) pra evitar
+        que digitação intermediária perca dados.
+        """
+        pass
+
     def get_output_resource_placeholders(self) -> list:
         """
         Retorna StrategyResource placeholders para cada campo de output preenchido.

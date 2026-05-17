@@ -53,11 +53,6 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
         metadata={"help": "Máximo de amostras armazenadas por classe para ajuste final do KDE."}
     )
 
-    fisher_eps: float = field(
-        default=1e-6,
-        metadata={"help": "Epsilon numérico para clipping antes da transformação de Fisher."}
-    )
-
     min_bandwidth_abs: float = field(
         default=1e-3,
         metadata={"help": "Bandwidth mínimo absoluto no espaço transformado."}
@@ -106,9 +101,6 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
         if self.max_stored_samples <= 0:
             raise ValueError("max_stored_samples deve ser maior que zero.")
 
-        if self.fisher_eps <= 0:
-            raise ValueError("fisher_eps deve ser maior que zero.")
-
         if self.min_bandwidth_abs <= 0:
             raise ValueError("min_bandwidth_abs deve ser maior que zero.")
 
@@ -128,8 +120,14 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """
         Reconstrói o DTO de configuração a partir de dicionário.
+
+        Descarta silenciosamente campos legados (ex: `fisher_eps` antes do
+        switch pra z-score normalization) — assim configs antigas seguem
+        carregando sem erro.
         """
         if not data:
             return cls()
 
-        return cls(**data)
+        legacy_fields = {"fisher_eps"}
+        cleaned = {k: v for k, v in data.items() if k not in legacy_fields}
+        return cls(**cleaned)

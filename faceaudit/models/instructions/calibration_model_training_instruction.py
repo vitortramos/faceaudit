@@ -114,6 +114,20 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             ),
         ]
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera os configs aninhados dos calibradores que NÃO são o tipo
+        atual. Sem isso, mudar de LOGREG pra KDE deixa `logreg_config`
+        pendurado (consumindo espaço no JSON, confundindo diagnóstico
+        em logs). Chamado só no Apply.
+        """
+        if not self.uses_logistic_regression:
+            self.logreg_config = None
+        if not self.uses_kde:
+            self.kde_config = None
+        if not self.uses_bigauss:
+            self.bigauss_config = None
+
     def _sync_declared_io(self) -> None:
         inputs = []
         outputs = []

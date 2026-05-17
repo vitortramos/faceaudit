@@ -595,7 +595,6 @@ _KDE_CONFIG_LABELS = {
     "use_gridsearch":            "Otimizar bandwidth via GridSearch",
     "max_samples_for_gridsearch": "Máx. amostras (GridSearch)",
     "max_stored_samples":        "Máx. amostras armazenadas",
-    "fisher_eps":                "Epsilon (Fisher)",
     "min_bandwidth_abs":         "Bandwidth mínimo absoluto",
     "max_grid_expansions":       "Máx. expansões do grid",
     "min_log_lr":                "log-LR mínimo",
@@ -621,11 +620,8 @@ _KDE_CONFIG_TOOLTIPS = {
     "max_stored_samples":
         "Máximo de amostras retidas por classe (genuínos/impostores) para "
         "ajuste final do KDE.",
-    "fisher_eps":
-        "Epsilon numérico aplicado em clipping antes da transformação de Fisher "
-        "(evita Inf/NaN em scores próximos de ±1).",
     "min_bandwidth_abs":
-        "Bandwidth mínimo absoluto no espaço transformado pelo Fisher — evita "
+        "Bandwidth mínimo absoluto no espaço z-score — evita "
         "que o GridSearch escolha bandwidth degenerado próximo de zero.",
     "max_grid_expansions":
         "Número máximo de vezes que o grid de busca pode ser expandido se o "

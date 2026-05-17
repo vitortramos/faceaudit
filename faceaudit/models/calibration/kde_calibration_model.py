@@ -33,13 +33,16 @@ class KDECalibrationModel(CalibrationModelProtocol):
     - 1 = genuíno / Hp
     - 0 = impostor / Hd
 
-    Observação:
-    Este modelo assume que os scores brutos vivem no domínio [-1, 1], o que é
-    adequado para similaridade cosseno. O uso com outros scores pode exigir uma
-    estratégia diferente no futuro.
+    Pré-processamento:
+    Aplica z-score normalization (`(x - μ) / σ`) com μ/σ aprendidos em
+    `fit()` a partir de todos os scores de treino concatenados. Funciona
+    pra QUALQUER escala de score (cosseno em [-1, 1], PLDA em ranges
+    arbitrários, etc). A transformação é determinística e persistida
+    junto com o modelo — `calibrate_scores` em validação/casework aplica
+    exatamente a mesma normalização.
     """
 
-    MODEL_VERSION = 1
+    MODEL_VERSION = 2
 
     def __init__(
         self,
@@ -53,6 +56,16 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self.kde_genuine: Optional[KernelDensity] = None
         self.kde_impostor: Optional[KernelDensity] = None
         self.lr_interpolator: Optional[interp1d] = None
+
+        # Parâmetros da z-score normalization aprendidos em fit().
+        # Aplicados a TODOS os scores antes do KDE (treino + inferência).
+        self._score_mean: Optional[float] = None
+        self._score_std: Optional[float] = None
+        # Range coberto pela curva interpoladora no espaço raw. Definido
+        # em fit() pra cobrir os dados de treino com folga sem desperdiçar
+        # pontos na grade em regiões vazias.
+        self._raw_min: Optional[float] = None
+        self._raw_max: Optional[float] = None
 
         self.metadata: dict = {}
 
@@ -111,22 +124,43 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self._log_score_stats(genuine_scores_raw, "Genuínos RAW", logger_callback)
         self._log_score_stats(impostor_scores_raw, "Impostores RAW", logger_callback)
 
-        genuine_scores_fisher = self._to_fisher_space(genuine_scores_raw)
-        impostor_scores_fisher = self._to_fisher_space(impostor_scores_raw)
+        # Z-score normalization aprendida a partir de TODOS os scores de
+        # treino (gen + imp concatenados). Funciona pra qualquer escala
+        # de score sem assumir range [-1, 1] como o Fisher transform
+        # antigo exigia. Persistida no save() pra que validação/casework
+        # apliquem exatamente a mesma transformação.
+        all_train = np.concatenate([genuine_scores_raw, impostor_scores_raw])
+        self._score_mean = float(np.mean(all_train))
+        std = float(np.std(all_train))
+        # Guarda mínimo positivo pra evitar divisão por zero em datasets
+        # degenerados (ex: todos scores iguais). Cenário improvável mas
+        # protege contra NaN/Inf na inferência.
+        self._score_std = max(std, 1e-12)
 
-        self._log_score_stats(genuine_scores_fisher, "Genuínos Fisher(z)", logger_callback)
-        self._log_score_stats(impostor_scores_fisher, "Impostores Fisher(z)", logger_callback)
+        # Cobertura da curva interpoladora no espaço raw: usa os extremos
+        # dos dados de treino com margem de ±5σ, garantindo que scores
+        # de validação um pouco fora do range visto ainda caiam dentro
+        # de pontos interpolados (em vez de bordas clampadas).
+        margin = 5.0 * self._score_std
+        self._raw_min = float(all_train.min()) - margin
+        self._raw_max = float(all_train.max()) + margin
+
+        genuine_scores_z = self._to_normalized_space(genuine_scores_raw)
+        impostor_scores_z = self._to_normalized_space(impostor_scores_raw)
+
+        self._log_score_stats(genuine_scores_z, "Genuínos z-score", logger_callback)
+        self._log_score_stats(impostor_scores_z, "Impostores z-score", logger_callback)
 
         bw_gen = float(self.config.bandwidth_genuine)
         bw_imp = float(self.config.bandwidth_impostor)
 
         if self.config.use_gridsearch:
-            logger_callback(f"[{self.name}] Executando GridSearch para bandwidth no espaço Fisher...")
+            logger_callback(f"[{self.name}] Executando GridSearch para bandwidth no espaço z-score...")
             bw_gen = self._optimize_bandwidth(
-                genuine_scores_fisher, "Genuínos", logger_callback
+                genuine_scores_z, "Genuínos", logger_callback
             )
             bw_imp = self._optimize_bandwidth(
-                impostor_scores_fisher, "Impostores", logger_callback
+                impostor_scores_z, "Impostores", logger_callback
             )
         else:
             bw_gen = max(bw_gen, self.config.min_bandwidth_abs)
@@ -138,24 +172,27 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self.kde_genuine = KernelDensity(
             kernel=self.config.kernel,
             bandwidth=bw_gen,
-        ).fit(genuine_scores_fisher.reshape(-1, 1))
+        ).fit(genuine_scores_z.reshape(-1, 1))
 
         self.kde_impostor = KernelDensity(
             kernel=self.config.kernel,
             bandwidth=bw_imp,
-        ).fit(impostor_scores_fisher.reshape(-1, 1))
+        ).fit(impostor_scores_z.reshape(-1, 1))
 
         self._regenerate_interpolator()
 
         self.metadata = {
             "kernel": self.config.kernel,
             "use_gridsearch": bool(self.config.use_gridsearch),
-            "transform": "fisher_arctanh",
-            "bw_genuine_fisher": float(bw_gen),
-            "bw_impostor_fisher": float(bw_imp),
+            "transform": "z_score",
+            "bw_genuine_z": float(bw_gen),
+            "bw_impostor_z": float(bw_imp),
             "n_genuine": int(genuine_scores_raw.size),
             "n_impostor": int(impostor_scores_raw.size),
-            "fisher_eps": float(self.config.fisher_eps),
+            "score_mean": float(self._score_mean),
+            "score_std": float(self._score_std),
+            "raw_min": float(self._raw_min),
+            "raw_max": float(self._raw_max),
             "min_log_lr": float(self.config.min_log_lr),
             "max_log_lr": float(self.config.max_log_lr),
         }
@@ -164,7 +201,8 @@ class KDECalibrationModel(CalibrationModelProtocol):
 
         logger_callback(
             f"[{self.name}] ✅ Treinamento concluído "
-            f"(h_gen={bw_gen:.6f} | h_imp={bw_imp:.6f})."
+            f"(μ={self._score_mean:.6f}, σ={self._score_std:.6f}, "
+            f"h_gen={bw_gen:.6f}, h_imp={bw_imp:.6f})."
         )
 
     # =========================================================================
@@ -237,6 +275,13 @@ class KDECalibrationModel(CalibrationModelProtocol):
             "kde_impostor": self.kde_impostor,
             "metadata": self.metadata,
             "is_fitted": self._is_fitted,
+            # Z-score normalization aprendida em fit() — sem isso o
+            # calibrador em inferência (validação/casework) não consegue
+            # reproduzir a mesma transformação que viu no treino.
+            "score_mean": self._score_mean,
+            "score_std": self._score_std,
+            "raw_min": self._raw_min,
+            "raw_max": self._raw_max,
         }
 
         path_obj = Path(path)
@@ -262,6 +307,15 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self.kde_impostor = payload.get("kde_impostor")
         self.metadata = payload.get("metadata", {})
         self._is_fitted = bool(payload.get("is_fitted", False))
+
+        # Restaura params da z-score normalization. Calibradores legados
+        # (MODEL_VERSION=1, antes do switch pra z-score) não têm esses
+        # campos — `_regenerate_interpolator` vai falhar com mensagem
+        # explícita e usuário re-treina.
+        self._score_mean = payload.get("score_mean")
+        self._score_std = payload.get("score_std")
+        self._raw_min = payload.get("raw_min")
+        self._raw_max = payload.get("raw_max")
 
         if self._is_fitted:
             self._regenerate_interpolator()
@@ -311,25 +365,39 @@ class KDECalibrationModel(CalibrationModelProtocol):
     # HELPERS MATEMÁTICOS
     # =========================================================================
 
-    def _to_fisher_space(self, x_raw: np.ndarray) -> np.ndarray:
+    def _to_normalized_space(self, x_raw: np.ndarray) -> np.ndarray:
+        """Aplica z-score normalization: `(x - μ) / σ` com μ/σ aprendidos
+        em fit() a partir de todos os scores de treino concatenados.
+        """
+        if self._score_mean is None or self._score_std is None:
+            raise RuntimeError(
+                "Normalização não foi aprendida — chame fit() antes."
+            )
         x = np.asarray(x_raw, dtype=np.float64)
-        x = np.clip(x, -1.0 + self.config.fisher_eps, 1.0 - self.config.fisher_eps)
-        return np.arctanh(x)
+        return (x - self._score_mean) / self._score_std
 
     def _regenerate_interpolator(self) -> None:
         if self.kde_genuine is None or self.kde_impostor is None:
             raise RuntimeError("KDEs não inicializados.")
+        if self._raw_min is None or self._raw_max is None:
+            raise RuntimeError(
+                "Range raw não foi computado — chame fit() antes."
+            )
 
+        # Grade de pontos no espaço raw, cobrindo [min_train - 5σ,
+        # max_train + 5σ]. Scores de validação um pouco fora do range
+        # visto ainda caem dentro da curva interpolada — sem isso, eles
+        # seriam clampados nas bordas, achatando log-LRs extremos.
         x_raw = np.linspace(
-            -1.0,
-            1.0,
+            self._raw_min,
+            self._raw_max,
             self.config.interpolation_points,
             dtype=np.float64,
         ).reshape(-1, 1)
-        x_fisher = self._to_fisher_space(x_raw)
+        x_z = self._to_normalized_space(x_raw)
 
-        log_pdf_gen = self.kde_genuine.score_samples(x_fisher)
-        log_pdf_imp = self.kde_impostor.score_samples(x_fisher)
+        log_pdf_gen = self.kde_genuine.score_samples(x_z)
+        log_pdf_imp = self.kde_impostor.score_samples(x_z)
 
         log_lr_curve = log_pdf_gen - log_pdf_imp
         log_lr_curve = np.clip(

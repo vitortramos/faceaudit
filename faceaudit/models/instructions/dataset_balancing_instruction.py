@@ -291,6 +291,19 @@ class DatasetBalancingInstruction(StrategyInstructionDefinition):
             )
         return None
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera campos que não pertencem ao modo/critério atual:
+        - `quality_metric` só faz sentido com `selection_criterion=BY_QUALITY`.
+        - `target_n` não é usado em `AUTO_MIN_BALANCE` (computado em runtime).
+
+        Chamado só no Apply pra não perder dados durante edição.
+        """
+        if not self.uses_quality_selection:
+            self.quality_metric = QualityScoreType.OFIQ  # default neutro
+        if self.uses_auto_min:
+            self.target_n = 10  # default neutro
+
     # ── Sincronização de IO declarado ────────────────────────────────
 
     def _sync_declared_io(self) -> None:

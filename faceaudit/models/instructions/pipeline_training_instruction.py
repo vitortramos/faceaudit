@@ -213,6 +213,29 @@ class PipelineTrainingInstruction(StrategyInstructionDefinition):
                 ))
             return specs
 
+    def prune_unused_fields(self) -> None:
+        """
+        Zera campos do modo OPOSTO + outputs de `apply_to_training_datasets`
+        quando desligado. Chamado só no Apply pra não perder dados durante
+        edição.
+        """
+        if self.is_linear:
+            self.source_pipeline_config_resource_id = None
+            self.target_pipeline_config_resource_id = None
+            self.source_dataset_resource_id = None
+            self.target_dataset_resource_id = None
+            self.output_transformed_source_dataset_resource_id = None
+            self.output_transformed_target_dataset_resource_id = None
+        else:
+            self.pipeline_config_resource_id = None
+            self.dataset_resource_id = None
+            self.output_transformed_dataset_resource_id = None
+
+        if not self.apply_to_training_datasets:
+            self.output_transformed_dataset_resource_id = None
+            self.output_transformed_source_dataset_resource_id = None
+            self.output_transformed_target_dataset_resource_id = None
+
     def _sync_declared_io(self) -> None:
         """
         Sincroniza input_resource_ids e output_resource_ids com os campos específicos

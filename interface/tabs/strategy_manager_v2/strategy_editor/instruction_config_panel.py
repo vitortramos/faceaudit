@@ -2064,7 +2064,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             elif isinstance(widget, QtWidgets.QLineEdit):
                 instr.parameters[key] = widget.text().strip()
 
-        # Sincroniza io novamente após choice fields (modo pode ter mudado)
+        # Limpa campos não usados na configuração atual (ex: PIPELINE_
+        # APPLICATION com pipeline_mode alterado entre LINEAR/DUAL deixa
+        # lixo do modo anterior pendurado). Default no-op no base; DTOs
+        # com choice fields que controlam quais campos são relevantes
+        # sobrescrevem. Chamado SÓ no Apply pra que digitação intermediária
+        # no panel não perca dados.
+        if hasattr(instr, "prune_unused_fields"):
+            instr.prune_unused_fields()
+
+        # Sincroniza io novamente após choice fields + prune (modo pode
+        # ter mudado e campos do modo oposto foram zerados acima).
         if hasattr(instr, "_sync_declared_io"):
             instr._sync_declared_io()
 

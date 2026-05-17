@@ -422,7 +422,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         # Identifica resources com esse path.
         rel_path = saved_abs.relative_to(project_root).as_posix()
-        affected_resource_ids: Set[str] = set()
         touched_strategy_ids: Set[str] = set()
 
         from faceaudit.services.hash_service import HashService
@@ -432,6 +431,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         except Exception:
             new_hash = None
 
+        affected_unique_ids: Set[str] = set()
         for defn in self._definitions:
             for res in defn.resources:
                 ref = res.artifact_ref
@@ -460,10 +460,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
                             ctx_res.payload = None
                     except Exception:
                         pass
-                affected_resource_ids.add(res.resource_id)
+                if res.id:
+                    affected_unique_ids.add(res.id)
                 touched_strategy_ids.add(defn.strategy_id)
 
-        if not affected_resource_ids:
+        if not affected_unique_ids:
             return
 
         for defn in self._definitions:
@@ -475,13 +476,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         # Cascade dos dependentes — reusa o BFS já existente.
         invalidated_total = 0
-        for rid in affected_resource_ids:
+        for uid in affected_unique_ids:
             before = sum(
                 1 for defn in self._definitions for r in defn.resources
                 if r.category == ResourceCategory.DERIVED
                 and r.artifact_ref is not None
             )
-            self._invalidate_dependents_of(rid)
+            self._invalidate_dependents_of(uid)
             after = sum(
                 1 for defn in self._definitions for r in defn.resources
                 if r.category == ResourceCategory.DERIVED
@@ -538,8 +539,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not new_hashes:
             return (0, 0)
 
-        # Atualiza hash + coleta resource_ids afetados (pra cascade).
-        affected_resource_ids: Set[str] = set()
+        # Atualiza hash + coleta ids únicos afetados (pra cascade).
+        affected_unique_ids: Set[str] = set()
         updated_count = 0
         touched_strategy_ids: Set[str] = set()
         for defn in self._definitions:
@@ -565,7 +566,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         except Exception:
                             pass
                     updated_count += 1
-                    affected_resource_ids.add(res.resource_id)
+                    if res.id:
+                        affected_unique_ids.add(res.id)
                     touched_strategy_ids.add(defn.strategy_id)
 
         # Salva primeiro as definitions com hash atualizado.
@@ -576,16 +578,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 except Exception:
                     pass
 
-        # Cascade: invalida todos os dependentes de cada resource_id afetado.
+        # Cascade: invalida todos os dependentes de cada id único afetado.
         # `_invalidate_dependents_of` já cuida do save após.
         total_invalidated = 0
-        for rid in affected_resource_ids:
+        for uid in affected_unique_ids:
             before = len([
                 r for defn in self._definitions for r in defn.resources
                 if r.category == ResourceCategory.DERIVED
                 and r.artifact_ref is not None
             ])
-            self._invalidate_dependents_of(rid)
+            self._invalidate_dependents_of(uid)
             after = len([
                 r for defn in self._definitions for r in defn.resources
                 if r.category == ResourceCategory.DERIVED
@@ -2144,84 +2146,91 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         return touched
 
-    def _invalidate_dependents_of(
-        self,
-        root_resource_id: str,
-        origin_strategy_id: Optional[str] = None,
-    ) -> None:
+    def _invalidate_dependents_of(self, root_unique_id: str) -> None:
         """Invalida em cascata todas as instruções que dependem direta ou
         transitivamente do recurso editado.
 
-        Algoritmo BFS sobre o grafo de dependência: começa com {root},
-        encontra instruções cujos `input_resource_ids` tocam o conjunto
-        dirty, invalida seus outputs (apaga arquivos + zera artifact_ref/
-        payload), adiciona esses outputs ao dirty, repete até estabilizar.
+        Algoritmo BFS sobre o grafo de dependência usando `StrategyResource.id`
+        como chave (não `resource_id`, que é apenas o nome legível e PODE
+        repetir entre estratégias quando duplicate preservou labels).
 
-        Escopo via `origin_strategy_id`:
-        - **None (default)** — cross-strategy. Usado por edição de config
-          compartilhada (PIPELINE_CONFIG/MINING_CONFIG/SPLIT_CONFIG via ✎)
-          e por re-save de dataset primário: o arquivo físico é único e
-          referenciado por várias estratégias, então invalidar em todas
-          é correto.
-        - **<strategy_id>** — intra-strategy. Usado por Apply Alterações
-          e remoção de instrução: o `resource_id` é label do usuário
-          (escopo intencional: dentro DA estratégia), e duas estratégias
-          podem ter o MESMO `resource_id` por acaso (caso típico:
-          duplicate strategy preserva labels). Sem o filtro, uma re-
-          execução na MISTA com output `PLDA_TRAIN_MERGED` (label igual
-          à da estratégia PLDA original) apagaria o `PLDA_MODEL` treinado
-          na PLDA por engano.
+        Escopo natural:
+        - **DERIVED**: cada DERIVED tem `id` único globalmente (regenerado
+          pelo `_on_duplicate_strategy` via `generate_resource_id`). O BFS
+          só atinge instruções DA MESMA estratégia que dona o derivado —
+          sem precisar de filtro de strategy_id.
+        - **PRIMARY**: configs/datasets importados compartilham `id` entre
+          todas as estratégias que os referenciam (representam mesma
+          identidade física). O BFS naturalmente atinge todas — exatamente
+          o que se espera de edição de config compartilhada via ✎ ou
+          re-save de dataset primário externo.
+
+        O mapeamento `resource_id → id` é local por estratégia, porque
+        cada `instr.input_resource_ids` usa `resource_id` (label).
         """
-        if not self._project or not root_resource_id:
+        if not self._project or not root_unique_id:
             return
 
-        dirty: Set[str] = {root_resource_id}
+        dirty_ids: Set[str] = {root_unique_id}
         processed: Set[str] = set()
-        any_invalidated = False
         touched_strategy_ids: Set[str] = set()
 
         while True:
-            to_process = dirty - processed
+            to_process = dirty_ids - processed
             if not to_process:
                 break
             processed |= to_process
 
             for defn in self._definitions:
-                if (
-                    origin_strategy_id is not None
-                    and defn.strategy_id != origin_strategy_id
-                ):
-                    continue
+                # Map local desta defn: resource_id (label) -> id (chave única).
+                # Recalculado a cada iteração porque outputs invalidados
+                # podem ter sido removidos/zerados em iterações anteriores
+                # (raro mas defensivo).
+                rid_to_uid = {
+                    r.resource_id: r.id
+                    for r in defn.resources
+                    if r.id
+                }
                 for instr in defn.instructions:
-                    inputs = set(getattr(instr, "input_resource_ids", []) or [])
-                    if not (inputs & to_process):
+                    input_rids = getattr(instr, "input_resource_ids", []) or []
+                    # Resolve cada input para id único via mapeamento local.
+                    input_uids = {
+                        rid_to_uid[rid]
+                        for rid in input_rids
+                        if rid in rid_to_uid
+                    }
+                    if not (input_uids & to_process):
                         continue
 
-                    # Apaga arquivos físicos + descobre os output_ids.
-                    output_ids = self._delete_instruction_output_files(
+                    # Apaga arquivos físicos + descobre os output rids da
+                    # instrução. `_delete_instruction_output_files` retorna
+                    # `resource_id`s (labels locais à defn) — convertemos
+                    # pra ids únicos via rid_to_uid pra propagar no BFS.
+                    output_rids = self._delete_instruction_output_files(
                         instr, definition=defn,
                     )
-                    if not output_ids:
+                    if not output_rids:
                         continue
 
-                    for output_id in output_ids:
-                        existing = defn.get_resource_by_id(output_id)
+                    for output_rid in output_rids:
+                        existing = defn.get_resource_by_id(output_rid)
                         if existing is None:
                             continue
                         existing.artifact_ref = None
                         existing.payload = None
-                        any_invalidated = True
-                        dirty.add(output_id)
+
+                        if existing.id:
+                            dirty_ids.add(existing.id)
 
                         # Remove do contexto vivo apenas quando a definition
                         # invalidada é a atual (contexto é por estratégia).
                         if (
                             defn is self._current_definition
                             and self._execution_context is not None
-                            and self._execution_context.has_resource(output_id)
+                            and self._execution_context.has_resource(output_rid)
                         ):
                             try:
-                                self._execution_context.remove_resource(output_id)
+                                self._execution_context.remove_resource(output_rid)
                             except Exception:
                                 pass
 
@@ -2310,16 +2319,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
             # dos inputs estarem zerados — UI mente sobre o estado válido
             # da estratégia. _invalidate_dependents_of salva as definitions
             # afetadas e dispara os refreshes visuais ao final.
-            # `origin_strategy_id` restringe o cascade à estratégia
-            # atual — `resource_id` é label dentro da estratégia, e
-            # outras estratégias podem ter labels iguais por acaso
-            # (caso típico: duplicate preserva os labels).
-            origin = (
-                self._current_definition.strategy_id
-                if self._current_definition is not None else None
-            )
-            for output_id in output_ids:
-                self._invalidate_dependents_of(output_id, origin_strategy_id=origin)
+            # Cascade usa o `id` único do recurso DERIVED. Como o
+            # _on_duplicate_strategy regenera ids dos DERIVED, esse id
+            # é exclusivo da estratégia atual — o BFS não atinge outras.
+            for output_rid in output_ids:
+                res = self._current_definition.get_resource_by_id(output_rid)
+                if res is None or not res.id:
+                    continue
+                self._invalidate_dependents_of(res.id)
             # Recursos foram invalidados — instruções DOWNSTREAM que dependem
             # delas precisam ser revalidadas pelo gate de dependência.
             self._refresh_instruction_states()
@@ -2366,17 +2373,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # dessa instrução como input. Sem isso, Y permanece com ✅ apesar
         # dos seus inputs terem sumido — UI mostra estado válido falso,
         # execuções subsequentes falham tardio.
-        # `origin_strategy_id` restringe o cascade à estratégia atual —
-        # `resource_id` é label intra-estratégia, e outras estratégias
-        # podem ter labels iguais por acaso (duplicate preserva labels).
+        # Cascade usa o `id` único dos recursos DERIVED. Como os ids são
+        # exclusivos da estratégia atual (regenerados em duplicate), o
+        # BFS naturalmente não atinge outras estratégias.
         # _invalidate_dependents_of já salva as definitions afetadas e
         # dispara os refreshes visuais (✅/🔒 + tree + produced resources).
-        origin = (
-            self._current_definition.strategy_id
-            if self._current_definition is not None else None
-        )
-        for output_id in output_ids:
-            self._invalidate_dependents_of(output_id, origin_strategy_id=origin)
+        for output_rid in output_ids:
+            res = self._current_definition.get_resource_by_id(output_rid)
+            if res is None or not res.id:
+                continue
+            self._invalidate_dependents_of(res.id)
 
         # NÃO chamamos `_save_current_definition()` aqui — o save virá em
         # seguida via `_on_strategy_modified` (emitido pelo widget logo
@@ -3613,7 +3619,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # pipeline/mining ficariam marcados como ✅ apesar de estarem
         # desatualizados. Cascade também atinge outputs derivados que
         # virem inputs de outras instruções (transitivo).
-        self._invalidate_dependents_of(resource_id)
+        # Recurso PRIMARY (config compartilhada) tem o MESMO `id` em
+        # todas as estratégias que o referenciam (não regenerado no
+        # duplicate), então o cascade naturalmente atinge cross-strategy.
+        primary_uid = getattr(target_resource, "id", None)
+        if primary_uid:
+            self._invalidate_dependents_of(primary_uid)
 
         # Defesa adicional: RESETA `_executed_instruction_ids` para o estado
         # autoritativo derivado de disco. Necessário porque
@@ -4772,15 +4783,29 @@ class StrategyManagerV2Controller(QtCore.QObject):
             current_strategy_modified = False
             instructions_unexecuted: list = []
 
+            # Identifica o recurso por `id` único — `resource_id` (label)
+            # pode repetir entre estratégias quando duplicate preservou
+            # nomes. Pra cada def, buscamos o resource com mesmo id;
+            # DERIVED só vai casar na def dona; PRIMARY casa em todas
+            # as defs que referenciam o mesmo arquivo físico.
+            removed_uid = resource.id
             for defn in self._definitions:
                 modified = False
 
+                # Encontra o resource_id (label) LOCAL desta def que
+                # corresponde ao mesmo `id` único do recurso removido.
+                local_rid: Optional[str] = None
+                for r in defn.resources:
+                    if r.id and r.id == removed_uid:
+                        local_rid = r.resource_id
+                        break
+                if local_rid is None:
+                    continue
+
                 # Limpa TODOS os campos (inputs e outputs) das instruções
-                # que apontam pra este resource_id. Antes só limpava
-                # outputs — inputs referenciando o recurso fantasma
-                # ficavam no DTO mesmo após o combo ser repopulado sem
-                # ele, deixando o estado inconsistente (combo vazio mas
-                # DTO com ID quebrado).
+                # que apontam pra esse label local. Inputs apontando pro
+                # recurso fantasma ficavam no DTO mesmo após o combo ser
+                # repopulado sem ele — agora limpa em cascata.
                 for instr in defn.instructions:
                     try:
                         specs = instr.get_resource_field_specs()
@@ -4788,7 +4813,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         specs = []
                     instr_modified = False
                     for spec in specs:
-                        if getattr(instr, spec.field_name, None) == resource.resource_id:
+                        if getattr(instr, spec.field_name, None) == local_rid:
                             setattr(instr, spec.field_name, None)
                             instr_modified = True
                     if instr_modified and hasattr(instr, "_sync_declared_io"):
@@ -4801,8 +4826,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         modified = True
 
                 # Remove o recurso da lista de resources da definição.
-                if defn.get_resource_by_id(resource.resource_id) is not None:
-                    defn.remove_resource(resource.resource_id)
+                if defn.get_resource_by_id(local_rid) is not None:
+                    defn.remove_resource(local_rid)
                     modified = True
 
                 if modified:

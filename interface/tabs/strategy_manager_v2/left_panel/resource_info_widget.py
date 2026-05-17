@@ -1296,9 +1296,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 extras.append(
                     f"N_gen={n_gen:,} | N_imp={n_imp:,}".replace(",", ".")
                 )
-            fisher_eps = getattr(cfg, "fisher_epsilon", None) if cfg else None
-            if fisher_eps is not None:
-                extras.append(f"fisher_eps={fisher_eps:g}")
+            md_z = getattr(payload, "metadata", {}) or {}
+            mu = md_z.get("score_mean")
+            sigma = md_z.get("score_std")
+            if mu is not None and sigma is not None:
+                extras.append(f"z-score(μ={mu:.4g}, σ={sigma:.4g})")
         elif is_bigauss:
             sigma = getattr(payload, "sigma_target", None)
             if sigma is not None:
