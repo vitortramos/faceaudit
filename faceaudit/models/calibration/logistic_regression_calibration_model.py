@@ -41,6 +41,14 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         # diagnóstico (log + execution_metadata) e para reprodução.
         self.best_C_: float | None = None
 
+        # Standardização de features (ativada via config.standardize_features
+        # quando X tem shape (N, D) com D > 1 — caso típico de score
+        # vectorization). μ/σ aprendidos no fit são persistidos pra que
+        # calibrate_scores aplique a mesma transformação em validação e
+        # casework. None quando standardização não foi usada.
+        self._feature_mean: np.ndarray | None = None
+        self._feature_std: np.ndarray | None = None
+
         self.logreg = self._build_estimator(self.config.C)
 
     def _build_estimator(self, c_value: float) -> LogisticRegression:
@@ -96,6 +104,35 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             X = scores_arr.reshape(-1, 1)
         else:
             raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
+
+        # Standardização opcional (só aplica quando D > 1 e config ativa).
+        # Aprende μ, σ por feature no treino e persiste pra aplicar
+        # exatamente os mesmos parâmetros em calibrate_scores (validação
+        # / casework). Sem isso, a L2 do sklearn penaliza pesos
+        # uniformemente, distorcendo features de escalas dispares.
+        self._feature_mean = None
+        self._feature_std = None
+        if self.config.standardize_features and X.shape[1] > 1:
+            self._feature_mean = X.mean(axis=0)
+            self._feature_std = X.std(axis=0, ddof=1)
+            # Defensivo: features constantes (std=0) viram divisão por
+            # zero. Substitui 1.0 — feature constante não contribui pra
+            # discriminação mesmo, então o peso aprendido pelo LogReg
+            # vai ser próximo de zero.
+            zero_std = self._feature_std == 0
+            if np.any(zero_std):
+                logger_callback(
+                    f"[{self.name}] ⚠️ {int(zero_std.sum())} feature(s) "
+                    "com std=0 no treino — substituindo por 1.0 (não "
+                    "contribuirão pra discriminação)."
+                )
+                self._feature_std = np.where(zero_std, 1.0, self._feature_std)
+            X = (X - self._feature_mean) / self._feature_std
+            logger_callback(
+                f"[{self.name}] 📐 Standardização ativa (D={X.shape[1]}). "
+                f"μ={self._feature_mean.round(4).tolist()}, "
+                f"σ={self._feature_std.round(4).tolist()}"
+            )
 
         if labels_arr.ndim != 1:
             raise ValueError("labels deve ser vetor 1D.")
@@ -192,6 +229,19 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         else:
             raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
 
+        # Aplica a mesma standardização aprendida no fit (μ, σ por feature).
+        # Crítico: usa μ/σ do treino, NÃO recomputa nos scores novos —
+        # senão recalibra silenciosamente com distribuição diferente em
+        # validação/casework.
+        if self._feature_mean is not None and self._feature_std is not None:
+            if X.shape[1] != self._feature_mean.shape[0]:
+                raise ValueError(
+                    f"Dimensão das features mudou desde o treino: "
+                    f"esperado D={self._feature_mean.shape[0]}, recebido "
+                    f"D={X.shape[1]}. Re-treine o calibrador."
+                )
+            X = (X - self._feature_mean) / self._feature_std
+
         probs = self.logreg.predict_proba(X)
         return np.asarray(probs, dtype=np.float64)
 
@@ -227,6 +277,9 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "logreg": self.logreg,
             "is_fitted": self._is_fitted,
             "best_C_": self.best_C_,
+            # Standardização (None quando não foi usada).
+            "feature_mean": self._feature_mean,
+            "feature_std": self._feature_std,
         }
 
         path_obj = Path(path)
@@ -254,6 +307,12 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         self._is_fitted = bool(payload.get("is_fitted", False))
         best_c = payload.get("best_C_")
         self.best_C_ = float(best_c) if best_c is not None else None
+        # Standardização (pickles antigos sem essas keys retornam None,
+        # equivalente a "não usou standardização" — comportamento legado).
+        fm = payload.get("feature_mean")
+        fs = payload.get("feature_std")
+        self._feature_mean = np.asarray(fm, dtype=np.float64) if fm is not None else None
+        self._feature_std = np.asarray(fs, dtype=np.float64) if fs is not None else None
 
     # =========================================================================
     # AUXILIARES

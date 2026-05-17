@@ -61,6 +61,21 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         )}
     )
 
+    standardize_features: bool = field(
+        default=False,
+        metadata={"help": (
+            "Quando True E o input X for matriz multivariada (N, D) com D > 1, "
+            "aplica z-score por feature (μ, σ aprendidos no fit) antes do "
+            "LogReg. Necessário em score vectorization quando os sistemas "
+            "têm escalas dispares (ex: Cosseno em [-0.5, +0.5] + PLDA em "
+            "[-200, +60]). Sem standardização, a L2 do sklearn penaliza pesos "
+            "uniformemente, distorcendo a contribuição relativa das features. "
+            "Para X 1D (calibração univariada normal), o flag é ignorado. "
+            "μ/σ são persistidos com o modelo e aplicados automaticamente em "
+            "score_calibration (treino/validação/casework)."
+        )}
+    )
+
     def __post_init__(self) -> None:
         """
         Validação defensiva mínima do DTO.

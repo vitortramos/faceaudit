@@ -542,11 +542,12 @@ _PLDA_CONFIG_TOOLTIPS = {
 
 
 _LOGREG_CONFIG_LABELS = {
-    "C":              "C (regularização inversa)",
-    "use_gridsearch": "Otimizar C via GridSearch",
-    "c_grid":         "Grade de C (GridSearch)",
-    "cv_folds":       "Folds do CV (GridSearch)",
-    "scoring":        "Métrica do GridSearch",
+    "C":                     "C (regularização inversa)",
+    "use_gridsearch":        "Otimizar C via GridSearch",
+    "c_grid":                "Grade de C (GridSearch)",
+    "cv_folds":              "Folds do CV (GridSearch)",
+    "scoring":               "Métrica do GridSearch",
+    "standardize_features":  "Standardizar features (score vectorization)",
 }
 
 _LOGREG_CONFIG_TOOLTIPS = {
@@ -573,6 +574,18 @@ _LOGREG_CONFIG_TOOLTIPS = {
         "Ideal para calibradores.\n"
         "- 'roc_auc': otimiza separabilidade, não calibração. Útil "
         "quando o objetivo é apenas ranking.",
+    "standardize_features":
+        "Quando ATIVO, aplica z-score por feature (μ, σ aprendidos no "
+        "treino) antes do LogReg. Necessário em score vectorization quando "
+        "os sistemas têm escalas muito diferentes (ex: Cosseno em [-0.5, "
+        "+0.5] + PLDA em [-200, +60]). Sem standardização, a regularização "
+        "L2 penaliza pesos uniformemente, distorcendo a contribuição "
+        "relativa das features.\n\n"
+        "Só ativa quando X tem shape (N, D) com D > 1 (multivariado). "
+        "Para calibração univariada normal (D=1), o flag é ignorado. "
+        "μ/σ são persistidos com o modelo e re-aplicados automaticamente "
+        "em validação e casework.\n\n"
+        "Default: desativado (preserva comportamento legado).",
 }
 
 
