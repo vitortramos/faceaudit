@@ -126,7 +126,7 @@ class StrategyManagerV2View(QtWidgets.QWidget):
 
         # Left panel placeholder — substituído por LeftPanelWidget pelo controller
         self.left_panel_placeholder = QtWidgets.QWidget()
-        self.left_panel_placeholder.setMinimumWidth(200)
+        self.left_panel_placeholder.setMinimumWidth(180)
         self.left_panel_placeholder.setMaximumWidth(500)
 
         # Editor de estratégia — placeholder substituído pelo controller via
@@ -137,14 +137,19 @@ class StrategyManagerV2View(QtWidgets.QWidget):
 
         self._workspace_splitter.addWidget(self.left_panel_placeholder)
         self._workspace_splitter.addWidget(self.strategy_editor_placeholder)
-        self._workspace_splitter.setSizes([280, 700])
+        # Tamanhos default reduzidos pra MacBook 14" (1512px):
+        # 220 left + 700 editor = 920 base (cabe sem cortar).
+        self._workspace_splitter.setSizes([220, 700])
 
         layout.addWidget(self._workspace_splitter)
         return page
 
     def set_left_panel(self, widget: QtWidgets.QWidget) -> None:
         """Substitui o placeholder do painel esquerdo pelo widget real."""
-        widget.setMinimumWidth(200)
+        # Mínimo alinhado com o LeftPanelWidget.setMinimumWidth(180)
+        # do próprio widget — sem isso, esse setMinimumWidth aqui
+        # sobrescreve o do construtor e quebra layouts em telas pequenas.
+        widget.setMinimumWidth(180)
         widget.setMaximumWidth(500)
         self._workspace_splitter.replaceWidget(0, widget)
         self.left_panel_placeholder.hide()
