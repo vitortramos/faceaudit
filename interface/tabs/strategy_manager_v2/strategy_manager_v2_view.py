@@ -165,10 +165,20 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         controla a largura interna. O splitter então acomoda
         automaticamente — left vai pra 12px, editor pega o resto. Total
         da janela inalterado.
+
+        Trava de geometria: captura `geometry()` da MainWindow antes
+        de qualquer mudança e força de volta depois. Sem isso, quando
+        o left panel encolhe pra 12px o splitter respeita o sizeHint
+        natural do editor à direita (que pode ser maior que a tela em
+        MacBook 14") e empurra a janela inteira além da tela.
         """
         if self._workspace_splitter is None:
             return
         self._workspace_splitter.setChildrenCollapsible(True)
+
+        # Captura geometria da janela ANTES do toggle.
+        main_window = self.window()
+        geo_before = main_window.geometry() if main_window is not None else None
 
         left = self.left_panel_placeholder
         self._left_panel_collapsed = not self._left_panel_collapsed
@@ -188,6 +198,13 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                 self._workspace_splitter.setSizes(
                     [left_w, max(total - left_w, 0)]
                 )
+
+        # Restaura geometria da janela. `setGeometry` é síncrono e
+        # imediatamente trunca o sizeHint propagado do editor — sem
+        # isso, a janela cresceria pra atender o sizeHint natural do
+        # editor (que em telas pequenas é maior que a tela disponível).
+        if geo_before is not None and main_window is not None:
+            main_window.setGeometry(geo_before)
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
