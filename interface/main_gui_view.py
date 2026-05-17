@@ -52,6 +52,31 @@ class MainGuiView(QtWidgets.QMainWindow):
         # Folga pequena pra evitar 1px de excesso por arredondamento de
         # bordas de janela do macOS.
         self.setMaximumSize(avail.width(), avail.height())
+        self._screen_max_w = avail.width()
+        self._screen_max_h = avail.height()
+
+    def resizeEvent(self, event):
+        """Hard cap: se a janela tenta crescer além da tela, força
+        volta. Necessário porque Qt no macOS prioriza `minimumSize`
+        do conteúdo sobre `setMaximumSize` (QTBUG-72571) — quando o
+        layout interno propaga um min maior que a tela, a janela
+        cresce e sai pelo lado. Aqui interceptamos e cortamos.
+        """
+        super().resizeEvent(event)
+        max_w = getattr(self, "_screen_max_w", None)
+        max_h = getattr(self, "_screen_max_h", None)
+        if max_w is None or max_h is None:
+            return
+        new_size = event.size()
+        if new_size.width() > max_w or new_size.height() > max_h:
+            target_w = min(new_size.width(), max_w)
+            target_h = min(new_size.height(), max_h)
+            # singleShot evita re-entrância — resize dentro do
+            # resizeEvent geralmente é OK mas singleShot é mais
+            # seguro contra loops.
+            QtCore.QTimer.singleShot(
+                0, lambda w=target_w, h=target_h: self.resize(w, h)
+            )
 
     def _apply_main_tabs_style(self):
         """Estilo Office accent bar nas tabs principais — mesma família
