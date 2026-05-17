@@ -186,9 +186,20 @@ class StrategyManagerV2View(QtWidgets.QWidget):
             return
         self._workspace_splitter.setChildrenCollapsible(True)
 
-        # Captura geometria da janela ANTES do toggle.
+        # HACK: setFixedSize na MainWindow durante o toggle.
+        # Razão: as abordagens "limpas" (Ignored policy, setMaximumSize
+        # na MainWindow, setMinimumWidth(0) nos widgets, setStretchFactor)
+        # falharam em produção no macOS — Qt reagenda o resize do
+        # `minimumSizeHint` agregado do splitter ANTES dos constraints
+        # serem aplicados. setFixedSize trava fisicamente a janela
+        # durante o ciclo de relayout do toggle, e liberamos depois.
+        # Refs: QTBUG-72571 (QSplitter cresce além do disponível);
+        # Qt forum discussão de hack setFixedSize como workaround.
         main_window = self.window()
-        geo_before = main_window.geometry() if main_window is not None else None
+        locked_size = None
+        if main_window is not None:
+            locked_size = main_window.size()
+            main_window.setFixedSize(locked_size)
 
         left = self.left_panel_placeholder
         self._left_panel_collapsed = not self._left_panel_collapsed
@@ -209,11 +220,23 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                     [left_w, max(total - left_w, 0)]
                 )
 
-        # Com `Ignored` no editor + `setMinimumWidth(0)` no left ao
-        # colapsar, o splitter não propaga mais o minimumSizeHint
-        # pra cima — a janela não cresce. setGeometry de restauração
-        # virou redundante; remove pra evitar piscadas em monitores
-        # high-refresh.
+        # Libera a trava de size DEPOIS do tick atual — garante que
+        # todo o relayout do collapse processou antes de devolver
+        # o controle de resize à janela.
+        if main_window is not None and locked_size is not None:
+            def _release_lock(mw=main_window, sz=locked_size):
+                mw.setMinimumSize(0, 0)
+                mw.setMaximumSize(16777215, 16777215)
+                # Re-aplica o cap da tela (sobrescreve QWIDGETSIZE_MAX
+                # acima pra preservar a invariante "janela não passa
+                # do display").
+                if hasattr(mw, "_apply_screen_max_size"):
+                    mw._apply_screen_max_size()
+                # Restaura o size travado — sem isso a janela pode
+                # ficar com a largura fixa que travamos como "novo"
+                # tamanho preferido.
+                mw.resize(sz)
+            QtCore.QTimer.singleShot(0, _release_lock)
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
