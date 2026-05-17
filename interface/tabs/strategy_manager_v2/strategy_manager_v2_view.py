@@ -158,42 +158,41 @@ class StrategyManagerV2View(QtWidgets.QWidget):
     def toggle_left_panel(self) -> None:
         """
         Alterna entre painel lateral visível e recolhido. Quando recolhido,
-        o splitter dá toda a largura para a área principal — útil em telas
-        pequenas (ex: MacBook 14&quot;) durante edição intensa de instruções.
+        o conteúdo do LeftPanelWidget some mas a barra fina de toggle
+        (12px à direita do painel) permanece visível pra re-expandir.
 
-        Implementação: NÃO usa `hide()` no widget — isso faria o splitter
-        soltar o widget do layout e o editor à direita expandir até o
-        `sizeHint` natural (que pode ser muito maior que a tela). Em
-        vez disso, força `setChildrenCollapsible(True)` e `setSizes([0,
-        total])` — mantém a largura total da janela inalterada,
-        independente do `minimumWidth` do left panel.
+        Delega ao próprio `LeftPanelWidget.set_collapsed(...)` que
+        controla a largura interna. O splitter então acomoda
+        automaticamente — left vai pra 12px, editor pega o resto. Total
+        da janela inalterado.
         """
         if self._workspace_splitter is None:
             return
         self._workspace_splitter.setChildrenCollapsible(True)
+
+        left = self.left_panel_placeholder
+        self._left_panel_collapsed = not self._left_panel_collapsed
+        if hasattr(left, "set_collapsed"):
+            left.set_collapsed(self._left_panel_collapsed)
+        # Força redistribuição imediata respeitando a nova largura
+        # mínima/máxima do left panel — editor recebe o que sobra.
         sizes = self._workspace_splitter.sizes()
         total = sum(sizes) if sizes else 0
-
-        if self._left_panel_collapsed:
-            # Restaura: usa os tamanhos salvos, mas ajustados pro total
-            # atual (a janela pode ter sido redimensionada enquanto o
-            # painel estava recolhido — não queremos forçar tamanho
-            # antigo).
-            saved = self._saved_splitter_sizes or [220, 700]
-            ratio = saved[0] / max(sum(saved), 1)
-            left_w = int(round(total * ratio)) if total > 0 else saved[0]
-            right_w = max(total - left_w, 0) if total > 0 else saved[1]
-            self._workspace_splitter.setSizes([left_w, right_w])
-            self._left_panel_collapsed = False
-        else:
-            if sizes and sizes[0] > 0:
-                self._saved_splitter_sizes = list(sizes)
-            # Recolhe sem mexer no total — left vai pra 0, editor pega
-            # a largura inteira.
-            self._workspace_splitter.setSizes([0, total])
-            self._left_panel_collapsed = True
+        if total > 0:
+            if self._left_panel_collapsed:
+                self._workspace_splitter.setSizes([12, total - 12])
+            else:
+                saved = self._saved_splitter_sizes or [220, 700]
+                ratio = saved[0] / max(sum(saved), 1)
+                left_w = max(180, int(round(total * ratio)))
+                self._workspace_splitter.setSizes(
+                    [left_w, max(total - left_w, 0)]
+                )
 
         # Atualiza label do botão na toolbar, se existir.
+        # Toolbar btn não é mais necessário (a barra fina cobre o caso
+        # de re-expandir), mas o set é benigno — mantém comportamento
+        # consistente caso seja revertido.
         toolbar = getattr(self, "project_toolbar", None)
         if toolbar is not None and hasattr(toolbar, "set_left_panel_collapsed"):
             toolbar.set_left_panel_collapsed(self._left_panel_collapsed)

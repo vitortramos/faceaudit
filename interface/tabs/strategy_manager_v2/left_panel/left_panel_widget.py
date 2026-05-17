@@ -64,34 +64,18 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self._init_ui()
 
     def _init_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
+        # Layout externo horizontal: [conteúdo (fluido) | barra fina
+        # de toggle (largura fixa, altura cheia)]. A barra fina
+        # SOBREVIVE ao colapso — só o conteúdo é escondido, deixando
+        # a barra visível pra re-expandir.
+        outer = QtWidgets.QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self._content = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(self._content)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        # Header com botão de recolher alinhado à direita. Faz par com o
-        # botão da toolbar (esse aqui sempre visível quando o painel está
-        # aberto; o da toolbar aparece só quando colapsado pra permitir
-        # re-expandir).
-        header_row = QtWidgets.QHBoxLayout()
-        header_row.setContentsMargins(4, 2, 4, 2)
-        header_row.setSpacing(0)
-        header_row.addStretch(1)
-        self.btn_toggle_collapse = QtWidgets.QPushButton("◀")
-        self.btn_toggle_collapse.setToolTip(
-            "Recolher painel lateral (Cmd+B)",
-        )
-        self.btn_toggle_collapse.setFixedSize(24, 22)
-        self.btn_toggle_collapse.setStyleSheet(
-            "QPushButton { border: 1px solid #c0c8d0; border-radius: 3px; "
-            "background: white; font-size: 12px; padding: 0; } "
-            "QPushButton:hover { background: #e8f0fe; "
-            "border-color: #4a90d9; }"
-        )
-        self.btn_toggle_collapse.clicked.connect(
-            self.toggle_collapse_requested,
-        )
-        header_row.addWidget(self.btn_toggle_collapse)
-        layout.addLayout(header_row)
 
         # Splitter principal: estratégias | recursos
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
@@ -162,6 +146,39 @@ class LeftPanelWidget(QtWidgets.QWidget):
 
         layout.addWidget(splitter)
 
+        # Adiciona o conteúdo (fluido) ao layout externo
+        outer.addWidget(self._content, 1)
+
+        # Barra fina vertical clicável de toggle. Altura cheia (Expanding),
+        # largura fixa (~12px). Estilo: fundo discreto + setinha pequena
+        # centralizada. Hover destaca pra deixar claro que é clicável.
+        self._toggle_strip = QtWidgets.QPushButton("◀")
+        self._toggle_strip.setToolTip(
+            "Recolher / expandir painel lateral (Cmd+B)",
+        )
+        self._toggle_strip.setFixedWidth(12)
+        self._toggle_strip.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        self._toggle_strip.setCursor(
+            QtCore.Qt.CursorShape.PointingHandCursor,
+        )
+        self._toggle_strip.setStyleSheet(
+            "QPushButton { "
+            "    background: #ecf0f3; "
+            "    border: none; "
+            "    border-left: 1px solid #d0d6dc; "
+            "    color: #66707a; "
+            "    font-size: 9px; "
+            "    padding: 0; "
+            "} "
+            "QPushButton:hover { background: #d8e4f0; color: #1976d2; } "
+            "QPushButton:pressed { background: #c5d4e3; }"
+        )
+        self._toggle_strip.clicked.connect(self.toggle_collapse_requested)
+        outer.addWidget(self._toggle_strip, 0)
+
         # Conexões internas
         self.strategy_list.strategy_selected.connect(self.strategy_selected)
         self.strategy_list.strategy_opened.connect(self.strategy_opened)
@@ -186,6 +203,21 @@ class LeftPanelWidget(QtWidgets.QWidget):
         )
 
     # ── Public API ────────────────────────────────────────────────────────────
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        """Esconde/mostra o conteúdo do painel mantendo a barra fina
+        de toggle visível. Quando colapsado: o widget como um todo
+        ocupa apenas 12px (largura da barra). Quando expandido:
+        respeita os mínimos/máximos normais (180–380px).
+        """
+        self._content.setVisible(not collapsed)
+        self._toggle_strip.setText("▶" if collapsed else "◀")
+        if collapsed:
+            self.setMinimumWidth(12)
+            self.setMaximumWidth(12)
+        else:
+            self.setMinimumWidth(180)
+            self.setMaximumWidth(380)
 
     def populate_strategies(
         self,

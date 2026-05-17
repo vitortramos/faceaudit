@@ -219,16 +219,13 @@ class ProjectToolbar(QFrame):
     # ── API pública (preservada — usada pelo controller) ────────────
 
     def set_left_panel_collapsed(self, collapsed: bool) -> None:
-        """Atualiza o label do botão para refletir o estado atual do
-        painel. Botão aqui na toolbar fica VISÍVEL APENAS quando o
-        painel está colapsado — quando aberto, o botão equivalente
-        vive dentro do próprio LeftPanelWidget (mais intuitivo, evita
-        botão "perdido" no canto da toolbar)."""
-        self.btn_toggle_left_panel.setText(
-            _LEFT_PANEL_LABEL_COLLAPSED
-            if collapsed else _LEFT_PANEL_LABEL_EXPANDED
-        )
-        self.btn_toggle_left_panel.setVisible(collapsed)
+        """No-op visual — antes esse método mostrava/escondia um botão
+        de toggle na toolbar. Agora o toggle vive numa barra fina
+        clicável dentro do próprio LeftPanelWidget (estilo VSCode), que
+        sobrevive ao colapso pra permitir re-expandir. O botão aqui na
+        toolbar fica permanentemente escondido — mantido pra compat
+        de assinatura com o controller, mas sem efeito visual."""
+        self.btn_toggle_left_panel.setVisible(False)
 
     def set_project_open(self, is_open: bool) -> None:
         """Habilita/desabilita botões que dependem de um projeto aberto."""
