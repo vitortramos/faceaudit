@@ -236,14 +236,28 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         # o controle de resize à janela.
         if main_window is not None and locked_size is not None:
             def _release_lock(mw=main_window, sz=locked_size):
-                print(f"[toggle dbg] 4_pre_release: mw_size={mw.size().width()}x{mw.size().height()}")
+                print(f"[toggle dbg] 4_pre_release: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
                 mw.setMinimumSize(0, 0)
-                mw.setMaximumSize(16777215, 16777215)
-                if hasattr(mw, "_apply_screen_max_size"):
-                    mw._apply_screen_max_size()
+                # CRÍTICO: cap absoluto no max baseado na tela. Mantém
+                # esse cap permanente — sobrescreve qualquer min que o
+                # conteúdo tente impor.
+                screen = mw.screen() or QtWidgets.QApplication.primaryScreen()
+                if screen is not None:
+                    avail = screen.availableGeometry()
+                    mw.setMaximumSize(avail.width(), avail.height())
+                else:
+                    mw.setMaximumSize(16777215, 16777215)
                 mw.resize(sz)
-                print(f"[toggle dbg] 5_pos_release: mw_size={mw.size().width()}x{mw.size().height()}")
+                print(f"[toggle dbg] 5_pos_release: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
             QtCore.QTimer.singleShot(0, _release_lock)
+
+            # Captura adicional em ticks posteriores pra detectar
+            # crescimento tardio do event loop.
+            def _dbg_later(tag: str, mw=main_window):
+                print(f"[toggle dbg] {tag}: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
+            QtCore.QTimer.singleShot(50, lambda: _dbg_later("6_apos_50ms"))
+            QtCore.QTimer.singleShot(250, lambda: _dbg_later("7_apos_250ms"))
+            QtCore.QTimer.singleShot(1000, lambda: _dbg_later("8_apos_1s"))
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
