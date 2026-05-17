@@ -204,6 +204,25 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                 f"editor_sizeHint={self.strategy_editor_placeholder.sizeHint().width()}"
             )
         _dbg("0_inicio")
+
+        # DEBUG: percorre a árvore de widgets do MainWindow e lista
+        # quem tem minimumSizeHint > 500 (suspeitos do crescimento).
+        if main_window is not None:
+            from PyQt6.QtWidgets import QWidget
+            offenders = []
+            for w in main_window.findChildren(QWidget):
+                if not w.isVisible():
+                    continue
+                msh = w.minimumSizeHint().width()
+                ms = w.minimumSize().width()
+                if msh > 500 or ms > 500:
+                    offenders.append(
+                        (msh, ms, type(w).__name__, w.objectName() or "(no name)")
+                    )
+            offenders.sort(reverse=True)
+            print("[toggle dbg] widgets com min > 500px:")
+            for msh, ms, cls, name in offenders[:15]:
+                print(f"  msh={msh:5d} ms={ms:5d}  {cls:30s}  {name}")
         locked_size = None
         if main_window is not None:
             locked_size = main_window.size()
