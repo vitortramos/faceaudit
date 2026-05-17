@@ -47,6 +47,11 @@ class LeftPanelWidget(QtWidgets.QWidget):
     rename_resource_requested = QtCore.pyqtSignal(object, str)  # (res, new_name) — Fase 4
     edit_dataset_in_manager_requested = QtCore.pyqtSignal(str)  # path absoluto
 
+    # Toggle do próprio painel — botão integrado no header (canto sup. direito).
+    # Faz par com o botão da toolbar (esse último visível apenas quando o
+    # painel está colapsado, pra permitir re-expandir).
+    toggle_collapse_requested = QtCore.pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         # Mínimo enxuto pra caber em telas pequenas (MacBook 14"
@@ -62,6 +67,31 @@ class LeftPanelWidget(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+
+        # Header com botão de recolher alinhado à direita. Faz par com o
+        # botão da toolbar (esse aqui sempre visível quando o painel está
+        # aberto; o da toolbar aparece só quando colapsado pra permitir
+        # re-expandir).
+        header_row = QtWidgets.QHBoxLayout()
+        header_row.setContentsMargins(4, 2, 4, 2)
+        header_row.setSpacing(0)
+        header_row.addStretch(1)
+        self.btn_toggle_collapse = QtWidgets.QPushButton("◀")
+        self.btn_toggle_collapse.setToolTip(
+            "Recolher painel lateral (Cmd+B)",
+        )
+        self.btn_toggle_collapse.setFixedSize(24, 22)
+        self.btn_toggle_collapse.setStyleSheet(
+            "QPushButton { border: 1px solid #c0c8d0; border-radius: 3px; "
+            "background: white; font-size: 12px; padding: 0; } "
+            "QPushButton:hover { background: #e8f0fe; "
+            "border-color: #4a90d9; }"
+        )
+        self.btn_toggle_collapse.clicked.connect(
+            self.toggle_collapse_requested,
+        )
+        header_row.addWidget(self.btn_toggle_collapse)
+        layout.addLayout(header_row)
 
         # Splitter principal: estratégias | recursos
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)

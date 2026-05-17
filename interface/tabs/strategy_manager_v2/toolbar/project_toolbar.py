@@ -66,6 +66,10 @@ class ProjectToolbar(QFrame):
         self._wire_button_aliases()
         self._connect_internal_signals()
         self.set_project_open(False)
+        # Painel inicia expandido — esconde o botão da toolbar
+        # (equivalente vive no header do LeftPanelWidget). Aparece
+        # automaticamente quando o usuário colapsa o painel.
+        self.btn_toggle_left_panel.setVisible(False)
 
     # ── Style + structure ────────────────────────────────────────────
 
@@ -216,11 +220,15 @@ class ProjectToolbar(QFrame):
 
     def set_left_panel_collapsed(self, collapsed: bool) -> None:
         """Atualiza o label do botão para refletir o estado atual do
-        painel."""
+        painel. Botão aqui na toolbar fica VISÍVEL APENAS quando o
+        painel está colapsado — quando aberto, o botão equivalente
+        vive dentro do próprio LeftPanelWidget (mais intuitivo, evita
+        botão "perdido" no canto da toolbar)."""
         self.btn_toggle_left_panel.setText(
             _LEFT_PANEL_LABEL_COLLAPSED
             if collapsed else _LEFT_PANEL_LABEL_EXPANDED
         )
+        self.btn_toggle_left_panel.setVisible(collapsed)
 
     def set_project_open(self, is_open: bool) -> None:
         """Habilita/desabilita botões que dependem de um projeto aberto."""
