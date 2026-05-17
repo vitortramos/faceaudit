@@ -133,34 +133,48 @@ class ProjectToolbar(QFrame):
         self.tabs.addTab(self.biblioteca_ribbon, "Biblioteca de Configurações")
         self.tabs.setCurrentIndex(0)
 
-        # Botão de toggle do painel — corner widget da QTabBar.
-        # Sempre visível independente da aba selecionada (faz sentido
-        # porque é uma ação de visualização, não de projeto/biblioteca).
+        # Botão de toggle do painel. Histórico:
+        # - Tentativa 1: corner widget da QTabBar. Em telas pequenas
+        #   (MacBook 14") o Qt promovia o widget pra uma linha SEPARADA
+        #   acima das tabs e ainda sobrepunha a borda do
+        #   `QTabWidget::pane` (linha fina aparente).
+        # - Solução: empilhar [tabs | btn] num QHBoxLayout EXTERNO,
+        #   garantindo que o botão fica na MESMA linha das tabs,
+        #   alinhado verticalmente, sem reflow exótico.
         self.btn_toggle_left_panel = QtWidgets.QPushButton(
             _LEFT_PANEL_LABEL_EXPANDED,
         )
         self.btn_toggle_left_panel.setToolTip(
             "Mostrar/esconder o painel lateral (Cmd+B)",
         )
-        # Botão compacto + fixed size pra que o corner widget do
-        # QTabWidget não tente promovê-lo pra uma linha separada quando
-        # a largura disponível na barra de tabs aperta. Margem zero pra
-        # não sobrepor a borda do QTabWidget::pane (que gerava a "linha
-        # quebrada" cosmética acima do botão em telas pequenas).
         self.btn_toggle_left_panel.setFixedSize(28, 24)
         self.btn_toggle_left_panel.setStyleSheet(
             "QPushButton { "
             "    border: 1px solid #bbb; border-radius: 4px; "
             "    background: white; font-size: 13px; "
-            "    margin: 2px 6px 0 6px; padding: 0; "
+            "    padding: 0; "
             "} "
             "QPushButton:hover { background: #e8f0fe; border-color: #4a90d9; }"
         )
-        self.tabs.setCornerWidget(
-            self.btn_toggle_left_panel, QtCore.Qt.Corner.TopRightCorner,
-        )
 
-        main_layout.addWidget(self.tabs)
+        # Container horizontal: tabs (expand) | btn (fixo). Alinha o
+        # botão no topo direito, no mesmo nível que a primeira linha de
+        # tabs do QTabWidget.
+        tabs_row = QtWidgets.QHBoxLayout()
+        tabs_row.setContentsMargins(0, 0, 0, 0)
+        tabs_row.setSpacing(4)
+        tabs_row.addWidget(self.tabs, 1)
+        btn_holder = QtWidgets.QWidget()
+        btn_holder_layout = QtWidgets.QVBoxLayout(btn_holder)
+        btn_holder_layout.setContentsMargins(0, 4, 4, 0)
+        btn_holder_layout.addWidget(
+            self.btn_toggle_left_panel,
+            alignment=QtCore.Qt.AlignmentFlag.AlignTop,
+        )
+        btn_holder_layout.addStretch()
+        tabs_row.addWidget(btn_holder, 0)
+
+        main_layout.addLayout(tabs_row)
 
     def _wire_button_aliases(self) -> None:
         """Cria atalhos `self.btn_<x>` delegando aos ribbons. Preserva
