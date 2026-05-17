@@ -19,6 +19,39 @@ class MainGuiView(QtWidgets.QMainWindow):
         self.main_tabs = self.findChild(QtWidgets.QTabWidget)
         self._apply_main_tabs_style()
         self._setup_corner_config_button()
+        # Trava a largura/altura máxima da janela à área disponível da
+        # tela. Sem isso, widgets internos com `sizeHint` natural maior
+        # que a tela (caso típico em MacBook 14" com Strategy Manager V2
+        # quando o painel lateral é colapsado e o editor expande pra
+        # ~1300px) arrastam a MainWindow pra fora dos limites do display
+        # — usuário não consegue ver o canto direito.
+        self._apply_screen_max_size()
+        self.windowHandle = None
+        # Re-aplica em mudança de tela (laptop conectado a monitor externo
+        # e voltando à tela built-in, por exemplo).
+        try:
+            QtWidgets.QApplication.instance().screenAdded.connect(
+                lambda _s: self._apply_screen_max_size()
+            )
+            QtWidgets.QApplication.instance().screenRemoved.connect(
+                lambda _s: self._apply_screen_max_size()
+            )
+        except Exception:
+            pass
+
+    def _apply_screen_max_size(self) -> None:
+        """Limita maximumSize da janela ao `availableGeometry` da tela
+        atual (já desconta dock + menu bar do macOS)."""
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        screen = self.screen() or app.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        # Folga pequena pra evitar 1px de excesso por arredondamento de
+        # bordas de janela do macOS.
+        self.setMaximumSize(avail.width(), avail.height())
 
     def _apply_main_tabs_style(self):
         """Estilo Office accent bar nas tabs principais — mesma família
