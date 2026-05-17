@@ -146,6 +146,9 @@ class StrategyResourceLoaderService:
         if resource_type == StrategyResourceType.MINING_CONFIG:
             return self._load_mining_config(path)
 
+        if resource_type == StrategyResourceType.SPLIT_CONFIG:
+            return self._load_split_config(path)
+
         # Modelos treinados, dados de trajetória, resultados de validação e
         # visualizações forenses são persistidos como pickle (preserva
         # ndarray e estrutura Python).
@@ -227,6 +230,19 @@ class StrategyResourceLoaderService:
             return ComparisonMiningConfig.from_dict(data)
         except Exception as exc:
             msg = f"falha ao carregar mining config '{path}': {exc!r}"
+            self._last_error = msg
+            warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
+            return None
+
+    def _load_split_config(self, path: Path):
+        """
+        Carrega uma SplitConfig a partir de um arquivo .json.
+        """
+        from faceaudit.models.split_config import SplitConfig
+        try:
+            return SplitConfig.from_json(path)
+        except Exception as exc:
+            msg = f"falha ao carregar split config '{path}': {exc!r}"
             self._last_error = msg
             warnings.warn(f"[ResourceLoader] {msg}", RuntimeWarning, stacklevel=2)
             return None

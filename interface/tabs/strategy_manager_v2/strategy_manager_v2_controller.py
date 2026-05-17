@@ -3391,6 +3391,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._edit_pipeline_config_resource(target_resource)
         elif rtype == StrategyResourceType.MINING_CONFIG:
             self._edit_mining_config_resource(target_resource)
+        elif rtype == StrategyResourceType.SPLIT_CONFIG:
+            self._edit_split_config_resource(target_resource)
         else:
             QtWidgets.QMessageBox.warning(
                 self._view,
@@ -3714,6 +3716,53 @@ class StrategyManagerV2Controller(QtCore.QObject):
             QtWidgets.QMessageBox.information(
                 self._view,
                 "Mining config atualizado",
+                f"A configuração de '{target_resource.resource_id}' foi atualizada e salva.",
+            )
+
+    def _edit_split_config_resource(self, target_resource) -> None:
+        """Edita um SPLIT_CONFIG via NewSplitConfigDialogController em
+        modo edit + lock_name (mesmo padrão do mining/pipeline).
+        Hidrata o payload sob demanda, salva via UPSERT na definition
+        afetada, invalida em cascata os dependentes."""
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.models.split_config import SplitConfig
+        from interface.tabs.strategy_manager.new_split_config_dialog.new_split_config_dialog_controller import (
+            NewSplitConfigDialogController,
+        )
+
+        if not self._hydrate_resource_if_needed(target_resource):
+            return
+        if not isinstance(target_resource.payload, SplitConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Split config indisponível",
+                "O payload carregado não é um SplitConfig válido.",
+            )
+            return
+
+        ctrl = NewSplitConfigDialogController(
+            parent=self._view,
+            config_to_edit=target_resource.payload,
+            lock_name=True,
+        )
+        new_config = ctrl.exec()
+        if new_config is None:
+            # Usuário cancelou.
+            return
+        if not isinstance(new_config, SplitConfig):
+            QtWidgets.QMessageBox.warning(
+                self._view,
+                "Edição inválida",
+                "A configuração editada não é um SplitConfig válido.",
+            )
+            return
+
+        if self._persist_edited_config_resource(
+            target_resource, new_config, StrategyArtifactType.SPLIT_CONFIG
+        ):
+            QtWidgets.QMessageBox.information(
+                self._view,
+                "Split config atualizado",
                 f"A configuração de '{target_resource.resource_id}' foi atualizada e salva.",
             )
 

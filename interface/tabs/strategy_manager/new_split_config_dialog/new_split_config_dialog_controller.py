@@ -7,20 +7,41 @@ class NewSplitConfigDialogController:
     Controller para o Diálogo de Criação/Edição de Configurações de Split (PLDA).
     Gerencia as validações, as travas dinâmicas da interface e a extração do DTO.
     """
-    def __init__(self, parent=None, config_to_edit: SplitConfig = None):
+    def __init__(
+        self,
+        parent=None,
+        config_to_edit: SplitConfig = None,
+        lock_name: bool = False,
+    ):
         self.view = NewSplitConfigDialogView(parent)
         self.config_to_edit = config_to_edit
+        self.lock_name = bool(lock_name)
         self.final_config = None
-        
+
         self._setup_connections()
-        
+
         # Se um objeto foi passado, estamos em modo de EDIÇÃO.
         if self.config_to_edit:
             self._load_config()
             self.view.setWindowTitle("Editar Configuração de Split")
         else:
             # Em modo de CRIAÇÃO, apenas força o estado inicial das travas
-            self._update_ui_state() 
+            self._update_ui_state()
+
+        # lock_name: usado quando a edição vem do botão ✎ ao lado de um
+        # dropdown na nova arch — o nome do recurso é o stem do arquivo
+        # em disco e não pode ser alterado por aqui (renomear será
+        # operação dedicada no painel esquerdo, ainda não implementada).
+        if self.lock_name:
+            self.view.name_input.setReadOnly(True)
+            self.view.name_input.setToolTip(
+                "O nome do recurso não pode ser alterado por aqui. "
+                "Renomear a config de split será uma operação dedicada "
+                "no painel esquerdo (ainda não disponível)."
+            )
+            self.view.name_input.setStyleSheet(
+                "QLineEdit { background-color: #f0f0f0; color: #555; }"
+            )
 
     def _setup_connections(self):
         """Conecta os sinais (events) da view aos métodos do controller."""

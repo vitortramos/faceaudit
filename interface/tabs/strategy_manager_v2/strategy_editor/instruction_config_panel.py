@@ -1189,11 +1189,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
     _EDITABLE_RESOURCE_TYPES = (
         StrategyResourceType.PIPELINE_CONFIG,
         StrategyResourceType.MINING_CONFIG,
+        StrategyResourceType.SPLIT_CONFIG,
     )
 
     _EDIT_TOOLTIPS = {
         StrategyResourceType.PIPELINE_CONFIG: "Editar a configuração de pipeline selecionada",
         StrategyResourceType.MINING_CONFIG: "Editar a configuração de mineração selecionada",
+        StrategyResourceType.SPLIT_CONFIG: "Editar a configuração de split selecionada",
     }
 
     def _wrap_combo_with_edit_button_if_needed(
