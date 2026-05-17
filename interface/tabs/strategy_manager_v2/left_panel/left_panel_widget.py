@@ -209,12 +209,21 @@ class LeftPanelWidget(QtWidgets.QWidget):
         de toggle visível. Quando colapsado: o widget como um todo
         ocupa apenas 12px (largura da barra). Quando expandido:
         respeita os mínimos/máximos normais (180–380px).
+
+        CRÍTICO: usa setMinimumWidth(0) ao colapsar (não 12), porque
+        qualquer valor > 0 vira piso somado ao minimumSizeHint do
+        editor no QSplitter — e esse piso é forçado pela MainWindow
+        no macOS mesmo com setMaximumSize, fazendo a janela crescer
+        além da tela. A largura visual de 12px vem do splitter.setSizes
+        externamente, não do widget aqui.
         """
         self._content.setVisible(not collapsed)
         self._toggle_strip.setText("▶" if collapsed else "◀")
         if collapsed:
-            self.setMinimumWidth(12)
-            self.setMaximumWidth(12)
+            # Min=0 (não força piso na soma do splitter), Max grande
+            # (não bloqueia se o usuário arrastar o handle).
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)  # QWIDGETSIZE_MAX
         else:
             self.setMinimumWidth(180)
             self.setMaximumWidth(380)

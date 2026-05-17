@@ -209,15 +209,11 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                     [left_w, max(total - left_w, 0)]
                 )
 
-        # Restaura geometria da janela em DOIS momentos:
-        # (1) síncrono agora, e (2) deferido via singleShot pro próximo
-        # tick do event loop. O Qt no macOS reagenda o resize do
-        # sizeHint propagado em alguns casos — só o sync não pega esses.
-        if geo_before is not None and main_window is not None:
-            main_window.setGeometry(geo_before)
-            QtCore.QTimer.singleShot(
-                0, lambda: main_window.setGeometry(geo_before)
-            )
+        # Com `Ignored` no editor + `setMinimumWidth(0)` no left ao
+        # colapsar, o splitter não propaga mais o minimumSizeHint
+        # pra cima — a janela não cresce. setGeometry de restauração
+        # virou redundante; remove pra evitar piscadas em monitores
+        # high-refresh.
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
@@ -233,12 +229,16 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         # com sizeHint somado ~1300-1400px. Sem Ignored na largura, o
         # splitter respeita esse sizeHint e propaga pra cima quando o
         # left panel encolhe — empurrando a MainWindow pra fora da tela.
-        # Ignored faz o widget se acomodar ao espaço DADO em vez de
-        # exigir o desejado.
+        # Ignored é a ÚNICA policy que faz o layout descartar `sizeHint`
+        # E `minimumSizeHint` (Maximum/Preferred ainda propagam o min).
         widget.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Ignored,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
+        # Belt-and-suspenders: piso zero no widget também, pra que
+        # nenhum filho interno do editor sub-repticiamente força um
+        # minimumSizeHint via algum setMinimumWidth herdado.
+        widget.setMinimumWidth(0)
         # Editor é o segundo widget do splitter (índice 1) — left panel é o 0.
         self._workspace_splitter.replaceWidget(1, widget)
         self.strategy_editor_placeholder.hide()
