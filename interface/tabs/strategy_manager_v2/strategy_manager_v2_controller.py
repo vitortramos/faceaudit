@@ -4735,26 +4735,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
             for defn in self._definitions:
                 modified = False
 
-                # Limpa campos `output_*_resource_id` das instruções que apontam
-                # para este resource_id, mantendo os campos como None.
+                # Limpa TODOS os campos (inputs e outputs) das instruções
+                # que apontam pra este resource_id. Antes só limpava
+                # outputs — inputs referenciando o recurso fantasma
+                # ficavam no DTO mesmo após o combo ser repopulado sem
+                # ele, deixando o estado inconsistente (combo vazio mas
+                # DTO com ID quebrado).
                 for instr in defn.instructions:
                     try:
                         specs = instr.get_resource_field_specs()
                     except Exception:
                         specs = []
+                    instr_modified = False
                     for spec in specs:
-                        if not spec.is_output:
-                            continue
                         if getattr(instr, spec.field_name, None) == resource.resource_id:
                             setattr(instr, spec.field_name, None)
-                            modified = True
-                    if modified and hasattr(instr, "_sync_declared_io"):
+                            instr_modified = True
+                    if instr_modified and hasattr(instr, "_sync_declared_io"):
                         try:
                             instr._sync_declared_io()
                         except Exception:
                             pass
-                    if modified:
+                    if instr_modified:
                         instructions_unexecuted.append(instr.instruction_id)
+                        modified = True
 
                 # Remove o recurso da lista de resources da definição.
                 if defn.get_resource_by_id(resource.resource_id) is not None:

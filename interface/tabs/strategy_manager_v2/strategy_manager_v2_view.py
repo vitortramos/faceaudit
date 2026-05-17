@@ -82,7 +82,7 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         icon.setStyleSheet("font-size: 60px; margin-bottom: 15px;")
         icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        title = QtWidgets.QLabel("Gerenciador de Estratégias (Nova Arquitetura)")
+        title = QtWidgets.QLabel("Gerenciador de Estratégias")
         title.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50;")
 
         subtitle = QtWidgets.QLabel(

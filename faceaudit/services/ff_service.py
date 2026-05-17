@@ -397,6 +397,7 @@ class FFService:
         bgr_aligned_faces: np.ndarray,
         *,
         models: Optional[List[str]] = None,
+        error_callback: Optional[Callable[[str], None]] = None,
     ) -> List[Optional[FFInfo]]:
         """Extrai embeddings + FIQA de **N faces alinhadas em paralelo**
         numa única chamada por modelo ao ONNX Runtime.
@@ -455,9 +456,10 @@ class FFService:
             try:
                 model_name, engine = self._resolve_engine(m)
             except Exception as e:
-                print(
+                msg = (
                     f"[FFService.batch] resolve_engine falhou pra '{m}': {e}"
                 )
+                (error_callback or print)(msg)
                 continue
 
             # Inferência batch do encoder.
@@ -472,10 +474,11 @@ class FFService:
                 else:
                     embeddings = rec_out[0]
             except Exception as e:
-                print(
+                msg = (
                     f"[FFService.batch] inferência batch falhou pra "
                     f"'{model_name}': {e}"
                 )
+                (error_callback or print)(msg)
                 continue
 
             # FIQA é feito UMA vez total (mesmo encoder em todos os engines).
@@ -576,6 +579,7 @@ class FFService:
         models: Optional[List[str]] = None,
         *,
         dataset: Optional[FaceDataset] = None,
+        error_callback: Optional[Callable[[str], None]] = None,
     ) -> FaceInfo:
         """
         Processa uma face, preenchendo `face_info.ff_info` com bbox,
@@ -651,7 +655,8 @@ class FFService:
                     setattr(ff_data, self._slot_for_model(model_name), emb)
 
             except Exception as e:
-                print(f"Error processing face {image_path} (model={m}): {e}")
+                msg = f"Error processing face {image_path} (model={m}): {e}"
+                (error_callback or print)(msg)
 
         if ff_data is not None:
             face_info.ff_info = ff_data
@@ -729,11 +734,22 @@ class FFService:
                 dataset, total_faces, model, models, progress_callback,
             )
         else:
+            # Adapter: erros por modelo dentro do process_face viram
+            # linhas de log no LogProgressDialog em vez de print()
+            # silencioso. Sem isso, falhas (ex: V4 com input
+            # incompatível) eram descobertas só olhando stdout.
+            def _err_cb(msg: str) -> None:
+                if progress_callback:
+                    progress_callback(f"⚠ {msg}", 0)
+                else:
+                    print(msg)
+
             for idx, face in enumerate(
                 tqdm(dataset, desc=f"Processando {dataset.name}", unit="face")
             ):
                 self.process_face(
                     face, model=model, models=models, dataset=dataset,
+                    error_callback=_err_cb,
                 )
                 if progress_callback:
                     pct = int(((idx + 1) / total_faces) * 95)
@@ -783,16 +799,26 @@ class FFService:
         buffer_crops: List[np.ndarray] = []
         buffer_faces: List[FaceInfo] = []
 
+        # Adapter que rebobina erros internos do batch helper como
+        # linhas de log no LogProgressDialog (via progress_callback).
+        # Sem isso, falhas por modelo (ex: V4 com shape de input
+        # incompatível) viravam print() silencioso pro terminal.
+        def _err_cb(msg: str) -> None:
+            if progress_callback:
+                progress_callback(f"⚠ {msg}", 0)
+            else:
+                print(msg)
+
         def flush() -> None:
             if not buffer_crops:
                 return
             arr = np.stack(buffer_crops, axis=0)
             try:
                 ff_infos = self.extract_embeddings_from_aligned_faces_batch(
-                    arr, models=target_models,
+                    arr, models=target_models, error_callback=_err_cb,
                 )
             except Exception as e:
-                print(
+                _err_cb(
                     f"[FFService] Falha no batch de tamanho {len(arr)}: {e}"
                 )
                 ff_infos = [None] * len(buffer_faces)
@@ -876,16 +902,25 @@ class FFService:
         buffer_crops: List[np.ndarray] = []
         buffer_faces: List[FaceInfo] = []
 
+        # Mesma motivação do helper cached: erros internos do batch
+        # precisam virar linhas de log no LogProgressDialog em vez de
+        # print() silencioso pro terminal.
+        def _err_cb(msg: str) -> None:
+            if progress_callback:
+                progress_callback(f"⚠ {msg}", 0)
+            else:
+                print(msg)
+
         def flush() -> None:
             if not buffer_crops:
                 return
             arr = np.stack(buffer_crops, axis=0)  # (N, 112, 112, 3)
             try:
                 ff_infos = self.extract_embeddings_from_aligned_faces_batch(
-                    arr, models=target_models,
+                    arr, models=target_models, error_callback=_err_cb,
                 )
             except Exception as e:
-                print(
+                _err_cb(
                     f"[FFService] Falha no batch de tamanho {len(arr)}: {e}"
                 )
                 ff_infos = [None] * len(buffer_faces)

@@ -1165,15 +1165,34 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         combo = QtWidgets.QComboBox()
         _make_combo_shrinkable(combo)
         combo.addItem("(nenhum)", userData=None)
+
+        # IDs dos outputs declarados pela própria instrução — não podem
+        # aparecer como opção de input (auto-feedback loop). Mesmo se a
+        # instrução já tiver sido executada antes e o output exista em
+        # disco como artefato, semanticamente um PIPELINE_APPLICATION
+        # não pode consumir o próprio dataset transformado como entrada.
+        own_output_ids: set = set()
+        try:
+            for own_spec in instr.get_resource_field_specs():
+                if own_spec.is_output:
+                    val = getattr(instr, own_spec.field_name, None)
+                    if val:
+                        own_output_ids.add(val)
+        except Exception:
+            pass
+
         for res in self._available_resources:
-            if res.resource_type in spec.accepted_types:
-                display = res.name if res.name else res.resource_id
-                combo.addItem(display, userData=res.resource_id)
-                combo.setItemData(
-                    combo.count() - 1,
-                    f"ID: {res.resource_id}\nTipo: {res.resource_type.value}",
-                    QtCore.Qt.ItemDataRole.ToolTipRole,
-                )
+            if res.resource_type not in spec.accepted_types:
+                continue
+            if res.resource_id in own_output_ids:
+                continue
+            display = res.name if res.name else res.resource_id
+            combo.addItem(display, userData=res.resource_id)
+            combo.setItemData(
+                combo.count() - 1,
+                f"ID: {res.resource_id}\nTipo: {res.resource_type.value}",
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
 
         current_val = getattr(instr, spec.field_name, None)
         if current_val:

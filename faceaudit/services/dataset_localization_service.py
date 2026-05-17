@@ -82,8 +82,16 @@ class DatasetLocalizationService:
         if any(not (p.startswith("/") or (len(p) > 2 and p[1] == ":")) for p in norm):
             return None
 
-        # Componentes do primeiro path como referência.
-        ref = norm[0].split("/")
+        # Componentes do primeiro path como referência, EXCLUINDO o
+        # último (que é sempre nome de arquivo). Com ≥2 paths, o loop
+        # naturalmente quebrava em algum diretório divergente (ou no
+        # nome do arquivo) e o prefixo retornado era o diretório-pai.
+        # Mas com 1 path único, nada diverge — `all(...)` é trivial —
+        # e `common` engloba o arquivo, deixando o `_rebase_prefix`
+        # substituir o path inteiro e produzir só o novo diretório
+        # sem nome de arquivo. Truncar o último componente aqui formaliza
+        # o invariante: prefixo é diretório, nunca arquivo.
+        ref = norm[0].split("/")[:-1]
         common: list[str] = []
         for i, comp in enumerate(ref):
             if all(len(p.split("/")) > i and p.split("/")[i] == comp for p in norm):
