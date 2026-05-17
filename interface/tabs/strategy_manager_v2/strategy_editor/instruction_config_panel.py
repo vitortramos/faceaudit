@@ -29,6 +29,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
     StrategyInstructionDefinition,
     ValueFieldSpec,
 )
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
@@ -147,6 +148,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._instruction: Optional[StrategyInstructionDefinition] = None
         self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
+        # Definition usada pra filtrar os dropdowns de input por ordem de
+        # execução das instruções (recursos produzidos por instruções
+        # posteriores não aparecem). Setada via `set_strategy_definition`
+        # pelo editor a cada `load_strategy` / `update_available_resources`.
+        # Independente de `_latest_definition` (visual runtime state).
+        self._strategy_definition: Optional[LRStrategyDefinition] = None
 
         # Raiz do projeto atual — usada para resolver `artifact_ref.path`
         # (relativo) em path absoluto para leitura do sidecar de stats
@@ -458,6 +465,19 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
     def set_available_resources(self, resources: List[StrategyResource]) -> None:
         self._available_resources = list(resources)
+        if self._instruction is not None:
+            self._rebuild_form()
+
+    def set_strategy_definition(
+        self, definition: Optional[LRStrategyDefinition]
+    ) -> None:
+        """Define a estratégia aberta no editor. Usada pelos dropdowns de
+        input pra filtrar derivados por ordem de execução (instruções
+        posteriores não devem aparecer como inputs de uma anterior).
+        Sem chamar isso, o filtro é desativado e mostra todos os
+        derivados — degradação segura.
+        """
+        self._strategy_definition = definition
         if self._instruction is not None:
             self._rebuild_form()
 
@@ -1181,10 +1201,49 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         except Exception:
             pass
 
+        # Outputs declarados por instruções ANTERIORES a `instr` na ordem
+        # de execução (preparation → validation → casework; dentro da
+        # fase, ordem da lista). Outputs de instruções POSTERIORES não
+        # entram — não estão produzidos no momento em que `instr` roda.
+        # Sem isso, derivados herdados por duplicate (estratégia clonada
+        # de outra com 20+ instruções já configuradas) apareciam todos
+        # no dropdown, mesmo aqueles produzidos por instruções que
+        # rodam DEPOIS — confunde o usuário e permite seleções inválidas.
+        upstream_output_ids: Optional[Set[str]] = None
+        defn_for_filter = (
+            self._strategy_definition or self._latest_definition
+        )
+        if defn_for_filter is not None and instr is not None:
+            upstream_output_ids = set()
+            try:
+                done = False
+                for phase_list in defn_for_filter._phase_lists():
+                    if done:
+                        break
+                    for prior in phase_list:
+                        if prior.instruction_id == instr.instruction_id:
+                            done = True
+                            break
+                        try:
+                            for ph in prior.get_output_resource_placeholders():
+                                upstream_output_ids.add(ph.resource_id)
+                        except Exception:
+                            pass
+            except Exception:
+                upstream_output_ids = None
+
         for res in self._available_resources:
             if res.resource_type not in spec.accepted_types:
                 continue
             if res.resource_id in own_output_ids:
+                continue
+            # Filtragem por ordem de execução: PRIMARY sempre passa;
+            # DERIVED só passa se produzido por instrução anterior.
+            if (
+                upstream_output_ids is not None
+                and res.category == ResourceCategory.DERIVED
+                and res.resource_id not in upstream_output_ids
+            ):
                 continue
             display = res.name if res.name else res.resource_id
             combo.addItem(display, userData=res.resource_id)

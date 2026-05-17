@@ -262,6 +262,11 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
         for phase_key, _ in _PHASES:
             instr_list, config_panel, results_panel = self._phase_widgets[phase_key]
+            # Propaga a definition pro panel pra que os dropdowns de input
+            # possam filtrar derivados por ordem de execução. Setar ANTES
+            # de set_available_resources evita um rebuild redundante (sem
+            # filtro aplicado).
+            config_panel.set_strategy_definition(definition)
             config_panel.set_available_resources(available_resources or [])
             instr_list.load_strategy(definition._get_phase_list(phase_key))
             config_panel.show_empty()
@@ -301,6 +306,11 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
     def update_available_resources(self, resources: List[StrategyResource]) -> None:
         for _, (_, config_panel, _) in self._phase_widgets.items():
+            # Re-sincroniza a definition em cada refresh — instruções
+            # podem ter sido adicionadas/removidas no editor desde o
+            # load_strategy inicial, o que muda a ordem de execução
+            # que alimenta o filtro dos dropdowns.
+            config_panel.set_strategy_definition(self._definition)
             config_panel.set_available_resources(resources)
 
     def show_empty(self) -> None:

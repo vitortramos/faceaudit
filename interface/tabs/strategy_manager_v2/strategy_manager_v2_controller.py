@@ -4885,9 +4885,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
           3. `apply_to_training_datasets` em PIPELINE_TRAINING desligado
              depois de já ter rodado: outputs deixam de ser declarados.
 
-        NUNCA toca em recursos do tipo "projeto" (DATASET, PIPELINE_CONFIG,
-        SPLIT_CONFIG, MERGE_CONFIG, SIMILARITY_MODEL_CONFIG,
-        CALIBRATION_MODEL_CONFIG) — são primários, não outputs de instrução.
+        NUNCA toca em recursos com `category=PRIMARY` (datasets/configs
+        importados da biblioteca do projeto) — são primários compartilhados,
+        não outputs de instrução. Antes o filtro era por `resource_type`
+        (DATASET, PIPELINE_CONFIG, ...), mas isso conflitava tipo com
+        categoria: datasets DERIVADOS de PIPELINE_APPLICATION/DATASET_SPLIT
+        também têm `resource_type=DATASET` e ficavam imunes à limpeza,
+        deixando o output antigo de uma instrução renomeada pra sempre
+        em `definition.resources`.
 
         NUNCA apaga recurso cujo `resource_id` ainda é declarado por
         OUTRA instrução da estratégia (edge case raro mas possível com
@@ -4912,18 +4917,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
             except Exception:
                 pass
 
-        _project_resource_types = {
-            StrategyResourceType.DATASET,
-            StrategyResourceType.PIPELINE_CONFIG,
-            StrategyResourceType.SPLIT_CONFIG,
-            StrategyResourceType.MERGE_CONFIG,
-            StrategyResourceType.SIMILARITY_MODEL_CONFIG,
-            StrategyResourceType.CALIBRATION_MODEL_CONFIG,
-        }
-
         removed_any = False
         for resource in list(definition.resources):
-            if resource.resource_type in _project_resource_types:
+            if resource.category == ResourceCategory.PRIMARY:
                 continue
             if resource.resource_id in declared_output_ids:
                 continue

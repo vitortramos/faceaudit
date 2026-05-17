@@ -147,6 +147,22 @@ if __name__ == "__main__":
     app.setStyle("Fusion")
     _apply_light_palette(app)
 
+    # Tradução dos widgets padrão do Qt pra pt-BR (Yes/No/OK/Cancel,
+    # QFileDialog, etc.). Sem isso, QMessageBox.question aparece com
+    # "Yes" e "No" mesmo no Brasil. O `.qm` vem com o PyQt6 — basta
+    # carregar e instalar; aplica-se a todas as janelas modais nativas.
+    QtCore.QLocale.setDefault(QtCore.QLocale(QtCore.QLocale.Language.Portuguese,
+                                              QtCore.QLocale.Country.Brazil))
+    _qt_translator = QtCore.QTranslator(app)
+    _qm_path = QtCore.QLibraryInfo.path(
+        QtCore.QLibraryInfo.LibraryPath.TranslationsPath,
+    )
+    if _qt_translator.load("qtbase_pt_BR", _qm_path):
+        app.installTranslator(_qt_translator)
+    # Mantém referência forte — sem isso o GC pode coletar o translator
+    # e os textos voltam pro inglês durante a sessão.
+    app._qt_translator = _qt_translator
+
     # QTBUG-135882 — fallback quando pyobjc não está disponível.
     # Caminho preferido (acima, antes da criação do QApplication):
     # injeção do CFBundleIdentifier via pyobjc.Foundation, preserva

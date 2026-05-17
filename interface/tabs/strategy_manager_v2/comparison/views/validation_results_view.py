@@ -451,11 +451,29 @@ class ValidationResultsView(QtWidgets.QWidget):
             fpr_c = np.clip(fpr, eps, 1.0 - eps)
             fnr_c = np.clip(fnr, eps, 1.0 - eps)
             color = _PALETTE[idx % len(_PALETTE)]
+            label = self._legend_label(item, result)
+            # Anexa o valor de EER no label da legenda; aparece num único
+            # entry combinado com o marker do scatter abaixo.
+            eer_val = getattr(getattr(result, "metrics", None), "eer", None)
+            if eer_val is not None:
+                label = f"{label} (EER={eer_val*100:.2f}%)"
             ax.plot(
                 norm.ppf(fpr_c), norm.ppf(fnr_c),
                 color=color, linewidth=1.6,
-                label=self._legend_label(item, result), alpha=0.9,
+                label=label, alpha=0.9,
             )
+            # Marca o EER na curva: scatter na cor da estratégia, sem
+            # crosshair (várias estratégias = poluição visual). Hidden
+            # da legenda — o ponto compartilha entry com a linha.
+            if eer_val is not None:
+                try:
+                    eer_n = norm.ppf(np.clip(eer_val, eps, 1.0 - eps))
+                    ax.scatter(
+                        [eer_n], [eer_n], color=color, s=55, zorder=5,
+                        edgecolor="#222", linewidth=1.0, label="_nolegend_",
+                    )
+                except Exception:
+                    pass
             any_drawn = True
 
         if not any_drawn:
