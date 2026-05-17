@@ -24,8 +24,12 @@ from .ribbons.biblioteca_ribbon import BibliotecaRibbon
 from .ribbons.projeto_ribbon import ProjetoRibbon
 
 
-_LEFT_PANEL_LABEL_EXPANDED = "◀ Recolher painel"
-_LEFT_PANEL_LABEL_COLLAPSED = "▶ Mostrar painel"
+# Labels curtas — só seta. Texto longo no corner widget do QTabWidget
+# era promovido pra uma "linha" extra acima das tabs em telas
+# pequenas e ainda sobrepunha a borda do QTabWidget::pane (linha fina
+# horizontal aparente). Tooltip preserva a semântica completa.
+_LEFT_PANEL_LABEL_EXPANDED = "◀"
+_LEFT_PANEL_LABEL_COLLAPSED = "▶"
 
 
 class ProjectToolbar(QFrame):
@@ -138,11 +142,17 @@ class ProjectToolbar(QFrame):
         self.btn_toggle_left_panel.setToolTip(
             "Mostrar/esconder o painel lateral (Cmd+B)",
         )
+        # Botão compacto + fixed size pra que o corner widget do
+        # QTabWidget não tente promovê-lo pra uma linha separada quando
+        # a largura disponível na barra de tabs aperta. Margem zero pra
+        # não sobrepor a borda do QTabWidget::pane (que gerava a "linha
+        # quebrada" cosmética acima do botão em telas pequenas).
+        self.btn_toggle_left_panel.setFixedSize(28, 24)
         self.btn_toggle_left_panel.setStyleSheet(
             "QPushButton { "
             "    border: 1px solid #bbb; border-radius: 4px; "
-            "    background: white; padding: 3px 12px; font-size: 11px; "
-            "    margin: 4px 6px; "
+            "    background: white; font-size: 13px; "
+            "    margin: 2px 6px 0 6px; padding: 0; "
             "} "
             "QPushButton:hover { background: #e8f0fe; border-color: #4a90d9; }"
         )
