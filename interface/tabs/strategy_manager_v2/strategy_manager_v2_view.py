@@ -171,71 +171,23 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         o conteúdo do LeftPanelWidget some mas a barra fina de toggle
         (12px à direita do painel) permanece visível pra re-expandir.
 
-        Delega ao próprio `LeftPanelWidget.set_collapsed(...)` que
-        controla a largura interna. O splitter então acomoda
-        automaticamente — left vai pra 12px, editor pega o resto. Total
-        da janela inalterado.
-
-        Trava de geometria: captura `geometry()` da MainWindow antes
-        de qualquer mudança e força de volta depois. Sem isso, quando
-        o left panel encolhe pra 12px o splitter respeita o sizeHint
-        natural do editor à direita (que pode ser maior que a tela em
-        MacBook 14") e empurra a janela inteira além da tela.
+        Total da janela inalterado. O fix real está no MainGuiView
+        (QSizePolicy.Ignored no centralwidget + tab principal), que
+        impede o `minimumSizeHint` do conteúdo das outras tabs (Dataset
+        Manager) de propagar pra MainWindow — sem essa quebra, o
+        toggle do painel acionava o Qt no macOS a recalcular o min da
+        janela (1630px) e crescer além da tela (QTBUG-72571).
         """
         if self._workspace_splitter is None:
             return
         self._workspace_splitter.setChildrenCollapsible(True)
 
-        main_window = self.window()
-        # DEBUG: instrumentação pra entender em que ponto o widget
-        # cresce. Remove depois de identificar a causa.
-        def _dbg(tag: str) -> None:
-            mw = main_window
-            sp = self._workspace_splitter
-            print(
-                f"[toggle dbg] {tag}: "
-                f"mw_size={mw.size().width() if mw else '?'}x"
-                f"{mw.size().height() if mw else '?'} "
-                f"mw_min={mw.minimumSize().width() if mw else '?'} "
-                f"mw_max={mw.maximumSize().width() if mw else '?'} "
-                f"splitter_sizes={sp.sizes() if sp else '?'} "
-                f"splitter_minSizeHint={sp.minimumSizeHint().width() if sp else '?'} "
-                f"editor_minSizeHint={self.strategy_editor_placeholder.minimumSizeHint().width()} "
-                f"editor_sizeHint={self.strategy_editor_placeholder.sizeHint().width()}"
-            )
-        _dbg("0_inicio")
-
-        # DEBUG: percorre a árvore de widgets do MainWindow e lista
-        # quem tem minimumSizeHint > 500 (suspeitos do crescimento).
-        if main_window is not None:
-            from PyQt6.QtWidgets import QWidget
-            offenders = []
-            for w in main_window.findChildren(QWidget):
-                if not w.isVisible():
-                    continue
-                msh = w.minimumSizeHint().width()
-                ms = w.minimumSize().width()
-                if msh > 500 or ms > 500:
-                    offenders.append(
-                        (msh, ms, type(w).__name__, w.objectName() or "(no name)")
-                    )
-            offenders.sort(reverse=True)
-            print("[toggle dbg] widgets com min > 500px:")
-            for msh, ms, cls, name in offenders[:15]:
-                print(f"  msh={msh:5d} ms={ms:5d}  {cls:30s}  {name}")
-        locked_size = None
-        if main_window is not None:
-            locked_size = main_window.size()
-            main_window.setFixedSize(locked_size)
-            _dbg("1_apos_setFixedSize")
-
         left = self.left_panel_placeholder
         self._left_panel_collapsed = not self._left_panel_collapsed
         if hasattr(left, "set_collapsed"):
             left.set_collapsed(self._left_panel_collapsed)
-        _dbg("2_apos_set_collapsed")
-        # Força redistribuição imediata respeitando a nova largura
-        # mínima/máxima do left panel — editor recebe o que sobra.
+        # Redistribui o splitter: left vai pra 12 (só a barra de toggle),
+        # editor pega o resto. Total preservado.
         sizes = self._workspace_splitter.sizes()
         total = sum(sizes) if sizes else 0
         if total > 0:
@@ -248,35 +200,6 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                 self._workspace_splitter.setSizes(
                     [left_w, max(total - left_w, 0)]
                 )
-        _dbg("3_apos_setSizes")
-
-        # Libera a trava de size DEPOIS do tick atual — garante que
-        # todo o relayout do collapse processou antes de devolver
-        # o controle de resize à janela.
-        if main_window is not None and locked_size is not None:
-            def _release_lock(mw=main_window, sz=locked_size):
-                print(f"[toggle dbg] 4_pre_release: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
-                mw.setMinimumSize(0, 0)
-                # CRÍTICO: cap absoluto no max baseado na tela. Mantém
-                # esse cap permanente — sobrescreve qualquer min que o
-                # conteúdo tente impor.
-                screen = mw.screen() or QtWidgets.QApplication.primaryScreen()
-                if screen is not None:
-                    avail = screen.availableGeometry()
-                    mw.setMaximumSize(avail.width(), avail.height())
-                else:
-                    mw.setMaximumSize(16777215, 16777215)
-                mw.resize(sz)
-                print(f"[toggle dbg] 5_pos_release: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
-            QtCore.QTimer.singleShot(0, _release_lock)
-
-            # Captura adicional em ticks posteriores pra detectar
-            # crescimento tardio do event loop.
-            def _dbg_later(tag: str, mw=main_window):
-                print(f"[toggle dbg] {tag}: mw_size={mw.size().width()}x{mw.size().height()} mw_min={mw.minimumSize().width()} mw_max={mw.maximumSize().width()}")
-            QtCore.QTimer.singleShot(50, lambda: _dbg_later("6_apos_50ms"))
-            QtCore.QTimer.singleShot(250, lambda: _dbg_later("7_apos_250ms"))
-            QtCore.QTimer.singleShot(1000, lambda: _dbg_later("8_apos_1s"))
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
