@@ -186,25 +186,35 @@ class StrategyManagerV2View(QtWidgets.QWidget):
             return
         self._workspace_splitter.setChildrenCollapsible(True)
 
-        # HACK: setFixedSize na MainWindow durante o toggle.
-        # Razão: as abordagens "limpas" (Ignored policy, setMaximumSize
-        # na MainWindow, setMinimumWidth(0) nos widgets, setStretchFactor)
-        # falharam em produção no macOS — Qt reagenda o resize do
-        # `minimumSizeHint` agregado do splitter ANTES dos constraints
-        # serem aplicados. setFixedSize trava fisicamente a janela
-        # durante o ciclo de relayout do toggle, e liberamos depois.
-        # Refs: QTBUG-72571 (QSplitter cresce além do disponível);
-        # Qt forum discussão de hack setFixedSize como workaround.
         main_window = self.window()
+        # DEBUG: instrumentação pra entender em que ponto o widget
+        # cresce. Remove depois de identificar a causa.
+        def _dbg(tag: str) -> None:
+            mw = main_window
+            sp = self._workspace_splitter
+            print(
+                f"[toggle dbg] {tag}: "
+                f"mw_size={mw.size().width() if mw else '?'}x"
+                f"{mw.size().height() if mw else '?'} "
+                f"mw_min={mw.minimumSize().width() if mw else '?'} "
+                f"mw_max={mw.maximumSize().width() if mw else '?'} "
+                f"splitter_sizes={sp.sizes() if sp else '?'} "
+                f"splitter_minSizeHint={sp.minimumSizeHint().width() if sp else '?'} "
+                f"editor_minSizeHint={self.strategy_editor_placeholder.minimumSizeHint().width()} "
+                f"editor_sizeHint={self.strategy_editor_placeholder.sizeHint().width()}"
+            )
+        _dbg("0_inicio")
         locked_size = None
         if main_window is not None:
             locked_size = main_window.size()
             main_window.setFixedSize(locked_size)
+            _dbg("1_apos_setFixedSize")
 
         left = self.left_panel_placeholder
         self._left_panel_collapsed = not self._left_panel_collapsed
         if hasattr(left, "set_collapsed"):
             left.set_collapsed(self._left_panel_collapsed)
+        _dbg("2_apos_set_collapsed")
         # Força redistribuição imediata respeitando a nova largura
         # mínima/máxima do left panel — editor recebe o que sobra.
         sizes = self._workspace_splitter.sizes()
@@ -219,23 +229,20 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                 self._workspace_splitter.setSizes(
                     [left_w, max(total - left_w, 0)]
                 )
+        _dbg("3_apos_setSizes")
 
         # Libera a trava de size DEPOIS do tick atual — garante que
         # todo o relayout do collapse processou antes de devolver
         # o controle de resize à janela.
         if main_window is not None and locked_size is not None:
             def _release_lock(mw=main_window, sz=locked_size):
+                print(f"[toggle dbg] 4_pre_release: mw_size={mw.size().width()}x{mw.size().height()}")
                 mw.setMinimumSize(0, 0)
                 mw.setMaximumSize(16777215, 16777215)
-                # Re-aplica o cap da tela (sobrescreve QWIDGETSIZE_MAX
-                # acima pra preservar a invariante "janela não passa
-                # do display").
                 if hasattr(mw, "_apply_screen_max_size"):
                     mw._apply_screen_max_size()
-                # Restaura o size travado — sem isso a janela pode
-                # ficar com a largura fixa que travamos como "novo"
-                # tamanho preferido.
                 mw.resize(sz)
+                print(f"[toggle dbg] 5_pos_release: mw_size={mw.size().width()}x{mw.size().height()}")
             QtCore.QTimer.singleShot(0, _release_lock)
 
         # Atualiza label do botão na toolbar, se existir.
