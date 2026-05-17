@@ -19,6 +19,26 @@ class MainGuiView(QtWidgets.QMainWindow):
         self.main_tabs = self.findChild(QtWidgets.QTabWidget)
         self._apply_main_tabs_style()
         self._setup_corner_config_button()
+        # CRÍTICO em telas pequenas: o QTabWidget propaga o MAX dos
+        # minimumSizeHint de TODAS as tabs (não só a ativa). A tab
+        # Dataset Manager (com ribbon de muitos botões) tem min ~1630,
+        # arrastando a janela inteira pra fora da tela quando o
+        # conteúdo da tab Strategy V2 colapsa.
+        # Ignored faz o widget descartar sizeHint E minimumSizeHint —
+        # única policy que quebra a propagação.
+        if self.main_tabs is not None:
+            self.main_tabs.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
+            self.main_tabs.setMinimumWidth(0)
+        cw = self.centralWidget()
+        if cw is not None:
+            cw.setSizePolicy(
+                QtWidgets.QSizePolicy.Policy.Ignored,
+                QtWidgets.QSizePolicy.Policy.Expanding,
+            )
+            cw.setMinimumWidth(0)
         # Trava a largura/altura máxima da janela à área disponível da
         # tela. Sem isso, widgets internos com `sizeHint` natural maior
         # que a tela (caso típico em MacBook 14" com Strategy Manager V2
