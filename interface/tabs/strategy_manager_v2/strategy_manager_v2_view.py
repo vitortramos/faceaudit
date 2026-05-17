@@ -140,6 +140,16 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         # Tamanhos default reduzidos pra MacBook 14" (1512px):
         # 220 left + 700 editor = 920 base (cabe sem cortar).
         self._workspace_splitter.setSizes([220, 700])
+        # Stretch factors: left=0 (não estica), right=1 (absorve resto).
+        # Crítico pra que quando o left colapse pra 12px, o editor NÃO
+        # propague seu sizeHint natural pra fora — o splitter pega o
+        # espaço disponível em vez do desejado.
+        self._workspace_splitter.setStretchFactor(0, 0)
+        self._workspace_splitter.setStretchFactor(1, 1)
+        # `setOpaqueResize(False)` evita relayout intermediário durante
+        # drag — só ao soltar. Reduz oportunidade de race entre o
+        # collapse e o `setGeometry` de restauração.
+        self._workspace_splitter.setOpaqueResize(False)
 
         layout.addWidget(self._workspace_splitter)
         return page
@@ -199,12 +209,15 @@ class StrategyManagerV2View(QtWidgets.QWidget):
                     [left_w, max(total - left_w, 0)]
                 )
 
-        # Restaura geometria da janela. `setGeometry` é síncrono e
-        # imediatamente trunca o sizeHint propagado do editor — sem
-        # isso, a janela cresceria pra atender o sizeHint natural do
-        # editor (que em telas pequenas é maior que a tela disponível).
+        # Restaura geometria da janela em DOIS momentos:
+        # (1) síncrono agora, e (2) deferido via singleShot pro próximo
+        # tick do event loop. O Qt no macOS reagenda o resize do
+        # sizeHint propagado em alguns casos — só o sync não pega esses.
         if geo_before is not None and main_window is not None:
             main_window.setGeometry(geo_before)
+            QtCore.QTimer.singleShot(
+                0, lambda: main_window.setGeometry(geo_before)
+            )
 
         # Atualiza label do botão na toolbar, se existir.
         # Toolbar btn não é mais necessário (a barra fina cobre o caso
@@ -216,6 +229,16 @@ class StrategyManagerV2View(QtWidgets.QWidget):
 
     def set_strategy_editor(self, widget: QtWidgets.QWidget) -> None:
         """Substitui o placeholder do editor de estratégia pelo widget real."""
+        # Crítico em telas pequenas: o editor tem 3 colunas internas
+        # com sizeHint somado ~1300-1400px. Sem Ignored na largura, o
+        # splitter respeita esse sizeHint e propaga pra cima quando o
+        # left panel encolhe — empurrando a MainWindow pra fora da tela.
+        # Ignored faz o widget se acomodar ao espaço DADO em vez de
+        # exigir o desejado.
+        widget.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         # Editor é o segundo widget do splitter (índice 1) — left panel é o 0.
         self._workspace_splitter.replaceWidget(1, widget)
         self.strategy_editor_placeholder.hide()
