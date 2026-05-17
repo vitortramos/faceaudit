@@ -160,28 +160,43 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         Alterna entre painel lateral visível e recolhido. Quando recolhido,
         o splitter dá toda a largura para a área principal — útil em telas
         pequenas (ex: MacBook 14&quot;) durante edição intensa de instruções.
+
+        Implementação: NÃO usa `hide()` no widget — isso faria o splitter
+        soltar o widget do layout e o editor à direita expandir até o
+        `sizeHint` natural (que pode ser muito maior que a tela). Em
+        vez disso, força `setChildrenCollapsible(True)` e `setSizes([0,
+        total])` — mantém a largura total da janela inalterada,
+        independente do `minimumWidth` do left panel.
         """
         if self._workspace_splitter is None:
             return
+        self._workspace_splitter.setChildrenCollapsible(True)
+        sizes = self._workspace_splitter.sizes()
+        total = sum(sizes) if sizes else 0
+
         if self._left_panel_collapsed:
-            self._workspace_splitter.setSizes(self._saved_splitter_sizes)
+            # Restaura: usa os tamanhos salvos, mas ajustados pro total
+            # atual (a janela pode ter sido redimensionada enquanto o
+            # painel estava recolhido — não queremos forçar tamanho
+            # antigo).
+            saved = self._saved_splitter_sizes or [220, 700]
+            ratio = saved[0] / max(sum(saved), 1)
+            left_w = int(round(total * ratio)) if total > 0 else saved[0]
+            right_w = max(total - left_w, 0) if total > 0 else saved[1]
+            self._workspace_splitter.setSizes([left_w, right_w])
             self._left_panel_collapsed = False
         else:
-            current = self._workspace_splitter.sizes()
-            if current and current[0] > 0:
-                self._saved_splitter_sizes = list(current)
-            # Truque: setChildrenCollapsible está False, então não conseguimos
-            # ir a 0. Usamos minimumWidth do left panel como tamanho recolhido
-            # mais próximo de 0; mas pra de fato &quot;sumir&quot;, ocultamos o widget.
-            self.left_panel_placeholder.hide()
+            if sizes and sizes[0] > 0:
+                self._saved_splitter_sizes = list(sizes)
+            # Recolhe sem mexer no total — left vai pra 0, editor pega
+            # a largura inteira.
+            self._workspace_splitter.setSizes([0, total])
             self._left_panel_collapsed = True
+
         # Atualiza label do botão na toolbar, se existir.
         toolbar = getattr(self, "project_toolbar", None)
         if toolbar is not None and hasattr(toolbar, "set_left_panel_collapsed"):
             toolbar.set_left_panel_collapsed(self._left_panel_collapsed)
-        # Mostra de volta após restaurar tamanhos (ordem importa pra evitar flicker).
-        if not self._left_panel_collapsed:
-            self.left_panel_placeholder.show()
 
     def set_strategy_editor(self, widget: QtWidgets.QWidget) -> None:
         """Substitui o placeholder do editor de estratégia pelo widget real."""
