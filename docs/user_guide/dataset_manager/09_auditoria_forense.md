@@ -1,0 +1,400 @@
+# 09 — Auditoria forense
+
+A **Auditoria** é a área mais sofisticada do Gerenciador de
+Datasets — uma suíte de verificações de integridade biométrica
+e análise topológica voltada para o **uso forense** dos
+embeddings.
+
+A motivação: antes de usar um dataset em cálculo de razão de
+verossimilhança, é necessário garantir que ele está livre de
+contaminações (mesma foto em duas identidades, identidades
+mescladas, fotos órfãs, *singletons*, etc.) e entender a
+**geometria** do espaço de embeddings (clusters, hubs, outliers).
+
+Este capítulo cobre dois diálogos relacionados:
+
+- 🔎 **Auditar** (ribbon *Dataset*) — análise completa
+- 📜 **Custódia** (ribbon *Dataset*) — log forense de operações
+
+## Sumário do capítulo
+
+1. [O conceito de *AuditIssue*](#o-conceito-de-auditissue)
+2. [Leiaute do diálogo Auditar](#leiaute-do-diálogo-auditar)
+3. [Categorias de issues](#categorias-de-issues)
+4. [Ações sobre issues selecionados](#ações-sobre-issues-selecionados)
+5. [Visualizações analíticas](#visualizações-analíticas)
+6. [Hubness — análise topológica](#hubness--análise-topológica)
+7. [Auditoria de identidades (heavy)](#auditoria-de-identidades)
+8. [UMAP — projeção 2D](#umap--projeção-2d)
+9. [Undo/redo](#undoredo)
+10. [O diálogo *Custódia* (Audit Log)](#o-diálogo-custódia)
+
+---
+
+## O conceito de *AuditIssue*
+
+Um **AuditIssue** é um achado da análise — uma violação detectada
+ou uma observação relevante. Cada issue tem:
+
+| Atributo | Conteúdo |
+|---|---|
+| **Categoria** | Grupo (Integridade Física, Lógica de Rótulos, Qualidade, Biométrica, Hubness, etc.) |
+| **Tipo** | Sub-tipo específico (Caminhos órfãos, Conflitos de hash, etc.) |
+| **Severidade** | 🔴 CRÍTICO / 🟠 AVISO / ⚪ INFO |
+| **Locators** | Lista de faces afetadas (paths ou índices) |
+| **Detalhes** | Informações adicionais (identidades envolvidas, threshold violado) |
+
+A auditoria é **dividida em duas passagens**:
+
+- **Quick audit** (O(N)) — rodada automaticamente ao abrir o
+  diálogo, segundos
+- **Heavy audit** (O(N²)) — chama explícita via botão **🔍
+  Mineração Pesada** ou **🔬 Auditar identidades**, minutos em
+  datasets grandes
+
+## Leiaute do diálogo Auditar
+
+![Diálogo Auditar com tree de findings, detalhes, e abas de visualização](assets/40_auditar.png)
+
+Três áreas principais:
+
+### Painel esquerdo — Tree de findings
+
+Hierárquica, agrupada por categoria. Cada categoria mostra seu
+contador (`Integridade Física (3)`). Categorias são colapsáveis.
+
+Selecionar um issue popula o painel central.
+
+### Painel central — Detalhes do issue
+
+| Sub-área | Função |
+|---|---|
+| **Topo — Resumo** | Texto descritivo + badge de severidade |
+| **Meio — Tabela de issues** | Uma linha por locator (identity / file_name / metadados) |
+| **Carrossel inferior — Preview** | Thumbnails das faces afetadas. Suporta Ctrl+Click (multi-select) e Shift+Click (range) |
+
+Faces deletadas (ações já executadas) aparecem com fundo
+**vermelho**; faces renomeadas/mescladas com fundo **laranja**.
+
+### Painel direito — Visualizações
+
+Aba `QTabWidget` que muda conforme o tipo de issue selecionado:
+
+| Aba | Quando aparece |
+|---|---|
+| **Histograma** | Issues envolvendo distribuições de qualidade (FIQA, OFIQ, embedding norm) |
+| **Scatter** | Issues de correlação entre métricas |
+| **Boxplot** | Estratificação por pose ou identidade |
+| **UMAP** | Issues de duplicate/mixed identities |
+| **Hubness Tables** | Issues de hubness |
+| **Balance Metrics** | Issues de distribuição por identidade |
+
+### Rodapé — Botões de ação
+
+| Botão | Função |
+|---|---|
+| **🔍 Mineração Pesada** | Roda audits O(N²) (hash duplicates, hard mining) |
+| **🔬 Auditar identidades** | Detecta duplicate/mixed identities por similaridade de embedding |
+| **🔌 Hubness (KNN)** | Calcula k-NN e Nk de cada face |
+| **🌌 UMAP** | Projeção 2D do espaço de embeddings |
+| **🔄 Reanalisar** | Re-roda os audits O(N) (úteis após edições) |
+
+## Categorias de issues
+
+### 1. Integridade Física
+
+| Issue | O que detecta | Por que importa | Severidade |
+|---|---|---|---|
+| **Orphan Paths** | `image_path` que não existe no disco (ou está vazio) | Quebra a inspeção visual; indica perda de arquivo (deleção acidental, ingest mal-sucedido). Bloqueia hash recomputation | 🔴 CRÍTICO |
+| **Hash Conflicts** | Mesmo SHA-256 sob **duas identidades** diferentes | Indica contaminação — a mesma foto está rotulada como duas pessoas. **Fatal pra LR** — viola a premissa de mapeamento 1:1 foto→identidade | 🔴 CRÍTICO |
+| **Exact Duplicates** | Múltiplas linhas com hash idêntico | Inflaciona contagens artificialmente; testes estatísticos pressupõem independência. Pode ser intencional (augmentation) ou bug de ingest | 🟠 AVISO |
+| **Missing Embeddings** | Faces sem vetor de embedding (segundo o schema) | Sem embedding, mining/hubness/scores falham. Indica falha no extractor | 🔴 CRÍTICO |
+
+### 2. Lógica de Rótulos
+
+| Issue | O que detecta | Por que importa | Severidade |
+|---|---|---|---|
+| **Singleton Identities** | Identidades com < `min_samples` amostras (default 2) | Não dá pra fazer LR within-identity (sem variância); quebra premissas de balanceamento de classes | 🟠 AVISO |
+
+### 3. Qualidade
+
+| Issue | O que detecta |
+|---|---|
+| **Low FIQA** | Faces abaixo de um threshold de FIQA |
+| **Low OFIQ** | Faces com OFIQ unificado baixo |
+| **Low SER-FIQ** | Robustez baixa |
+| **Low embedding norm** | Magnitude do embedding atipicamente baixa — embedding "fraco" |
+
+Severidade `🟠 AVISO` ou `⚪ INFO` conforme o threshold. Não
+são bloqueadores — servem como sinal pra revisão manual.
+
+### 4. Biométrica (heavy, O(N²))
+
+| Issue | O que detecta | Por que importa | Severidade |
+|---|---|---|---|
+| **Duplicate Identities** | Pares de **identidades diferentes** com similaridade de embedding > threshold (default cos > 0.90) | Sugere que duas labels são a mesma pessoa (data entry, alias) | 🟠 AVISO |
+| **Mixed Identities** | Uma identidade com fotos que se agrupam em **subclusters distantes** | Indica fotos mislabel ou efeitos de subpopulação (idades, condições) | 🟠 AVISO |
+
+### 5. Hubness (heavy, O(N²))
+
+| Issue | O que detecta |
+|---|---|
+| **Top Hubs** | Faces com `Nk` (count em k-NN de outras faces) anormalmente alto |
+| **Anti-hubs** | Faces com `Nk = 0` ou baixíssimo — isoladas no espaço |
+
+Veja [seção dedicada abaixo](#hubness--análise-topológica).
+
+### 6. Visualizações
+
+Não geram issues por si só — apenas renderizam os gráficos para
+inspeção manual quando você clica nas abas correspondentes.
+
+## Ações sobre issues selecionados
+
+O painel central tem botões na base que **aplicam mutações** ao
+dataset:
+
+### Deletar faces
+
+Remove as faces selecionadas do dataset (mutação em memória; só
+persiste no save).
+
+| Aspecto | Comportamento |
+|---|---|
+| Seleção | Ctrl+Click / Shift+Click no carrossel ou na tabela |
+| Estado visual | Faces deletadas marcadas em vermelho — clique fica desabilitado |
+| Undo | Disponível via histórico (ver seção abaixo) |
+| Persistência | Mudança fica em memória; **Salvar** para persistir |
+
+### Renomear identidade
+
+Renomeia em massa **todas as faces** com a identidade do issue
+(não só as selecionadas). Use quando você descobriu que "Alice"
+e "Alice S." são a mesma pessoa e quer unificar.
+
+| Aspecto | Comportamento |
+|---|---|
+| Escopo | Identidade inteira, não apenas locators selecionados |
+| UX | Diálogo pede novo nome |
+| Visual | Faces marcadas em laranja com legenda `✎ ID: old → new` |
+
+### Mesclar identidades
+
+Combinação de N identidades em uma. Você seleciona faces de 2+
+identidades, escolhe qual delas vira o alvo (no diálogo).
+
+| Aspecto | Comportamento |
+|---|---|
+| UX | Lista as identidades candidatas, ordenadas por número de amostras (sugere a maior como alvo) |
+| Efeito | Todas as faces dos lados não-alvos ganham a identidade do alvo |
+| Undo | Disponível |
+
+## Visualizações analíticas
+
+As 5 abas de visualização do painel direito:
+
+### Histograma
+
+| Eixo / elemento | Conteúdo |
+|---|---|
+| **X** | Valor da métrica (FIQA, OFIQ, embedding norm, etc.) |
+| **Y** | Contagem de faces |
+| **Visual** | Barras + KDE leve por cima |
+| **Bonus** | Carrossel abaixo mostrando top-10 faces na cauda esquerda (pior qualidade) e direita (melhor) — facilita inspeção forense direta |
+
+Insight: forma da distribuição (bimodal → subpopulações?),
+caudas (outliers a investigar).
+
+### Scatter (Correlação)
+
+| Eixo | Conteúdo |
+|---|---|
+| **X** | Primeira métrica |
+| **Y** | Segunda métrica |
+| **Visual** | Pontos pequenos (`α=0.45`) se N < 5k; hexbin density heatmap se N ≥ 5k |
+| **Overlay** | Linha de regressão OLS + Pearson r na legenda |
+| **Grid** | Linhas em thresholds dividindo 4 quadrantes (com contagem em cada) |
+
+Insight: dependência (alto r) ou ortogonalidade entre as métricas.
+
+### Boxplot estratificado
+
+| Eixo | Conteúdo |
+|---|---|
+| **X** | Bins (quartis, ranges de pose, etc.) |
+| **Y** | Métrica |
+| **Visual** | Box por grupo: mediana, Q1/Q3, whiskers, outliers |
+| **Overlay** | Linha conectando medianas |
+
+Insight: tendência monotônica (linha desce → correlação
+confirmada) vs flat (correlação era artefato).
+
+### UMAP Scatter
+
+Projeção 2D do espaço de embeddings via UMAP. Cada ponto = uma
+face.
+
+| Elemento | Função |
+|---|---|
+| **Eixos** | `umap_x` / `umap_y` |
+| **Cor** | Selecionável via dropdown: identidade (top 20 + "others" em cinza), gênero, source, pose (yaw), FIQA, norm |
+| **Interação** | Clique num ponto → painel lookalike abre à direita mostrando k-NN por cosine |
+
+Insight: geometria dos embeddings — clusters por identidade,
+espalhamento, outliers topologicamente isolados.
+
+### Hubness Tables
+
+Duas tabelas lado-a-lado:
+
+| Tabela | Conteúdo |
+|---|---|
+| **Top Hubs** | Top 50 faces com Nk **alto** |
+| **Top Anti-hubs** | Top 50 faces com Nk **baixo** (zero ou perto) |
+
+Colunas: Identity, Photo, FIQA, embedding norm, Nk, total de
+faces da identidade.
+
+Clique numa linha → preview da imagem no painel inferior.
+
+## Hubness — análise topológica
+
+**Hubness** (Nk) é a contagem de quantas vezes uma face aparece
+na vizinhança k-NN das demais (k=20 por padrão). Um **hub** é
+uma face que é "vizinho próximo" de muitas outras.
+
+### Por que importa pra forense
+
+| Tipo | Risco |
+|---|---|
+| **Hub** | Face genericamente parecida com muitos. Em LR, pode gerar **falsos positivos** porque match com hub é estatisticamente esperado mesmo entre não-mated. Hipotese de independência dos embeddings quebra |
+| **Anti-hub** | Face topologicamente isolada. Indica feature atípica (pose extrema, oclusão, qualidade ruim, mislabel). Embedding pouco confiável |
+
+### O que fazer
+
+A análise gera issues `Top Hubs` e `Top Anti-hubs`. Caminhos
+recomendados:
+
+- **Hubs**: investigar manualmente; possivelmente excluir os mais
+  extremos do conjunto de **calibração** (para não distorcer o
+  score model). Manter no conjunto de **avaliação** apenas se
+  representativos da população
+- **Anti-hubs**: investigar visualmente — costumam ser fotos com
+  problemas (oclusão, blur extremo). Deletar ou marcar `error=True`
+
+## Auditoria de identidades
+
+Botão **🔬 Auditar identidades** roda uma análise específica:
+
+| Tipo | O que faz |
+|---|---|
+| **Duplicate Identities** | Para cada par (identity_A, identity_B), calcula a similaridade de embeddings (média ou max). Pares com cos > 0.90 viram issues |
+| **Mixed Identities** | Para cada identidade com ≥ N amostras, calcula a dispersão dos embeddings (silhouette ou desvio). Identidades com bimodalidade clara viram issues |
+
+Estes audits são O(N²) e podem demorar minutos em datasets
+grandes. O cancelamento é suportado.
+
+## UMAP — projeção 2D
+
+Botão **🌌 UMAP** calcula a projeção UMAP do espaço de
+embeddings. Parâmetros configuráveis:
+
+| Parâmetro | Default | Notas |
+|---|---|---|
+| n_neighbors | 15 | Vizinhos locais — maior = preserva estrutura global |
+| min_dist | 0.1 | Distância mínima entre pontos no plot |
+| metric | cosine | Métrica de similaridade |
+| random_state | 42 | Reprodutibilidade |
+
+O resultado popula a aba UMAP (descrita acima). Pode demorar
+~30s em 10k faces.
+
+## Undo/redo
+
+Toda ação destrutiva (delete / rename / merge) é registrada num
+**stack de histórico**:
+
+| Operação | O que armazena |
+|---|---|
+| Delete | Backup dos `FaceInfo` removidos |
+| Rename | Mapeamento `old_identity → new_identity` |
+| Merge | Mapeamento `path → (old_identity, new_identity)` |
+
+O botão **↩ Desfazer** reverte a última ação. Você pode também
+clicar em uma ação específica no painel de histórico pra desfazer
+qualquer uma (não só a última) — útil quando você fez 3 ações e
+descobriu que a 2ª foi um erro.
+
+> ⚠️ O histórico é **em memória** — fechar o dataset descarta.
+> Recomendação: **Salvar Como** entre operações irreversíveis se
+> o caso for crítico.
+
+## O diálogo *Custódia*
+
+![Diálogo Audit Log com cadeia de custódia SHA-256](assets/43_audit_log.png)
+
+Acessível pelo botão 📜 **Custódia** na ribbon *Dataset*. É a
+**cadeia de custódia forense** — um log append-only de todas as
+operações que mutaram o dataset.
+
+### Operações rastreadas
+
+| Operação | Quando |
+|---|---|
+| ✨ CREATE | Dataset instanciado pela primeira vez |
+| 📂 OPEN | Lido do disco |
+| 💾 SAVE / SAVE_AS | Persistido |
+| 🚪 CLOSE | Sessão encerrada |
+| ✏️ EDIT_LABEL | Identidade ou metadado editado |
+| 🏷️ EDIT_SCHEMA | Esquema de coluna modificado |
+| ➕ ADD_COLUMN / ➖ REMOVE_COLUMN / ✏️ RENAME_COLUMN | Operações de esquema |
+| 🔬 ENRICH | Forense Face, OFIQ ou SER-FIQ executados |
+| 🔗 MERGE / ✂️ SPLIT | Operações estruturais |
+| 📤 EXPORT | Exportação CSV/Excel |
+| 🗂 COPY_IMAGES | Localização (REBASE/REWRITE/COPY) |
+| ✅ INTEGRITY_VERIFIED / ❌ INTEGRITY_FAILED | Verificação da cadeia |
+
+### Estrutura do log
+
+Arquivo JSON-Lines sidecar: `<dataset_stem>.audit.json` (mesma
+pasta do parquet).
+
+Cada entrada tem:
+
+| Campo | Conteúdo |
+|---|---|
+| `timestamp` | UTC ISO 8601 |
+| `operator` | User / sistema |
+| `operation` | Um dos valores acima |
+| `description` | Texto livre |
+| `dataset_hash` | SHA-256 do dataset no momento da operação |
+| `entry_hash` | SHA-256 da própria entrada — depende do `entry_hash` do registro anterior |
+
+### Encadeamento (chain-of-custody)
+
+O `entry_hash` de cada entrada **inclui** o `entry_hash` do
+registro anterior. Isso forma uma **cadeia hash** (igual à
+estrutura de blockchain): qualquer modificação retroativa quebra
+todos os hashes a partir dela.
+
+### Verificação
+
+Botão **🔒 Verificar integridade** no diálogo:
+
+1. Lê todo o log
+2. Recomputa cada `entry_hash` na sequência
+3. Compara com o gravado
+4. Linhas que não batem ficam destacadas em vermelho
+
+Em datasets críticos pra perícia, rode a verificação **sempre que
+abrir** o parquet — detecta tampering ou corrupção.
+
+### Exportação
+
+Botão **📤 Exportar log** salva uma cópia do JSON-Lines em local
+à escolha. Use pra **preservação de evidência** — entregue ao
+laudo, juntamente com o parquet, como prova de procedência.
+
+---
+
+[← Capítulo 08 — Pipeline de imagens](08_pipeline_de_imagens.md) · [Capítulo 10 — Integração com Estratégias →](10_integracao_estrategias.md)
