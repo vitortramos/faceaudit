@@ -60,8 +60,17 @@ class MainGuiView(QtWidgets.QMainWindow):
             pass
 
     def _apply_screen_max_size(self) -> None:
-        """Limita maximumSize da janela ao `availableGeometry` da tela
-        atual (já desconta dock + menu bar do macOS)."""
+        """Limita maximumSize do CENTRAL WIDGET (não da QMainWindow!) ao
+        `availableGeometry` da tela atual (já desconta dock + menu bar do
+        macOS).
+
+        IMPORTANTE: `setMaximumSize` numa `QMainWindow` faz o Qt remover
+        a flag `WS_MAXIMIZEBOX` da janela nativa no Windows → o botão de
+        maximizar fica greyed out / inutilizável. Por isso aplicamos a
+        constraint no central widget: o conteúdo interno continua capado
+        (não arrasta a janela pra fora da tela), mas a janela em si fica
+        livre pra ser maximizada/restaurada.
+        """
         app = QtWidgets.QApplication.instance()
         if app is None:
             return
@@ -69,9 +78,9 @@ class MainGuiView(QtWidgets.QMainWindow):
         if screen is None:
             return
         avail = screen.availableGeometry()
-        # Folga pequena pra evitar 1px de excesso por arredondamento de
-        # bordas de janela do macOS.
-        self.setMaximumSize(avail.width(), avail.height())
+        cw = self.centralWidget()
+        if cw is not None:
+            cw.setMaximumSize(avail.width(), avail.height())
         self._screen_max_w = avail.width()
         self._screen_max_h = avail.height()
 
