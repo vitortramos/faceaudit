@@ -60,10 +60,18 @@ class ApplicationContainer(containers.DeclarativeContainer):
     # Parâmetros operacionais (modelos, det_size, extended) agora vêm do
     # `DatasetIngestionConfig` e o `FeatureExtractionPipeline` instancia
     # um FFService temporário quando os defaults não bastam.
+    #
+    # `use_gpu` / `batch_size` são passados DIRETO (sem `.as_bool()` /
+    # `.as_int()`). O dependency-injector usa esses helpers pra converter
+    # strings de .env — quando o valor vem de JSON e já é bool/int nativo,
+    # `.as_bool()` levanta AttributeError silenciado (o argumento chega
+    # como None) e `.as_int()` retorna um Provider object não-resolvido.
+    # Resultado anterior: FFService.use_gpu sempre None → CPUExecutionProvider
+    # mesmo com `"use_gpu": true` no config.json.
     ff_service = providers.Singleton(
         FFService,
-        use_gpu=config.ff.use_gpu.as_bool(),
-        batch_size=config.ff.batch_size.as_int(),
+        use_gpu=config.ff.use_gpu,
+        batch_size=config.ff.batch_size,
     )
 
     ofiq_service = providers.Singleton(
