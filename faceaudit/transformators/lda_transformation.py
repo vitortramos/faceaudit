@@ -61,34 +61,35 @@ class LdaTransformation(EmbeddingTransformationProtocol):
         if n_classes < 2:
             raise ValueError(f"[{self.name}] Erro: LDA requer dataset com pelo menos 2 identidades. Encontrado: {n_classes}")
             
-        # Executa o cálculo matemático via serviço usando os parâmetros do DTO
-        self._mean_vector, self._lda_matrix = self.math_service.calculate_lda_parameters(
+        # Executa o cálculo via serviço — passa a config inteira (estimator,
+        # shrinkage, grid search e demais campos vão juntos). math_service
+        # devolve métricas já populadas com estimator_used, fisher ratios,
+        # condition number, etc.
+        (
+            self._mean_vector,
+            self._lda_matrix,
+            self._metrics,
+        ) = self.math_service.calculate_lda_parameters(
             dataset=source_dataset,
-            n_components=self.config.n_components,
-            regularization=self.config.regularization
+            config=self.config,
         )
-        
-        # --- CÁLCULO DE MÉTRICAS (AUDITORIA) ---
+
+        # Saneamento final do step_type e log amigável.
         try:
+            t_type_val = (
+                self.transformation_type.value
+                if hasattr(self.transformation_type, 'value')
+                else str(self.transformation_type)
+            )
+            self._metrics["step_type"] = t_type_val
             input_dim = source_dataset.matrix.shape[1]
             output_dim = self._lda_matrix.shape[1]
-            
-            # SANEAMENTO: Extração segura do valor da string do Enum para o relatório
-            t_type_val = self.transformation_type.value if hasattr(self.transformation_type, 'value') else str(self.transformation_type)
-
-            self._metrics = {
-                "step_type": t_type_val,
-                "n_classes_found": int(n_classes),
-                "input_dimension": int(input_dim),
-                "output_dimension": int(output_dim), 
-                "regularization": self.config.regularization
-            }
-            
-            print(f"[{self.name}] Métricas: {n_classes} classes, Redução {input_dim}->{output_dim}")
-            
+            print(
+                f"[{self.name}] Métricas: {n_classes} classes, "
+                f"Redução {input_dim}->{output_dim}"
+            )
         except Exception as e:
-            print(f"[{self.name}] ⚠️ Erro ao calcular métricas: {e}")
-            self._metrics = {"error": str(e)}
+            print(f"[{self.name}] ⚠️ Erro no saneamento das métricas: {e}")
 
         self._fitted = True
 

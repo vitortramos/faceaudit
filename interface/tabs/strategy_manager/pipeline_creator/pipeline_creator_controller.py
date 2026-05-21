@@ -14,6 +14,8 @@ from faceaudit.enums.aggregation_method import AggregationMethod
 from faceaudit.enums.quality_score_type import QualityScoreType
 from faceaudit.enums.wccn_estimator_type import WccnEstimatorType
 from faceaudit.enums.wccn_grid_search_metric import WccnGridSearchMetric
+from faceaudit.enums.lda_estimator_type import LdaEstimatorType
+from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
 
 from .pipeline_creator_view import PipelineCreatorView
 
@@ -243,26 +245,112 @@ class PipelineCreatorController(QtCore.QObject):
         return w
 
     def _build_lda_form(self, dto, item):
-        w = QtWidgets.QWidget(); layout = QtWidgets.QFormLayout(w); layout.setContentsMargins(0,0,0,0)
-        chk_auto = QtWidgets.QCheckBox("Automático (Max)"); spin_n = QtWidgets.QSpinBox(); spin_n.setRange(1, 4096)
-        
+        """Form do LDA: n_components + estimator + shrinkage + ridge +
+        grid search opcional. Paridade total com WCCN."""
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # n_components com toggle auto (max = n_classes - 1).
+        chk_auto = QtWidgets.QCheckBox("Automático (Max)")
+        spin_n = QtWidgets.QSpinBox()
+        spin_n.setRange(1, 4096)
         current_n = dto.n_components
         is_auto = current_n is None
-        chk_auto.setChecked(is_auto); spin_n.setEnabled(not is_auto)
-        if not is_auto: spin_n.setValue(current_n)
-        
+        chk_auto.setChecked(is_auto)
+        spin_n.setEnabled(not is_auto)
+        if not is_auto:
+            spin_n.setValue(current_n)
+
         def toggle_auto(checked):
             spin_n.setEnabled(not checked)
-            self._update_dto_param(item, 'n_components', None if checked else spin_n.value())
-            
-        spin_n.valueChanged.connect(lambda v: self._update_dto_param(item, 'n_components', v if not chk_auto.isChecked() else None))
+            self._update_dto_param(
+                item, 'n_components', None if checked else spin_n.value()
+            )
+        spin_n.valueChanged.connect(
+            lambda v: self._update_dto_param(
+                item, 'n_components', v if not chk_auto.isChecked() else None
+            )
+        )
         chk_auto.toggled.connect(toggle_auto)
-        layout.addRow("Dimensões:", chk_auto); layout.addRow(" ", spin_n)
+        layout.addRow("Dimensões:", chk_auto)
+        layout.addRow(" ", spin_n)
 
-        spin_reg = QtWidgets.QDoubleSpinBox(); spin_reg.setDecimals(5); spin_reg.setRange(0.0, 1.0); spin_reg.setSingleStep(1e-4)
+        # Estimador de Sw (STANDARD / LEDOIT_WOLF / OAS).
+        combo_est = QtWidgets.QComboBox()
+        for est in LdaEstimatorType:
+            combo_est.addItem(est.label, est)
+            combo_est.setItemData(
+                combo_est.count() - 1,
+                est.description,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        idx = combo_est.findData(dto.estimator)
+        if idx >= 0:
+            combo_est.setCurrentIndex(idx)
+        combo_est.currentIndexChanged.connect(
+            lambda: self._update_dto_param(item, 'estimator', combo_est.currentData())
+        )
+        layout.addRow("Estimador:", combo_est)
+
+        # Shrinkage explícito (combinável com qualquer estimator).
+        spin_shrink = QtWidgets.QDoubleSpinBox()
+        spin_shrink.setDecimals(4)
+        spin_shrink.setRange(0.0, 1.0)
+        spin_shrink.setSingleStep(0.01)
+        spin_shrink.setValue(dto.shrinkage)
+        spin_shrink.valueChanged.connect(
+            lambda v: self._update_dto_param(item, 'shrinkage', v)
+        )
+        layout.addRow("Shrinkage (α):", spin_shrink)
+
+        # Regularização (desabilita quando grid search ativo).
+        spin_reg = QtWidgets.QDoubleSpinBox()
+        spin_reg.setDecimals(8)
+        spin_reg.setRange(1e-12, 1.0)
+        spin_reg.setSingleStep(1e-4)
         spin_reg.setValue(dto.regularization)
-        spin_reg.valueChanged.connect(lambda v: self._update_dto_param(item, 'regularization', v))
-        layout.addRow("Regularização:", spin_reg)
+        spin_reg.valueChanged.connect(
+            lambda v: self._update_dto_param(item, 'regularization', v)
+        )
+        lbl_reg = QtWidgets.QLabel("Regularização:")
+        layout.addRow(lbl_reg, spin_reg)
+
+        # Grid search toggle.
+        chk_gs = QtWidgets.QCheckBox("Ativar Grid Search (busca ε via holdout)")
+        chk_gs.setChecked(dto.use_grid_search)
+        chk_gs.toggled.connect(
+            lambda v: self._update_dto_param(item, 'use_grid_search', v)
+        )
+        layout.addRow("", chk_gs)
+
+        # Métrica do grid search.
+        combo_metric = QtWidgets.QComboBox()
+        for m in LdaGridSearchMetric:
+            combo_metric.addItem(m.label, m)
+            combo_metric.setItemData(
+                combo_metric.count() - 1,
+                m.description,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        idx = combo_metric.findData(dto.grid_search_metric)
+        if idx >= 0:
+            combo_metric.setCurrentIndex(idx)
+        combo_metric.currentIndexChanged.connect(
+            lambda: self._update_dto_param(
+                item, 'grid_search_metric', combo_metric.currentData(),
+            )
+        )
+        lbl_metric = QtWidgets.QLabel("Métrica (GS):")
+        layout.addRow(lbl_metric, combo_metric)
+
+        def update_ui_state():
+            gs = chk_gs.isChecked()
+            spin_reg.setEnabled(not gs)
+            combo_metric.setEnabled(gs)
+            lbl_metric.setEnabled(gs)
+        chk_gs.toggled.connect(update_ui_state)
+        update_ui_state()
         return w
 
     def _build_whitening_form(self, dto, item):

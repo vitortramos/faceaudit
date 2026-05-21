@@ -29,10 +29,13 @@ from faceaudit.enums.coral_estimator_type import CoralEstimatorType
 from faceaudit.enums.transformation_type import TransformationType
 from faceaudit.enums.wccn_estimator_type import WccnEstimatorType
 from faceaudit.enums.wccn_grid_search_metric import WccnGridSearchMetric
+from faceaudit.enums.lda_estimator_type import LdaEstimatorType
+from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
 
 # --- INJEÇÃO DO DTO DE AGREGAÇÃO ---
 from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.wccn_config import WCCNConfig
+from faceaudit.models.lda_config import LDAConfig
 
 class EmbeddingMathService:
     """
@@ -525,54 +528,387 @@ class EmbeddingMathService:
     # 4. TRANSFORMAÇÃO LDA (LINEAR DISCRIMINANT ANALYSIS)
     # =========================================================================
 
-    def calculate_lda_parameters(self, 
-                               dataset: EmbeddingDataset, 
-                               n_components: Optional[int] = None, 
-                               regularization: float = 1e-4) -> Tuple[np.ndarray, np.ndarray]:
+    def calculate_lda_parameters(
+        self,
+        dataset: EmbeddingDataset,
+        config: "LDAConfig",
+    ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
         """
-        Calcula os eixos discriminantes de Fisher (LDA) baseados nas identidades rotuladas.
-        Maximiza a variância inter-classes (Sb) minimizando a intra-classes (Sw).
+        Calcula os eixos discriminantes de Fisher (LDA).
+
+        Sequência:
+          1. Agrupa amostras por identidade; valida ≥ 2 classes com ≥ 2 amostras.
+          2. Se config.use_grid_search=True, busca o melhor ε via holdout
+             por identidade usando a métrica configurada.
+          3. Refita (mean, matrix) no dataset completo com ε escolhido,
+             estimator e shrinkage da config.
+          4. Retorna (mean_vector, lda_matrix, metrics_dict).
+
+        Args:
+            dataset: Dataset rotulado (cada EmbeddingInfo precisa de `identity`).
+            config: LDAConfig com n_components/regularization/shrinkage/
+                estimator/grid search.
+
+        Returns:
+            Tuple (mean_vector, lda_matrix, metrics_dict).
+            - mean_vector: ``(D,)`` — centro global usado em apply.
+            - lda_matrix: ``(D, n_components)`` — eixos discriminantes.
+            - metrics_dict: estatísticas de auditoria (estimator usado, ε
+              final, condicionamento, etc.).
         """
-        print(f"--- Calculando Parâmetros LDA (Reg={regularization}) ---")
+        if dataset.matrix.size == 0:
+            raise ValueError("[LDA] Dataset vazio.")
+
         X = dataset.matrix
-        y = np.array([item.identity for item in dataset.items])
-        if X.size == 0: raise ValueError("Dataset vazio.")
-        
-        classes = np.unique(y)
-        if len(classes) < 2:
-            raise ValueError("LDA requer pelo menos 2 classes (identidades) diferentes.")
-            
-        n_features = X.shape[1]
-        global_mean = np.mean(X, axis=0)
-        
-        Sw = np.zeros((n_features, n_features))
-        Sb = np.zeros((n_features, n_features))
-        print(f"   -> Processando {len(classes)} identidades para calcular Sw/Sb...")
-        
-        for cls in classes:
-            X_c = X[y == cls]
-            mean_c = np.mean(X_c, axis=0)
-            centered_c = X_c - mean_c
-            Sw += np.dot(centered_c.T, centered_c)
-            n_c = X_c.shape[0]
-            mean_diff = (mean_c - global_mean).reshape(-1, 1)
-            Sb += n_c * np.dot(mean_diff, mean_diff.T)
-            
-        Sw += np.eye(n_features) * regularization
-        
-        print("   -> Resolvendo EIGH Generalizado (Sb, Sw)...")
-        eigvals, eigvecs = linalg.eigh(Sb, Sw)
+        identities = [item.identity for item in dataset.items]
+        if any(ident is None or ident == "" for ident in identities):
+            raise ValueError(
+                "[LDA] Todos os EmbeddingInfo precisam ter 'identity' populado."
+            )
+
+        ids_array = np.asarray(identities)
+        classes, counts = np.unique(ids_array, return_counts=True)
+        n_singletons = int(np.sum(counts == 1))
+        valid_classes = classes[counts >= 2]
+        n_classes_used = int(len(valid_classes))
+
+        if n_classes_used < 2:
+            raise ValueError(
+                f"[LDA] São necessárias ≥ 2 identidades com ≥ 2 amostras. "
+                f"Encontrado: {n_classes_used}."
+            )
+
+        print(
+            f"--- Calculando Parâmetros LDA (Estimador: {config.estimator.label}, "
+            f"GridSearch: {config.use_grid_search}) ---"
+        )
+        print(
+            f"   -> {n_classes_used} identidades válidas, "
+            f"{n_singletons} singletons descartados."
+        )
+
+        grid_search_scores: Dict[float, float] = {}
+        best_score: Optional[float] = None
+        final_eps = float(config.regularization)
+
+        if config.use_grid_search:
+            best_eps, best_score, grid_search_scores = self._perform_lda_grid_search(
+                dataset=dataset,
+                config=config,
+                valid_classes=valid_classes,
+            )
+            final_eps = best_eps
+            print(
+                f"   -> Grid search escolheu ε={final_eps:.1e} "
+                f"({config.grid_search_metric.label}={best_score:.4f})"
+            )
+
+        mean_vector, lda_matrix, metrics_fit = self._lda_fit_single_eps(
+            X=X,
+            identities=ids_array,
+            config=config,
+            eps=final_eps,
+            valid_classes=valid_classes,
+        )
+
+        metrics: Dict[str, Any] = {
+            "step_type": "LDA",
+            "n_classes_used": n_classes_used,
+            "n_singletons_skipped": n_singletons,
+            "input_dimension": int(X.shape[1]),
+            "output_dimension": int(lda_matrix.shape[1]),
+            "estimator_used": config.estimator.value,
+            "final_regularization": float(final_eps),
+            "final_shrinkage": float(config.shrinkage),
+            "grid_search_used": bool(config.use_grid_search),
+            "grid_search_metric": (
+                config.grid_search_metric.value if config.use_grid_search else None
+            ),
+            "grid_search_scores": (
+                {f"{eps:.3e}": float(score) for eps, score in grid_search_scores.items()}
+                if config.use_grid_search else {}
+            ),
+            "grid_search_best_eps": (
+                float(final_eps) if config.use_grid_search else None
+            ),
+            "grid_search_best_score": (
+                float(best_score) if best_score is not None else None
+            ),
+        }
+        metrics.update(metrics_fit)
+        return mean_vector, lda_matrix, metrics
+
+    def _lda_fit_single_eps(
+        self,
+        X: np.ndarray,
+        identities: np.ndarray,
+        config: "LDAConfig",
+        eps: float,
+        valid_classes: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+        """
+        Fit do LDA para um ε específico. Helper compartilhado entre o fit
+        normal e o grid search.
+
+        Retorna (mean_vector, lda_matrix, fit_metrics).
+        """
+        from faceaudit.enums.lda_estimator_type import LdaEstimatorType
+        if valid_classes is None:
+            classes, counts = np.unique(identities, return_counts=True)
+            valid_classes = classes[counts >= 2]
+
+        d = int(X.shape[1])
+        global_mean = X.mean(axis=0)
+
+        # --- Sw via estimator escolhido ---
+        if config.estimator == LdaEstimatorType.STANDARD:
+            # Soma de outer products (Fisher LDA clássico).
+            Sw = np.zeros((d, d), dtype=np.float64)
+            for cls in valid_classes:
+                Xc = X[identities == cls]
+                mean_c = Xc.mean(axis=0)
+                centered = Xc - mean_c
+                Sw += centered.T @ centered
+        elif config.estimator in (LdaEstimatorType.LEDOIT_WOLF, LdaEstimatorType.OAS):
+            # Concatena vetores centrados por classe e aplica estimador
+            # robusto sobre o conjunto centralizado intraclasse. Escala
+            # pelo número de amostras pra ficar compatível com a soma de
+            # outer products (mantém o critério Fisher sensível a tamanho).
+            centered_chunks = []
+            for cls in valid_classes:
+                Xc = X[identities == cls]
+                centered_chunks.append(Xc - Xc.mean(axis=0))
+            X_centered_all = np.concatenate(centered_chunks, axis=0)
+            n_centered = X_centered_all.shape[0]
+            CovModel = LedoitWolf if config.estimator == LdaEstimatorType.LEDOIT_WOLF else OAS
+            cov_model = CovModel(store_precision=False, assume_centered=True).fit(X_centered_all)
+            Sw = cov_model.covariance_ * n_centered
+        else:
+            raise ValueError(f"Estimador LDA desconhecido: {config.estimator}")
+
+        within_trace_before = float(np.trace(Sw))
+
+        # --- Shrinkage explícito (combina com qualquer estimator) ---
+        if config.shrinkage > 0.0:
+            Sw = (1.0 - config.shrinkage) * Sw + config.shrinkage * np.eye(d)
+
+        # --- Sb (between-class scatter) — sempre standard ---
+        Sb = np.zeros((d, d), dtype=np.float64)
+        for cls in valid_classes:
+            Xc = X[identities == cls]
+            n_c = Xc.shape[0]
+            mean_diff = (Xc.mean(axis=0) - global_mean).reshape(-1, 1)
+            Sb += n_c * (mean_diff @ mean_diff.T)
+
+        # --- Ridge final no Sw + eig generalizado ---
+        eye_d = np.eye(d)
+        eps_current = eps
+        for attempt in range(3):
+            try:
+                Sw_reg = Sw + eps_current * eye_d
+                eigvals, eigvecs = linalg.eigh(Sb, Sw_reg)
+                break
+            except (np.linalg.LinAlgError, ValueError):
+                eps_current *= 100.0
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"[LDA] Falha persistente no eigh generalizado mesmo após "
+                        f"escalar ε para {eps_current:.1e}."
+                    )
+
+        # Ordena por autovalor descendente (maior separabilidade primeiro)
         sorted_indices = np.argsort(eigvals)[::-1]
         eigvecs = eigvecs[:, sorted_indices]
-        
-        max_valid_components = len(classes) - 1
-        if n_components is None or n_components > max_valid_components:
-            n_components = max_valid_components
-            
+
+        max_valid = len(valid_classes) - 1
+        n_components = config.n_components
+        if n_components is None or n_components > max_valid:
+            n_components = max_valid
+
         lda_matrix = eigvecs[:, :n_components]
-        print(f"LDA Calculado. Projetando de {n_features}D para {n_components}D.")
-        
-        return global_mean, lda_matrix
+
+        # Métricas de auditoria
+        try:
+            cond = float(np.linalg.cond(Sw_reg))
+        except Exception:
+            cond = float("nan")
+        try:
+            # Fisher ratio antes/depois (sob a projeção)
+            tr_sw = float(np.trace(Sw))
+            tr_sb = float(np.trace(Sb))
+            fisher_before = tr_sb / max(tr_sw, 1e-12)
+            Sb_proj = lda_matrix.T @ Sb @ lda_matrix
+            Sw_proj = lda_matrix.T @ Sw @ lda_matrix
+            fisher_after = float(np.trace(Sb_proj)) / max(float(np.trace(Sw_proj)), 1e-12)
+        except Exception:
+            fisher_before = float("nan")
+            fisher_after = float("nan")
+
+        return global_mean, lda_matrix, {
+            "within_class_trace_before": within_trace_before,
+            "within_class_trace_after": float(np.trace(Sw)) if config.shrinkage == 0 else float("nan"),
+            "fisher_ratio_before": float(fisher_before),
+            "fisher_ratio_after": float(fisher_after),
+            "condition_number": cond,
+        }
+
+    def _perform_lda_grid_search(
+        self,
+        dataset: EmbeddingDataset,
+        config: "LDAConfig",
+        valid_classes: np.ndarray,
+    ) -> Tuple[float, float, Dict[float, float]]:
+        """
+        Busca o melhor ε em config.reg_grid usando holdout por identidade.
+        Mesma estrutura do `_perform_wccn_grid_search` (split estratificado
+        por ID, refit per ε, score holdout, escolhe maior score).
+        """
+        rng = random.Random(self.seed) if self.seed is not None else random.Random()
+
+        all_ids = sorted([str(c) for c in valid_classes])
+        rng.shuffle(all_ids)
+        n_holdout = max(1, int(round(len(all_ids) * config.grid_search_holdout_ratio)))
+        holdout_ids = set(all_ids[:n_holdout])
+        train_ids = set(all_ids[n_holdout:])
+
+        if len(train_ids) < 2:
+            raise ValueError(
+                f"[LDA] Grid search precisa de ≥ 2 identidades de treino após holdout. "
+                f"Total={len(all_ids)}, holdout={n_holdout}, treino={len(train_ids)}."
+            )
+
+        X = dataset.matrix
+        identities = np.asarray([item.identity for item in dataset.items])
+        train_mask = np.isin(identities, list(train_ids))
+        holdout_mask = np.isin(identities, list(holdout_ids))
+        X_train = X[train_mask]
+        ids_train = identities[train_mask]
+        X_holdout = X[holdout_mask]
+        ids_holdout = identities[holdout_mask]
+
+        ho_classes, ho_counts = np.unique(ids_holdout, return_counts=True)
+        ho_valid = ho_classes[ho_counts >= 2]
+        if len(ho_valid) < 5:
+            raise ValueError(
+                f"[LDA] Holdout insuficiente para grid search: precisa de ≥ 5 "
+                f"identidades com ≥ 2 amostras, encontrado {len(ho_valid)}."
+            )
+
+        train_classes, train_counts = np.unique(ids_train, return_counts=True)
+        train_valid = train_classes[train_counts >= 2]
+        if len(train_valid) < 2:
+            raise ValueError(
+                f"[LDA] Treino do grid search precisa de ≥ 2 identidades com "
+                f"≥ 2 amostras, encontrado {len(train_valid)}."
+            )
+
+        scores: Dict[float, float] = {}
+        for eps in config.reg_grid:
+            try:
+                mean_eps, matrix_eps, _ = self._lda_fit_single_eps(
+                    X=X_train,
+                    identities=ids_train,
+                    config=config,
+                    eps=float(eps),
+                    valid_classes=train_valid,
+                )
+                # Projeta holdout pelo modelo treinado
+                X_holdout_proj = (X_holdout - mean_eps) @ matrix_eps
+                score = self._score_lda_holdout(
+                    X_holdout_proj=X_holdout_proj,
+                    ids_holdout=ids_holdout,
+                    valid_classes=ho_valid,
+                    metric=config.grid_search_metric,
+                    rng=rng,
+                )
+                scores[float(eps)] = float(score)
+            except Exception as e:
+                print(f"   [grid] ε={eps:.1e} falhou: {e}")
+                scores[float(eps)] = float("-inf")
+
+        finite_scores = {k: v for k, v in scores.items() if v != float("-inf") and not np.isnan(v)}
+        if not finite_scores:
+            raise RuntimeError(
+                "[LDA] Grid search falhou para todos os valores de ε avaliados."
+            )
+        max_score = max(finite_scores.values())
+        best_eps = min(eps for eps, s in finite_scores.items() if s == max_score)
+        return float(best_eps), float(max_score), scores
+
+    def _score_lda_holdout(
+        self,
+        X_holdout_proj: np.ndarray,
+        ids_holdout: np.ndarray,
+        valid_classes: np.ndarray,
+        metric: "LdaGridSearchMetric",
+        rng: random.Random,
+    ) -> float:
+        """
+        Score do holdout JÁ PROJETADO segundo a métrica escolhida.
+
+        FISHER_RATIO: trace(Sb_proj)/trace(Sw_proj) — barato, sem pares.
+        COSINE_AUC: AUC de cossenos em pares genuíno/impostor (≤ 200 ids).
+        """
+        from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
+
+        if metric == LdaGridSearchMetric.FISHER_RATIO:
+            d = X_holdout_proj.shape[1]
+            global_mean = X_holdout_proj.mean(axis=0)
+            Sw = np.zeros((d, d), dtype=np.float64)
+            Sb = np.zeros((d, d), dtype=np.float64)
+            for cls in valid_classes:
+                Xc = X_holdout_proj[ids_holdout == cls]
+                mean_c = Xc.mean(axis=0)
+                centered = Xc - mean_c
+                Sw += centered.T @ centered
+                diff = (mean_c - global_mean).reshape(-1, 1)
+                Sb += Xc.shape[0] * (diff @ diff.T)
+            tr_sw = float(np.trace(Sw))
+            tr_sb = float(np.trace(Sb))
+            return tr_sb / (tr_sw + 1e-12)
+
+        if metric == LdaGridSearchMetric.COSINE_AUC:
+            ids = list(valid_classes)
+            if len(ids) > 200:
+                rng_local = random.Random(self.seed) if self.seed is not None else rng
+                rng_local.shuffle(ids)
+                ids = sorted(ids[:200])
+
+            id_to_idx: Dict[str, list] = {
+                cls: list(np.where(ids_holdout == cls)[0]) for cls in ids
+            }
+            gen_a, gen_b, imp_a, imp_b = [], [], [], []
+            for i, cls in enumerate(ids):
+                idxs = id_to_idx[cls]
+                if len(idxs) < 2:
+                    continue
+                gen_a.append(idxs[0])
+                gen_b.append(idxs[1])
+                other_cls = ids[(i + 1) % len(ids)]
+                other_idxs = id_to_idx[other_cls]
+                if not other_idxs:
+                    continue
+                imp_a.append(idxs[0])
+                imp_b.append(other_idxs[0])
+
+            if not gen_a or not imp_a:
+                return float("-inf")
+
+            def cos_sim_pairs(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+                na = np.linalg.norm(A, axis=1, keepdims=True) + 1e-10
+                nb = np.linalg.norm(B, axis=1, keepdims=True) + 1e-10
+                return np.sum((A / na) * (B / nb), axis=1)
+
+            sims_gen = cos_sim_pairs(X_holdout_proj[gen_a], X_holdout_proj[gen_b])
+            sims_imp = cos_sim_pairs(X_holdout_proj[imp_a], X_holdout_proj[imp_b])
+            y_true = np.concatenate([np.ones(len(sims_gen)), np.zeros(len(sims_imp))])
+            y_scores = np.concatenate([sims_gen, sims_imp])
+            try:
+                return float(roc_auc_score(y_true, y_scores))
+            except ValueError:
+                return float("-inf")
+
+        raise ValueError(f"Métrica de grid search LDA desconhecida: {metric}")
 
     def apply_lda_transformation(self, dataset: EmbeddingDataset, mean_vector: np.ndarray, lda_matrix: np.ndarray) -> EmbeddingDataset:
         """Aplica a matriz de projeção LDA a um dataset."""
