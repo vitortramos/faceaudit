@@ -2,8 +2,8 @@
 
 **Plataforma forense para perícia de comparação facial.** Permite que o perito
 desenhe, treine e aplique estratégias declarativas de cálculo de **likelihood
-ratio (LR)** sobre embeddings AdaFace de imagens faciais, com fundamentação
-estatística defensável em corte.
+ratio (LR)** sobre embeddings faciais extraídos por modelos Sepael (v2–v6), com
+fundamentação estatística defensável em corte.
 
 O FaceAudit é composto de **duas partes integradas**, acessadas como abas do
 aplicativo:
@@ -38,8 +38,11 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 - **Python 3.11+**
 - **Sistema operacional**: Windows (otimizado), macOS ou Linux.
-- **Modelos**: AdaFace, ForensicFace (sepaelv2/v4), OFIQ, SERFIQ. Paths
-  configurados em `config.json`.
+- **Modelos Sepael (v2 a v6)**: arquivos ONNX baixados manualmente em
+  `~/.forensicface/models/<sepaelv2|v3|v4|v5|v6>/`. O FaceAudit detecta
+  automaticamente quais estão disponíveis (`SepaelModel.available_on_disk()`).
+- **OFIQ** (opcional, mas recomendado): binário externo para auditoria de
+  qualidade ICAO. Paths em `config.json` → `ofiq.*`.
 - **GPU CUDA** (opcional, mas recomendado): aceleração significativa na
   extração de embeddings via ForensicFace.
 
@@ -60,8 +63,12 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 | Ferramenta | Função |
 |---|---|
-| **AdaFace** | Modelo primário de embedding facial (512-D) |
-| **ForensicFace / sepaelv2/v4** | Detecção + alinhamento + extração de embedding |
+| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada via git URL (PyPI tem apenas 0.4.1; precisamos ≥ 0.6.0 do upstream `rafribeiro/forensicface@v0.6.0`) |
+| **Sepael V2** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v2` no parquet, `FFInfo.embedding_sepaelv2`) |
+| **Sepael V3** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v3`, `FFInfo.embedding_sepaelv3`) |
+| **Sepael V4** | Encoder AdaFace ViT WebFace4M — embeddings 512-D (`embedding_v4`, `FFInfo.embedding_sepaelv4`) |
+| **Sepael V5** | Encoder TopoFR R200 Glint360K — embeddings 512-D (`embedding_v5`, `FFInfo.embedding_sepaelv5`) |
+| **Sepael V6** | Encoder KPRPE — embeddings 512-D, requer `aligned_keypoints` como segundo input ONNX (`embedding_v6`, `FFInfo.embedding_sepaelv6`) |
 | **OFIQ** | Avaliação de qualidade NIST/BSI (binário externo) |
 | **SERFIQ** | Score de qualidade alternativo |
 | **SpeechBrain** | Implementação do PLDA SIMPLE |
@@ -82,7 +89,7 @@ pip install -e ".[dev]"
 
 ### Configuração mínima
 
-`config.json` na raiz aponta para a biblioteca global e modelos externos:
+Um único arquivo `config.json` na raiz do projeto:
 
 ```json
 {
@@ -91,8 +98,8 @@ pip install -e ".[dev]"
     "dir_templates": "data/templates"
   },
   "ofiq": {
-    "ofiq_exe_path": "caminho/para/OFIQSampleApp.exe",
-    "ofiq_data_path": "caminho/para/OFIQ-MODELS"
+    "ofiq_exe_path": "",
+    "ofiq_data_path": ""
   },
   "ff": {
     "use_gpu": true,
@@ -101,7 +108,25 @@ pip install -e ".[dev]"
 }
 ```
 
-`config.yaml` define seeds aleatórios, paths de saída e flags de sistema.
+**Chaves:**
+
+| Chave | Função |
+|---|---|
+| `paths.library` | Raiz da biblioteca global. Subpastas `datasets/`, `pipelines/`, `strategies/`, `mining_configs/`, `split_configs/`, `validation_rules/` são derivadas automaticamente — você não precisa criar/listar cada uma |
+| `paths.dir_templates` | Pasta onde ficam os templates de estrutura de pasta usados pelo botão "Criar Template" na criação de dataset |
+| `ofiq.ofiq_exe_path` | Caminho para `OFIQSampleApp.exe`. Vazio = OFIQ desligado (operações de qualidade que dependem dele ficam indisponíveis) |
+| `ofiq.ofiq_data_path` | Caminho para a pasta `OFIQ-MODELS` |
+| `ff.use_gpu` | Se `true`, ForensicFace usa CUDA quando disponível |
+| `ff.batch_size` | Tamanho do batch na extração de embeddings |
+
+O FaceAudit cria o `config.json` automaticamente na primeira execução com
+defaults relativos à pasta do projeto, e migra schemas legados (paths separados
+por subpasta, `ff.model`, `serfiq.*`, `plda.*`) automaticamente para o formato
+acima.
+
+A escolha do modelo Sepael (v2/v3/v4/v5/v6) é feita em runtime — qualquer
+modelo presente em `~/.forensicface/models/` aparece nas operações de
+extração.
 
 ### Executar
 
@@ -128,9 +153,11 @@ Um dataset é um arquivo **parquet** (`.parquet`) com:
   várias faces gera várias linhas).
 - **Colunas tipadas** descritas pelo `column_specs` na metadata do parquet
   (schema-by-role): identidade, file_name, image_path, face_hash, embeddings
-  (sepaelv2, sepaelv4 — vetores `float32` empacotados), métricas de qualidade
-  (FIQA, OFIQ, SER-FIQ), pose (yaw, pitch, roll), demografia (gênero, idade),
-  origem, e colunas customizadas que o perito adicionar.
+  (`embedding_v2`/`v3`/`v4`/`v5`/`v6` — um por modelo Sepael, todos
+  `float32` 512-D empacotados, presentes apenas para os modelos que foram
+  rodados sobre o dataset), métricas de qualidade (FIQA, OFIQ, SER-FIQ),
+  pose (yaw, pitch, roll), demografia (gênero, idade), origem, e colunas
+  customizadas que o perito adicionar.
 - **Metadata estruturada**: nome, descrição, paths absolutos vs relativos
   (`path_mode`), pasta-âncora portátil (`path_root`), flag `is_aligned` (faces
   já alinhadas em 112×112), `column_specs` com tipos e vocabulários fechados
