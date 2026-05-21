@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 from faceaudit.models import FaceDataset, FaceInfo, FFInfo, OFIQInfo, SERFIQInfo
-from faceaudit.models.dir_template import DirTemplate
+from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN, DirTemplate
 from faceaudit.services.hash_service import HashService
 
 class FaceDatasetAdapter:
@@ -61,11 +61,37 @@ class FaceDatasetAdapter:
         return dataset
 
     @staticmethod
+    def _assign_column(face: FaceInfo, attr: str, val: str, template: DirTemplate) -> None:
+        """Roteia o valor extraído para o destino correto:
+          - Built-in (identity/gender/ethnicity/origin): atributo direto de FaceInfo.
+          - Custom column declarada no template: face.extra_data[col_name].
+          - IGNORE_TOKEN ou desconhecido: descarta silenciosamente.
+        """
+        if not attr:
+            return
+        attr_clean = attr.lower().strip()
+        if not attr_clean or attr_clean == IGNORE_TOKEN:
+            return
+
+        if attr_clean in BUILTIN_COLUMNS:
+            setattr(face, attr_clean, val)
+            return
+
+        if attr_clean in template.custom_columns:
+            face.extra_data[attr_clean] = val
+            return
+
+        # Coluna referenciada no map mas que não existe no universo
+        # declarado: template inconsistente. Não levantamos erro pra
+        # não quebrar ingestões em massa — só pulamos. UI bloqueia
+        # remoção justamente pra evitar esse estado.
+
+    @staticmethod
     def _apply_template(face: FaceInfo, file_path: Path, root_path: Path, template: DirTemplate):
         """Aplica a lógica de extração sem silenciar erros críticos."""
         try:
             relative_path = file_path.relative_to(root_path)
-            folder_parts = relative_path.parent.parts 
+            folder_parts = relative_path.parent.parts
         except ValueError:
             folder_parts = []
 
@@ -74,42 +100,32 @@ class FaceDatasetAdapter:
             level_idx = int(level_key)
             if level_idx < len(folder_parts):
                 folder_name = folder_parts[level_idx]
-                
-                if template.use_separator and template.separator and template.separator in folder_name:
-                    values = folder_name.split(template.separator)
+
+                if (template.use_folder_separator and template.folder_separator
+                        and template.folder_separator in folder_name):
+                    values = folder_name.split(template.folder_separator)
                 else:
                     values = [folder_name]
 
                 for i, attr in enumerate(attributes):
-                    if not attr: continue
-                    attr_clean = attr.lower().strip()
-                    if attr_clean == "ignorar": continue
-
                     val = values[i] if i < len(values) else values[0]
-                    
-                    if hasattr(face, attr_clean):
-                        setattr(face, attr_clean, val)
+                    FaceDatasetAdapter._assign_column(face, attr, val, template)
 
         # 2. Mapeamento de Arquivos
         filename_stem = file_path.stem
-        if template.use_separator and template.separator and template.separator in filename_stem:
-            file_parts = filename_stem.split(template.separator)
+        if (template.use_filename_separator and template.filename_separator
+                and template.filename_separator in filename_stem):
+            file_parts = filename_stem.split(template.filename_separator)
         else:
             file_parts = [filename_stem]
 
         for idx_key, attr in template.filename_map.items():
             idx_int = int(idx_key)
-            if not attr: continue
-            attr_clean = attr.lower().strip()
-            if attr_clean == "ignorar": continue
-
             val = file_parts[idx_int] if idx_int < len(file_parts) else file_parts[0]
-            
-            if hasattr(face, attr_clean):
-                setattr(face, attr_clean, val)
+            FaceDatasetAdapter._assign_column(face, attr, val, template)
 
         # 3. Força a pasta pai se configurado
-        if getattr(template, 'identity_from_parent', False):
+        if getattr(template, "identity_from_parent", False):
             face.identity = file_path.parent.name
 
     @staticmethod
