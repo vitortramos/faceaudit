@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import List
 from types import SimpleNamespace
 
+from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.storage.strategy_artifact_reference import (
@@ -159,9 +160,29 @@ def test_t3_project_resources_are_never_deleted():
 
         definition = LRStrategyDefinition(strategy_id="strat-3", name="Test")
         # Nenhuma instrução declara esses recursos como output — mas eles
-        # são tipo PROJECT, então devem sobreviver.
-        ds = _make_resource("d1", "datasets/d1.parquet", StrategyResourceType.DATASET)
-        pp = _make_resource("p1", "pipelines/p1.json", StrategyResourceType.PIPELINE_CONFIG)
+        # são PRIMARY (importados via "Adicionar Recurso"), então devem
+        # sobreviver. Datasets/configs derivados de instruções terão
+        # `category=DERIVED` e seguem o caminho de limpeza normal.
+        ds = StrategyResource(
+            resource_id="d1",
+            name="d1",
+            resource_type=StrategyResourceType.DATASET,
+            category=ResourceCategory.PRIMARY,
+            artifact_ref=StrategyArtifactReference(
+                artifact_type=StrategyArtifactType.SIMILARITY_SCORES,
+                path="datasets/d1.parquet",
+            ),
+        )
+        pp = StrategyResource(
+            resource_id="p1",
+            name="p1",
+            resource_type=StrategyResourceType.PIPELINE_CONFIG,
+            category=ResourceCategory.PRIMARY,
+            artifact_ref=StrategyArtifactReference(
+                artifact_type=StrategyArtifactType.SIMILARITY_SCORES,
+                path="pipelines/p1.json",
+            ),
+        )
         definition.resources.append(ds)
         definition.resources.append(pp)
 

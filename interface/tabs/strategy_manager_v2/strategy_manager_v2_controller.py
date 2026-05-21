@@ -2349,7 +2349,34 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not output_ids:
             return
 
-        # Remove placeholders dos outputs de `definition.resources`.
+        # Captura os `id` únicos dos outputs ANTES de qualquer mutação em
+        # `defn.resources`. _invalidate_dependents_of recebe esses ids como
+        # raiz do BFS e os usa pra encontrar instruções dependentes via
+        # comparação com `rid_to_uid` (mapeamento local da defn).
+        output_unique_ids: List[str] = []
+        for output_rid in output_ids:
+            res = self._current_definition.get_resource_by_id(output_rid)
+            if res is not None and res.id:
+                output_unique_ids.append(res.id)
+
+        # PRIMEIRO o cascade downstream: invalida instruções que consumiam
+        # os outputs como input. Crítico rodar AQUI (antes de remover os
+        # placeholders) porque o BFS constrói `rid_to_uid` a partir de
+        # `defn.resources` — se removermos antes, downstream input_rids
+        # não mapeiam para ids únicos e o cascade não propaga.
+        # Sem isso, Y permanece com ✅ apesar dos inputs terem sumido —
+        # UI mostra estado válido falso, execuções subsequentes falham tardio.
+        # _invalidate_dependents_of já salva as definitions afetadas e
+        # dispara os refreshes visuais (✅/🔒 + tree + produced resources).
+        for unique_id in output_unique_ids:
+            self._invalidate_dependents_of(unique_id)
+
+        # Agora remove placeholders dos outputs de `definition.resources`.
+        # Diferente de Apply Alterações (que invalida outputs mas mantém os
+        # placeholders na expectativa de reexecução), aqui a instrução
+        # deixa de existir — então também removemos os placeholders dos
+        # recursos produzidos. Senão eles ficariam órfãos na árvore, sem
+        # instrução pai pra reproduzí-los.
         output_id_set = set(output_ids)
         self._current_definition.resources = [
             r for r in self._current_definition.resources
@@ -2368,21 +2395,6 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     pass
 
         self._executed_instruction_ids.discard(instruction.instruction_id)
-
-        # Cascade downstream: invalida instruções que consumiam os outputs
-        # dessa instrução como input. Sem isso, Y permanece com ✅ apesar
-        # dos seus inputs terem sumido — UI mostra estado válido falso,
-        # execuções subsequentes falham tardio.
-        # Cascade usa o `id` único dos recursos DERIVED. Como os ids são
-        # exclusivos da estratégia atual (regenerados em duplicate), o
-        # BFS naturalmente não atinge outras estratégias.
-        # _invalidate_dependents_of já salva as definitions afetadas e
-        # dispara os refreshes visuais (✅/🔒 + tree + produced resources).
-        for output_rid in output_ids:
-            res = self._current_definition.get_resource_by_id(output_rid)
-            if res is None or not res.id:
-                continue
-            self._invalidate_dependents_of(res.id)
 
         # NÃO chamamos `_save_current_definition()` aqui — o save virá em
         # seguida via `_on_strategy_modified` (emitido pelo widget logo
