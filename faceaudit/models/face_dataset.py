@@ -23,6 +23,19 @@ from faceaudit.enums.path_mode import PathMode
 # `FaceInfo.to_flat_dict` emite. Tudo fora dessa lista é capturado como
 # `face.extra_data` em `from_dataframe` e re-emitido em `to_flat_dict` —
 # round-trip pra preservar colunas custom em save/load/filter.
+def _canonical_embedding_columns() -> frozenset:
+    """Conjunto de nomes de coluna de embedding canônicos derivado do
+    `SepaelModel` enum em runtime. Import local pra evitar ciclo de
+    import com `enums.embedding_type` que já depende de `face_dataset`.
+    Inclui o alias genérico `embedding` (v2 retrocompat) e o `embedding_serfiq`
+    histórico que não está no enum."""
+    from faceaudit.enums.sepael_model import SepaelModel
+    return frozenset(
+        {"embedding", "embedding_serfiq"}
+        | {member.parquet_column for member in SepaelModel}
+    )
+
+
 _CANONICAL_FACE_COLUMNS = frozenset({
     # FaceInfo metadata
     "image_path", "file_name", "hash", "origin", "source",
@@ -32,14 +45,20 @@ _CANONICAL_FACE_COLUMNS = frozenset({
     # FFInfo (exclude_heavy=True) + renomeados em to_flat_dict
     "ipd", "fiqa_score", "det_score", "gender_est", "age_est",
     "yaw", "pitch", "roll",
-    # FFInfo embeddings (preservados como colunas planas)
-    "embedding", "embedding_v2", "embedding_v4", "embedding_serfiq",
 })
 
 
 def _is_canonical_face_column(name: str) -> bool:
-    """True quando `name` pertence ao mapeamento canônico de FaceInfo."""
+    """True quando `name` pertence ao mapeamento canônico de FaceInfo.
+
+    Colunas de embedding são consultadas via `_canonical_embedding_columns()`
+    em runtime pra cobrir TODOS os membros do `SepaelModel` enum — sem
+    isso, embeddings v3/v5/v6 (qualquer modelo fora dos hard-coded v2/v4)
+    caíam no loop de `extra_data` e quebrar com `pd.isna(array)` ambíguo.
+    """
     if name in _CANONICAL_FACE_COLUMNS:
+        return True
+    if name in _canonical_embedding_columns():
         return True
     # OFIQ/SERFIQ emitem múltiplas colunas com prefixo — todas canônicas
     return name.startswith("ofiq_") or name.startswith("serfiq_")
@@ -462,12 +481,13 @@ class FaceDataset:
                 if _is_canonical_face_column(col):
                     continue
                 val = row[col]
-                if pd.isna(val):
-                    continue
-                # Mantém apenas escalares — listas/arrays/dicts ficam fora
-                # do round-trip (consistente com to_flat_dict que só emite
-                # custom values via update simples).
+                # Skip de array/list/dict ANTES de pd.isna — sem isso,
+                # `pd.isna(array)` retorna array de bools e o `if` quebra
+                # com "truth value of an array is ambiguous". Acontecia
+                # quando uma coluna de embedding não-canônica chegava aqui.
                 if isinstance(val, (list, np.ndarray, dict)):
+                    continue
+                if pd.isna(val):
                     continue
                 extra_data[col] = clean(val)
             if extra_data:

@@ -79,9 +79,50 @@ def test_enum_membership_completeness():
     )
 
 
+def test_from_dataframe_loads_v6_without_extra_data_crash():
+    """Regressão: parquet com `embedding_v6` causava crash em
+    `from_dataframe` porque a coluna não estava em
+    `_CANONICAL_FACE_COLUMNS` → caía no loop de extra_data → `pd.isna(array)`
+    explodia com `truth value of an array is ambiguous`."""
+    import pandas as pd
+    from faceaudit.models.face_dataset import FaceDataset
+
+    df = pd.DataFrame([{
+        "image_path": "/fake/img.jpg",
+        "identity": "1",
+        "fiqa_score": 0.9,
+        "embedding_v2": [1.0, 2.0, 3.0],
+        "embedding_v6": [7.0, 8.0, 9.0],
+    }])
+
+    ds = FaceDataset.from_dataframe(df, name="test_v6_load")
+
+    assert len(ds.faces) == 1
+    face = ds.faces[0]
+    assert face.ff_info is not None
+    assert face.ff_info.embedding_sepaelv2 is not None
+    assert face.ff_info.embedding_sepaelv2.tolist() == [1.0, 2.0, 3.0]
+    assert face.ff_info.embedding_sepaelv6 is not None
+    assert face.ff_info.embedding_sepaelv6.tolist() == [7.0, 8.0, 9.0]
+
+
+def test_is_canonical_face_column_covers_all_sepael_versions():
+    """Sanity: TODOS os parquet_columns do enum são classificados como
+    canônicos, garantindo que extra_data loop não tenta processá-los."""
+    from faceaudit.models.face_dataset import _is_canonical_face_column
+
+    for member in SepaelModel:
+        assert _is_canonical_face_column(member.parquet_column), (
+            f"{member.parquet_column} não está reconhecida como canonical "
+            f"— vai cair no extra_data loop e crashar com array."
+        )
+
+
 if __name__ == "__main__":
     test_to_flat_dict_serializes_all_present_embeddings()
     test_to_flat_dict_skips_absent_embeddings()
     test_to_flat_dict_handles_v6_only()
     test_enum_membership_completeness()
+    test_from_dataframe_loads_v6_without_extra_data_crash()
+    test_is_canonical_face_column_covers_all_sepael_versions()
     print("Todos os testes passaram.")
