@@ -1784,44 +1784,56 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _on_duplicate_strategy(self, definition: LRStrategyDefinition) -> None:
         if not self._project:
             return
-        cloned = copy.deepcopy(definition)
-        cloned.strategy_id = str(uuid.uuid4())
-        cloned.name = f"{definition.name} (cópia)"
 
-        # CRÍTICO: zerar artifact_ref e payload de TODOS os recursos DERIVED
-        # do clone. Sem isso, o clone herda refs apontando para arquivos
-        # com o UUID da estratégia ORIGINAL — se o usuário depois deletar
-        # o clone, `_on_remove_strategy` percorreria essas refs e
-        # APAGARIA OS ARQUIVOS DA ORIGINAL (porque o cleanup vai pelo
-        # `artifact_ref.path`, não pelo UUID do dono). Recursos PRIMARY
-        # (datasets/configs importados) mantêm os refs porque vivem na
-        # biblioteca compartilhada do projeto.
-        #
-        # Regenerar `id` dos DERIVED (Fase 5): `copy.deepcopy` literalmente
-        # duplica os ids. Se mantivéssemos os mesmos ids, quando ambas as
-        # estratégias (original + clone) fossem carregadas num mesmo
-        # contexto de execução (caso raro mas possível em Run All
-        # cross-strategy), `set_resource` do clone sobrescreveria o do
-        # original no `_id_to_resource_id_index`. Regenerar o id garante
-        # unicidade global em todo o projeto. PRIMARY mantém id porque
-        # representa a mesma identidade física do recurso compartilhado.
-        from faceaudit.models.strategy.resource_id_generator import (
-            generate_resource_id,
+        # WaitCursor: a duplicação pode demorar perceptivelmente em
+        # estratégias grandes (deepcopy de muitos resources + iteração
+        # por todos os DERIVED zerando refs + regen de ids + save no
+        # disco + refresh do painel esquerdo). Sem o cursor, o usuário
+        # fica sem feedback de que algo está acontecendo.
+        QtWidgets.QApplication.setOverrideCursor(
+            QtCore.Qt.CursorShape.WaitCursor
         )
-        for res in cloned.resources:
-            if res.category == ResourceCategory.DERIVED:
-                res.artifact_ref = None
-                res.payload = None
-                res.id = generate_resource_id(res.resource_type)
-
         try:
-            self._project.definition_repository.save_definition(cloned)
-            self._is_dirty = False
-            self._refresh_left_panel()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(
-                self._view, "Erro", f"Não foi possível duplicar a estratégia:\n{exc}"
+            cloned = copy.deepcopy(definition)
+            cloned.strategy_id = str(uuid.uuid4())
+            cloned.name = f"{definition.name} (cópia)"
+
+            # CRÍTICO: zerar artifact_ref e payload de TODOS os recursos DERIVED
+            # do clone. Sem isso, o clone herda refs apontando para arquivos
+            # com o UUID da estratégia ORIGINAL — se o usuário depois deletar
+            # o clone, `_on_remove_strategy` percorreria essas refs e
+            # APAGARIA OS ARQUIVOS DA ORIGINAL (porque o cleanup vai pelo
+            # `artifact_ref.path`, não pelo UUID do dono). Recursos PRIMARY
+            # (datasets/configs importados) mantêm os refs porque vivem na
+            # biblioteca compartilhada do projeto.
+            #
+            # Regenerar `id` dos DERIVED (Fase 5): `copy.deepcopy` literalmente
+            # duplica os ids. Se mantivéssemos os mesmos ids, quando ambas as
+            # estratégias (original + clone) fossem carregadas num mesmo
+            # contexto de execução (caso raro mas possível em Run All
+            # cross-strategy), `set_resource` do clone sobrescreveria o do
+            # original no `_id_to_resource_id_index`. Regenerar o id garante
+            # unicidade global em todo o projeto. PRIMARY mantém id porque
+            # representa a mesma identidade física do recurso compartilhado.
+            from faceaudit.models.strategy.resource_id_generator import (
+                generate_resource_id,
             )
+            for res in cloned.resources:
+                if res.category == ResourceCategory.DERIVED:
+                    res.artifact_ref = None
+                    res.payload = None
+                    res.id = generate_resource_id(res.resource_type)
+
+            try:
+                self._project.definition_repository.save_definition(cloned)
+                self._is_dirty = False
+                self._refresh_left_panel()
+            except Exception as exc:
+                QtWidgets.QMessageBox.critical(
+                    self._view, "Erro", f"Não foi possível duplicar a estratégia:\n{exc}"
+                )
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def _on_rename_strategy(self, definition: LRStrategyDefinition) -> None:
         if not self._project:
