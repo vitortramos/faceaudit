@@ -469,11 +469,20 @@ _CATEGORICAL_MAX_CARDINALITY = 50
 
 # Colunas que nunca contam como categóricas, independente da cardinalidade.
 # Identity/path/hash/file_name são identificadoras — histograma delas não
-# tem semântica útil.
-_EXCLUDED_FROM_CATEGORICAL = frozenset({
-    "identity", "image_path", "hash", "file_name",
-    "embedding", "embedding_v2", "embedding_v4", "embedding_serfiq",
-})
+# tem semântica útil. Embeddings são vetores — também não fazem sentido
+# em histograma categórico.
+def _excluded_from_categorical() -> frozenset:
+    """Build excluded set em runtime pra incluir TODOS os parquet_columns
+    do `SepaelModel` enum (v2..v6+) — sem hard-coding."""
+    from faceaudit.enums.sepael_model import SepaelModel
+    return frozenset(
+        {"identity", "image_path", "hash", "file_name",
+         "embedding", "embedding_serfiq"}
+        | {m.parquet_column for m in SepaelModel}
+    )
+
+
+_EXCLUDED_FROM_CATEGORICAL = _excluded_from_categorical()
 
 
 def _get_categorical_counts(

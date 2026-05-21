@@ -458,20 +458,25 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         editable=False, visible_default=False, category=CATEGORY_FF_POSE,
         axis=PoseAxis.ROLL, unit="degrees",
     )
-    specs["embedding_v2"] = ColumnSpec(
-        name="embedding_v2", label="Sepael V2",
-        role=ColumnRole.EMBEDDING, source=ColumnSource.FF,
-        dtype=ColumnDType.VECTOR,
-        editable=False, visible_default=False, category=CATEGORY_FF_EMBEDDING,
-        dim=256, model_name="sepaelv2",
-    )
-    specs["embedding_v4"] = ColumnSpec(
-        name="embedding_v4", label="Sepael V4",
-        role=ColumnRole.EMBEDDING, source=ColumnSource.FF,
-        dtype=ColumnDType.VECTOR,
-        editable=False, visible_default=False, category=CATEGORY_FF_EMBEDDING,
-        dim=512, model_name="sepaelv4",
-    )
+    # Embeddings dos modelos Sepael — gerados a partir do enum em vez
+    # de hard-codear v2/v4. Qualquer modelo novo adicionado ao
+    # `SepaelModel` ganha ColumnSpec automaticamente. Sem isso, colunas
+    # como `embedding_v6` aparecem no parquet mas a UI não consegue
+    # togglar visibilidade (sem spec → sem entrada no menu Mostrar/Ocultar).
+    from faceaudit.enums.sepael_model import SepaelModel
+    for member in SepaelModel:
+        specs[member.parquet_column] = ColumnSpec(
+            name=member.parquet_column,
+            label=member.label_pt,
+            role=ColumnRole.EMBEDDING,
+            source=ColumnSource.FF,
+            dtype=ColumnDType.VECTOR,
+            editable=False,
+            visible_default=False,
+            category=CATEGORY_FF_EMBEDDING,
+            dim=member.embedding_dim,
+            model_name=member.ff_name,
+        )
 
     # ---------- OFIQ — atalhos canônicos ----------
     specs["ofiq_score"] = ColumnSpec(
