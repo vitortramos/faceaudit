@@ -8,10 +8,12 @@ from faceaudit.models.transformator_config import TransformatorConfig
 from faceaudit.enums.transformation_type import TransformationType
 
 # Importação dos Enums que montam a UI
-from faceaudit.enums.coral_estimator_type import CoralEstimatorType 
+from faceaudit.enums.coral_estimator_type import CoralEstimatorType
 from faceaudit.enums.whitening_style import WhiteningStyle
 from faceaudit.enums.aggregation_method import AggregationMethod
 from faceaudit.enums.quality_score_type import QualityScoreType
+from faceaudit.enums.wccn_estimator_type import WccnEstimatorType
+from faceaudit.enums.wccn_grid_search_metric import WccnGridSearchMetric
 
 from .pipeline_creator_view import PipelineCreatorView
 
@@ -184,6 +186,7 @@ class PipelineCreatorController(QtCore.QObject):
             TransformationType.CORAL_TRANSFORMATION:   self._build_coral_form,
             TransformationType.LDA_TRANSFORMATION:     self._build_lda_form,
             TransformationType.WHITENING_TRANSFORMATION: self._build_whitening_form,
+            TransformationType.WCCN_TRANSFORMATION:    self._build_wccn_form,
             TransformationType.IDENTITY_AGGREGATION:   self._build_aggregation_form,
             TransformationType.RADIAL_GAUSSIANIZATION: self._build_radial_gauss_form,
         }
@@ -288,6 +291,96 @@ class PipelineCreatorController(QtCore.QObject):
         spin_n.valueChanged.connect(lambda v: self._update_dto_param(item, 'n_components', v if not chk_auto.isChecked() else None))
         chk_auto.toggled.connect(toggle_auto)
         layout.addRow("Componentes:", chk_auto); layout.addRow(" ", spin_n)
+        return w
+
+    def _build_wccn_form(self, dto, item):
+        """Form de WCCN: estimator + shrinkage + regularization + grid search opcional.
+
+        Layout idêntico ao CORAL (estimator + regularization + grid search
+        toggle), mais o `shrinkage` (extra do WCCN: blend explícito com I)
+        e a métrica do grid search (FISHER_RATIO ou COSINE_AUC).
+        """
+        w = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(w)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Estimator (STANDARD / LEDOIT_WOLF / OAS).
+        combo_est = QtWidgets.QComboBox()
+        for est in WccnEstimatorType:
+            combo_est.addItem(est.label, est)
+            combo_est.setItemData(
+                combo_est.count() - 1,
+                est.description,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        idx = combo_est.findData(dto.estimator)
+        if idx >= 0:
+            combo_est.setCurrentIndex(idx)
+        combo_est.currentIndexChanged.connect(
+            lambda: self._update_dto_param(item, 'estimator', combo_est.currentData())
+        )
+        layout.addRow("Estimador:", combo_est)
+
+        # Shrinkage explícito (sempre visível — combinável com qualquer estimator).
+        spin_shrink = QtWidgets.QDoubleSpinBox()
+        spin_shrink.setDecimals(4)
+        spin_shrink.setRange(0.0, 1.0)
+        spin_shrink.setSingleStep(0.01)
+        spin_shrink.setValue(dto.shrinkage)
+        spin_shrink.valueChanged.connect(
+            lambda v: self._update_dto_param(item, 'shrinkage', v)
+        )
+        layout.addRow("Shrinkage (α):", spin_shrink)
+
+        # Regularização (desabilitada quando grid search está ligado — ε vai
+        # ser escolhido automaticamente da `reg_grid`).
+        spin_reg = QtWidgets.QDoubleSpinBox()
+        spin_reg.setDecimals(8)
+        spin_reg.setRange(1e-12, 1.0)
+        spin_reg.setSingleStep(1e-6)
+        spin_reg.setValue(dto.regularization)
+        spin_reg.valueChanged.connect(
+            lambda v: self._update_dto_param(item, 'regularization', v)
+        )
+        lbl_reg = QtWidgets.QLabel("Regularização:")
+        layout.addRow(lbl_reg, spin_reg)
+
+        # Toggle de grid search.
+        chk_gs = QtWidgets.QCheckBox("Ativar Grid Search (busca ε via holdout)")
+        chk_gs.setChecked(dto.use_grid_search)
+        chk_gs.toggled.connect(
+            lambda v: self._update_dto_param(item, 'use_grid_search', v)
+        )
+        layout.addRow("", chk_gs)
+
+        # Métrica do grid search (FISHER_RATIO / COSINE_AUC) — só faz
+        # sentido quando grid search está ligado.
+        combo_metric = QtWidgets.QComboBox()
+        for m in WccnGridSearchMetric:
+            combo_metric.addItem(m.label, m)
+            combo_metric.setItemData(
+                combo_metric.count() - 1,
+                m.description,
+                QtCore.Qt.ItemDataRole.ToolTipRole,
+            )
+        idx = combo_metric.findData(dto.grid_search_metric)
+        if idx >= 0:
+            combo_metric.setCurrentIndex(idx)
+        combo_metric.currentIndexChanged.connect(
+            lambda: self._update_dto_param(
+                item, 'grid_search_metric', combo_metric.currentData(),
+            )
+        )
+        lbl_metric = QtWidgets.QLabel("Métrica (GS):")
+        layout.addRow(lbl_metric, combo_metric)
+
+        def update_ui_state():
+            gs = chk_gs.isChecked()
+            spin_reg.setEnabled(not gs)
+            combo_metric.setEnabled(gs)
+            lbl_metric.setEnabled(gs)
+        chk_gs.toggled.connect(update_ui_state)
+        update_ui_state()
         return w
 
     def _build_aggregation_form(self, dto, item):
