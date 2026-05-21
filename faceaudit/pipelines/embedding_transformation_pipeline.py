@@ -30,6 +30,7 @@ from faceaudit.transformators.lda_transformation import LdaTransformation
 from faceaudit.transformators.radial_gaussianization_transformation import (
     RadialGaussianizationTransformation,
 )
+from faceaudit.transformators.wccn_transformation import WCCNTransformation
 from faceaudit.transformators.whitening_transformation import WhiteningTransformation
 
 
@@ -61,6 +62,7 @@ class EmbeddingTransformationPipeline(EmbeddingTransformationPipelineProtocol):
         TransformationType.L2_NORMALIZATION: L2Normalization,
         TransformationType.WHITENING_TRANSFORMATION: WhiteningTransformation,
         TransformationType.CORAL_TRANSFORMATION: CoralTransformation,
+        TransformationType.WCCN_TRANSFORMATION: WCCNTransformation,
         TransformationType.IDENTITY_AGGREGATION: IdentityAggregation,
         TransformationType.LDA_TRANSFORMATION: LdaTransformation,
         TransformationType.CENTERING_TRANSFORMATION: CenteringTransformation,
@@ -364,6 +366,22 @@ class EmbeddingTransformationPipeline(EmbeddingTransformationPipelineProtocol):
 
         elif t_value == TransformationType.LDA_TRANSFORMATION.value:
             if training_policy.use_target_for_lda:
+                fit_source = current_source + current_target
+
+        elif t_value == TransformationType.WCCN_TRANSFORMATION.value:
+            if training_policy.use_target_for_wccn:
+                # WCCN é supervisionado — exige labels em ambos os datasets
+                # quando o pool é usado. Validação explícita evita silent fallback.
+                missing_target_labels = any(
+                    item.identity is None or item.identity == ""
+                    for item in current_target.items
+                )
+                if missing_target_labels:
+                    raise ValueError(
+                        "[Pipeline] use_target_for_wccn=True exige que o target_dataset "
+                        "tenha 'identity' populado em todas as amostras. "
+                        "Desligue a flag ou rotule o target."
+                    )
                 fit_source = current_source + current_target
 
         return fit_source, fit_target

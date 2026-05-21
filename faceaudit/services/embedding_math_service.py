@@ -27,9 +27,12 @@ from faceaudit.enums.whitening_style import WhiteningStyle
 from faceaudit.enums.step_type import StepType 
 from faceaudit.enums.coral_estimator_type import CoralEstimatorType
 from faceaudit.enums.transformation_type import TransformationType
+from faceaudit.enums.wccn_estimator_type import WccnEstimatorType
+from faceaudit.enums.wccn_grid_search_metric import WccnGridSearchMetric
 
 # --- INJEÇÃO DO DTO DE AGREGAÇÃO ---
 from faceaudit.models.aggregation_config import AggregationConfig
+from faceaudit.models.wccn_config import WCCNConfig
 
 class EmbeddingMathService:
     """
@@ -600,6 +603,423 @@ class EmbeddingMathService:
             name=f"{dataset.name}_LDA",
             description=f"Projeção LDA ({lda_matrix.shape[1]}D)",
             items=new_items
+        )
+
+    # =========================================================================
+    # 4b. TRANSFORMAÇÃO WCCN (Within-Class Covariance Normalization)
+    # =========================================================================
+
+    def calculate_wccn_parameters(
+        self,
+        dataset: EmbeddingDataset,
+        config: WCCNConfig,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Calcula a matriz WCCN (B) para normalizar a covariância intraclasse.
+
+        Sequência:
+          1. Agrupa amostras por identidade; descarta singletons.
+          2. Se config.use_grid_search=True, busca o melhor ε via holdout.
+          3. Refita W no dataset completo com ε escolhido.
+          4. Retorna (B, metrics_dict).
+
+        Args:
+            dataset: Dataset rotulado (cada EmbeddingInfo precisa de `identity`).
+            config: WCCNConfig com regularization/shrinkage/estimator/grid search.
+
+        Returns:
+            Tuple (B_matrix, metrics_dict). B é D×D; aplicação: x' = x @ B.
+        """
+        if dataset.matrix.size == 0:
+            raise ValueError("[WCCN] Dataset vazio.")
+
+        X = dataset.matrix
+        identities = [item.identity for item in dataset.items]
+        if any(ident is None or ident == "" for ident in identities):
+            raise ValueError(
+                "[WCCN] Todos os EmbeddingInfo precisam ter 'identity' populado. "
+                "WCCN é supervisionado."
+            )
+
+        ids_array = np.asarray(identities)
+        classes, counts = np.unique(ids_array, return_counts=True)
+        n_singletons = int(np.sum(counts == 1))
+        valid_classes = classes[counts >= 2]
+        n_classes_used = int(len(valid_classes))
+
+        if n_classes_used < 2:
+            raise ValueError(
+                f"[WCCN] São necessárias ≥ 2 identidades com ≥ 2 amostras. "
+                f"Encontrado: {n_classes_used}."
+            )
+
+        print(
+            f"--- Calculando Parâmetros WCCN (Estimador: {config.estimator.label}, "
+            f"GridSearch: {config.use_grid_search}) ---"
+        )
+        print(
+            f"   -> {n_classes_used} identidades válidas, "
+            f"{n_singletons} singletons descartados."
+        )
+
+        grid_search_scores: Dict[float, float] = {}
+        best_score: Optional[float] = None
+        final_eps = float(config.regularization)
+
+        if config.use_grid_search:
+            best_eps, best_score, grid_search_scores = self._perform_wccn_grid_search(
+                dataset=dataset,
+                config=config,
+                valid_classes=valid_classes,
+            )
+            final_eps = best_eps
+            print(
+                f"   -> Grid search escolheu ε={final_eps:.1e} "
+                f"({config.grid_search_metric.label}={best_score:.4f})"
+            )
+
+        B, metrics_fit = self._wccn_fit_single_eps(
+            X=X,
+            identities=ids_array,
+            config=config,
+            eps=final_eps,
+            valid_classes=valid_classes,
+        )
+
+        metrics: Dict[str, Any] = {
+            "step_type": StepType.WCCN.value,
+            "n_classes_used": n_classes_used,
+            "n_singletons_skipped": n_singletons,
+            "input_dimension": int(X.shape[1]),
+            "output_dimension": int(B.shape[0]),
+            "estimator_used": config.estimator.value,
+            "final_regularization": float(final_eps),
+            "final_shrinkage": float(config.shrinkage),
+            "grid_search_used": bool(config.use_grid_search),
+            "grid_search_metric": (
+                config.grid_search_metric.value if config.use_grid_search else None
+            ),
+            "grid_search_scores": (
+                {f"{eps:.3e}": float(score) for eps, score in grid_search_scores.items()}
+                if config.use_grid_search else {}
+            ),
+            "grid_search_best_eps": (
+                float(final_eps) if config.use_grid_search else None
+            ),
+            "grid_search_best_score": (
+                float(best_score) if best_score is not None else None
+            ),
+        }
+        metrics.update(metrics_fit)
+        return B, metrics
+
+    def _wccn_fit_single_eps(
+        self,
+        X: np.ndarray,
+        identities: np.ndarray,
+        config: WCCNConfig,
+        eps: float,
+        valid_classes: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """
+        Fit do WCCN para um ε específico. Helper compartilhado entre o fit
+        normal e o grid search.
+
+        Retorna (B, fit_metrics) onde B = chol(inv(W_reg)).
+        """
+        if valid_classes is None:
+            classes, counts = np.unique(identities, return_counts=True)
+            valid_classes = classes[counts >= 2]
+
+        d = int(X.shape[1])
+
+        # Computa W segundo o estimador escolhido
+        if config.estimator == WccnEstimatorType.STANDARD:
+            # Média das covariâncias por classe (Hatch et al. 2006)
+            W = np.zeros((d, d), dtype=np.float64)
+            K = 0
+            for cls in valid_classes:
+                X_c = X[identities == cls]
+                mean_c = X_c.mean(axis=0)
+                centered = X_c - mean_c
+                cov_c = (centered.T @ centered) / centered.shape[0]
+                W += cov_c
+                K += 1
+            W /= max(K, 1)
+
+        elif config.estimator in (WccnEstimatorType.LEDOIT_WOLF, WccnEstimatorType.OAS):
+            # Concatena todos os vetores centrados por classe e aplica
+            # o estimador robusto sobre o conjunto centralizado intraclasse.
+            centered_chunks = []
+            for cls in valid_classes:
+                X_c = X[identities == cls]
+                centered_chunks.append(X_c - X_c.mean(axis=0))
+            X_centered_all = np.concatenate(centered_chunks, axis=0)
+            CovModel = LedoitWolf if config.estimator == WccnEstimatorType.LEDOIT_WOLF else OAS
+            cov_model = CovModel(store_precision=False, assume_centered=True).fit(X_centered_all)
+            W = cov_model.covariance_
+        else:
+            raise ValueError(f"Estimador WCCN desconhecido: {config.estimator}")
+
+        within_trace_before = float(np.trace(W))
+
+        # Shrinkage explícito (combina com ridge)
+        if config.shrinkage > 0.0:
+            W = (1.0 - config.shrinkage) * W + config.shrinkage * np.eye(d)
+
+        # Ridge final
+        eye_d = np.eye(d)
+        W_reg = W + eps * eye_d
+
+        # Inversa via Cholesky de W_reg + chol(inv(W_reg)).
+        # Fallback aumenta ε se a primeira tentativa falhar.
+        eps_current = eps
+        for attempt in range(3):
+            try:
+                W_inv = np.linalg.inv(W_reg)
+                # B = chol(W_inv) tal que W_inv = B @ B.T
+                B = np.linalg.cholesky(W_inv)
+                break
+            except np.linalg.LinAlgError:
+                eps_current *= 100.0
+                W_reg = W + eps_current * eye_d
+                if attempt == 2:
+                    raise RuntimeError(
+                        f"[WCCN] Falha persistente na inversão de W mesmo "
+                        f"após escalar ε para {eps_current:.1e}."
+                    )
+
+        # Métrica de condicionamento
+        try:
+            cond = float(np.linalg.cond(W_reg))
+        except Exception:
+            cond = float("nan")
+
+        # Fisher ratio antes/depois: usa Sb global como referência
+        # (não é o critério de seleção do grid search; serve para auditoria).
+        try:
+            global_mean = X.mean(axis=0)
+            Sb = np.zeros((d, d), dtype=np.float64)
+            for cls in valid_classes:
+                X_c = X[identities == cls]
+                diff = (X_c.mean(axis=0) - global_mean).reshape(-1, 1)
+                Sb += X_c.shape[0] * (diff @ diff.T)
+            Sb_trace = float(np.trace(Sb))
+            fisher_before = Sb_trace / max(within_trace_before, 1e-12)
+
+            # Após WCCN, W' = B.T @ W @ B = I (idealmente)
+            W_after = B.T @ W @ B
+            Sb_after = B.T @ Sb @ B
+            fisher_after = float(np.trace(Sb_after)) / max(float(np.trace(W_after)), 1e-12)
+        except Exception:
+            fisher_before = float("nan")
+            fisher_after = float("nan")
+
+        return B, {
+            "within_class_trace_before": within_trace_before,
+            "within_class_trace_after": float(np.trace(B.T @ W @ B)),
+            "fisher_ratio_before": float(fisher_before),
+            "fisher_ratio_after": float(fisher_after),
+            "condition_number": cond,
+        }
+
+    def _perform_wccn_grid_search(
+        self,
+        dataset: EmbeddingDataset,
+        config: WCCNConfig,
+        valid_classes: np.ndarray,
+    ) -> Tuple[float, float, Dict[float, float]]:
+        """
+        Busca o melhor ε em config.reg_grid usando holdout por identidade.
+
+        Métrica: FISHER_RATIO (default) ou COSINE_AUC.
+        Retorna (best_eps, best_score, scores_dict).
+        """
+        rng = random.Random(self.seed) if self.seed is not None else random.Random()
+
+        # Split por identidade
+        all_ids = sorted([str(c) for c in valid_classes])
+        rng.shuffle(all_ids)
+        n_holdout = max(1, int(round(len(all_ids) * config.grid_search_holdout_ratio)))
+        holdout_ids = set(all_ids[:n_holdout])
+        train_ids = set(all_ids[n_holdout:])
+
+        if len(train_ids) < 2:
+            raise ValueError(
+                f"[WCCN] Grid search precisa de ≥ 2 identidades de treino após holdout. "
+                f"Total={len(all_ids)}, holdout={n_holdout}, treino={len(train_ids)}."
+            )
+
+        X = dataset.matrix
+        identities = np.asarray([item.identity for item in dataset.items])
+
+        train_mask = np.isin(identities, list(train_ids))
+        holdout_mask = np.isin(identities, list(holdout_ids))
+        X_train = X[train_mask]
+        ids_train = identities[train_mask]
+        X_holdout = X[holdout_mask]
+        ids_holdout = identities[holdout_mask]
+
+        # Pré-requisito do holdout: ≥ 5 identidades com ≥ 2 amostras
+        ho_classes, ho_counts = np.unique(ids_holdout, return_counts=True)
+        ho_valid = ho_classes[ho_counts >= 2]
+        if len(ho_valid) < 5:
+            raise ValueError(
+                f"[WCCN] Holdout insuficiente para grid search: precisa de ≥ 5 "
+                f"identidades com ≥ 2 amostras, encontrado {len(ho_valid)}. "
+                f"Reduza holdout_ratio ou adicione mais identidades ao dataset."
+            )
+
+        # Pré-computa classes válidas no treino
+        train_classes, train_counts = np.unique(ids_train, return_counts=True)
+        train_valid = train_classes[train_counts >= 2]
+        if len(train_valid) < 2:
+            raise ValueError(
+                f"[WCCN] Treino do grid search precisa de ≥ 2 identidades com "
+                f"≥ 2 amostras, encontrado {len(train_valid)}."
+            )
+
+        scores: Dict[float, float] = {}
+        for eps in config.reg_grid:
+            try:
+                B_eps, _ = self._wccn_fit_single_eps(
+                    X=X_train,
+                    identities=ids_train,
+                    config=config,
+                    eps=float(eps),
+                    valid_classes=train_valid,
+                )
+                X_holdout_trans = X_holdout @ B_eps
+                score = self._score_wccn_holdout(
+                    X_holdout=X_holdout_trans,
+                    ids_holdout=ids_holdout,
+                    valid_classes=ho_valid,
+                    metric=config.grid_search_metric,
+                    rng=rng,
+                )
+                scores[float(eps)] = float(score)
+            except Exception as e:
+                print(f"   [grid] ε={eps:.1e} falhou: {e}")
+                scores[float(eps)] = float("-inf")
+
+        # Seleção: maior score; em empate, menor ε (mais conservador)
+        finite_scores = {k: v for k, v in scores.items() if v != float("-inf") and not np.isnan(v)}
+        if not finite_scores:
+            raise RuntimeError(
+                "[WCCN] Grid search falhou para todos os valores de ε avaliados. "
+                "Verifique a integridade do dataset ou amplie reg_grid."
+            )
+        max_score = max(finite_scores.values())
+        best_eps = min(eps for eps, s in finite_scores.items() if s == max_score)
+        return float(best_eps), float(max_score), scores
+
+    def _score_wccn_holdout(
+        self,
+        X_holdout: np.ndarray,
+        ids_holdout: np.ndarray,
+        valid_classes: np.ndarray,
+        metric: WccnGridSearchMetric,
+        rng: random.Random,
+    ) -> float:
+        """
+        Computa o score do holdout transformado segundo a métrica escolhida.
+        """
+        if metric == WccnGridSearchMetric.FISHER_RATIO:
+            d = X_holdout.shape[1]
+            global_mean = X_holdout.mean(axis=0)
+            Sw = np.zeros((d, d), dtype=np.float64)
+            Sb = np.zeros((d, d), dtype=np.float64)
+            for cls in valid_classes:
+                Xc = X_holdout[ids_holdout == cls]
+                mean_c = Xc.mean(axis=0)
+                centered = Xc - mean_c
+                Sw += centered.T @ centered
+                diff = (mean_c - global_mean).reshape(-1, 1)
+                Sb += Xc.shape[0] * (diff @ diff.T)
+            tr_sw = float(np.trace(Sw))
+            tr_sb = float(np.trace(Sb))
+            return tr_sb / (tr_sw + 1e-12)
+
+        if metric == WccnGridSearchMetric.COSINE_AUC:
+            # Limita a 200 identidades para evitar O(N²) explosivo
+            ids = list(valid_classes)
+            if len(ids) > 200:
+                rng_local = random.Random(self.seed) if self.seed is not None else rng
+                rng_local.shuffle(ids)
+                ids = sorted(ids[:200])
+
+            # Constrói pares: 1 genuíno + 1 impostor por identidade
+            id_to_idx: Dict[str, list] = {cls: list(np.where(ids_holdout == cls)[0]) for cls in ids}
+            gen_a, gen_b, imp_a, imp_b = [], [], [], []
+            for i, cls in enumerate(ids):
+                idxs = id_to_idx[cls]
+                if len(idxs) < 2:
+                    continue
+                # Genuíno: dois índices distintos
+                a, b = idxs[0], idxs[1]
+                gen_a.append(a)
+                gen_b.append(b)
+                # Impostor: amostra desse cls vs amostra da próxima id no ciclo
+                other_cls = ids[(i + 1) % len(ids)]
+                other_idxs = id_to_idx[other_cls]
+                if not other_idxs:
+                    continue
+                imp_a.append(a)
+                imp_b.append(other_idxs[0])
+
+            if not gen_a or not imp_a:
+                return float("-inf")
+
+            def cos_sim_pairs(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+                na = np.linalg.norm(A, axis=1, keepdims=True) + 1e-10
+                nb = np.linalg.norm(B, axis=1, keepdims=True) + 1e-10
+                return np.sum((A / na) * (B / nb), axis=1)
+
+            sims_gen = cos_sim_pairs(X_holdout[gen_a], X_holdout[gen_b])
+            sims_imp = cos_sim_pairs(X_holdout[imp_a], X_holdout[imp_b])
+            y_true = np.concatenate([np.ones(len(sims_gen)), np.zeros(len(sims_imp))])
+            y_scores = np.concatenate([sims_gen, sims_imp])
+            try:
+                return float(roc_auc_score(y_true, y_scores))
+            except ValueError:
+                return float("-inf")
+
+        raise ValueError(f"Métrica de grid search desconhecida: {metric}")
+
+    def apply_wccn_transformation(
+        self,
+        dataset: EmbeddingDataset,
+        wccn_matrix: np.ndarray,
+    ) -> EmbeddingDataset:
+        """
+        Aplica a matriz WCCN B em um dataset, gerando um novo dataset
+        com x' = x @ B em cada embedding.
+        """
+        if wccn_matrix is None:
+            raise ValueError("wccn_matrix não pode ser None.")
+
+        print(f"Aplicando WCCN em {dataset.name}...")
+
+        new_items = []
+        for item in dataset.items:
+            new_emb = (item.embedding @ wccn_matrix).astype(np.float32)
+            new_items.append(EmbeddingInfo(
+                embedding=new_emb,
+                face_hash=item.face_hash,
+                image_path=item.image_path,
+                identity=item.identity,
+                file_name=item.file_name,
+                source=item.source,
+                origin=item.origin,
+                face_image=item.face_image,
+                pose=dict(item.pose) if item.pose else None,
+                quality_scores=dict(item.quality_scores) if item.quality_scores else None,
+            ))
+
+        return EmbeddingDataset(
+            name=f"{dataset.name}_WCCN",
+            description=f"Adaptado via WCCN de {dataset.name}",
+            items=new_items,
         )
 
     # =========================================================================

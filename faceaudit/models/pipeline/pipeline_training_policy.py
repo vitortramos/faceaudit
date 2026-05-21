@@ -29,6 +29,10 @@ class PipelineTrainingPolicy(JSONSerializableMixin):
             entre Source e Target.
         use_target_for_lda:
             Se True, permite que o LDA considere também o target_dataset no fit.
+        use_target_for_wccn:
+            Se True, no modo DUAL o WCCN é treinado no pool source+target
+            (ambos rotulados). Se False, treina só no source e propaga a matriz
+            para o branch target via state sync.
         copy_shared_state_to_target:
             Se True, steps compartilhados poderão propagar seu estado treinado
             para o ramo Target no modo DUAL.
@@ -46,6 +50,12 @@ class PipelineTrainingPolicy(JSONSerializableMixin):
         default=False,
         metadata={"help": "Permite uso do target_dataset no treino do LDA."}
     )
+    use_target_for_wccn: bool = field(
+        default=False,
+        metadata={"help": "Modo DUAL: se True, treina WCCN no pool source+target "
+                          "(ambos precisam ter labels). Se False, treina no source "
+                          "e copia a matriz para o branch target."}
+    )
     copy_shared_state_to_target: bool = field(
         default=True,
         metadata={"help": "Permite copiar o estado treinado de steps compartilhados para o Target."}
@@ -60,6 +70,7 @@ class PipelineTrainingPolicy(JSONSerializableMixin):
             use_target_for_coral=False,
             use_target_for_whitening=False,
             use_target_for_lda=False,
+            use_target_for_wccn=False,
             copy_shared_state_to_target=False
         )
 
@@ -72,6 +83,7 @@ class PipelineTrainingPolicy(JSONSerializableMixin):
             use_target_for_coral=True,
             use_target_for_whitening=False,
             use_target_for_lda=False,
+            use_target_for_wccn=False,
             copy_shared_state_to_target=True
         )
 

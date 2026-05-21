@@ -10,6 +10,7 @@ class StepType(Enum):
     RAW         = "RAW"
     WHITENING   = "WHITENING"
     CORAL       = "CORAL"
+    WCCN        = "WCCN"
     LDA         = "LDA"
     L2_NORM     = "L2_NORM"
     CENTERING   = "CENTERING"
@@ -23,6 +24,7 @@ class StepType(Enum):
             "RAW":         "Bruto",
             "WHITENING":   "Branqueamento",
             "CORAL":       "CORAL",
+            "WCCN":        "WCCN",
             "LDA":         "LDA",
             "L2_NORM":     "Normalização L2",
             "CENTERING":   "Centralização",

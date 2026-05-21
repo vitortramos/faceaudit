@@ -10,6 +10,7 @@ from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.whitening_config import WhiteningConfig
 from faceaudit.models.lda_config import LDAConfig
 from faceaudit.models.coral_config import CoralConfig
+from faceaudit.models.wccn_config import WCCNConfig
 from faceaudit.models.radial_gaussianization_config import RadialGaussianizationConfig
 
 class TransformationType(Enum):
@@ -55,6 +56,26 @@ class TransformationType(Enum):
         False,
         lambda p: f"{p.get('n_components') or 'Full'}D [{p.get('style', 'PCA')}]",
         WhiteningConfig # <--- INJEÇÃO DO DTO
+    )
+
+    WCCN_TRANSFORMATION = (
+        "WCCN_TRANSFORMATION",
+        "WCCN Normalization",
+        "Normalização WCCN",
+        "WCCN",
+        "Normaliza pela covariância intraclasse (Hatch et al. 2006). "
+        "Reduz variabilidade dentro da mesma identidade.",
+        "🔬",
+        False,
+        StepType.WCCN,
+        False,
+        lambda p: (
+            f"GridSearch [{str(p.get('estimator', 'standard')).replace('_', '-').upper()}]"
+            if p.get('use_grid_search', False)
+            else f"ε={p.get('regularization', 1e-6):.1e} "
+                 f"[{str(p.get('estimator', 'standard')).replace('_', '-').upper()}]"
+        ),
+        WCCNConfig # <--- INJEÇÃO DO DTO
     )
 
     LDA_TRANSFORMATION = (
