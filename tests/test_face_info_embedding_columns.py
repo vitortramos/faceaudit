@@ -28,8 +28,10 @@ def test_to_flat_dict_serializes_all_present_embeddings():
     assert flat["embedding_v4"] == [4.0, 5.0, 6.0]
     assert flat["embedding_v6"] == [7.0, 8.0, 9.0]
 
-    # Alias `embedding` (genérico) aponta pro v2 — retrocompat.
-    assert flat["embedding"] == [1.0, 2.0, 3.0]
+    # Coluna `embedding` (sem sufixo) NÃO é mais escrita — economia de
+    # disco. Retrocompat de leitura preservada via fallback em
+    # `face_dataset.py:344`.
+    assert "embedding" not in flat
 
 
 def test_to_flat_dict_skips_absent_embeddings():
@@ -41,7 +43,8 @@ def test_to_flat_dict_skips_absent_embeddings():
 
     flat = face.to_flat_dict()
 
-    assert "embedding" in flat
+    # Coluna `embedding` (sem sufixo) não é mais escrita — só `embedding_v2`.
+    assert "embedding" not in flat
     assert "embedding_v2" in flat
     assert "embedding_v3" not in flat
     assert "embedding_v4" not in flat

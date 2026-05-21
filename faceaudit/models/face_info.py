@@ -193,19 +193,21 @@ class FaceInfo:
             # --- REINJEÇÃO DE EMBEDDINGS ---
             # Itera o SepaelModel enum em vez de hard-codear nomes — assim
             # v3/v5/v6 (e qualquer modelo futuro) entram automaticamente
-            # quando adicionados ao enum. `embedding` genérico mantém
-            # retrocompatibilidade apontando pro v2 (convenção histórica).
+            # quando adicionados ao enum.
+            #
+            # NÃO escrevemos a coluna `embedding` (sem sufixo) — ela era
+            # alias histórico do v2 nos parquets pré-multi-modelo. Custava
+            # ~2KB por face em duplicação inútil (512 floats × 4 bytes
+            # × N faces). O loader em `face_dataset.py:344` continua
+            # aceitando `embedding` como fallback pra carregar parquets
+            # antigos, então a remoção da escrita é puramente economia
+            # de disco — sem quebra de retrocompat.
             from faceaudit.enums.sepael_model import SepaelModel
             for member in SepaelModel:
                 emb = getattr(self.ff_info, member.ffinfo_slot, None)
                 if emb is None:
                     continue
-                emb_list = emb.tolist()
-                ff_data[member.parquet_column] = emb_list
-                if member is SepaelModel.SEPAEL_V2:
-                    # Mantém alias `embedding` apontando pro v2 — código
-                    # legado (incluindo parquets antigos) depende disso.
-                    ff_data['embedding'] = emb_list
+                ff_data[member.parquet_column] = emb.tolist()
             
             # Tratamento de conflitos de nome
             if 'gender' in ff_data:
