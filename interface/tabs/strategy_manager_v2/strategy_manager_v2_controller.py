@@ -1182,6 +1182,36 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # ensure_payload disparam &quot;Recurso X não encontrado no contexto&quot;.
         project_resources = self._collect_project_resources()
 
+        # CRÍTICO: PRIMARY DATASETs são compartilhados por referência entre
+        # estratégias que os referenciam (deduplicação por resource_id em
+        # `_collect_project_resources`). Se a estratégia anterior hidratou
+        # o payload com sua `embedding_column`, o objeto compartilhado fica
+        # cacheado COM AQUELA COLUNA. A próxima estratégia (com outra
+        # embedding_column) chama `ensure_payload`, que faz early-return
+        # se `payload is not None` — e silenciosamente usa os vetores da
+        # coluna ERRADA. Sintoma: scores byte-iguais entre estratégias com
+        # embedding_columns diferentes (ex: V4 e V6 dando outputs
+        # idênticos porque ambas reusam o payload V2 que a V2 hidratou
+        # primeiro).
+        #
+        # Fix: shallow-copy de cada PRIMARY DATASET com `payload=None`
+        # antes de passar como additional_resources. Cada strategy run
+        # recebe uma cópia independente que será rehidratada com a
+        # `embedding_column` da estratégia atual. ArtifactReference fica
+        # compartilhado (metadata imutável), só o slot payload é zerado.
+        isolated_resources: List[StrategyResource] = []
+        for res in project_resources:
+            if (
+                res.resource_type == StrategyResourceType.DATASET
+                and res.category == ResourceCategory.PRIMARY
+            ):
+                clone = copy.copy(res)
+                clone.payload = None
+                isolated_resources.append(clone)
+            else:
+                isolated_resources.append(res)
+        project_resources = isolated_resources
+
         thread = QtCore.QThread()
         worker = StrategyExecutionWorker(
             executor,
