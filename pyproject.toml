@@ -23,6 +23,12 @@ dependencies = [
     #   - Para empacotar o app como .exe Windows futuramente, `-headless`
     #     é o caminho oficial (sem .so de GUI que falham fora do Linux).
     "opencv-python-headless",
+    # Forensic embedding backend. `FFService` (faceaudit/services/ff_service.py)
+    # delega à API >= 0.6.0 — PyPI só tem até 0.4.1, então instalamos do
+    # repositório upstream via git URL (PEP 508).
+    # Note: o usuário ainda precisa baixar os arquivos de modelo em
+    # ~/.forensicface/models/ — o pacote não distribui pesos.
+    "forensicface @ git+https://github.com/rafribeiro/forensicface.git@v0.6.0",
     # Plotting (used by validation, casework, hubness widgets and
     # by generate_arch_doc.py PDF generation)
     "matplotlib",
