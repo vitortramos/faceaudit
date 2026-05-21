@@ -17,12 +17,18 @@ class NewDatasetController(QtCore.QObject):
     Controlador para criação de novos datasets.
     Gerencia a View principal e o sub-controller de criação de templates.
     """
-    def __init__(self, parent_widget=None, templates_path: Path = None):
+    def __init__(
+        self,
+        parent_widget=None,
+        templates_path: Path = None,
+        ff_available: bool = True,
+        ofiq_available: bool = True,
+    ):
         super().__init__()
-        
+
         # Inicializa a View
         self.view = NewDatasetView(parent_widget)
-        
+
         # Gerencia o caminho dos templates
         self.templates_path = templates_path if templates_path else Path("data/templates")
         if not self.templates_path.exists():
@@ -30,11 +36,20 @@ class NewDatasetController(QtCore.QObject):
                 self.templates_path.mkdir(parents=True, exist_ok=True)
             except: pass
 
-        self.templates_map = {} 
-        
+        self.templates_map = {}
+
         self._setup_connections()
         self._load_templates()
-        
+
+        # Desabilita opções de extração que dependem de serviços externos
+        # ausentes (FFService sem modelo ou OFIQ sem executável). Sem isso,
+        # o usuário marca o checkbox e a criação falha tardio com erro
+        # difícil de relacionar à raiz.
+        self.view.set_stage_availability(
+            ff_available=ff_available,
+            ofiq_available=ofiq_available,
+        )
+
         # Estado inicial (Força atualização da UI para o estado padrão)
         self._on_recursive_toggled(self.view.chk_recursive.isChecked())
 

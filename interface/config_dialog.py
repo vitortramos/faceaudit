@@ -2,9 +2,10 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QCheckBox, QPushButton, QFormLayout, QDialogButtonBox,
-    QWidget, QFileDialog, QGroupBox, QSpinBox,
+    QWidget, QFileDialog, QGroupBox, QSpinBox, QComboBox,
 )
 
+from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models.system_config import SystemConfig
 
 
@@ -82,6 +83,40 @@ class ConfigDialog(QDialog):
             "para desligar batching (comportamento legado)."
         )
         form_hw.addRow("Batch size (ForensicFace):", self.spin_batch_size)
+
+        # Modelo padrão do ForensicFace — populado dinamicamente com os
+        # modelos detectados em `~/.forensicface/models/`. Vazio quando
+        # nenhum modelo está instalado (caso primeira execução).
+        self.combo_default_model = QComboBox()
+        self._available_models = SepaelModel.available_on_disk()
+        if not self._available_models:
+            # Fallback: mostra todos os membros pra o usuário ver o que
+            # precisa instalar. Item desabilitado pra deixar claro que
+            # nenhum está disponível.
+            self.combo_default_model.addItem(
+                "(nenhum modelo instalado em ~/.forensicface/models/)",
+                userData=None,
+            )
+            self.combo_default_model.setEnabled(False)
+        else:
+            for member in self._available_models:
+                self.combo_default_model.addItem(member.label_pt, userData=member.ff_name)
+            # Seleciona o `default_model` salvo, ou o primeiro disponível.
+            current = self.config.ff.default_model
+            target_idx = 0
+            if current:
+                for i in range(self.combo_default_model.count()):
+                    if self.combo_default_model.itemData(i) == current:
+                        target_idx = i
+                        break
+            self.combo_default_model.setCurrentIndex(target_idx)
+        self.combo_default_model.setToolTip(
+            "Modelo padrão do ForensicFace. Diálogos de Novo/Enriquecer "
+            "Dataset herdam essa escolha quando o usuário não trocar "
+            "explicitamente. Lista populada com os modelos instalados em "
+            "~/.forensicface/models/."
+        )
+        form_hw.addRow("Modelo padrão:", self.combo_default_model)
         layout.addWidget(gb_hw)
 
         # ─── OFIQ (paths externos) ──────────────────────────────────────
@@ -131,6 +166,9 @@ class ConfigDialog(QDialog):
 
         self.config.ff.use_gpu = self.chk_use_gpu.isChecked()
         self.config.ff.batch_size = int(self.spin_batch_size.value())
+        # `default_model` é o ff_name (ex: "sepaelv2") guardado como
+        # userData de cada item; None quando nenhum modelo disponível.
+        self.config.ff.default_model = self.combo_default_model.currentData()
 
         self.config.ofiq.ofiq_exe_path = self.input_ofiq_exe.text() or ""
         self.config.ofiq.ofiq_data_path = self.input_ofiq_data.text() or ""

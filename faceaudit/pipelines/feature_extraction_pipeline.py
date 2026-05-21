@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Callable
 
 # Imports do Domínio
 from faceaudit.enums.path_mode import PathMode
+from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models import FaceDataset
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 from faceaudit.adapters.face_dataset_adapter import FaceDatasetAdapter
@@ -156,7 +157,7 @@ class FeatureExtractionPipeline:
                 next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
 
                 ff_svc = self._resolve_ff_service(config)
-                wanted_models = list(config.ff_models or ["sepaelv2"])
+                wanted_models = list(config.ff_models or [SepaelModel.default().ff_name])
 
                 # Callback adaptativo: escala o % interno do FFService (0-100)
                 # para caber no slot atual do pipeline.
@@ -292,7 +293,7 @@ class FeatureExtractionPipeline:
         pedidos. O temporário paga ~5-10s de carga ONNX uma vez por
         execução — se você executar várias vezes seguidas com os mesmos
         params, o helper continua reutilizando."""
-        wanted_models = list(config.ff_models or ["sepaelv2"])
+        wanted_models = list(config.ff_models or [SepaelModel.default().ff_name])
         det_size = int(config.ff_det_size)
         extended = bool(config.ff_extended)
 
@@ -423,7 +424,7 @@ class FeatureExtractionPipeline:
                 next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
 
                 ff_svc = self._resolve_ff_service(config)
-                wanted_models = list(config.ff_models or ["sepaelv2"])
+                wanted_models = list(config.ff_models or [SepaelModel.default().ff_name])
 
                 def ff_callback(msg: str, internal_pct: int):
                     if progress_callback:

@@ -30,8 +30,19 @@ class EnrichDatasetView(QDialog):
     do executável externo (passado via Configurações do sistema).
     """
 
-    # Modelos suportados pelo FFService.
-    _SUPPORTED_FF_MODELS = ("sepaelv2", "sepaelv4")
+    # Lista dinâmica: lê os modelos detectados em
+    # `~/.forensicface/models/` a cada open do dialog. Permite que o
+    # usuário adicione modelos novos sem alterar código.
+    @property
+    def _supported_ff_models(self) -> tuple:
+        from faceaudit.enums.sepael_model import SepaelModel
+        available = SepaelModel.available_on_disk()
+        if available:
+            return tuple(m.ff_name for m in available)
+        # Fallback histórico se nenhum modelo está em disco — mantém UI
+        # consistente em primeira execução; o usuário vai falhar na execução
+        # se de fato não tiver nada instalado.
+        return (SepaelModel.default().ff_name,)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -221,15 +232,28 @@ class EnrichDatasetView(QDialog):
         layout.setContentsMargins(20, 4, 4, 4)
         layout.setSpacing(6)
 
-        # Modelos (multi-select)
+        # Modelos (multi-select) — lista dinâmica vinda de
+        # `SepaelModel.available_on_disk()`. Label exibido é o
+        # `label_pt` do enum (ex: "Sepael V2").
+        from faceaudit.enums.sepael_model import SepaelModel
         layout.addWidget(QLabel("<b>Modelos de embedding</b>"))
         models_row = QHBoxLayout()
-        for model_name in self._SUPPORTED_FF_MODELS:
-            chk = QCheckBox(model_name.replace("sepaelv", "SEPAEL V"))
+        for model_name in self._supported_ff_models:
+            member = SepaelModel.from_ff_name(model_name)
+            label = member.label_pt if member is not None else model_name
+            chk = QCheckBox(label)
             self._ff_model_checks[model_name] = chk
             models_row.addWidget(chk)
-        # Default: sepaelv2 marcado
-        self._ff_model_checks["sepaelv2"].setChecked(True)
+        # Default selecionado: SepaelModel.default() (sepaelv2 hoje).
+        default_name = SepaelModel.default().ff_name
+        if default_name in self._ff_model_checks:
+            self._ff_model_checks[default_name].setChecked(True)
+        else:
+            # default não está disponível em disco — marca o primeiro
+            # da lista pra evitar UI sem nada selecionado.
+            first = next(iter(self._ff_model_checks.values()), None)
+            if first is not None:
+                first.setChecked(True)
         models_row.addStretch()
         layout.addLayout(models_row)
         models_help = QLabel(
@@ -378,6 +402,47 @@ class EnrichDatasetView(QDialog):
     def set_ff_is_aligned(self, value: bool) -> None:
         if self._ff_is_aligned_chk is not None:
             self._ff_is_aligned_chk.setChecked(bool(value))
+
+    def set_stage_availability(
+        self,
+        ff_available: bool,
+        ofiq_available: bool,
+    ) -> None:
+        """Desabilita visualmente os checkboxes dos estágios cujo serviço
+        externo não pôde ser inicializado. SER-FIQ depende de FF, então
+        segue a disponibilidade do FF. Cada checkbox desabilitado ganha
+        tooltip explicando o motivo + sai forçadamente desmarcado pra
+        que `get_config()` não devolva o estágio como solicitado."""
+        ff_tooltip = (
+            "ForensicFace não está disponível: nenhum modelo encontrado em "
+            "~/.forensicface/models/ ou o serviço falhou ao carregar. "
+            "Instale um modelo (sepaelv2/v3/v4/v5) ou troque nas Configurações."
+        )
+        ofiq_tooltip = (
+            "OFIQ não está disponível: executável ou pasta de dados não "
+            "encontrados. Verifique os caminhos nas Configurações."
+        )
+
+        chk_ff = self.checkboxes.get("ff")
+        if chk_ff is not None and not ff_available:
+            chk_ff.setChecked(False)
+            chk_ff.setEnabled(False)
+            chk_ff.setToolTip(ff_tooltip)
+
+        chk_serfiq = self.checkboxes.get("serfiq")
+        if chk_serfiq is not None and not ff_available:
+            chk_serfiq.setChecked(False)
+            chk_serfiq.setEnabled(False)
+            chk_serfiq.setToolTip(
+                "SER-FIQ depende do ForensicFace, que não está disponível. "
+                + ff_tooltip
+            )
+
+        chk_ofiq = self.checkboxes.get("ofiq")
+        if chk_ofiq is not None and not ofiq_available:
+            chk_ofiq.setChecked(False)
+            chk_ofiq.setEnabled(False)
+            chk_ofiq.setToolTip(ofiq_tooltip)
 
     def get_serfiq_t(self) -> int:
         return int(self._serfiq_t_spin.value()) if self._serfiq_t_spin else 10

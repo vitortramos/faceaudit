@@ -56,22 +56,22 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
     stats_service = providers.Singleton(DatasetStatsService)
 
-    # FFService Singleton fica com defaults (model=sepaelv2, det_size=320).
-    # Parâmetros operacionais (modelos, det_size, extended) agora vêm do
-    # `DatasetIngestionConfig` e o `FeatureExtractionPipeline` instancia
-    # um FFService temporário quando os defaults não bastam.
+    # FFService Singleton — modelo principal vem da preferência do usuário
+    # via `config.ff.default_model` (None cai no `SepaelModel.default()`).
+    # `det_size` e `extended` continuam fixos em defaults; vêm do
+    # `DatasetIngestionConfig` por execução quando o usuário pede outros
+    # valores (FeatureExtractionPipeline cria FFService temporário).
     #
-    # `use_gpu` / `batch_size` são passados DIRETO (sem `.as_bool()` /
-    # `.as_int()`). O dependency-injector usa esses helpers pra converter
-    # strings de .env — quando o valor vem de JSON e já é bool/int nativo,
-    # `.as_bool()` levanta AttributeError silenciado (o argumento chega
-    # como None) e `.as_int()` retorna um Provider object não-resolvido.
-    # Resultado anterior: FFService.use_gpu sempre None → CPUExecutionProvider
-    # mesmo com `"use_gpu": true` no config.json.
+    # `use_gpu` / `batch_size` / `default_model` passados DIRETO (sem
+    # `.as_bool()` / `.as_int()`). O dependency-injector usa esses helpers
+    # pra converter strings de .env — quando o valor vem de JSON e já é
+    # bool/int nativo, `.as_bool()` levanta AttributeError silenciado e
+    # `.as_int()` retorna um Provider object não-resolvido.
     ff_service = providers.Singleton(
         FFService,
         use_gpu=config.ff.use_gpu,
         batch_size=config.ff.batch_size,
+        model=config.ff.default_model,
     )
 
     ofiq_service = providers.Singleton(

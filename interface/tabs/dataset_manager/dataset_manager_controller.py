@@ -60,12 +60,28 @@ class DatasetManagerController(QtCore.QObject):
     send_to_strategy_requested = QtCore.pyqtSignal(str)
 
     # RECEBE O CONTAINER AQUI
-    def __init__(self, view, pipeline, config, container):
+    def __init__(
+        self,
+        view,
+        pipeline,
+        config,
+        container,
+        ff_available: bool = True,
+        ofiq_available: bool = True,
+    ):
         super().__init__()
         self.view = view
         self.pipeline = pipeline
         self.config = config
         self.container = container # Guardamos a referência do container para injeção explícita
+        # Flags de disponibilidade dos serviços externos. Propagadas aos
+        # diálogos Novo/Enriquecer Dataset pra desabilitar checkboxes
+        # quando o respectivo serviço não pôde ser inicializado (ex:
+        # modelo ForensicFace não instalado, ou OFIQ exe não encontrado).
+        # O resto da aba (carregar, filtrar, comparar, balancear, pipeline
+        # de imagens, exportar) funciona normalmente sem esses serviços.
+        self.ff_available = bool(ff_available)
+        self.ofiq_available = bool(ofiq_available)
 
         # Estado Global
         self.dataset = None
@@ -1008,7 +1024,12 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_novo_dataset(self):
         templates_path = Path(self.config.paths.dir_templates)
-        dialog = NewDatasetController(self.view, templates_path=templates_path)
+        dialog = NewDatasetController(
+            self.view,
+            templates_path=templates_path,
+            ff_available=self.ff_available,
+            ofiq_available=self.ofiq_available,
+        )
         
         if dialog.exec():
             ingestion_config: DatasetIngestionConfig = dialog.get_config()
@@ -1828,7 +1849,12 @@ class DatasetManagerController(QtCore.QObject):
         try:
             self.sync_changes_from_table()
             
-            enrich_ctrl = EnrichDatasetController(self.dataset, parent=self.view)
+            enrich_ctrl = EnrichDatasetController(
+                self.dataset,
+                parent=self.view,
+                ff_available=self.ff_available,
+                ofiq_available=self.ofiq_available,
+            )
             
             QApplication.restoreOverrideCursor()
             

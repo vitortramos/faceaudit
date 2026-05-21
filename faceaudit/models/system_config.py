@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import warnings
 from dataclasses import dataclass, field
-from typing import Type, TypeVar
+from typing import Optional, Type, TypeVar
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
@@ -28,19 +28,27 @@ class OFIQConfig(JSONSerializableMixin):
 
 @dataclass
 class FFConfig(JSONSerializableMixin):
-    """Capability de hardware do ForensicFace.
+    """Capability de hardware do ForensicFace + preferência de modelo.
 
-    Parâmetros operacionais (modelo, det_size, extended) foram movidos para
-    `DatasetIngestionConfig` — viram escolha por execução (Novo/Enriquecer
-    Dataset). Aqui só fica o que é da máquina.
+    `use_gpu` e `batch_size` são da máquina (capability/throughput).
+    `default_model` é a preferência do usuário pra qual versão do
+    ForensicFace ele usa por padrão — `DatasetIngestionConfig.ff_models`
+    e a UI de Novo/Enriquecer Dataset herdam esse valor quando não há
+    override explícito.
 
     `batch_size` controla o agrupamento de faces em uma única chamada
     `onnx_session.run()` durante extração de embedding/FIQA. Maior =
     mais paralelismo GPU, porém mais memória. `1` desliga batching
     (comportamento legado, equivalente ao loop face-a-face).
+
+    `default_model` é o `ff_name` (ex: `"sepaelv2"`) — None significa
+    "use o fallback do FaceAudit" (`SepaelModel.default()` →
+    `sepaelv2`). Permite que o usuário troque o modelo padrão via UI
+    de Configurações sem editar JSON manualmente.
     """
     use_gpu: bool = False
     batch_size: int = 32
+    default_model: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "FFConfig":
@@ -58,6 +66,18 @@ class FFConfig(JSONSerializableMixin):
                 valid["batch_size"] = max(1, bs)
             except (TypeError, ValueError):
                 del valid["batch_size"]
+        # Sanitização: default_model normaliza pra lowercase ff_name ou
+        # None. String vazia / inválida vira None (cai no SepaelModel.default).
+        if "default_model" in valid:
+            from faceaudit.enums.sepael_model import SepaelModel
+            raw = valid["default_model"]
+            if not raw or not isinstance(raw, str):
+                valid["default_model"] = None
+            else:
+                member = SepaelModel.from_ff_name(raw)
+                valid["default_model"] = (
+                    member.ff_name if member is not None else None
+                )
         return cls(**valid)
 
 

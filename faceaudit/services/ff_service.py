@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Callable, Union, Tuple
 from tqdm.auto import tqdm
 
 # Import absoluto baseada na estrutura do pacote
+from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models import FaceInfo, FFInfo, FaceDataset
 
 try:
@@ -13,13 +14,21 @@ except ImportError:
     ForensicFace = None
 
 
-# Mapeamento entre nome do modelo e slot correspondente em FFInfo.
-# Adicionar entradas novas aqui é o único ponto necessário para suportar
-# um novo backbone do ForensicFace.
-_MODEL_TO_FFINFO_SLOT: Dict[str, str] = {
-    "sepaelv2": "embedding_sepaelv2",
-    "sepaelv4": "embedding_sepaelv4",
-}
+# Conjunto canônico de chaves do FFInfo a serem mergeadas quando um run
+# do encoder retorna novos valores. Sem incluir TODOS os slots de embedding
+# do enum, modelos novos (v3/v5/v6) entregavam embeddings que sumiam no
+# merge — só v2 e v4 eram propagados.
+_FFINFO_BASE_KEYS: Tuple[str, ...] = (
+    "ipd", "fiqa_score", "det_score", "gender", "age",
+    "yaw", "pitch", "roll", "bbox", "keypoints",
+    "aligned_face",
+)
+_FFINFO_MERGE_KEYS: Tuple[str, ...] = (
+    _FFINFO_BASE_KEYS + tuple(m.ffinfo_slot for m in SepaelModel)
+)
+_FFINFO_EMBEDDING_SLOTS: Tuple[str, ...] = tuple(
+    m.ffinfo_slot for m in SepaelModel
+)
 
 
 class FFService:
@@ -60,14 +69,14 @@ class FFService:
         # Resolve a lista de modelos a carregar:
         #   - `models` tem prioridade quando fornecido (forma nova)
         #   - `model` é mantido como kwarg de retrocompat (containers.py)
-        #   - default = ["sepaelv2"]
+        #   - default = SepaelModel.default().ff_name
         resolved: List[str]
         if models is not None:
             resolved = [models] if isinstance(models, str) else list(models)
         elif model is not None:
             resolved = [model]
         else:
-            resolved = ["sepaelv2"]
+            resolved = [SepaelModel.default().ff_name]
 
         if not resolved:
             raise ValueError("FFService: ao menos um modelo deve ser declarado.")
@@ -92,6 +101,33 @@ class FFService:
             self._batch_size: int = max(1, int(batch_size))
         except (TypeError, ValueError):
             self._batch_size = 32
+
+        # Pré-check de disponibilidade em disco: falha cedo com mensagem
+        # amigável quando o usuário pede um modelo cuja pasta não tem os
+        # ONNX. Sem essa checagem, o erro estoura lá dentro do
+        # `ForensicFace.__init__` como `FileNotFoundError` num arquivo
+        # interno do encoder (ex: `adaface_vit_webface4m.onnx`), com
+        # mensagem que não menciona o `ff_name` que o usuário pediu.
+        missing: List[str] = []
+        recognized: List[SepaelModel] = []
+        for name in normalized:
+            member = SepaelModel.from_ff_name(name)
+            if member is None:
+                # Não reconhecido pelo enum — assume que o usuário sabe
+                # o que está fazendo (ex: modelo experimental). Não bloqueia.
+                continue
+            recognized.append(member)
+            if not member.installed_on_disk():
+                missing.append(member.label_pt)
+        if missing:
+            available_now = [m.label_pt for m in SepaelModel.available_on_disk()]
+            available_str = ", ".join(available_now) if available_now else "(nenhum)"
+            raise FileNotFoundError(
+                f"Modelo(s) não instalado(s) em ~/.forensicface/models/: "
+                f"{', '.join(missing)}. Disponíveis na máquina: {available_str}. "
+                f"Instale baixando do repositório do ForensicFace ou "
+                f"escolha outro modelo nas Configurações."
+            )
 
         # Carrega uma ForensicFace independente por modelo.
         # Cada engine fica com `models=[<um>]`, então só esse encoder roda
@@ -122,6 +158,42 @@ class FFService:
         # (ex: chamada direta do compare nativo). Mapeia para o engine
         # default. Múltiplos modelos? Use `_resolve_engine(model)`.
         self.app: ForensicFace = self._engines[self._default_model]
+
+        # Detecta fallback silencioso CPU quando `use_gpu=True` foi
+        # solicitado mas o onnxruntime instalado / drivers não suportam
+        # nenhum accelerator. Mensagem fica no stderr (caller que rodar
+        # pelo terminal vê). Sem isso, usuário pede GPU, vê o app rodar
+        # lento e não entende — `session_providers` no log padrão do
+        # ForensicFace já mostra o efetivo, mas ninguém lê esse detalhe.
+        if use_gpu:
+            self._warn_if_cpu_fallback()
+
+    _ACCELERATED_PROVIDERS = frozenset({
+        "CUDAExecutionProvider",
+        "CoreMLExecutionProvider",
+        "ROCMExecutionProvider",
+        "TensorrtExecutionProvider",
+        "DmlExecutionProvider",
+    })
+
+    def _warn_if_cpu_fallback(self) -> None:
+        """Quando `use_gpu=True` mas os providers efetivos das sessions
+        são só CPU, emite warning no stderr. Não bloqueia execução —
+        FFService continua funcionando em CPU."""
+        effective: set = set()
+        for engine in self._engines.values():
+            for sess in getattr(engine, "rec_inference_sessions", []) or []:
+                try:
+                    effective.update(sess.get_providers())
+                except Exception:
+                    pass
+        if effective and not (effective & self._ACCELERATED_PROVIDERS):
+            print(
+                f"⚠️ [FFService] use_gpu=True solicitado, mas providers "
+                f"efetivos são {sorted(effective)}. Verifique instalação "
+                f"de drivers (CUDA/CoreML) e do pacote onnxruntime "
+                f"apropriado. Processamento continuará em CPU (mais lento)."
+            )
 
     # ─────────────────────────────────────────────────────────────────────
     # Resolução de engine por modelo
@@ -186,10 +258,11 @@ class FFService:
     def _slot_for_model(model_name: str) -> str:
         """
         Retorna o atributo de FFInfo onde o embedding do `model_name` deve
-        ser gravado. Modelos desconhecidos caem no slot v2 (mantém o
-        comportamento histórico do FFService antigo).
+        ser gravado. Modelos desconhecidos caem no slot do default
+        (`SepaelModel.default()` → sepaelv2) — mantém o comportamento
+        histórico do FFService antigo.
         """
-        return _MODEL_TO_FFINFO_SLOT.get(model_name.lower(), "embedding_sepaelv2")
+        return SepaelModel.ffinfo_slot_for(model_name)
 
     # ─────────────────────────────────────────────────────────────────────
     # Extração de embeddings
@@ -397,27 +470,23 @@ class FFService:
         bgr_aligned_faces: np.ndarray,
         *,
         models: Optional[List[str]] = None,
+        aligned_keypoints_batch: Optional[np.ndarray] = None,
         error_callback: Optional[Callable[[str], None]] = None,
     ) -> List[Optional[FFInfo]]:
-        """Extrai embeddings + FIQA de **N faces alinhadas em paralelo**
-        numa única chamada por modelo ao ONNX Runtime.
+        """Extrai embeddings + FIQA de **N faces alinhadas em paralelo**.
 
-        Diferente do `extract_embeddings_from_aligned_face` (single):
-        - Recebe `(N, 112, 112, 3)` BGR uint8 — N faces empilhadas.
-        - Stackeia → `(N, 3, 112, 112)` float32 normalizado.
-        - Roda `rec_session.run()` UMA vez por modelo (em vez de N).
-        - Roda `ort_fiqa.run()` UMA vez (em vez de N).
-        - Retorna lista de `FFInfo` (uma por entrada) com embedding +
-          fiqa_score já distribuídos.
-
-        Performance: speedup escala com o batch size — 5-15× em GPU,
-        1.5-3× em CPU pra batch≥32. Modelo ONNX precisa ter sido
-        exportado com primeira dim de input dinâmica (confirmado:
-        sepaelv2 e CR-FIQA da forensicface 0.5.1 são).
+        Delega à lib `forensicface` (>= 0.6.0) via
+        `engine._try_compute_embeddings_batch` — herda OOM recovery por
+        halving recursivo e suporte automático a sepaelv6 (KPRPE) quando
+        `aligned_keypoints_batch` é fornecido. Versões anteriores da lib
+        caem em fallback inline (loop manual via `rec.run`).
 
         Args:
             bgr_aligned_faces: array `(N, 112, 112, 3)` BGR uint8.
             models: lista de modelos a extrair. Default = `_default_model`.
+            aligned_keypoints_batch: array `(N, 5, 2)` opcional. Necessário
+                quando algum modelo carregado for KPRPE (`sepaelv6`); ignorado
+                pelos modelos ResNet/ViT.
 
         Returns:
             Lista de length N. Posições com erro são `None`. FIQA score
@@ -441,14 +510,6 @@ class FFService:
         else:
             target_models = [self._default_model]
 
-        # Pré-processa o batch inteiro de uma vez:
-        # `_to_input_ada` legado: (x/255 - 0.5)/0.5 + transpose pra CHW.
-        # Versão batch: opera sobre (N, H, W, C) → (N, C, H, W).
-        batched = bgr_aligned_faces.astype(np.float32)
-        batched = ((batched / 255.0) - 0.5) / 0.5
-        # (N, H, W, C) → (N, C, H, W)
-        batched_input = batched.transpose(0, 3, 1, 2).copy()
-
         results: List[Optional[FFInfo]] = [None] * n
         fiqa_run_done = False
 
@@ -462,47 +523,29 @@ class FFService:
                 (error_callback or print)(msg)
                 continue
 
-            # Inferência batch do encoder.
-            try:
-                rec = engine.rec_inference_sessions[0]
-                rec_input_name = rec.get_inputs()[0].name
-                rec_out = rec.run(None, {rec_input_name: batched_input})
-                # Padrão do forensicface: 2 outputs (normed_embedding, norm)
-                # ou 1 output (embedding).
-                if len(rec_out) == 2:
-                    embeddings = rec_out[0] * rec_out[1]
-                else:
-                    embeddings = rec_out[0]
-            except Exception as e:
-                msg = (
-                    f"[FFService.batch] inferência batch falhou pra "
-                    f"'{model_name}': {e}"
-                )
-                (error_callback or print)(msg)
+            embeddings, fiqa_scores = self._run_engine_batch(
+                engine=engine,
+                model_name=model_name,
+                bgr_aligned_faces=bgr_aligned_faces,
+                aligned_keypoints_batch=aligned_keypoints_batch,
+                error_callback=error_callback,
+            )
+            if embeddings is None:
                 continue
 
-            # FIQA é feito UMA vez total (mesmo encoder em todos os engines).
-            fiqa_scores: Optional[np.ndarray] = None
-            if not fiqa_run_done and self._extended:
-                try:
-                    ort_fiqa = engine.ort_fiqa
-                    if ort_fiqa is not None:
-                        fiqa_in = ort_fiqa.get_inputs()[0].name
-                        _, fiqa_out = ort_fiqa.run(
-                            None, {fiqa_in: batched_input}
-                        )
-                        fiqa_scores = fiqa_out  # shape (N, 1)
-                        fiqa_run_done = True
-                except Exception as e:
-                    print(f"[FFService.batch] inferência FIQA falhou: {e}")
+            # FIQA é compartilhado entre engines (mesmo CR-FIQA em todos);
+            # guardamos só uma vez pra não sobrescrever após primeiro engine.
+            if fiqa_run_done:
+                fiqa_scores = None
+            elif fiqa_scores is not None:
+                fiqa_run_done = True
 
-            # Distribui resultados.
             slot = self._slot_for_model(model_name)
             for i in range(n):
                 ff = results[i]
                 if ff is None:
                     fiqa_val = (
-                        float(fiqa_scores[i][0])
+                        float(fiqa_scores[i])
                         if fiqa_scores is not None else None
                     )
                     ff = FFInfo(fiqa_score=fiqa_val)
@@ -510,6 +553,95 @@ class FFService:
                 setattr(ff, slot, embeddings[i])
 
         return results
+
+    def _run_engine_batch(
+        self,
+        *,
+        engine,
+        model_name: str,
+        bgr_aligned_faces: np.ndarray,
+        aligned_keypoints_batch: Optional[np.ndarray],
+        error_callback: Optional[Callable[[str], None]],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Roda o batch em um engine ForensicFace específico.
+
+        Prefere `_try_compute_embeddings_batch` (lib >= 0.6.0, com OOM
+        recovery + suporte sepaelv6). Cai num fallback inline pra
+        compatibilidade com lib 0.5.x — mesmo cálculo manual que o
+        FFService usava antes da migração.
+
+        Retorna `(embeddings, fiqa_scores)`. Embeddings shape `(N, dim)`;
+        fiqa_scores shape `(N,)` ou None quando `extended=False`. Ambos
+        viram None na tupla quando a inferência falha (erro reportado
+        via `error_callback`).
+        """
+        try:
+            if hasattr(engine, "_try_compute_embeddings_batch"):
+                # Caminho moderno: lib v0.6+ devolve emb (N, dim) e
+                # fiqa (N,) já achatado. `concat_embeddings=True` no
+                # construtor garante que com 1 modelo o emb sai 2D.
+                kwargs = {}
+                if aligned_keypoints_batch is not None:
+                    kwargs["aligned_keypoints_batch"] = aligned_keypoints_batch
+                # Captura `warnings.warn(...)` emitidos pela lib durante
+                # o batch — o `_try_compute_embeddings_batch` avisa quando
+                # acontece OOM auto-recovery (halving) via `warnings.warn`,
+                # que normalmente sai pelo stderr. Repassa pro
+                # `error_callback` pra que apareça no LogProgressDialog
+                # da UI — sem isso, o usuário só percebe pelo tempo extra.
+                import warnings as _warnings
+                with _warnings.catch_warnings(record=True) as caught:
+                    _warnings.simplefilter("always")
+                    embeddings, fiqa_scores = engine._try_compute_embeddings_batch(
+                        bgr_aligned_faces, **kwargs,
+                    )
+                for w in caught:
+                    msg = f"⚠ [forensicface] {w.message}"
+                    (error_callback or print)(msg)
+                # Defensivo: se algum dia a lib mudar e retornar lista
+                # com 1 modelo (concat=False), achata.
+                if isinstance(embeddings, list) and len(embeddings) == 1:
+                    embeddings = embeddings[0]
+                return embeddings, fiqa_scores
+
+            # Fallback lib 0.5.x: roda direto via rec_inference_sessions.
+            batched = bgr_aligned_faces.astype(np.float32)
+            batched = ((batched / 255.0) - 0.5) / 0.5
+            batched_input = batched.transpose(0, 3, 1, 2).copy()
+
+            rec = engine.rec_inference_sessions[0]
+            rec_out = rec.run(
+                None, {rec.get_inputs()[0].name: batched_input},
+            )
+            if len(rec_out) == 2:
+                embeddings = rec_out[0] * rec_out[1]
+            else:
+                embeddings = rec_out[0]
+
+            fiqa_scores = None
+            if self._extended:
+                ort_fiqa = getattr(engine, "ort_fiqa", None)
+                if ort_fiqa is not None:
+                    try:
+                        _, fiqa_out = ort_fiqa.run(
+                            None,
+                            {ort_fiqa.get_inputs()[0].name: batched_input},
+                        )
+                        fiqa_scores = np.asarray(fiqa_out).reshape(-1)
+                    except Exception as e:
+                        (error_callback or print)(
+                            f"[FFService.batch] inferência FIQA falhou: {e}"
+                        )
+
+            return embeddings, fiqa_scores
+
+        except Exception as e:
+            msg = (
+                f"[FFService.batch] inferência batch falhou pra "
+                f"'{model_name}': {e}"
+            )
+            (error_callback or print)(msg)
+            return None, None
 
     def process_face_aligned(
         self,
@@ -562,11 +694,7 @@ class FFService:
             face_info.ff_info = new_ff_data
             return face_info
 
-        for key in (
-            "ipd", "fiqa_score", "det_score", "gender", "age",
-            "yaw", "pitch", "roll", "bbox", "keypoints",
-            "aligned_face", "embedding_sepaelv2", "embedding_sepaelv4",
-        ):
+        for key in _FFINFO_MERGE_KEYS:
             val = getattr(new_ff_data, key, None)
             if val is not None:
                 setattr(existing, key, val)
@@ -828,10 +956,9 @@ class FFService:
                 existing = face.ff_info  # já existe (gate do caller)
                 # MERGE: novo modelo sobrescreve só o slot dele +
                 # fiqa_score (FIQA score é mesmo entre engines).
-                for key in (
-                    "fiqa_score",
-                    "embedding_sepaelv2", "embedding_sepaelv4",
-                ):
+                # Itera TODOS os slots conhecidos pra acomodar runs com
+                # qualquer modelo (v2/v3/v4/v5/v6).
+                for key in ("fiqa_score", *_FFINFO_EMBEDDING_SLOTS):
                     val = getattr(new_ff, key, None)
                     if val is not None:
                         setattr(existing, key, val)
@@ -933,11 +1060,7 @@ class FFService:
                 if existing is None:
                     face.ff_info = new_ff
                     continue
-                for key in (
-                    "ipd", "fiqa_score", "det_score", "gender", "age",
-                    "yaw", "pitch", "roll", "bbox", "keypoints",
-                    "aligned_face", "embedding_sepaelv2", "embedding_sepaelv4",
-                ):
+                for key in _FFINFO_MERGE_KEYS:
                     val = getattr(new_ff, key, None)
                     if val is not None:
                         setattr(existing, key, val)

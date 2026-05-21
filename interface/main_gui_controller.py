@@ -43,9 +43,11 @@ class MainGuiController:
         """
         cfg = self.app_config
 
-        # GPU capability + batch size — lidos pelo FFService Singleton.
+        # GPU capability + batch size + modelo padrão — lidos pelo
+        # FFService Singleton na primeira chamada de `container.ff_service()`.
         self.container.config.ff.use_gpu.from_value(cfg.ff.use_gpu)
         self.container.config.ff.batch_size.from_value(cfg.ff.batch_size)
+        self.container.config.ff.default_model.from_value(cfg.ff.default_model)
 
         # OFIQ executable + data path — lidos pelo OFIQService Singleton.
         self.container.config.ofiq.ofiq_exe_path.from_value(cfg.ofiq.ofiq_exe_path)
@@ -60,23 +62,67 @@ class MainGuiController:
     def _init_dataset_manager(self):
         """
         Inicializa a aba de gerenciamento de datasets.
+
+        Tolerante a falhas de FFService e OFIQService: cada serviço é
+        resolvido individualmente, falhas viram None. A aba é construída
+        sempre — funcionalidades que dependem de FF/OFIQ (enrich,
+        criação com extração de embeddings/qualidade) são desabilitadas
+        nos diálogos. Tudo que não depende (carregar parquet, filtrar,
+        comparar, balancear, pipeline de imagens sem FF, etc.) continua.
         """
+        from pathlib import Path
+        from faceaudit.pipelines import FeatureExtractionPipeline
+
+        # Tenta resolver cada serviço separadamente. FFService falha quando
+        # o modelo solicitado não está em ~/.forensicface/models/; OFIQService
+        # falha quando o executável/data dir não existem. Ambos não-fatais
+        # pra abrir a aba.
+        ff_service = None
         try:
-            pipeline_extracao = self.container.feature_extraction_pipeline()
-
-            self.manager_view = DatasetManagerView()
-
-            self.manager_controller = DatasetManagerController(
-                view=self.manager_view,
-                pipeline=pipeline_extracao,
-                config=self.app_config,
-                container=self.container # <--- PASSAMOS O CONTAINER AQUI
-            )
-
-            self.view.add_tab(0, self.manager_view, "Gerenciador de Datasets")
+            ff_service = self.container.ff_service()
         except Exception as e:
-            print(f"⚠ Aba 'Gerenciador de Datasets' desativada (FFService falhou): {e}")
-            self.manager_controller = None
+            print(f"⚠ FFService indisponível (enriquecimento com embedding/FIQA desabilitado): {e}")
+
+        ofiq_service = None
+        try:
+            ofiq_service = self.container.ofiq_service()
+        except Exception as e:
+            print(f"⚠ OFIQService indisponível (enriquecimento com OFIQ desabilitado): {e}")
+
+        # SERFIQ depende internamente de FFService (compartilha sessions).
+        # Sem FF, SERFIQ também fica indisponível.
+        serfiq_service = None
+        if ff_service is not None:
+            try:
+                serfiq_service = self.container.serfiq_service()
+            except Exception as e:
+                print(f"⚠ SERFIQService indisponível: {e}")
+
+        # Constrói o pipeline manualmente em vez de via `container.feature_extraction_pipeline()` —
+        # esse Factory cascateia a resolução de todos os serviços e falha
+        # inteiro quando qualquer um quebra. Aqui passamos None pros que
+        # falharam; o pipeline tolera (enrich pula estágios sem serviço).
+        library = Path(self.app_config.paths.library)
+        storage_path = library / "datasets"
+
+        pipeline_extracao = FeatureExtractionPipeline(
+            hash_service=self.container.hash_service(),
+            ff_service=ff_service,
+            ofiq_service=ofiq_service,
+            serfiq_service=serfiq_service,
+            storage_path=storage_path,
+        )
+
+        self.manager_view = DatasetManagerView()
+        self.manager_controller = DatasetManagerController(
+            view=self.manager_view,
+            pipeline=pipeline_extracao,
+            config=self.app_config,
+            container=self.container,
+            ff_available=ff_service is not None,
+            ofiq_available=ofiq_service is not None,
+        )
+        self.view.add_tab(0, self.manager_view, "Gerenciador de Datasets")
 
     # No método _init_strategy_manager()
 

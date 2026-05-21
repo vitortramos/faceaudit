@@ -27,9 +27,15 @@ class FFInfo:
     bbox: Optional[np.ndarray] = None
     keypoints: Optional[np.ndarray] = field(default=None, repr=False)
     
-    # Embeddings (Vetores de características)
+    # Embeddings (Vetores de características) — um slot por modelo
+    # ForensicFace. Nomeação canônica `embedding_<ff_name>`; novos modelos
+    # do upstream (v6 KPRPE, ou versões futuras) ganham slot novo aqui +
+    # entrada no `SepaelModel` enum em `faceaudit.enums.sepael_model`.
     embedding_sepaelv2: Optional[np.ndarray] = field(default=None, repr=False)
+    embedding_sepaelv3: Optional[np.ndarray] = field(default=None, repr=False)
     embedding_sepaelv4: Optional[np.ndarray] = field(default=None, repr=False)
+    embedding_sepaelv5: Optional[np.ndarray] = field(default=None, repr=False)
+    embedding_sepaelv6: Optional[np.ndarray] = field(default=None, repr=False)
     
     # Imagem Processada
     aligned_face: Optional[np.ndarray] = field(default=None, repr=False)

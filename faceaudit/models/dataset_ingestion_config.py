@@ -4,6 +4,14 @@ from pathlib import Path
 from faceaudit.models.dir_template import DirTemplate
 
 
+def _default_ff_model_name() -> str:
+    """Lazy-resolve do default pra evitar ciclo de imports
+    (`SepaelModel` está em `faceaudit.enums`, que pode importar coisas
+    de `faceaudit.models` futuramente)."""
+    from faceaudit.enums.sepael_model import SepaelModel
+    return SepaelModel.default().ff_name
+
+
 @dataclass
 class DatasetIngestionConfig:
     """
@@ -34,8 +42,12 @@ class DatasetIngestionConfig:
     # Lista de modelos a carregar (multi-select). O `FFService` instancia
     # uma `ForensicFace` por modelo — `process_face` usa o primeiro como
     # default e preenche o slot correspondente em FFInfo
-    # (`embedding_sepaelv2` ou `embedding_sepaelv4`).
-    ff_models: List[str] = field(default_factory=lambda: ["sepaelv2"])
+    # (`embedding_sepaelv2`, `embedding_sepaelv3`, ..., `embedding_sepaelv6`).
+    # Default vem do `SepaelModel.default()` — único ponto de verdade do
+    # codebase pra qual modelo é padrão.
+    ff_models: List[str] = field(
+        default_factory=lambda: [_default_ff_model_name()]
+    )
     # Tamanho da imagem de entrada do detector. Comuns: 320 (default),
     # 640 (melhor pra fotos de baixa res, ~2x mais GPU).
     ff_det_size: int = 320
@@ -86,4 +98,4 @@ class DatasetIngestionConfig:
             self.input_path = Path(self.input_path)
         # Garante que ff_models não fique vazio — sem modelo, FF não roda.
         if not self.ff_models:
-            self.ff_models = ["sepaelv2"]
+            self.ff_models = [_default_ff_model_name()]

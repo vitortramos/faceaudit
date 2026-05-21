@@ -6,9 +6,17 @@ from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QDoubleSpinBox, QFrame
 )
 
-# Modelos suportados pelo FFService — duplicado da EnrichDatasetView
-# pra manter a UI auto-contida (lista pequena, raramente muda).
-_SUPPORTED_FF_MODELS = ("sepaelv2", "sepaelv4")
+# Modelos suportados pelo FFService — lista lida em runtime via
+# `SepaelModel.available_on_disk()`, pra refletir o que o usuário
+# instalou em ~/.forensicface/models/.
+from faceaudit.enums.sepael_model import SepaelModel
+
+
+def _supported_ff_models() -> tuple:
+    available = SepaelModel.available_on_disk()
+    if available:
+        return tuple(m.ff_name for m in available)
+    return (SepaelModel.default().ff_name,)
 
 class NewDatasetView(QDialog):
     """
@@ -234,11 +242,19 @@ class NewDatasetView(QDialog):
         v.addWidget(QLabel("<b>Modelos de embedding</b>"))
         self._ff_model_checks = {}
         models_row = QHBoxLayout()
-        for name in _SUPPORTED_FF_MODELS:
-            chk = QCheckBox(name.replace("sepaelv", "SEPAEL V"))
+        for name in _supported_ff_models():
+            member = SepaelModel.from_ff_name(name)
+            label = member.label_pt if member is not None else name
+            chk = QCheckBox(label)
             self._ff_model_checks[name] = chk
             models_row.addWidget(chk)
-        self._ff_model_checks["sepaelv2"].setChecked(True)
+        default_name = SepaelModel.default().ff_name
+        if default_name in self._ff_model_checks:
+            self._ff_model_checks[default_name].setChecked(True)
+        else:
+            first = next(iter(self._ff_model_checks.values()), None)
+            if first is not None:
+                first.setChecked(True)
         models_row.addStretch()
         v.addLayout(models_row)
 
@@ -289,6 +305,42 @@ class NewDatasetView(QDialog):
         v.addLayout(alpha_row)
 
         return panel
+
+    def set_stage_availability(
+        self,
+        ff_available: bool,
+        ofiq_available: bool,
+    ) -> None:
+        """Desabilita checkboxes dos estágios cujo serviço externo não
+        está disponível. SER-FIQ depende de FF — segue a disponibilidade
+        do FF. Cada checkbox desabilitado também limpa a marcação pra
+        que `DatasetIngestionConfig` não receba `compute_ff=True` quando
+        o FFService não está pronto."""
+        ff_tooltip = (
+            "ForensicFace não está disponível: nenhum modelo encontrado em "
+            "~/.forensicface/models/ ou o serviço falhou ao carregar. "
+            "Instale um modelo (sepaelv2/v3/v4/v5) ou troque nas Configurações."
+        )
+        ofiq_tooltip = (
+            "OFIQ não está disponível: executável ou pasta de dados não "
+            "encontrados. Verifique os caminhos nas Configurações."
+        )
+
+        if not ff_available:
+            self.chk_ff.setChecked(False)
+            self.chk_ff.setEnabled(False)
+            self.chk_ff.setToolTip(ff_tooltip)
+            self.chk_serfiq.setChecked(False)
+            self.chk_serfiq.setEnabled(False)
+            self.chk_serfiq.setToolTip(
+                "SER-FIQ depende do ForensicFace, que não está disponível. "
+                + ff_tooltip
+            )
+
+        if not ofiq_available:
+            self.chk_ofiq.setChecked(False)
+            self.chk_ofiq.setEnabled(False)
+            self.chk_ofiq.setToolTip(ofiq_tooltip)
 
     # ──────────────────────────────────────────────────────────────────
     # Getters dos params operacionais (consumidos pelo controller)

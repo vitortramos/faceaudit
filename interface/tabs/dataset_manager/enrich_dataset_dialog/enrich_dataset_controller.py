@@ -7,7 +7,13 @@ class EnrichDatasetController:
     Controlador da janela de Enriquecimento.
     Analisa o dataset atual para sugerir quais processamentos estão faltando.
     """
-    def __init__(self, dataset, parent=None):
+    def __init__(
+        self,
+        dataset,
+        parent=None,
+        ff_available: bool = True,
+        ofiq_available: bool = True,
+    ):
         self.dataset = dataset
         self.view = EnrichDatasetView(parent)
 
@@ -17,6 +23,17 @@ class EnrichDatasetController:
         # existir).
         self.view.set_ff_is_aligned(
             bool(getattr(dataset, "is_aligned", False))
+        )
+
+        # Desabilita checkboxes dos estágios cujos serviços externos não
+        # estão disponíveis no momento (FFService falha quando o modelo
+        # não está em ~/.forensicface/models/; OFIQ quando o exe não
+        # existe). SER-FIQ depende de FF, então cai junto. O usuário vê
+        # a opção desativada com tooltip explicando — sem perder o
+        # acesso ao resto do diálogo (filtros, faces alinhadas, etc).
+        self.view.set_stage_availability(
+            ff_available=ff_available,
+            ofiq_available=ofiq_available,
         )
 
         # Analisa o dataset e preenche a UI com estatísticas
