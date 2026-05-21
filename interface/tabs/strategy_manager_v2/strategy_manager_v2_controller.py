@@ -1182,6 +1182,21 @@ class StrategyManagerV2Controller(QtCore.QObject):
         # ensure_payload disparam &quot;Recurso X não encontrado no contexto&quot;.
         project_resources = self._collect_project_resources()
 
+        # Defensive: zera payload dos PRIMARY DATASETs em `defn.resources`
+        # antes de cada Run All — força rehidratação com a `embedding_column`
+        # atual da estratégia. Sem isso, payload cacheado de uma run
+        # anterior (cancelada ou completa) era reusado via early-return em
+        # `ensure_payload`. Causa raiz do bug onde usuário começou Run All
+        # com embedding_v2, cancelou, trocou pra v6, re-rodou — o V6 silenciosamente
+        # usava os vetores v2 cacheados do run anterior. `artifact_ref`
+        # preservado — arquivo continua no disco.
+        for res in (self._current_definition.resources or []):
+            if (
+                res.resource_type == StrategyResourceType.DATASET
+                and res.category == ResourceCategory.PRIMARY
+            ):
+                res.payload = None
+
         # CRÍTICO: PRIMARY DATASETs são compartilhados por referência entre
         # estratégias que os referenciam (deduplicação por resource_id em
         # `_collect_project_resources`). Se a estratégia anterior hidratou
@@ -2576,6 +2591,15 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Usado pelo cascade ao trocar embedding (afeta toda a estratégia,
         não só a partir de uma raiz).
 
+        Também zera o `payload` dos PRIMARY DATASETs (sem deletar arquivo —
+        arquivos primários não pertencem à estratégia). Sem isso, payload
+        hidratado em run anterior com `embedding_column` ANTIGO permanece
+        em memória; a próxima run reusa via early-return de `ensure_payload`
+        ignorando o novo `embedding_column`. Caso típico: usuário começa
+        run com coluna errada, cancela, troca coluna, re-roda — sem essa
+        invalidação, o segundo run usa silenciosamente os vetores da coluna
+        errada.
+
         Diferente do `_invalidate_dependents_of` (BFS a partir de um
         resource_id) — aqui invalidamos sem percorrer grafo, já que
         embedding muda o universo inteiro.
@@ -2604,6 +2628,24 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     except Exception:
                         pass
             self._executed_instruction_ids.discard(instr.instruction_id)
+
+        # Zera payload dos PRIMARY DATASETs (mantém artifact_ref —
+        # arquivo continua no disco, só força rehidratação na próxima run
+        # com a nova `embedding_column`).
+        for res in (defn.resources or []):
+            if (
+                res.resource_type == StrategyResourceType.DATASET
+                and res.category == ResourceCategory.PRIMARY
+            ):
+                res.payload = None
+                if (
+                    self._execution_context is not None
+                    and self._execution_context.has_resource(res.resource_id)
+                ):
+                    ctx_res = self._execution_context.get_resource(res.resource_id)
+                    if ctx_res is not None:
+                        ctx_res.payload = None
+
         return invalidated
 
     def _compute_executed_ids_from_disk(self) -> set:
