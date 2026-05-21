@@ -6,7 +6,10 @@ from typing import List, Optional
 
 from PyQt6 import QtCore
 
-from faceaudit.executors.strategy_executor import StrategyExecutor
+from faceaudit.executors.strategy_executor import (
+    StrategyCancelledError,
+    StrategyExecutor,
+)
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 
@@ -20,7 +23,12 @@ class StrategyExecutionWorker(QtCore.QObject):
     Após executar todas as fases, persiste em disco os recursos treinados
     (campos do LRStrategyTrainedModel) ainda na thread do worker — evita
     travar a UI quando o pickle é pesado (ex: SimilarityScoreDataset com
-    milhões de pares ou TransformationTrajectoryData volumoso).
+    milhões de pares ou TransformationTrajetoryData volumoso).
+
+    Cancelamento cooperativo: caller chama `request_cancel()` (thread-safe
+    via flag bool) e o executor consulta o flag entre instruções. Quando
+    levanta `StrategyCancelledError`, o worker emite `error` com a
+    mensagem amigável (e NÃO `finished`) — caller trata como exit normal.
     """
 
     log_message = QtCore.pyqtSignal(str)
@@ -38,6 +46,15 @@ class StrategyExecutionWorker(QtCore.QObject):
         self._executor = executor
         self._definition = definition
         self._additional_resources = list(additional_resources or [])
+        # Flag de cancelamento — escrita pela main thread via
+        # `request_cancel()`, lida pelo executor (na worker thread) via
+        # `cancel_checker`. Acessos a bool em Python são atômicos por
+        # virtude do GIL, não precisa de lock explícito aqui.
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        """Sinaliza pro executor parar entre instruções. Idempotente."""
+        self._cancel_requested = True
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
@@ -53,6 +70,7 @@ class StrategyExecutionWorker(QtCore.QObject):
             result = self._executor.execute(
                 self._definition,
                 additional_resources=self._additional_resources or None,
+                cancel_checker=lambda: self._cancel_requested,
             )
 
             # Persiste recursos AINDA NA THREAD DO WORKER — evita "Não respondendo"
@@ -61,6 +79,16 @@ class StrategyExecutionWorker(QtCore.QObject):
 
             self.log_message.emit("Execução concluída com sucesso.")
             self.finished.emit(result)
+
+        except StrategyCancelledError as exc:
+            # Cancelamento cooperativo — não é erro. Loga amigável e
+            # emite error pra que o handler feche o dialog sem mexer em
+            # `_executed_instruction_ids` ou sincronizar artifacts
+            # parciais (algumas instruções RODARAM antes do cancel, mas
+            # a estratégia como um todo NÃO completou).
+            msg = f"⏹ {exc}"
+            self.log_message.emit(msg)
+            self.error.emit(msg)
 
         except Exception as exc:
             msg = f"Erro durante a execução: {exc}"

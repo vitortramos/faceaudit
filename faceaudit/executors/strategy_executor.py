@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, Type, Union
+from typing import Callable, Dict, List, Optional, Tuple, Type, Union
+
+
+class StrategyCancelledError(Exception):
+    """Raised por `StrategyExecutor.execute` quando o `cancel_checker`
+    retorna True entre instruções — sinaliza cancelamento cooperativo
+    pelo usuário, NÃO falha de execução. Caller (worker) trata como
+    exit normal com mensagem amigável em vez de erro técnico."""
+    pass
 
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
@@ -92,6 +100,7 @@ class StrategyExecutor:
         self,
         strategy_definition: LRStrategyDefinition,
         additional_resources: Optional[List[StrategyResource]] = None,
+        cancel_checker: Optional[Callable[[], bool]] = None,
     ) -> LRStrategyTrainedModel:
         """
         Executa completamente a estratégia e retorna o modelo treinado.
@@ -101,6 +110,12 @@ class StrategyExecutor:
         ``strategy_definition.resources`` mas são referenciados pelas
         instruções via dropdown. A controller V2 popula isso a partir do
         scan de disco em ``_collect_project_resources()``.
+
+        ``cancel_checker`` callable opcional consultado entre instruções
+        (cooperative cancel). Quando retorna True, a execução é abortada
+        levantando `StrategyCancelledError` — caller decide se trata
+        como erro ou exit normal. Granularidade é por-instrução: uma
+        instrução já em execução não é interrompida no meio.
         """
         if strategy_definition is None:
             raise ValueError("A definição da estratégia não pode ser nula.")
@@ -111,7 +126,9 @@ class StrategyExecutor:
         )
         self._validate_strategy(strategy_definition, context)
 
-        execution_results = self._execute_all_phases(strategy_definition, context)
+        execution_results = self._execute_all_phases(
+            strategy_definition, context, cancel_checker=cancel_checker,
+        )
 
         trained_model = self._build_trained_model(
             strategy_definition=strategy_definition,
@@ -474,6 +491,7 @@ class StrategyExecutor:
         self,
         strategy_definition: LRStrategyDefinition,
         context: StrategyExecutionContextProtocol,
+        cancel_checker: Optional[Callable[[], bool]] = None,
     ) -> List[InstructionExecutionResult]:
         results: List[InstructionExecutionResult] = []
 
@@ -491,6 +509,19 @@ class StrategyExecutor:
                 f"📋 Fase: {phase_name} ({len(phase_instructions)} instruções)",
             )
             for instruction in phase_instructions:
+                # Checkpoint de cancelamento ANTES de cada instrução.
+                # Granularidade é por-instrução: uma instrução longa em
+                # execução não é interrompida no meio, mas o usuário não
+                # precisa esperar TODAS as instruções restantes rodarem
+                # depois de clicar cancelar.
+                if cancel_checker is not None and cancel_checker():
+                    self._log(
+                        context,
+                        f"⏹ Cancelado pelo usuário antes de '{instruction.name}'.",
+                    )
+                    raise StrategyCancelledError(
+                        f"Cancelado pelo usuário antes de '{instruction.name}'."
+                    )
                 # execute_single_instruction já chama _rehydrate_inputs_if_needed
                 # internamente — não precisa duplicar aqui.
                 result = self.execute_single_instruction(instruction, context)

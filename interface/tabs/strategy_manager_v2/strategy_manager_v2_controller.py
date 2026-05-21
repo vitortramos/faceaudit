@@ -1199,7 +1199,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
         worker.log_message.connect(dialog.append_log)
 
         def on_cancel_requested():
+            # Sinaliza pro worker parar entre instruções (cancelamento
+            # cooperativo). Antes só setávamos o flag local e o worker
+            # continuava executando até o fim — usuário via "Cancelando..."
+            # mas a estratégia rodava inteira.
             cancel_state["requested"] = True
+            worker.request_cancel()
 
         dialog.cancellation_requested.connect(on_cancel_requested)
 
@@ -1226,6 +1231,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         def on_error(_msg):
             dialog.finish(False)
+            # Refresh do estado mesmo em erro/cancelamento — instruções
+            # que rodaram com sucesso antes do erro/cancel persistiram
+            # seus outputs em disco, e o `_refresh_instruction_states`
+            # lê do disco pra repopular ✅. Sem isso, a UI mostra
+            # nenhuma ✅ apesar do trabalho parcial ter sido salvo.
+            self._refresh_instruction_states()
+            self._refresh_produced_resources()
+            self._refresh_left_panel()
             close_dialog_if_cancelled()
 
         worker.finished.connect(on_finished)
