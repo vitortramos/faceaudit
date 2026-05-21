@@ -190,17 +190,22 @@ class FaceInfo:
             # exclude_heavy=True removeu imagens e embeddings
             ff_data = self.ff_info.to_dict(exclude_heavy=True)
             
-            # --- REINJEÇÃO DE EMBEDDINGS (V2 e V4) ---
-            # Salvamos todos que existirem para garantir backup completo no Parquet
-            
-            if self.ff_info.embedding_sepaelv2 is not None:
-                # 'embedding' genérico mantém retrocompatibilidade
-                ff_data['embedding'] = self.ff_info.embedding_sepaelv2.tolist()
-                # 'embedding_v2' explícito para clareza futura
-                ff_data['embedding_v2'] = self.ff_info.embedding_sepaelv2.tolist()
-                
-            if self.ff_info.embedding_sepaelv4 is not None:
-                ff_data['embedding_v4'] = self.ff_info.embedding_sepaelv4.tolist()
+            # --- REINJEÇÃO DE EMBEDDINGS ---
+            # Itera o SepaelModel enum em vez de hard-codear nomes — assim
+            # v3/v5/v6 (e qualquer modelo futuro) entram automaticamente
+            # quando adicionados ao enum. `embedding` genérico mantém
+            # retrocompatibilidade apontando pro v2 (convenção histórica).
+            from faceaudit.enums.sepael_model import SepaelModel
+            for member in SepaelModel:
+                emb = getattr(self.ff_info, member.ffinfo_slot, None)
+                if emb is None:
+                    continue
+                emb_list = emb.tolist()
+                ff_data[member.parquet_column] = emb_list
+                if member is SepaelModel.SEPAEL_V2:
+                    # Mantém alias `embedding` apontando pro v2 — código
+                    # legado (incluindo parquets antigos) depende disso.
+                    ff_data['embedding'] = emb_list
             
             # Tratamento de conflitos de nome
             if 'gender' in ff_data:

@@ -383,23 +383,34 @@ class FaceDataset:
             if col_emb and isinstance(row[col_emb], (list, np.ndarray)):
                  emb_array = np.array(row[col_emb], dtype=np.float32)
 
-            # Sepael V4 — coluna independente, NÃO entra em col_emb. Sem
-            # essa leitura, o `embedding_v4` do parquet era silenciosamente
-            # dropado no load e `face.ff_info.embedding_sepaelv4` ficava
-            # None pra todas as faces — a auditoria de "Faces sem Sepael V4"
-            # reportava 100% de faltantes mesmo quando a coluna existia
-            # com dados.
-            emb_v4_array = None
-            if 'embedding_v4' in df.columns:
-                v4_val = row['embedding_v4']
-                if isinstance(v4_val, (list, np.ndarray)):
-                    emb_v4_array = np.array(v4_val, dtype=np.float32)
+            # Embeddings adicionais por SepaelModel — itera o enum em vez
+            # de hard-codear nomes. Sem isso, parquets com `embedding_v3`/
+            # `embedding_v5`/`embedding_v6` perdiam silenciosamente esses
+            # vetores no load e a auditoria reportava 100% de faltantes
+            # mesmo com dados presentes. Para v2, mantém o `emb_array` já
+            # resolvido por `col_emb` (que respeita aliases legados como
+            # `embedding` puro).
+            from faceaudit.enums.sepael_model import SepaelModel
 
-            if (
-                pd.notna(row.get('fiqa_score'))
-                or emb_array is not None
-                or emb_v4_array is not None
-            ):
+            embeddings_per_model: dict[str, Optional[np.ndarray]] = {}
+            for member in SepaelModel:
+                col = member.parquet_column
+                if col not in df.columns:
+                    continue
+                val = row[col]
+                if isinstance(val, (list, np.ndarray)):
+                    embeddings_per_model[member.ffinfo_slot] = (
+                        np.array(val, dtype=np.float32)
+                    )
+
+            # v2 tem ainda o caminho legado via `col_emb` (cobre parquets
+            # antigos com coluna `embedding` sem o sufixo `_v2`).
+            if emb_array is not None:
+                embeddings_per_model.setdefault(
+                    SepaelModel.SEPAEL_V2.ffinfo_slot, emb_array,
+                )
+
+            if pd.notna(row.get('fiqa_score')) or embeddings_per_model:
                 face.ff_info = FFInfo(
                     fiqa_score=clean(row.get('fiqa_score')),
                     yaw=clean(row.get('yaw')),
@@ -408,8 +419,7 @@ class FaceDataset:
                     age=clean(row.get('age_est')),
                     gender=clean(row.get('gender_est')),
                     ipd=clean(row.get('ipd')),
-                    embedding_sepaelv2=emb_array,
-                    embedding_sepaelv4=emb_v4_array,
+                    **embeddings_per_model,
                 )
             
             # C. OFIQInfo
