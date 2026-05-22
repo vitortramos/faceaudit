@@ -223,3 +223,47 @@ class TestMigrationFailureCases:
         assert len(report["failures"]) == 1
         # artifact_ref não é tocado
         assert defn.resources[0].artifact_ref.path == "datasets/A.parquet"
+
+    def test_primary_shared_across_strategies_all_refs_updated(self, tmp_path):
+        """REGRESSION: o mesmo PRIMARY referenciado por N estratégias precisa
+        ter o ref atualizado em TODAS, não apenas na primeira que itera.
+
+        Bug original: a 1ª iteração movia source → dest (sucesso, ref
+        atualizado). Iterações seguintes viam source missing e abortavam
+        com (False, ['source missing']) — ref ficava stale apontando
+        pro path flat.
+
+        Fix: quando source não existe MAS dest existe, trata como
+        idempotente (já migrado) e retorna (True, []) pra que o caller
+        atualize o ref.
+        """
+        storage = _make_storage(tmp_path)
+        # Arquivo único compartilhado por 3 strategies
+        (tmp_path / "datasets" / "shared.parquet").write_bytes(b"data")
+
+        defn1 = _make_defn(
+            "ST_01", "A",
+            [_primary_resource("shared", "datasets/shared.parquet")],
+        )
+        defn2 = _make_defn(
+            "ST_02", "B",
+            [_primary_resource("shared", "datasets/shared.parquet")],
+        )
+        defn3 = _make_defn(
+            "ST_03", "C",
+            [_primary_resource("shared", "datasets/shared.parquet")],
+        )
+
+        report = storage.migrate_legacy_datasets_layout([defn1, defn2, defn3])
+
+        # Arquivo movido uma vez
+        assert (tmp_path / "datasets" / "primary" / "shared.parquet").exists()
+        assert not (tmp_path / "datasets" / "shared.parquet").exists()
+
+        # TODAS as 3 definitions têm ref atualizado
+        for d in [defn1, defn2, defn3]:
+            assert d.resources[0].artifact_ref.path == "datasets/primary/shared.parquet"
+
+        # Reporte conta 3 (uma por definition)
+        assert len(report["moved_primary"]) == 3
+        assert report["failures"] == []

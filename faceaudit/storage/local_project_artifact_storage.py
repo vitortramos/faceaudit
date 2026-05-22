@@ -593,7 +593,15 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         old_abs = self._root / old_rel
         new_abs = self._root / new_rel
 
+        # Idempotência cross-strategy: o mesmo PRIMARY pode estar
+        # referenciado por N estratégias. Quando a 1ª itera, move source
+        # → dest. Quando as próximas iteram, source não existe mais MAS
+        # dest existe. Trata como "já migrado" — ref deve ser atualizado
+        # mesmo assim. Sem isso só a 1ª estratégia recebe o ref novo
+        # (artifact_refs das outras ficam stale apontando flat path).
         if not old_abs.exists():
+            if new_abs.exists():
+                return (True, errors)
             errors.append(f"source missing: {old_rel}")
             return (False, errors)
 
