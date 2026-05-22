@@ -268,7 +268,7 @@ Cada fase contém uma sequência ordenada de **instruções**. Cada instrução
 consome recursos do contexto (datasets, configs, modelos treinados) e produz
 novos recursos.
 
-### Tipos de instrução (16)
+### Tipos de instrução (18)
 
 #### Preparação de dados
 
@@ -321,6 +321,13 @@ alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 | `HUBNESS_ANALYSIS` | Diagnóstico de viés topológico em alta dimensionalidade — Nk score, similaridade impostora, correlações com pose/norma. 5 estudos compósitos |
 | `HUBNESS_ABLATION` | Estudo de ablação progressiva (por quantidade de fotos ou pose) — custoso, refaz O(N²) em N subsets |
 
+#### Tipicidade forense (não-paramétrica)
+
+| Tipo | Função |
+|---|---|
+| `KNN_TYPICALITY_MODEL_TRAINING` | Treina um modelo de tipicidade **não-paramétrico** (k-NN esférico) a partir de um dataset de referência da subpopulação relevante (já estratificada). Três métricas por face: `mean_knn_similarity` (T_k), `typicality_percentile` (rank empírico LOO), `log_density_knn` (Loftsgaarden-Quesenberry esférico). Defensível em corte como estatística não-paramétrica de ranking — hubness deixa de violar a premissa do modelo e vira o sinal medido. |
+| `TYPICALITY_PAIR_SCORING` | Aplica modelo treinado a cada face de cada par, combina simetricamente (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) num score por par. Produz `SimilarityScoreDataset` pareável diretamente pelo `SCORE_VECTORIZATION` com scores de similaridade pra treinar calibrador 2D+ que conhece raridade local. Reduz Cllr quando há heterogeneidade de tipicidade na população — validado num cenário de hubness sintético com ganho de 6–9%. |
+
 ### Recursos (StrategyResource)
 
 Unidade de troca entre instruções. Cada instrução declara `input_resource_ids`
@@ -329,7 +336,8 @@ Unidade de troca entre instruções. Cada instrução declara `input_resource_id
 
 `DATASET`, `PIPELINE_CONFIG`, `SPLIT_CONFIG`, `MINING_CONFIG`,
 `SIMILARITY_MODEL_CONFIG`, `CALIBRATION_MODEL_CONFIG`, `TRAINED_PIPELINE`,
-`TRAINED_SIMILARITY_MODEL`, `TRAINED_CALIBRATION_MODEL`, `SIMILARITY_SCORES`,
+`TRAINED_SIMILARITY_MODEL`, `TRAINED_CALIBRATION_MODEL`,
+`TRAINED_TYPICALITY_MODEL`, `SIMILARITY_SCORES`,
 `CALIBRATED_SCORES`, `VALIDATION_RESULT`, `CASEWORK_VISUALIZATION`,
 `HUBNESS_REPORT`, `TRAJECTORY_DATA`, ...
 
@@ -444,7 +452,8 @@ forense estabelecida:
 
 Versão **0.1.0** — em desenvolvimento ativo. Os componentes core (engine
 declarativa, calibração tripla LogReg/KDE/biGauss, PLDA dual-variante, score
-score vectorization multivariado, hubness diagnostics, dataset management com
+vectorization multivariado, hubness diagnostics, tipicidade não-paramétrica
+kNN integrada ao calibrador via score vectorization, dataset management com
 schema-by-role e auditoria forense) estão maduros. A documentação técnica
 está em construção.
 
