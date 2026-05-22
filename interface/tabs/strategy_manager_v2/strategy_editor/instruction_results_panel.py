@@ -133,6 +133,7 @@ _PLOT_KIND_CASEWORK_VISUALIZATION = "casework_visualization"
 _PLOT_KIND_TRAJECTORY_BUTTON = "trajectory_button"  # pseudo-kind: só botão
 _PLOT_KIND_HUBNESS_REPORT = "hubness_report"
 _PLOT_KIND_HUBNESS_ABLATION = "hubness_ablation"
+_PLOT_KIND_TYPICALITY_DISTRIBUTION = "typicality_distribution"
 
 
 def _instruction_plot_kind(
@@ -146,6 +147,9 @@ def _instruction_plot_kind(
         StrategyInstructionType.SIMILARITY_SCORING,
         StrategyInstructionType.PAIR_MINING,
         StrategyInstructionType.SCORE_CALIBRATION,
+        # Tipicidade pareada produz SimilarityScoreDataset com `raw_score`
+        # = combinador(t_probe, t_ref) — mesmo schema, mesmo widget.
+        StrategyInstructionType.TYPICALITY_PAIR_SCORING,
     ):
         return _PLOT_KIND_SCORE_DISTRIBUTION
     if t == StrategyInstructionType.STRATEGY_EVALUATION:
@@ -162,6 +166,8 @@ def _instruction_plot_kind(
         return _PLOT_KIND_HUBNESS_REPORT
     if t == StrategyInstructionType.HUBNESS_ABLATION:
         return _PLOT_KIND_HUBNESS_ABLATION
+    if t == StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING:
+        return _PLOT_KIND_TYPICALITY_DISTRIBUTION
     return None
 
 
@@ -185,6 +191,7 @@ class _ResultsCard(QtWidgets.QWidget):
     view_casework_visualization_requested = QtCore.pyqtSignal(object)
     view_hubness_report_requested = QtCore.pyqtSignal(object)
     view_hubness_ablation_requested = QtCore.pyqtSignal(object)
+    view_typicality_distribution_requested = QtCore.pyqtSignal(object)
 
     # Pedido de hidratação assíncrona — emitido pelo botão "Carregar e
     # visualizar" para datasets grandes ainda no disco.
@@ -475,6 +482,13 @@ class _ResultsCard(QtWidgets.QWidget):
             self._plot_widget = HubnessAblationWidget(
                 parent=plot_page, result=None,
                 show_header=False, show_toolbar=False, show_help=False,
+            )
+        elif self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
+            from .result_widgets.typicality_distribution_widget import (
+                TypicalityDistributionWidget,
+            )
+            self._plot_widget = TypicalityDistributionWidget(
+                parent=plot_page, model=None, show_toolbar=False,
             )
 
         if self._plot_widget is not None:
@@ -915,6 +929,8 @@ class _ResultsCard(QtWidgets.QWidget):
             self.view_hubness_report_requested.emit(self._instruction)
         elif self._plot_kind == _PLOT_KIND_HUBNESS_ABLATION:
             self.view_hubness_ablation_requested.emit(self._instruction)
+        elif self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
+            self.view_typicality_distribution_requested.emit(self._instruction)
 
     def _render_plot(self, payload: Any) -> None:
         """Atualiza o widget de plot com o payload recebido.
@@ -967,6 +983,14 @@ class _ResultsCard(QtWidgets.QWidget):
                     self._plot_widget.set_result(payload)
                 elif isinstance(self._plot_widget, HubnessAblationWidget):
                     self._plot_widget.set_result(payload)
+                else:
+                    # KNN_TYPICALITY_MODEL_TRAINING: widget aceita o modelo
+                    # treinado direto via set_model.
+                    from .result_widgets.typicality_distribution_widget import (
+                        TypicalityDistributionWidget,
+                    )
+                    if isinstance(self._plot_widget, TypicalityDistributionWidget):
+                        self._plot_widget.set_model(payload)
             except Exception:
                 self._show_placeholder()
                 return
@@ -1134,6 +1158,8 @@ class _ResultsCard(QtWidgets.QWidget):
             return (StrategyResourceType.HUBNESS_REPORT,)
         if self._plot_kind == _PLOT_KIND_HUBNESS_ABLATION:
             return (StrategyResourceType.HUBNESS_ABLATION_RESULT,)
+        if self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
+            return (StrategyResourceType.TRAINED_TYPICALITY_MODEL,)
         return ()
 
 
@@ -1158,6 +1184,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         view_casework_visualization_requested(StrategyInstructionDefinition)
         view_hubness_report_requested(StrategyInstructionDefinition)
         view_hubness_ablation_requested(StrategyInstructionDefinition)
+        view_typicality_distribution_requested(StrategyInstructionDefinition)
         hydrate_requested(StrategyInstructionDefinition, str): instrução +
             resource_id solicitado para carregamento
     """
@@ -1168,6 +1195,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
     view_casework_visualization_requested = QtCore.pyqtSignal(object)
     view_hubness_report_requested = QtCore.pyqtSignal(object)
     view_hubness_ablation_requested = QtCore.pyqtSignal(object)
+    view_typicality_distribution_requested = QtCore.pyqtSignal(object)
     hydrate_requested = QtCore.pyqtSignal(object, str)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
@@ -1320,6 +1348,9 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         )
         card.view_hubness_ablation_requested.connect(
             self.view_hubness_ablation_requested.emit
+        )
+        card.view_typicality_distribution_requested.connect(
+            self.view_typicality_distribution_requested.emit
         )
         # Hydrate com instrução + resource_id (parent enriquece).
         card.hydrate_requested.connect(

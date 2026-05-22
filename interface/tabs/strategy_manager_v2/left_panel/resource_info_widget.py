@@ -522,6 +522,50 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         ha_layout.addLayout(ha_form)
         props_layout.addWidget(self._hubness_ablation_section)
 
+        # Detalhes do Modelo de Tipicidade (visível para TRAINED_TYPICALITY_MODEL)
+        self._typicality_section = QtWidgets.QWidget(parent=self)
+        ty_layout = QtWidgets.QVBoxLayout(self._typicality_section)
+        ty_layout.setContentsMargins(0, 0 if self._compact else 4, 0, 0)
+        ty_layout.setSpacing(4)
+
+        self._add_section_header(ty_layout, "Detalhes do Modelo de Tipicidade")
+
+        ty_form = QtWidgets.QFormLayout()
+        ty_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        ty_form.setSpacing(4)
+
+        self.lbl_ty_type = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_population = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_population.setWordWrap(True)
+        self.lbl_ty_k = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_n = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_dim = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_ood = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_loo_median = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_loo_range = QtWidgets.QLabel("—", parent=self._typicality_section)
+
+        for lbl in (self.lbl_ty_type, self.lbl_ty_population, self.lbl_ty_k,
+                    self.lbl_ty_n, self.lbl_ty_dim, self.lbl_ty_ood,
+                    self.lbl_ty_loo_median, self.lbl_ty_loo_range):
+            lbl.setStyleSheet("font-size: 11px; color: #333;")
+
+        for text, value_lbl in [
+            ("Tipo:", self.lbl_ty_type),
+            ("População:", self.lbl_ty_population),
+            ("k (vizinhos):", self.lbl_ty_k),
+            ("Tamanho da referência:", self.lbl_ty_n),
+            ("Dim. do embedding:", self.lbl_ty_dim),
+            ("Threshold OOD:", self.lbl_ty_ood),
+            ("T_k mediano (LOO):", self.lbl_ty_loo_median),
+            ("T_k min / max:", self.lbl_ty_loo_range),
+        ]:
+            lbl = QtWidgets.QLabel(text, parent=self._typicality_section)
+            lbl.setStyleSheet(_lbl_style)
+            ty_form.addRow(lbl, value_lbl)
+
+        ty_layout.addLayout(ty_form)
+        props_layout.addWidget(self._typicality_section)
+
         # Detalhes do Resultado de Validação (visível para VALIDATION_RESULT)
         self._validation_result_section = QtWidgets.QWidget(parent=self)
         vr_layout = QtWidgets.QVBoxLayout(self._validation_result_section)
@@ -744,6 +788,16 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self._clear_hubness_ablation()
 
+        # Detalhes do modelo de tipicidade (TRAINED_TYPICALITY_MODEL)
+        is_typicality = (
+            resource.resource_type == StrategyResourceType.TRAINED_TYPICALITY_MODEL
+        )
+        self._typicality_section.setVisible(is_typicality)
+        if is_typicality:
+            self._load_typicality_details(resource, abs_path)
+        else:
+            self._clear_typicality()
+
         # Detalhes do resultado de validação (VALIDATION_RESULT)
         is_validation_result = (
             resource.resource_type == StrategyResourceType.VALIDATION_RESULT
@@ -812,10 +866,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self._pipeline_trained_section.setVisible(False)
         self._hubness_report_section.setVisible(False)
         self._hubness_ablation_section.setVisible(False)
+        self._typicality_section.setVisible(False)
         self._validation_result_section.setVisible(False)
         self._clear_pipeline_trained()
         self._clear_hubness_report()
         self._clear_hubness_ablation()
+        self._clear_typicality()
         self._clear_validation_result()
         # Em modo compact a aba "Utilização" não foi adicionada, então o
         # usage_list é um widget órfão e pode já ter sido GC'd pelo Qt.
@@ -2009,6 +2065,86 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_ha_n_scenarios.setText("—")
         self.lbl_ha_k.setText("—")
         self.lbl_ha_scenarios.setText("—")
+
+    # ── TRAINED_TYPICALITY_MODEL ───────────────────────────────────────────
+
+    def _load_typicality_details(
+        self,
+        resource: StrategyResource,
+        abs_path: Optional[Path],
+    ) -> None:
+        """Popula labels do `_typicality_section` a partir de
+        `KNNTypicalityModel.summary()`. Lazy-load via pickle quando o
+        payload não está em memória (modelo grande, ~20 MB pra N=10k)."""
+        payload = getattr(resource, "payload", None)
+        if payload is None and abs_path and abs_path.exists():
+            try:
+                from faceaudit.services.strategy_resource_loader_service import (
+                    StrategyResourceLoaderService,
+                )
+                loader = getattr(self, "_loader", None)
+                if loader is None:
+                    self._loader = StrategyResourceLoaderService(artifact_storage=None)
+                    loader = self._loader
+                payload = loader._load_pickle(abs_path)
+            except Exception:
+                payload = None
+
+        if payload is None:
+            self._clear_typicality()
+            return
+
+        summary = getattr(payload, "summary", None)
+        if not callable(summary):
+            self._clear_typicality()
+            return
+
+        try:
+            s = summary()
+        except Exception:
+            self._clear_typicality()
+            return
+
+        if not isinstance(s, dict) or s.get("status") != "fitted":
+            self.lbl_ty_type.setText("(não treinado)")
+            return
+
+        self.lbl_ty_type.setText("kNN não-paramétrico")
+        self.lbl_ty_population.setText(str(s.get("population_label") or "(sem rótulo)"))
+        self.lbl_ty_k.setText(str(s.get("k", "—")))
+        n = s.get("sample_count")
+        self.lbl_ty_n.setText(
+            f"{int(n):,} faces".replace(",", ".") if n is not None else "—"
+        )
+        d = s.get("embedding_dim")
+        self.lbl_ty_dim.setText(str(int(d)) if d is not None else "—")
+
+        ood = s.get("ood_threshold")
+        ood_q = s.get("ood_quantile")
+        if ood is not None and ood_q is not None:
+            self.lbl_ty_ood.setText(f"{float(ood):.4f}  (quantil {float(ood_q):.4g})")
+        elif ood is not None:
+            self.lbl_ty_ood.setText(f"{float(ood):.4f}")
+        else:
+            self.lbl_ty_ood.setText("—")
+
+        med = s.get("loo_T_k_median")
+        self.lbl_ty_loo_median.setText(f"{float(med):.4f}" if med is not None else "—")
+
+        lo = s.get("loo_T_k_min")
+        hi = s.get("loo_T_k_max")
+        if lo is not None and hi is not None:
+            self.lbl_ty_loo_range.setText(f"{float(lo):.4f} / {float(hi):.4f}")
+        else:
+            self.lbl_ty_loo_range.setText("—")
+
+    def _clear_typicality(self) -> None:
+        for lbl in (
+            self.lbl_ty_type, self.lbl_ty_population, self.lbl_ty_k,
+            self.lbl_ty_n, self.lbl_ty_dim, self.lbl_ty_ood,
+            self.lbl_ty_loo_median, self.lbl_ty_loo_range,
+        ):
+            lbl.setText("—")
 
     def _load_validation_result_details(
         self, resource: StrategyResource, abs_path: Optional[Path]

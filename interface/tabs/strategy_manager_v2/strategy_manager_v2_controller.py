@@ -193,6 +193,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._strategy_editor.view_hubness_ablation_requested.connect(
             self._on_view_hubness_ablation
         )
+        self._strategy_editor.view_typicality_distribution_requested.connect(
+            self._on_view_typicality_distribution
+        )
         self._strategy_editor.resource_edit_requested.connect(
             self._on_resource_edit_requested
         )
@@ -4213,6 +4216,81 @@ class StrategyManagerV2Controller(QtCore.QObject):
             QtWidgets.QMessageBox.information(self._view, "Ablação indisponível", missing_msg)
         elif error_msg:
             QtWidgets.QMessageBox.critical(self._view, "Erro ao abrir visualizador", error_msg)
+
+    def _on_view_typicality_distribution(
+        self, instruction: StrategyInstructionDefinition,
+    ) -> None:
+        """
+        Abre o TypicalityDistributionViewerDialog a partir do modelo treinado
+        produzido por KNN_TYPICALITY_MODEL_TRAINING. Mesmo padrão de fetch
+        dos demais viewers — contexto vivo primeiro, hidrata do disco como
+        fallback.
+        """
+        from faceaudit.models.instructions.knn_typicality_model_training_instruction import (
+            KNNTypicalityModelTrainingInstruction,
+        )
+
+        if not self._project or not self._current_definition:
+            return
+        if not isinstance(instruction, KNNTypicalityModelTrainingInstruction):
+            return
+
+        result_id = instruction.trained_typicality_model_resource_id
+        if not result_id:
+            return
+
+        with self._wait_cursor():
+            model = None
+            missing_msg = None
+            error_msg = None
+
+            if (
+                self._execution_context is not None
+                and self._execution_context.has_resource(result_id)
+            ):
+                ctx_resource = self._execution_context.get_resource(result_id)
+                if ctx_resource and ctx_resource.has_payload:
+                    model = ctx_resource.payload
+
+            if model is None:
+                existing = self._current_definition.get_resource_by_id(result_id)
+                if existing is not None:
+                    if existing.has_payload:
+                        model = existing.payload
+                    elif existing.has_artifact and self._executor is not None:
+                        loader = getattr(self._executor, "_resource_loader", None)
+                        if loader is not None:
+                            try:
+                                loader.hydrate(existing)
+                            except Exception:
+                                pass
+                            if existing.has_payload:
+                                model = existing.payload
+
+            if model is None:
+                missing_msg = (
+                    "Não foi encontrado um modelo de tipicidade treinado para "
+                    "esta instrução. Execute KNN_TYPICALITY_MODEL_TRAINING primeiro."
+                )
+            else:
+                try:
+                    from interface.tabs.strategy_manager_v2.strategy_editor.typicality_distribution_viewer_dialog import (
+                        TypicalityDistributionViewerDialog,
+                    )
+                    dlg = TypicalityDistributionViewerDialog(model, parent=self._view)
+                    self._typicality_viewer = dlg
+                    dlg.show()
+                except Exception as exc:
+                    error_msg = f"Não foi possível abrir o visualizador:\n{exc}"
+
+        if missing_msg:
+            QtWidgets.QMessageBox.information(
+                self._view, "Modelo indisponível", missing_msg,
+            )
+        elif error_msg:
+            QtWidgets.QMessageBox.critical(
+                self._view, "Erro ao abrir visualizador", error_msg,
+            )
 
     def _on_run_instruction(self, instruction: StrategyInstructionDefinition) -> None:
         if not self._project or not self._current_definition:
