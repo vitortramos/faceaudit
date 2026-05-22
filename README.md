@@ -326,7 +326,7 @@ alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 | Tipo | Função |
 |---|---|
 | `KNN_TYPICALITY_MODEL_TRAINING` | Treina um modelo de tipicidade **não-paramétrico** (k-NN esférico) a partir de um dataset de referência da subpopulação relevante (já estratificada). Três métricas por face: `mean_knn_similarity` (T_k), `typicality_percentile` (rank empírico LOO), `log_density_knn` (Loftsgaarden-Quesenberry esférico). Defensível em corte como estatística não-paramétrica de ranking — hubness deixa de violar a premissa do modelo e vira o sinal medido. |
-| `TYPICALITY_PAIR_SCORING` | Aplica modelo treinado a cada face de cada par, combina simetricamente (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) num score por par. Produz `SimilarityScoreDataset` pareável diretamente pelo `SCORE_VECTORIZATION` com scores de similaridade pra treinar calibrador 2D+ que conhece raridade local. Reduz Cllr quando há heterogeneidade de tipicidade na população — validado num cenário de hubness sintético com ganho de 6–9%. |
+| `TYPICALITY_PAIR_SCORING` | Aplica modelo(s) treinado(s) a cada face de cada par, combina simetricamente (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) num score por par. **Suporta cross-população** (ex.: cross-pose forense — modelo lateral aplicado em probe lateral, modelo frontal aplicado em reference frontal). Produz `SimilarityScoreDataset` pareável diretamente pelo `SCORE_VECTORIZATION` com scores de similaridade pra treinar calibrador 2D+ que conhece raridade local. Reduz Cllr quando há heterogeneidade de tipicidade na população — validado num cenário de hubness sintético com ganho de 6–9%. |
 
 ### Recursos (StrategyResource)
 

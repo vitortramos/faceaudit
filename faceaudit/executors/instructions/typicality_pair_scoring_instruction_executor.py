@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Optional
 
 import numpy as np
 
@@ -37,9 +37,18 @@ from faceaudit.services.knn_typicality_model import KNNTypicalityModel
 
 class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
     """
-    Aplica um KNNTypicalityModel treinado a cada face dos datasets de entrada
-    e produz um SimilarityScoreDataset onde cada `raw_score` é a combinação
-    simétrica das tipicidades individuais (probe e reference).
+    Aplica modelo(s) KNNTypicalityModel treinado(s) às faces dos datasets
+    de entrada e produz um SimilarityScoreDataset onde cada `raw_score` é
+    a combinação simétrica das tipicidades individuais (probe e reference).
+
+    Dois modos:
+
+    1. Modelo único (típico/simétrico): mesma população dos dois lados do
+       par. `model_probe` é aplicado em ambos os datasets.
+
+    2. Dois modelos (cross-população): `model_probe` aplicado no probe,
+       `model_reference` aplicado no reference. Usado quando probe e
+       reference vivem em populações distintas (ex.: cross-pose).
 
     A ordem de enumeração de pares é IDÊNTICA à de SIMILARITY_SCORING:
     - Self:  triangular superior (i < j).
@@ -71,7 +80,12 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
         try:
             embedding_column = self._resolve_embedding_column(context)
-            model = self._fetch_model(instruction, context)
+            model_probe = self._fetch_model(
+                instruction.typicality_model_probe_resource_id,
+                context,
+                role="probe",
+            )
+
             probe_dataset = self._fetch_dataset(
                 instruction.probe_dataset_resource_id, context, "probe",
             )
@@ -85,9 +99,29 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
                 else None
             )
 
+            # Modelo do reference: usa o próprio se definido, senão o do probe.
+            # `effective_ref_model` é o que será aplicado nas faces do
+            # reference_dataset.
+            model_reference: Optional[KNNTypicalityModel] = None
+            if (
+                reference_dataset is not None
+                and instruction.typicality_model_reference_resource_id
+            ):
+                model_reference = self._fetch_model(
+                    instruction.typicality_model_reference_resource_id,
+                    context,
+                    role="reference",
+                )
+                self._log(
+                    context,
+                    f"🔀 Cross-população: aplicando modelo do reference "
+                    f"'{instruction.typicality_model_reference_resource_id}' "
+                    f"nas faces do reference_dataset.",
+                )
+
             # Tipicidade individual por face — uma chamada batch por dataset.
             probe_scores = self._compute_per_face_scores(
-                model, probe_dataset, embedding_column,
+                model_probe, probe_dataset, embedding_column,
                 instruction.score_type,
             )
             self._log(
@@ -96,8 +130,9 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             )
 
             if reference_dataset is not None:
+                effective_ref_model = model_reference or model_probe
                 ref_scores = self._compute_per_face_scores(
-                    model, reference_dataset, embedding_column,
+                    effective_ref_model, reference_dataset, embedding_column,
                     instruction.score_type,
                 )
                 self._log(
@@ -149,13 +184,16 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             metadata = {
                 "instruction_id": instruction.instruction_id,
                 "instruction_name": instruction.name,
-                "trained_typicality_model_resource_id":
-                    instruction.trained_typicality_model_resource_id,
+                "typicality_model_probe_resource_id":
+                    instruction.typicality_model_probe_resource_id,
+                "typicality_model_reference_resource_id":
+                    instruction.typicality_model_reference_resource_id,
                 "probe_dataset_resource_id": instruction.probe_dataset_resource_id,
                 "reference_dataset_resource_id":
                     instruction.reference_dataset_resource_id,
                 "score_type": instruction.score_type.to_str(),
                 "combiner": instruction.combiner.to_str(),
+                "uses_dual_typicality_models": (model_reference is not None),
                 "output_scores_resource_id": output_id,
                 "n_pairs": len(result.items),
                 "is_casework": instruction.is_casework,
@@ -187,15 +225,32 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             )
             return result
 
-        if not instruction.trained_typicality_model_resource_id:
+        # Modelo do probe (obrigatório)
+        probe_model_id = instruction.typicality_model_probe_resource_id
+        if not probe_model_id:
             result.add_error(
-                "A instrução deve definir 'trained_typicality_model_resource_id'."
+                "A instrução deve definir 'typicality_model_probe_resource_id'."
             )
-        elif not context.has_resource(instruction.trained_typicality_model_resource_id):
+        elif not context.has_resource(probe_model_id):
             result.add_error(
-                f"Modelo de tipicidade '{instruction.trained_typicality_model_resource_id}' "
+                f"Modelo de tipicidade do probe '{probe_model_id}' "
                 f"não encontrado no contexto."
             )
+
+        # Modelo do reference (opcional). Só faz sentido em cross-comparação.
+        ref_model_id = instruction.typicality_model_reference_resource_id
+        if ref_model_id:
+            if not instruction.reference_dataset_resource_id:
+                result.add_warning(
+                    "'typicality_model_reference_resource_id' está definido mas "
+                    "'reference_dataset_resource_id' não — o campo será ignorado "
+                    "em auto-comparação."
+                )
+            elif not context.has_resource(ref_model_id):
+                result.add_error(
+                    f"Modelo de tipicidade do reference '{ref_model_id}' "
+                    f"não encontrado no contexto."
+                )
 
         if not instruction.probe_dataset_resource_id:
             result.add_error("A instrução deve definir 'probe_dataset_resource_id'.")
@@ -239,18 +294,28 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
     @staticmethod
     def _fetch_model(
-        instruction: TypicalityPairScoringInstruction,
+        resource_id: str,
         context: StrategyExecutionContextProtocol,
+        *,
+        role: str,
     ) -> KNNTypicalityModel:
-        res = context.get_resource(instruction.trained_typicality_model_resource_id)
+        """Resolve um modelo de tipicidade do contexto. `role` é só pra mensagens."""
+        res = context.get_resource(resource_id)
+        if res is None or res.payload is None:
+            raise ValueError(
+                f"Recurso de modelo de tipicidade '{resource_id}' "
+                f"({role}) ausente ou sem payload."
+            )
         payload = res.payload
         if not isinstance(payload, KNNTypicalityModel):
             raise TypeError(
-                f"Recurso '{instruction.trained_typicality_model_resource_id}' "
-                f"não contém um KNNTypicalityModel (tem {type(payload).__name__})."
+                f"Recurso '{resource_id}' ({role}) não contém um "
+                f"KNNTypicalityModel (tem {type(payload).__name__})."
             )
         if not payload.is_fitted():
-            raise RuntimeError("KNNTypicalityModel não está treinado.")
+            raise RuntimeError(
+                f"KNNTypicalityModel '{resource_id}' ({role}) não está treinado."
+            )
         return payload
 
     @staticmethod
@@ -275,14 +340,15 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
         embedding_column: str,
         score_type: TypicalityScoreType,
     ) -> np.ndarray:
-        """Vetoriza tipicidade individual de todas as faces do dataset."""
-        # EmbeddingDataset já garante embeddings 2D via .matrix; o
-        # embedding_column é parâmetro do treino e validado pela regra
-        # EMBEDDING_DIM_MATCHES_MODEL — aqui assumimos consistência.
-        # Quando o user troca de coluna no DTO, reusa o fallback do
-        # training executor.
-        matrix = KNNTypicalityModelTrainingInstructionExecutor._extract_embeddings(
-            dataset, embedding_column
+        """Vetoriza tipicidade individual de todas as faces do dataset
+        aplicando o `model` informado. EmbeddingDataset garante embeddings
+        2D via .matrix; embedding_column é validado pela regra
+        EMBEDDING_DIM_MATCHES_MODEL."""
+        matrix, _ = (
+            KNNTypicalityModelTrainingInstructionExecutor
+            ._extract_embeddings_and_identities(
+                dataset, embedding_column, need_identities=False,
+            )
         )
 
         if score_type is TypicalityScoreType.MEAN_KNN_SIMILARITY:
@@ -400,6 +466,9 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
                 "combiner": instruction.combiner.to_str(),
                 "probe_dataset_name": probe_dataset.name,
                 "reference_dataset_name": reference_dataset.name,
+                "uses_dual_typicality_models": bool(
+                    instruction.typicality_model_reference_resource_id
+                ),
                 "is_casework": instruction.is_casework,
             },
         )

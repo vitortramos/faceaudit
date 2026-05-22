@@ -163,12 +163,14 @@ class StrategyInstructionType(Enum):
         "TYPICALITY_PAIR_SCORING",
         "Typicality Pair Scoring",
         "Calcular Score de Tipicidade por Par",
-        "Aplica um modelo de tipicidade treinado a cada face de cada par "
+        "Aplica modelo(s) de tipicidade treinado(s) a cada face de cada par "
         "(probe, reference) de um dataset, e produz um SimilarityScoreDataset "
         "onde o score de cada par é a combinação simétrica (MEAN/MIN/MAX/PRODUCT/"
-        "ABS_DIFF) das tipicidades individuais. Pareado com SIMILARITY_SCORES "
-        "pelo SCORE_VECTORIZATION pra treinar calibrador 2D+ que conheça "
-        "raridade local.",
+        "ABS_DIFF) das tipicidades individuais. Suporta dois modelos distintos "
+        "(probe vs reference) para casos cross-população (ex.: cross-pose: "
+        "lateral × frontal). Pareado com SIMILARITY_SCORES pelo "
+        "SCORE_VECTORIZATION pra treinar calibrador 2D+ que conheça raridade "
+        "local.",
     )
 
     def __init__(
