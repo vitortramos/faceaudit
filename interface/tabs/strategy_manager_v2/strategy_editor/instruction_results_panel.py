@@ -484,12 +484,12 @@ class _ResultsCard(QtWidgets.QWidget):
                 show_header=False, show_toolbar=False, show_help=False,
             )
         elif self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
-            from .result_widgets.typicality_distribution_widget import (
-                TypicalityDistributionWidget,
-            )
-            self._plot_widget = TypicalityDistributionWidget(
-                parent=plot_page, model=None, show_toolbar=False,
-            )
+            # KNN_TYPICALITY_MODEL_TRAINING: executor grava
+            # `<resource>_dist.png` em `graphics/<strategy>/typicality_models/`
+            # durante a persistência. Painel inline mostra via QPixmap
+            # (mesma estratégia de Score/Casework/ValidationResult). Widget
+            # matplotlib vivo só no dialog 🔍 Expandir.
+            self._plot_widget = _PngSnapshotWidget(parent=plot_page)
 
         if self._plot_widget is not None:
             # Wrap em "card" branco padronizado pra que todos os tipos de
@@ -983,14 +983,6 @@ class _ResultsCard(QtWidgets.QWidget):
                     self._plot_widget.set_result(payload)
                 elif isinstance(self._plot_widget, HubnessAblationWidget):
                     self._plot_widget.set_result(payload)
-                else:
-                    # KNN_TYPICALITY_MODEL_TRAINING: widget aceita o modelo
-                    # treinado direto via set_model.
-                    from .result_widgets.typicality_distribution_widget import (
-                        TypicalityDistributionWidget,
-                    )
-                    if isinstance(self._plot_widget, TypicalityDistributionWidget):
-                        self._plot_widget.set_model(payload)
             except Exception:
                 self._show_placeholder()
                 return
@@ -1007,12 +999,17 @@ class _ResultsCard(QtWidgets.QWidget):
         vez do widget vivo. Aplica-se aos tipos cujo executor já gera o
         PNG durante a persistência: SIMILARITY_SCORING e PAIR_MINING
         (produzem `SIMILARITY_SCORES`); SCORE_CALIBRATION (produz
-        `CALIBRATED_SCORES`, plot usa log-LR no eixo X)."""
+        `CALIBRATED_SCORES`, plot usa log-LR no eixo X);
+        KNN_TYPICALITY_MODEL_TRAINING e TYPICALITY_PAIR_SCORING (executor
+        grava `<resource>_dist.png`). Mantém o widget vivo só pro botão
+        🔍 Expandir."""
         try:
             return self._instruction.instruction_type in (
                 StrategyInstructionType.SIMILARITY_SCORING,
                 StrategyInstructionType.PAIR_MINING,
                 StrategyInstructionType.SCORE_CALIBRATION,
+                StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
+                StrategyInstructionType.TYPICALITY_PAIR_SCORING,
             )
         except Exception:
             return False
@@ -1043,6 +1040,13 @@ class _ResultsCard(QtWidgets.QWidget):
                 casework_visualization_png_path,
             )
             return casework_visualization_png_path(
+                project_root, strategy_id, resource_id,
+            )
+        if self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
+            from faceaudit.models.typicality_distribution_plot import (
+                typicality_distribution_png_path,
+            )
+            return typicality_distribution_png_path(
                 project_root, strategy_id, resource_id,
             )
         # Score distribution: subfolder muda se for output de

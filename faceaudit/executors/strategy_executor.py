@@ -358,6 +358,28 @@ class StrategyExecutor:
                         render_casework_png(resource.payload, png_path)
                 elif (
                     resource.resource_type
+                    == StrategyResourceType.TRAINED_TYPICALITY_MODEL
+                ):
+                    # KNNTypicalityModel treinado → PNG da distribuição LOO
+                    # de T_k. Mesmo padrão dos demais — gera headless via
+                    # FigureCanvasAgg, painel inline mostra via QPixmap
+                    # sem reconstruir matplotlib vivo.
+                    from faceaudit.services.knn_typicality_model import (
+                        KNNTypicalityModel,
+                    )
+                    from faceaudit.models.typicality_distribution_plot import (
+                        render_typicality_distribution_png,
+                        typicality_distribution_png_path,
+                    )
+                    if isinstance(resource.payload, KNNTypicalityModel):
+                        png_path = typicality_distribution_png_path(
+                            project_root, strategy_id, resource.resource_id,
+                        )
+                        render_typicality_distribution_png(
+                            resource.payload, png_path,
+                        )
+                elif (
+                    resource.resource_type
                     == StrategyResourceType.VALIDATION_RESULT
                 ):
                     from faceaudit.models.strategy_validation_result import (
