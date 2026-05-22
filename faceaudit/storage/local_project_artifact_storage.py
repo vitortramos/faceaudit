@@ -467,6 +467,62 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         ProjectFolder.GRAPHICS,
     )
 
+    @staticmethod
+    def _rmtree_force(path) -> bool:
+        """`shutil.rmtree` resistente a Windows READONLY attr.
+
+        Windows seta READONLY em pastas/arquivos por vários motivos
+        (OneDrive sync, criação via copy de fonte READONLY, etc.).
+        `rmtree` padrão falha com PermissionError quando encontra um
+        item READONLY. `ignore_errors=True` mascara isso silenciosamente
+        e o filesystem fica em estado inconsistente com o que o código
+        loga.
+
+        Esta versão usa o callback `onerror` pra tirar a flag READONLY
+        e retentar. Retorna True se a pasta sumiu de fato (False se
+        ainda persiste após tentativa).
+        """
+        import os
+        import stat
+        import shutil
+
+        def _on_rm_error(func, target, exc_info):
+            try:
+                os.chmod(target, stat.S_IWRITE)
+                func(target)
+            except Exception:
+                pass
+
+        try:
+            shutil.rmtree(path, onerror=_on_rm_error)
+        except Exception:
+            pass
+        # Verifica deleção real — onerror swallow garante que rmtree
+        # sempre retorna, mas a pasta pode permanecer se o chmod+retry
+        # também falhou (ex: file lock por outro processo).
+        from pathlib import Path as _P
+        return not _P(path).exists()
+
+    @staticmethod
+    def _rmdir_force(path) -> bool:
+        """`Path.rmdir` resistente a Windows READONLY attr.
+
+        Análogo a `_rmtree_force` mas pra diretório vazio.
+        """
+        import os
+        import stat
+        try:
+            path.rmdir()
+        except PermissionError:
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                path.rmdir()
+            except Exception:
+                return False
+        except OSError:
+            return False
+        return not path.exists()
+
     def cleanup_legacy_strategy_subfolders(
         self,
         strategy_pairs: List[tuple],
@@ -494,8 +550,6 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         Returns:
             Lista de paths relativos (POSIX) das subpastas apagadas.
         """
-        import shutil
-
         deleted: List[str] = []
         for strategy_id, current_folder in strategy_pairs:
             if not strategy_id or not current_folder:
@@ -514,12 +568,12 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
                     continue
                 if not legacy_dir.is_dir():
                     continue
-                try:
-                    rel_path = legacy_dir.relative_to(self._root).as_posix()
-                    shutil.rmtree(legacy_dir, ignore_errors=True)
+                rel_path = legacy_dir.relative_to(self._root).as_posix()
+                # _rmtree_force lida com Windows READONLY + verifica
+                # deleção real. Só reporta como deletado se a pasta
+                # SUMIU de fato.
+                if self._rmtree_force(legacy_dir):
                     deleted.append(rel_path + "/")
-                except Exception:
-                    pass
 
         return deleted
 
@@ -548,12 +602,15 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
             all_dirs.sort(key=lambda p: -len(p.parts))
             for path in all_dirs:
                 try:
-                    if not any(path.iterdir()):
-                        rel_path = path.relative_to(self._root).as_posix()
-                        path.rmdir()
-                        deleted.append(rel_path + "/")
+                    if any(path.iterdir()):
+                        continue
                 except Exception:
-                    pass
+                    continue
+                rel_path = path.relative_to(self._root).as_posix()
+                # _rmdir_force lida com Windows READONLY + verifica
+                # deleção real.
+                if self._rmdir_force(path):
+                    deleted.append(rel_path + "/")
         return deleted
 
     # Subpastas escaneadas em busca de arquivos órfãos. Mantemos apenas as pastas
