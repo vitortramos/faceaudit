@@ -187,6 +187,85 @@ class FaceAuditProject:
         except Exception as exc:
             print(f"[FaceAuditProject] Falha ao limpar subpastas legadas: {exc}")
 
+        # Migração silenciosa do layout flat de datasets/ pra hierárquico
+        # (`datasets/primary/<name>` + `datasets/<strategy_folder>/<rid>_<id>`).
+        # Move arquivos + companions (sidecars + .audit.json forense) e
+        # atualiza `artifact_ref.path` nas definitions em memória —
+        # salvamento abaixo se houve mudança. Esta migração é não-destrutiva
+        # (apenas mv).
+        try:
+            migration = self._storage.migrate_legacy_datasets_layout(definitions)
+            total_moved = (
+                len(migration["moved_primary"]) + len(migration["moved_derived"])
+            )
+            if total_moved:
+                print(
+                    f"[FaceAuditProject] Migração datasets layout: "
+                    f"{len(migration['moved_primary'])} primary + "
+                    f"{len(migration['moved_derived'])} derived movidos."
+                )
+                for old, new in migration["moved_primary"][:5]:
+                    print(f"  primary: {old} → {new}")
+                for old, new in migration["moved_derived"][:5]:
+                    print(f"  derived: {old} → {new}")
+                # Persiste as definitions atualizadas
+                for defn in definitions:
+                    if defn.strategy_id in migration["updated_definitions"]:
+                        try:
+                            self._definition_repository.save_definition(defn)
+                        except Exception as save_exc:
+                            print(
+                                f"[FaceAuditProject] Falha ao salvar definition "
+                                f"{defn.strategy_id} pós-migração: {save_exc}"
+                            )
+            if migration["failures"]:
+                print(
+                    f"[FaceAuditProject] Migração datasets: "
+                    f"{len(migration['failures'])} falha(s)."
+                )
+                for old, err in migration["failures"][:5]:
+                    print(f"  ⚠ {old}: {err}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha na migração de datasets: {exc}")
+
+        # Cleanup de arquivos flat órfãos em datasets/ (pré-migração que
+        # não pertencem a nenhuma definition). Lê JSONs RAW pra coletar
+        # refs — robusto contra definitions que não carregam por bug
+        # DTO legacy (ex: instruction_type extinto).
+        try:
+            import json
+            referenced_paths: List[str] = []
+            defs_dir = self._root / "definitions"
+            if defs_dir.is_dir():
+                for jf in defs_dir.glob("*_definition.json"):
+                    try:
+                        raw = json.loads(jf.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    for r in raw.get("resources", []):
+                        ar = r.get("artifact_ref") if isinstance(r, dict) else None
+                        if isinstance(ar, dict):
+                            p = ar.get("path")
+                            if p:
+                                referenced_paths.append(
+                                    p.replace("\\", "/")
+                                )
+            deleted_orphan_ds = self._storage.cleanup_orphan_flat_datasets(
+                referenced_paths,
+            )
+            if deleted_orphan_ds:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_orphan_ds)} arquivo(s) órfão(s) "
+                    f"em datasets/ flat apagado(s)."
+                )
+                for path in deleted_orphan_ds[:10]:
+                    print(f"  • {path}")
+                if len(deleted_orphan_ds) > 10:
+                    print(f"  ... e mais {len(deleted_orphan_ds) - 10}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar datasets órfãos: {exc}")
+
         # Cleanup de diretórios vazios em models/scores/results/graphics.
         # Roda DEPOIS do legacy cleanup pra capturar pastas que ficaram
         # vazias após a remoção do legado.

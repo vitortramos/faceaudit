@@ -456,15 +456,209 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return deleted
 
+    # Sufixos de companion files que SEMPRE acompanham um parquet/pkl
+    # quando movido. Inclui sidecars regeneráveis (_stats/_dist/_metrics)
+    # E o audit log (.audit.json — cadeia de custódia forense, NÃO deve
+    # ser apagado por cleanups genéricos, mas DEVE ser movido junto).
+    _ARTIFACT_COMPANION_SUFFIXES = (
+        "_stats.json",
+        "_dist.json",
+        "_metrics.json",
+        ".audit.json",  # dot-suffix: replaces parquet extension
+    )
+
+    def migrate_legacy_datasets_layout(
+        self,
+        definitions: List["LRStrategyDefinition"],  # type: ignore[name-defined]
+    ) -> dict:
+        """Migra layout antigo `datasets/<X>.parquet` (flat) pro novo:
+          - PRIMARY: `datasets/primary/<X>.parquet`
+          - DERIVED: `datasets/<strategy_folder>/<rid>_<id>.parquet`
+
+        Iterates `definitions` pra encontrar artifact_refs apontando
+        pra paths antigos. Pra cada um:
+          1. Computa novo path canônico
+          2. Move arquivo principal + companions (sidecars + audit.json)
+          3. Atualiza `artifact_ref.path` na definition em memória
+
+        O save_definition é DELEGADO ao caller (FaceAuditProject.check_integrity)
+        pra evitar acoplar esse helper ao repository.
+
+        Detecção de "antigo":
+          - PRIMARY: path == `datasets/<X>.parquet` (sem subfolder)
+          - DERIVED: path == `datasets/<sid>_<rid>...parquet` (com prefixo sid)
+
+        Args:
+            definitions: Lista de definitions do projeto.
+
+        Returns:
+            Dict com:
+              - "moved_primary": List[(old_rel, new_rel)]
+              - "moved_derived": List[(old_rel, new_rel)]
+              - "updated_definitions": Set[strategy_id] cujas defns
+                tiveram artifact_refs alteradas.
+              - "failures": List[(old_rel, error_str)]
+        """
+        from faceaudit.enums.resource_category import ResourceCategory
+        from faceaudit.enums.strategy_resource_type import StrategyResourceType
+        from faceaudit.models.strategy.strategy_folder import strategy_folder_name
+
+        moved_primary: List[tuple] = []
+        moved_derived: List[tuple] = []
+        updated_strategies: set = set()
+        failures: List[tuple] = []
+
+        for defn in definitions:
+            strategy_id = defn.strategy_id
+            strategy_name = defn.name or ""
+            strategy_folder = strategy_folder_name(strategy_id, strategy_name)
+
+            for res in defn.resources:
+                if res.artifact_ref is None or not res.artifact_ref.path:
+                    continue
+                if res.resource_type != StrategyResourceType.DATASET:
+                    continue
+                old_path = res.artifact_ref.path.replace("\\", "/")
+                if not old_path.startswith("datasets/"):
+                    continue
+                tail = old_path[len("datasets/"):]
+                # Já em formato novo? Skip.
+                if "/" in tail:
+                    continue
+
+                # Decide novo path por categoria.
+                if res.category == ResourceCategory.PRIMARY:
+                    new_path = f"datasets/primary/{tail}"
+                elif res.category == ResourceCategory.DERIVED:
+                    # Stripa prefixo `<sid>_` do filename, se presente.
+                    if tail.startswith(f"{strategy_id}_"):
+                        stripped = tail[len(strategy_id) + 1:]
+                    else:
+                        # Defensivo: derivado sem prefixo é caso raro;
+                        # mantém nome.
+                        stripped = tail
+                    # Garantir sufixo `_<id>` antes da extensão. Se já
+                    # tem, não duplica.
+                    res_id = getattr(res, "id", "") or ""
+                    if res_id and not stripped.endswith(
+                        f"_{res_id}.parquet"
+                    ):
+                        # Adiciona `_<id>` antes da extensão.
+                        if stripped.endswith(".parquet"):
+                            stripped = (
+                                stripped[: -len(".parquet")]
+                                + f"_{res_id}.parquet"
+                            )
+                    new_path = f"datasets/{strategy_folder}/{stripped}"
+                else:
+                    continue
+
+                if new_path == old_path:
+                    continue
+
+                # Move arquivo principal + companions
+                ok, errs = self._move_artifact_with_companions(
+                    old_path, new_path,
+                )
+                if not ok:
+                    failures.append((old_path, "; ".join(errs)))
+                    continue
+
+                res.artifact_ref.path = new_path
+                updated_strategies.add(strategy_id)
+                if res.category == ResourceCategory.PRIMARY:
+                    moved_primary.append((old_path, new_path))
+                else:
+                    moved_derived.append((old_path, new_path))
+
+        return {
+            "moved_primary": moved_primary,
+            "moved_derived": moved_derived,
+            "updated_definitions": updated_strategies,
+            "failures": failures,
+        }
+
+    def _move_artifact_with_companions(
+        self, old_rel: str, new_rel: str,
+    ) -> tuple:
+        """Move arquivo principal + companions (sidecars + audit.json)
+        de `old_rel` pra `new_rel`, ambos relativos ao project_root.
+
+        Returns:
+            (ok: bool, errors: List[str])
+        """
+        import shutil
+
+        errors: List[str] = []
+        old_abs = self._root / old_rel
+        new_abs = self._root / new_rel
+
+        # Idempotência cross-strategy: o mesmo PRIMARY pode estar
+        # referenciado por N estratégias. Quando a 1ª itera, move source
+        # → dest. Quando as próximas iteram, source não existe mais MAS
+        # dest existe. Trata como "já migrado" — ref deve ser atualizado
+        # mesmo assim. Sem isso só a 1ª estratégia recebe o ref novo
+        # (artifact_refs das outras ficam stale apontando flat path).
+        if not old_abs.exists():
+            if new_abs.exists():
+                return (True, errors)
+            errors.append(f"source missing: {old_rel}")
+            return (False, errors)
+
+        # Garante destination dir
+        try:
+            new_abs.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            errors.append(f"mkdir failed: {e}")
+            return (False, errors)
+
+        # Move main file
+        try:
+            if new_abs.exists():
+                # Idempotência: destino já existe (migração parcial
+                # rodou antes?) — preserva destino, apaga source.
+                old_abs.unlink()
+            else:
+                shutil.move(str(old_abs), str(new_abs))
+        except Exception as e:
+            errors.append(f"move main failed: {e}")
+            return (False, errors)
+
+        # Move companions (sidecars + audit log) — best-effort, falhas
+        # individuais não abortam (parquet é o principal).
+        old_stem = old_abs.stem
+        for suffix in self._ARTIFACT_COMPANION_SUFFIXES:
+            if suffix.startswith("."):
+                # dot-suffix substitui extensão: `<stem>.audit.json`
+                old_companion = old_abs.with_suffix(suffix)
+                new_companion = new_abs.with_suffix(suffix)
+            else:
+                # underscore-suffix preserva extensão: `<stem>_stats.json`
+                old_companion = old_abs.parent / (old_stem + suffix)
+                new_companion = new_abs.parent / (new_abs.stem + suffix)
+            if not old_companion.exists():
+                continue
+            try:
+                if new_companion.exists():
+                    old_companion.unlink()
+                else:
+                    shutil.move(str(old_companion), str(new_companion))
+            except Exception as e:
+                errors.append(f"companion {suffix}: {e}")
+
+        return (True, errors)
+
     # Pastas hierárquicas onde cada estratégia ocupa uma subpasta. Usado
     # pelos cleanups que sabem que `<folder>/<X>/` é um agrupamento por
-    # estratégia. Não inclui DATASETS/etc. que são flat (sem subpasta
-    # por estratégia).
+    # estratégia.
+    # DATASETS entra aqui após a refactor que separou PRIMARY (em
+    # `datasets/primary/`) de DERIVED (em `datasets/<strategy_folder>/`).
     _STRATEGY_SUBFOLDER_PARENTS = (
         ProjectFolder.MODELS,
         ProjectFolder.SCORES,
         ProjectFolder.RESULTS,
         ProjectFolder.GRAPHICS,
+        ProjectFolder.DATASETS,
     )
 
     @staticmethod
@@ -574,6 +768,84 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
                 # SUMIU de fato.
                 if self._rmtree_force(legacy_dir):
                     deleted.append(rel_path + "/")
+
+        return deleted
+
+    def cleanup_orphan_flat_datasets(
+        self, referenced_paths: List[str],
+    ) -> List[str]:
+        """Apaga arquivos flat em `datasets/` que NÃO estão na lista
+        de paths referenciados.
+
+        Contexto: após a migração que moveu primary pra `datasets/primary/`
+        e derived pra `datasets/<strategy_folder>/`, sobram no flat
+        `datasets/` arquivos pré-migração que:
+          - Pertencem a strategies removidas (refs não existem mais)
+          - São versões antigas de derived (refs já apontam pra files
+            novos no subfolder com `_DS-id`)
+          - Belongam a strategies cujo load falha por bug DTO legacy
+
+        Critério: arquivo flat (direto em `datasets/`, sem subfolder)
+        cujo path não está em `referenced_paths` é orfão.
+
+        Args:
+            referenced_paths: Lista de paths relativos (POSIX) referenciados
+                              por qualquer artifact_ref. Caller deve ler
+                              JSONs raw pra ser tolerante a definitions
+                              que não carregam (ex: instruction_type extinto).
+
+        Returns:
+            Lista de paths relativos (POSIX) dos arquivos apagados (incluindo
+            companions: _stats.json, _dist.json, _metrics.json, .audit.json).
+        """
+        datasets_root = self._root / ProjectFolder.DATASETS.value
+        if not datasets_root.is_dir():
+            return []
+
+        referenced = {p.replace("\\", "/") for p in referenced_paths if p}
+        # Também marca companions associados a referenced como "ref-aware"
+        # — sidecar de um arquivo referenciado NÃO é órfão.
+        referenced_stems: set = set()
+        for p in referenced:
+            if p.startswith("datasets/") and "/" not in p[len("datasets/"):]:
+                stem = Path(p).stem
+                referenced_stems.add(stem)
+
+        deleted: List[str] = []
+        for entry in datasets_root.iterdir():
+            if not entry.is_file():
+                continue
+            rel = f"datasets/{entry.name}"
+
+            # Decide pelo stem do arquivo (sem sufixo de sidecar).
+            stem = entry.stem
+            for sc_suffix in self._ARTIFACT_COMPANION_SUFFIXES:
+                if sc_suffix.startswith("."):
+                    # `.audit.json` — substitui extensão
+                    if entry.name.endswith(sc_suffix):
+                        stem = entry.name[: -len(sc_suffix)]
+                        break
+                else:
+                    # `_stats.json` — sufixo embutido
+                    if entry.stem.endswith(sc_suffix.rsplit(".", 1)[0]):
+                        stem = entry.stem[
+                            : -len(sc_suffix.rsplit(".", 1)[0])
+                        ]
+                        break
+
+            # Path canônico do "principal" (com .parquet) — verifica
+            # se ele OU o próprio sidecar está referenciado.
+            principal_rel = f"datasets/{stem}.parquet"
+            if rel in referenced or principal_rel in referenced:
+                continue
+            if stem in referenced_stems:
+                continue
+
+            try:
+                entry.unlink()
+                deleted.append(rel)
+            except Exception:
+                pass
 
         return deleted
 

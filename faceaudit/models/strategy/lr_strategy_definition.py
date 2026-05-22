@@ -317,10 +317,19 @@ class LRStrategyDefinition(JSONSerializableMixin):
 
         for key in ("preparation_instructions", "validation_instructions", "casework_instructions"):
             if key in processed_data and isinstance(processed_data[key], list):
-                processed_data[key] = [
-                    StrategyInstructionDefinition.from_dict(item) if isinstance(item, dict) else item
-                    for item in processed_data[key]
-                ]
+                # Itens que retornam None (instruction_type extinto, ex:
+                # `SCORE_FUSION` removido) são filtrados — o resto da
+                # estratégia carrega normalmente sem essa instrução. Sem
+                # esse filter, `cls(**...)` recebe None na lista e quebra.
+                rebuilt = []
+                for item in processed_data[key]:
+                    if isinstance(item, dict):
+                        instr = StrategyInstructionDefinition.from_dict(item)
+                        if instr is not None:
+                            rebuilt.append(instr)
+                    else:
+                        rebuilt.append(item)
+                processed_data[key] = rebuilt
 
         # Migração: estratégias antigas gravam `embedding_type` (enum
         # SEPAEL_V2/V4). Mapeamos pro nome da coluna parquet correspondente
