@@ -534,26 +534,36 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         ty_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
         ty_form.setSpacing(4)
 
-        self.lbl_ty_type = QtWidgets.QLabel("—", parent=self._typicality_section)
-        self.lbl_ty_population = QtWidgets.QLabel("—", parent=self._typicality_section)
-        self.lbl_ty_population.setWordWrap(True)
+        self.lbl_ty_mode = QtWidgets.QLabel("—", parent=self._typicality_section)
         self.lbl_ty_k = QtWidgets.QLabel("—", parent=self._typicality_section)
         self.lbl_ty_n = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_input_faces = QtWidgets.QLabel(
+            "—", parent=self._typicality_section,
+        )
+        self.lbl_ty_singletons = QtWidgets.QLabel(
+            "—", parent=self._typicality_section,
+        )
         self.lbl_ty_dim = QtWidgets.QLabel("—", parent=self._typicality_section)
         self.lbl_ty_ood = QtWidgets.QLabel("—", parent=self._typicality_section)
-        self.lbl_ty_loo_median = QtWidgets.QLabel("—", parent=self._typicality_section)
-        self.lbl_ty_loo_range = QtWidgets.QLabel("—", parent=self._typicality_section)
+        self.lbl_ty_loo_median = QtWidgets.QLabel(
+            "—", parent=self._typicality_section,
+        )
+        self.lbl_ty_loo_range = QtWidgets.QLabel(
+            "—", parent=self._typicality_section,
+        )
 
-        for lbl in (self.lbl_ty_type, self.lbl_ty_population, self.lbl_ty_k,
-                    self.lbl_ty_n, self.lbl_ty_dim, self.lbl_ty_ood,
+        for lbl in (self.lbl_ty_mode, self.lbl_ty_k,
+                    self.lbl_ty_n, self.lbl_ty_input_faces, self.lbl_ty_singletons,
+                    self.lbl_ty_dim, self.lbl_ty_ood,
                     self.lbl_ty_loo_median, self.lbl_ty_loo_range):
             lbl.setStyleSheet("font-size: 11px; color: #333;")
 
         for text, value_lbl in [
-            ("Tipo:", self.lbl_ty_type),
-            ("População:", self.lbl_ty_population),
+            ("Modo de Referência:", self.lbl_ty_mode),
             ("k (vizinhos):", self.lbl_ty_k),
-            ("Tamanho da referência:", self.lbl_ty_n),
+            ("Pontos de referência:", self.lbl_ty_n),
+            ("Faces de origem:", self.lbl_ty_input_faces),
+            ("Identidades singleton:", self.lbl_ty_singletons),
             ("Dim. do embedding:", self.lbl_ty_dim),
             ("Threshold OOD:", self.lbl_ty_ood),
             ("T_k mediano (LOO):", self.lbl_ty_loo_median),
@@ -2106,16 +2116,39 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             return
 
         if not isinstance(s, dict) or s.get("status") != "fitted":
-            self.lbl_ty_type.setText("(não treinado)")
+            self.lbl_ty_mode.setText("(não treinado)")
             return
 
-        self.lbl_ty_type.setText("kNN não-paramétrico")
-        self.lbl_ty_population.setText(str(s.get("population_label") or "(sem rótulo)"))
-        self.lbl_ty_k.setText(str(s.get("k", "—")))
-        n = s.get("sample_count")
-        self.lbl_ty_n.setText(
-            f"{int(n):,} faces".replace(",", ".") if n is not None else "—"
+        mode = s.get("reference_mode", "PER_FACE")
+        mode_label = (
+            "Por identidade (centroide)"
+            if mode == "PER_IDENTITY" else "Por face"
         )
+        self.lbl_ty_mode.setText(mode_label)
+        self.lbl_ty_k.setText(str(s.get("k", "—")))
+
+        n = s.get("sample_count")
+        unit = "identidades" if mode == "PER_IDENTITY" else "faces"
+        self.lbl_ty_n.setText(
+            f"{int(n):,} {unit}".replace(",", ".") if n is not None else "—"
+        )
+
+        nin = s.get("n_input_faces")
+        self.lbl_ty_input_faces.setText(
+            f"{int(nin):,} faces".replace(",", ".") if nin is not None else "—"
+        )
+
+        if mode == "PER_IDENTITY":
+            ns = s.get("n_singleton_identities", 0)
+            ns_pct = (
+                100.0 * int(ns) / max(int(n), 1) if n is not None else 0.0
+            )
+            self.lbl_ty_singletons.setText(
+                f"{int(ns):,} ({ns_pct:.1f}%)".replace(",", ".")
+            )
+        else:
+            self.lbl_ty_singletons.setText("(n/a no modo Por face)")
+
         d = s.get("embedding_dim")
         self.lbl_ty_dim.setText(str(int(d)) if d is not None else "—")
 
@@ -2140,8 +2173,9 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
     def _clear_typicality(self) -> None:
         for lbl in (
-            self.lbl_ty_type, self.lbl_ty_population, self.lbl_ty_k,
-            self.lbl_ty_n, self.lbl_ty_dim, self.lbl_ty_ood,
+            self.lbl_ty_mode, self.lbl_ty_k,
+            self.lbl_ty_n, self.lbl_ty_input_faces, self.lbl_ty_singletons,
+            self.lbl_ty_dim, self.lbl_ty_ood,
             self.lbl_ty_loo_median, self.lbl_ty_loo_range,
         ):
             lbl.setText("—")

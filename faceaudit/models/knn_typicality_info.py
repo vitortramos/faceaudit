@@ -27,7 +27,6 @@ class KNNTypicalityInfo(JSONSerializableMixin):
     # Identificação do modelo
     # -------------------------------------------------------------------------
     model_name: str = field(default="KNNTypicalityModel")
-    population_label: Optional[str] = field(default=None)
 
     # -------------------------------------------------------------------------
     # Metadata da população de referência

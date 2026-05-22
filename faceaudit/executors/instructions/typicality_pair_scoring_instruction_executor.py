@@ -70,6 +70,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
         )
 
         try:
+            embedding_column = self._resolve_embedding_column(context)
             model = self._fetch_model(instruction, context)
             probe_dataset = self._fetch_dataset(
                 instruction.probe_dataset_resource_id, context, "probe",
@@ -86,7 +87,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
             # Tipicidade individual por face — uma chamada batch por dataset.
             probe_scores = self._compute_per_face_scores(
-                model, probe_dataset, instruction.embedding_column,
+                model, probe_dataset, embedding_column,
                 instruction.score_type,
             )
             self._log(
@@ -96,7 +97,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
             if reference_dataset is not None:
                 ref_scores = self._compute_per_face_scores(
-                    model, reference_dataset, instruction.embedding_column,
+                    model, reference_dataset, embedding_column,
                     instruction.score_type,
                 )
                 self._log(
@@ -221,6 +222,20 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
         return result
 
     # ─────────────────────────── helpers ────────────────────────────
+
+    @staticmethod
+    def _resolve_embedding_column(
+        context: StrategyExecutionContextProtocol,
+    ) -> str:
+        """Lê a coluna de embedding da estratégia (via contexto)."""
+        col = getattr(context, "embedding_column", None)
+        if not col:
+            raise ValueError(
+                "A estratégia não definiu 'embedding_column'. Configure "
+                "a coluna de embedding no nível da estratégia antes de "
+                "executar a instrução."
+            )
+        return str(col)
 
     @staticmethod
     def _fetch_model(
