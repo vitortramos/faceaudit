@@ -151,19 +151,25 @@ def typicality_distribution_png_path(
     project_root: Union[str, Path],
     strategy_id: str,
     resource_id: str,
+    *,
+    strategy_name: str = "",
 ) -> Path:
     """Path absoluto e determinístico do PNG do modelo de tipicidade.
 
     Convenção:
-    `<project>/graphics/<strategy_id>/typicality_models/<resource_id>_dist.png`.
-    Subfolder dedicado evita mistura com PNGs de outros tipos no diretório.
+    `<project>/graphics/<strategy_folder>/typicality_models/<resource_id>_dist.png`,
+    com `strategy_folder` = `<sanitize(strategy_name)>_<strategy_id>`.
+    Subfolder dedicado evita mistura com PNGs de outros tipos.
     """
+    from faceaudit.models.strategy.strategy_folder import (
+        sanitize_name, strategy_folder_name,
+    )
     return (
         Path(project_root)
         / ProjectFolder.GRAPHICS.value
-        / _sanitize_name(strategy_id)
+        / strategy_folder_name(strategy_id, strategy_name)
         / "typicality_models"
-        / f"{_sanitize_name(resource_id)}_dist.png"
+        / f"{sanitize_name(resource_id)}_dist.png"
     )
 
 

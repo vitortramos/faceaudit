@@ -40,6 +40,8 @@ class StrategyArtifactType(Enum):
     METRICS = "metrics"
     TRAJECTORY_DATA = "trajectory_data"
     SIMILARITY_SCORES = "similarity_scores"
+    MINED_SCORES = "mined_scores"
+    VECTORIZED_SCORES = "vectorized_scores"
     CALIBRATED_SCORES = "calibrated_scores"
     VALIDATION_RESULT = "validation_result"
     CASEWORK_VISUALIZATION = "casework_visualization"

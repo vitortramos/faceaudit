@@ -286,6 +286,7 @@ class CaseworkResultsView(QtWidgets.QWidget):
             return None
         return casework_visualization_png_path(
             self._project_root, item.strategy_id, item.resource_id,
+            strategy_name=item.strategy_name or "",
         )
 
     def _load_result(self, item: ComparisonItem) -> Any:

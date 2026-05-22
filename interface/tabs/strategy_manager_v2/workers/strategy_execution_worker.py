@@ -110,6 +110,7 @@ class StrategyExecutionWorker(QtCore.QObject):
             return
 
         strategy_id = self._definition.strategy_id
+        strategy_name = self._definition.name or ""
 
         for resource in trained_resources:
             if not getattr(resource, "has_payload", False):
@@ -139,6 +140,7 @@ class StrategyExecutionWorker(QtCore.QObject):
                 artifact_ref = self._executor.persist_produced_resource(
                     resource=resource,
                     strategy_id=strategy_id,
+                    strategy_name=strategy_name,
                 )
                 if artifact_ref is not None:
                     resource.artifact_ref = artifact_ref

@@ -820,6 +820,7 @@ class _ResultsCard(QtWidgets.QWidget):
         storage = getattr(resource_loader, "_storage", None)
         project_root = getattr(storage, "project_root", None) if storage else None
         strategy_id = getattr(definition, "strategy_id", None)
+        strategy_name = getattr(definition, "name", None) or ""
         if project_root is None or not strategy_id:
             return None
         if self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
@@ -828,6 +829,7 @@ class _ResultsCard(QtWidgets.QWidget):
             )
             return validation_result_png_paths(
                 project_root, strategy_id, resource_id,
+                strategy_name=strategy_name,
             )
         if (
             self._plot_kind == _PLOT_KIND_SCORE_DISTRIBUTION
@@ -843,10 +845,12 @@ class _ResultsCard(QtWidgets.QWidget):
             return {
                 "distribution": score_distribution_png_path(
                     project_root, strategy_id, resource_id,
+                    strategy_name=strategy_name,
                     calibrated=True,
                 ),
                 "curve": calibration_curve_png_path(
                     project_root, strategy_id, resource_id,
+                    strategy_name=strategy_name,
                 ),
             }
         return None
@@ -1033,6 +1037,7 @@ class _ResultsCard(QtWidgets.QWidget):
         storage = getattr(resource_loader, "_storage", None)
         project_root = getattr(storage, "project_root", None) if storage else None
         strategy_id = getattr(definition, "strategy_id", None)
+        strategy_name = getattr(definition, "name", None) or ""
         if project_root is None or not strategy_id:
             return None
         if self._plot_kind == _PLOT_KIND_CASEWORK_VISUALIZATION:
@@ -1041,6 +1046,7 @@ class _ResultsCard(QtWidgets.QWidget):
             )
             return casework_visualization_png_path(
                 project_root, strategy_id, resource_id,
+                strategy_name=strategy_name,
             )
         if self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
             from faceaudit.models.typicality_distribution_plot import (
@@ -1048,6 +1054,7 @@ class _ResultsCard(QtWidgets.QWidget):
             )
             return typicality_distribution_png_path(
                 project_root, strategy_id, resource_id,
+                strategy_name=strategy_name,
             )
         # Score distribution: subfolder muda se for output de
         # SCORE_CALIBRATION (CALIBRATED_SCORES) — log-LR no eixo X.
@@ -1064,6 +1071,7 @@ class _ResultsCard(QtWidgets.QWidget):
         )
         return score_distribution_png_path(
             project_root, strategy_id, resource_id,
+            strategy_name=strategy_name,
             calibrated=is_calibrated,
         )
 

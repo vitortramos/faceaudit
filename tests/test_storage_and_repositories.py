@@ -68,12 +68,104 @@ class TestStrategyFileType:
         assert p == Path("definitions/ST_01_definition.json")
 
     def test_build_path_trained_model(self):
+        """Sem `strategy_folder`/`strategy_name`, auto-fill usa apenas
+        `strategy_id` como folder — backward-compat com callers legados."""
         p = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(strategy_id="ST_01")
-        assert p == Path("models/ST_01_trained_model.pkl")
+        assert p == Path("models/ST_01/strategy_model.pkl")
+
+    def test_build_path_trained_model_with_name(self):
+        """Com `strategy_name`, folder vira `<name>_<sid>`."""
+        p = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(
+            strategy_id="ST_01", strategy_name="My Strategy",
+        )
+        assert p == Path("models/My_Strategy_ST_01/strategy_model.pkl")
 
     def test_build_path_trained_pipeline(self):
-        p = StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a")
-        assert p == Path("artifacts/ST_01_pipe_a_pipeline.pkl")
+        p = StrategyFileType.TRAINED_PIPELINE.build_path(
+            strategy_id="ST_01", step_id="pipe_a", id="TP-12345678",
+        )
+        assert p == Path("models/ST_01/pipeline/pipe_a_TP-12345678.pkl")
+
+    def test_build_path_trained_pipeline_with_explicit_strategy_folder(self):
+        """Caller pode passar `strategy_folder` direto — override do
+        auto-fill."""
+        p = StrategyFileType.TRAINED_PIPELINE.build_path(
+            strategy_id="ST_01",
+            strategy_folder="PLDA_ST_01",
+            step_id="pipe_a",
+            id="TP-12345678",
+        )
+        assert p == Path("models/PLDA_ST_01/pipeline/pipe_a_TP-12345678.pkl")
+
+    def test_build_path_trained_similarity_model(self):
+        p = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
+            strategy_id="ST_01", resource_id="SIM-1", id="TS-aabbccdd",
+        )
+        assert p == Path("models/ST_01/similarity/SIM-1_TS-aabbccdd.pkl")
+
+    def test_build_path_similarity_scores(self):
+        p = StrategyFileType.SIMILARITY_SCORES.build_path(
+            strategy_id="ST_01", resource_id="SC-1", id="SS-aabbccdd",
+        )
+        assert p == Path("scores/ST_01/raw/SC-1_SS-aabbccdd.parquet")
+
+    def test_build_path_mined_scores(self):
+        p = StrategyFileType.MINED_SCORES.build_path(
+            strategy_id="ST_01", resource_id="SC-MIN", id="SS-11111111",
+        )
+        assert p == Path("scores/ST_01/mined/SC-MIN_SS-11111111.parquet")
+
+    def test_build_path_vectorized_scores(self):
+        p = StrategyFileType.VECTORIZED_SCORES.build_path(
+            strategy_id="ST_01", resource_id="SC-VEC", id="SS-22222222",
+        )
+        assert p == Path("scores/ST_01/vectorized/SC-VEC_SS-22222222.parquet")
+
+    def test_build_path_calibrated_scores(self):
+        p = StrategyFileType.CALIBRATED_SCORES.build_path(
+            strategy_id="ST_01", resource_id="SC-CAL", id="CS-aabbccdd",
+        )
+        assert p == Path("scores/ST_01/calibrated/SC-CAL_CS-aabbccdd.parquet")
+
+    def test_build_path_validation_result(self):
+        p = StrategyFileType.VALIDATION_RESULT.build_path(
+            strategy_id="ST_01", resource_id="VAL-1", id="VR-aabbccdd",
+        )
+        assert p == Path("results/ST_01/validation/VAL-1_VR-aabbccdd.pkl")
+
+    def test_build_path_casework_visualization(self):
+        p = StrategyFileType.CASEWORK_VISUALIZATION.build_path(
+            strategy_id="ST_01", resource_id="CASE-1", id="CV-aabbccdd",
+        )
+        assert p == Path("results/ST_01/casework/CASE-1_CV-aabbccdd.pkl")
+
+    def test_build_path_hubness_ablation_has_distinct_suffix(self):
+        """HUBNESS_REPORT e HUBNESS_ABLATION_RESULT compartilham subpasta
+        `results/<sid>/hubness/`. Pra não colidirem o ablation tem o
+        sufixo `_ablation` no nome do arquivo (depois do id)."""
+        report = StrategyFileType.HUBNESS_REPORT.build_path(
+            strategy_id="ST_01", resource_id="HUB-1", id="HR-aabbccdd",
+        )
+        ablation = StrategyFileType.HUBNESS_ABLATION_RESULT.build_path(
+            strategy_id="ST_01", resource_id="HUB-1", id="HA-aabbccdd",
+        )
+        assert report == Path("results/ST_01/hubness/HUB-1_HR-aabbccdd.pkl")
+        assert ablation == Path("results/ST_01/hubness/HUB-1_HA-aabbccdd_ablation.pkl")
+        assert report != ablation
+
+    def test_build_path_filename_disambiguates_same_resource_id(self):
+        """Mesmo `resource_id` em duas estratégias produz filenames
+        diferentes graças ao `_{id}` sufixo. Garante que dois recursos
+        com nome igual não colidem."""
+        a = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
+            strategy_id="ST_01", resource_id="PLDA MODEL", id="TS-aaaaaaaa",
+        )
+        b = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
+            strategy_id="ST_02", resource_id="PLDA MODEL", id="TS-bbbbbbbb",
+        )
+        assert a != b
+        assert a.name == "PLDA MODEL_TS-aaaaaaaa.pkl"
+        assert b.name == "PLDA MODEL_TS-bbbbbbbb.pkl"
 
     def test_build_path_missing_kwarg_raises(self):
         with pytest.raises(ValueError, match="strategy_id"):
@@ -179,6 +271,157 @@ class TestLocalProjectArtifactStorage:
         found = storage.list_artifacts(StrategyArtifactType.STRATEGY_DEFINITION)
         assert len(found) == 1
         assert found[0].artifact_type == StrategyArtifactType.STRATEGY_DEFINITION
+
+    def test_save_artifact_creates_nested_subdirs(self, storage, tmp_path):
+        """Templates com slashes (`models/<sid>/pipeline/<step_id>_<id>`)
+        devem criar subpastas automaticamente via `mkdir(parents=True)`."""
+        from faceaudit.models.transformation_pipeline_config import (
+            TransformationPipelineConfig,
+        )
+        cfg = TransformationPipelineConfig(name="pipe", transformators=[])
+        ref = storage.save_artifact(
+            StrategyArtifactType.TRAINED_PIPELINE,
+            cfg,
+            strategy_id="ST_09",
+            step_id="pipe_a",
+            id="TP-12345678",
+        )
+        resolved = storage.resolve_artifact(ref)
+        assert resolved is not None
+        assert resolved.exists()
+        # Path inclui subpastas — `models/ST_09/pipeline/pipe_a_TP-12345678.pkl`
+        assert "ST_09" in ref.path
+        assert "pipeline" in ref.path
+        assert "TP-12345678" in ref.path
+        assert (tmp_path / "models" / "ST_09" / "pipeline").is_dir()
+
+    def test_cleanup_orphan_sidecars_deletes_orphans(self, storage, tmp_path):
+        """Sidecars sem arquivo pai no mesmo dir são deletados."""
+        # Cria 3 sidecars órfãos (sem pai) em diretórios diferentes
+        scores_dir = tmp_path / "scores" / "ST_OR" / "raw"
+        scores_dir.mkdir(parents=True)
+        (scores_dir / "GhostScore_dist.json").write_text("{}", encoding="utf-8")
+
+        results_dir = tmp_path / "results" / "ST_OR" / "validation"
+        results_dir.mkdir(parents=True)
+        (results_dir / "GhostResult_metrics.json").write_text("{}", encoding="utf-8")
+
+        datasets_dir = tmp_path / "datasets"
+        (datasets_dir / "GhostDataset_stats.json").write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert len(deleted) == 3
+        assert not (scores_dir / "GhostScore_dist.json").exists()
+        assert not (results_dir / "GhostResult_metrics.json").exists()
+        assert not (datasets_dir / "GhostDataset_stats.json").exists()
+
+    def test_cleanup_orphan_sidecars_preserves_paired(self, storage, tmp_path):
+        """Sidecar com arquivo pai no mesmo dir NÃO é deletado."""
+        scores_dir = tmp_path / "scores" / "ST_OK" / "raw"
+        scores_dir.mkdir(parents=True)
+        parent = scores_dir / "RealScore.parquet"
+        sidecar = scores_dir / "RealScore_dist.json"
+        parent.write_bytes(b"\x00")  # arquivo pai (qualquer conteúdo)
+        sidecar.write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert deleted == []
+        assert sidecar.exists(), "Sidecar com pai NÃO deveria ter sido apagado"
+        assert parent.exists()
+
+    def test_cleanup_legacy_strategy_subfolders_deletes_when_canonical_exists(
+        self, storage, tmp_path,
+    ):
+        """Apaga `<sid>/` legacy quando `<name>_<sid>/` existe em alguma
+        das pastas hierárquicas."""
+        # Cria estrutura: graphics/ tem AMBOS os formatos pra SID_X.
+        (tmp_path / "graphics" / "SID_X").mkdir(parents=True)
+        (tmp_path / "graphics" / "SID_X" / "legacy_png.png").write_bytes(b"\x00")
+        (tmp_path / "graphics" / "MyStrat_SID_X").mkdir(parents=True)
+        (tmp_path / "graphics" / "MyStrat_SID_X" / "new_png.png").write_bytes(b"\x00")
+
+        # Outra estratégia (SID_Y) NÃO tem versão canônica — não deve ser apagada
+        (tmp_path / "graphics" / "SID_Y").mkdir(parents=True)
+        (tmp_path / "graphics" / "SID_Y" / "other_png.png").write_bytes(b"\x00")
+
+        deleted = storage.cleanup_legacy_strategy_subfolders(
+            [
+                ("SID_X", "MyStrat_SID_X"),  # tem canônica → apaga legacy
+                ("SID_Y", "MyStrat_SID_Y"),  # canônica não existe → preserva
+            ]
+        )
+        assert any("SID_X" in d for d in deleted)
+        assert not (tmp_path / "graphics" / "SID_X").exists()
+        # Canônica e SID_Y permanecem
+        assert (tmp_path / "graphics" / "MyStrat_SID_X").exists()
+        assert (tmp_path / "graphics" / "SID_Y").exists()
+
+    def test_cleanup_legacy_strategy_subfolders_skips_when_name_is_empty(
+        self, storage, tmp_path,
+    ):
+        """Quando current_folder == strategy_id (sem nome), não há
+        legacy distinto — não apaga nada."""
+        (tmp_path / "models" / "SID_Z").mkdir(parents=True)
+        (tmp_path / "models" / "SID_Z" / "file.pkl").write_bytes(b"\x00")
+        deleted = storage.cleanup_legacy_strategy_subfolders(
+            [("SID_Z", "SID_Z")],  # current == legacy → skip
+        )
+        assert deleted == []
+        assert (tmp_path / "models" / "SID_Z" / "file.pkl").exists()
+
+    def test_cleanup_empty_strategy_subfolders_removes_empties(
+        self, storage, tmp_path,
+    ):
+        """Bottom-up rmdir: leaves vazios são apagados, depois pais
+        vazios são apagados."""
+        # Cria models/SID_A/pipeline/ vazio + models/SID_A/similarity/file.pkl
+        (tmp_path / "models" / "SID_A" / "pipeline").mkdir(parents=True)
+        (tmp_path / "models" / "SID_A" / "similarity").mkdir(parents=True)
+        (tmp_path / "models" / "SID_A" / "similarity" / "file.pkl").write_bytes(b"\x00")
+        # scores/SID_B/ inteiramente vazio (com 2 subpastas vazias)
+        (tmp_path / "scores" / "SID_B" / "raw").mkdir(parents=True)
+        (tmp_path / "scores" / "SID_B" / "calibrated").mkdir(parents=True)
+
+        deleted = storage.cleanup_empty_strategy_subfolders()
+        # pipeline vazio é apagado, similarity (com arquivo) NÃO
+        assert not (tmp_path / "models" / "SID_A" / "pipeline").exists()
+        assert (tmp_path / "models" / "SID_A" / "similarity").exists()
+        assert (tmp_path / "models" / "SID_A" / "similarity" / "file.pkl").exists()
+        # SID_A não é apagado porque similarity ainda existe
+        assert (tmp_path / "models" / "SID_A").exists()
+        # SID_B inteiramente apagado (raw + calibrated + SID_B)
+        assert not (tmp_path / "scores" / "SID_B").exists()
+        # Reporta cada dir apagado
+        assert len(deleted) >= 3  # pipeline, raw, calibrated, SID_B = 4
+
+    def test_cleanup_orphan_sidecars_ignores_non_sidecar_files(self, storage, tmp_path):
+        """Arquivos que não batem com suffixes de sidecar são ignorados."""
+        d = tmp_path / "scores" / "ST_X" / "raw"
+        d.mkdir(parents=True)
+        random_json = d / "config.json"  # não é sidecar
+        random_json.write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert deleted == []
+        assert random_json.exists()
+
+    def test_list_artifacts_finds_files_in_nested_subdirs(self, storage):
+        """`list_artifacts` usa rglob — deve achar arquivos em subpastas."""
+        from faceaudit.models.transformation_pipeline_config import (
+            TransformationPipelineConfig,
+        )
+        cfg = TransformationPipelineConfig(name="pipe", transformators=[])
+        storage.save_artifact(
+            StrategyArtifactType.TRAINED_PIPELINE,
+            cfg,
+            strategy_id="ST_NESTED",
+            step_id="step_x",
+            id="TP-abcdefab",
+        )
+        found = storage.list_artifacts(StrategyArtifactType.TRAINED_PIPELINE)
+        assert len(found) == 1
+        assert "ST_NESTED" in found[0].path
+        assert "step_x" in found[0].path
 
     def test_list_artifacts_empty_project(self, storage):
         found = storage.list_artifacts()

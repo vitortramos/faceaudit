@@ -31,43 +31,51 @@ class StrategyFileType(Enum):
         "{strategy_id}_definition",
     )
 
-    # --- MODELO TREINADO FINAL ---
+    # --- MODELO TREINADO FINAL (wrapper Run All) ---
+    # Layout hierárquico: `models/<strategy_id>/strategy_model.pkl`.
+    # Demais modelos da estratégia vivem em subpastas irmãs
+    # (pipeline/similarity/calibration/typicality).
     TRAINED_STRATEGY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}_trained_model",
+        "{strategy_folder}/strategy_model",
     )
 
-    # --- ARTEFATOS INTERMEDIÁRIOS ---
+    # --- MODELOS COMPONENTES (subpastas em models/<strategy_id>/) ---
+    # Filenames combinam `{resource_id}_{id}` pra evitar colisão quando
+    # dois recursos compartilham nome (resource_id) — o id técnico
+    # (`TP-abcd1234`, `TS-...`, etc.) é único globalmente.
     TRAINED_PIPELINE = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{step_id}_pipeline",
+        ProjectFolder.MODELS,
+        "{strategy_folder}/pipeline/{step_id}_{id}",
     )
     TRAINED_SIMILARITY_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_similarity_model",
+        ProjectFolder.MODELS,
+        "{strategy_folder}/similarity/{resource_id}_{id}",
     )
     TRAINED_CALIBRATION_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_calibration_model",
+        ProjectFolder.MODELS,
+        "{strategy_folder}/calibration/{resource_id}_{id}",
     )
     TRAINED_TYPICALITY_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_typicality_model",
+        ProjectFolder.MODELS,
+        "{strategy_folder}/typicality/{resource_id}_{id}",
     )
 
     # --- DATASETS ---
     # Path físico pra DATASETs DERIVADOS (produzidos por instrução).
     # Distinto de SOURCE_DATASET (cópia do dataset importado, nome
     # escolhido pelo usuário) — ver mapping em `for_artifact`.
+    # Filename `{strategy_id}_{resource_id}_{id}` — `_{id}` desambigua
+    # contra colisão de nome dentro da mesma estratégia.
     DERIVED_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}",
+        "{strategy_id}_{resource_id}_{id}",
     )
     TRANSFORMED_DATASET = (
         ".parquet",
@@ -85,53 +93,66 @@ class StrategyFileType(Enum):
         "{strategy_id}_{resource_id}_merged",
     )
 
-    # --- LOGS E MÉTRICAS ---
+    # --- LOGS E MÉTRICAS (results/<strategy_id>/) ---
     EXECUTION_LOG = (
         ".log",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_execution_log",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/execution_log",
     )
     METRICS = (
         ".json",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_metrics",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/metrics",
     )
 
-    # --- VISUALIZAÇÕES E TRAJETÓRIA ---
-    TRAJECTORY_DATA = (
-        ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
-    )
+    # --- SCORE DATASETS (scores/<strategy_id>/<subtipo>/) ---
+    # Filename: `{resource_id}_{id}` — disambiguação igual aos modelos.
     SIMILARITY_SCORES = (
         ".parquet",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.SCORES,
+        "{strategy_folder}/raw/{resource_id}_{id}",
+    )
+    MINED_SCORES = (
+        ".parquet",
+        ProjectFolder.SCORES,
+        "{strategy_folder}/mined/{resource_id}_{id}",
+    )
+    VECTORIZED_SCORES = (
+        ".parquet",
+        ProjectFolder.SCORES,
+        "{strategy_folder}/vectorized/{resource_id}_{id}",
     )
     CALIBRATED_SCORES = (
         ".parquet",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.SCORES,
+        "{strategy_folder}/calibrated/{resource_id}_{id}",
+    )
+
+    # --- RESULTADOS DE ANÁLISE (results/<strategy_id>/<tipo>/) ---
+    TRAJECTORY_DATA = (
+        ".pkl",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/trajectory/{resource_id}_{id}",
     )
     VALIDATION_RESULT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/validation/{resource_id}_{id}",
     )
     CASEWORK_VISUALIZATION = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/casework/{resource_id}_{id}",
     )
     HUBNESS_REPORT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/hubness/{resource_id}_{id}",
     )
     HUBNESS_ABLATION_RESULT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_folder}/hubness/{resource_id}_{id}_ablation",
     )
     GRAPHIC = (
         ".png",
@@ -194,8 +215,16 @@ class StrategyFileType(Enum):
             StrategyFileType.STRATEGY_DEFINITION.build_path(strategy_id="ST_01")
             # → Path("definitions/ST_01_definition.json")
 
-            StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a")
-            # → Path("artifacts/ST_01_pipe_a_pipeline.pkl")
+            StrategyFileType.TRAINED_PIPELINE.build_path(
+                strategy_id="ST_01", step_id="pipe_a", id="TP-abc12345",
+                strategy_folder="My Strategy_ST_01",
+            )
+            # → Path("models/My Strategy_ST_01/pipeline/pipe_a_TP-abc12345.pkl")
+
+        Auto-fill: se o template contém `{strategy_folder}` e o caller não
+        passou esse kwarg, deriva via `strategy_folder_name(strategy_id)`
+        (fallback sem nome, vira só `<strategy_id>`). Permite que callers
+        legados que só conhecem `strategy_id` continuem funcionando.
 
         Args:
             **kwargs: Variáveis necessárias para preencher o name_template.
@@ -206,6 +235,19 @@ class StrategyFileType(Enum):
         Raises:
             ValueError: Se uma variável obrigatória do template estiver ausente.
         """
+        # Auto-fill `strategy_folder` quando o template precisa e caller
+        # não passou explicit (caso comum: repositórios que só recebem
+        # `strategy_id`).
+        if (
+            "{strategy_folder}" in self.name_template
+            and "strategy_folder" not in kwargs
+        ):
+            from faceaudit.models.strategy.strategy_folder import strategy_folder_name
+            kwargs["strategy_folder"] = strategy_folder_name(
+                kwargs.get("strategy_id", ""),
+                kwargs.get("strategy_name", ""),
+            )
+
         try:
             file_name = self.name_template.format(**kwargs)
         except KeyError as e:
@@ -276,6 +318,8 @@ class StrategyFileType(Enum):
             StrategyArtifactType.METRICS:                   cls.METRICS,
             StrategyArtifactType.TRAJECTORY_DATA:           cls.TRAJECTORY_DATA,
             StrategyArtifactType.SIMILARITY_SCORES:         cls.SIMILARITY_SCORES,
+            StrategyArtifactType.MINED_SCORES:              cls.MINED_SCORES,
+            StrategyArtifactType.VECTORIZED_SCORES:         cls.VECTORIZED_SCORES,
             StrategyArtifactType.CALIBRATED_SCORES:         cls.CALIBRATED_SCORES,
             StrategyArtifactType.VALIDATION_RESULT:         cls.VALIDATION_RESULT,
             StrategyArtifactType.CASEWORK_VISUALIZATION:    cls.CASEWORK_VISUALIZATION,

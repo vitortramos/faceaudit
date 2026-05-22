@@ -39,6 +39,7 @@ class FaceAuditProject:
         definition_repository: StrategyDefinitionRepository,
         model_repository: StrategyTrainedModelRepository,
         integrity_results: Optional[List[ArtifactIntegrityResult]] = None,
+        has_legacy_layout: bool = False,
     ) -> None:
         self._metadata = metadata
         self._root = root
@@ -46,6 +47,10 @@ class FaceAuditProject:
         self._definition_repository = definition_repository
         self._model_repository = model_repository
         self._integrity_results: Optional[List[ArtifactIntegrityResult]] = integrity_results
+        # True quando o projeto tem layout pré-reorg (pasta `artifacts/` populada
+        # com pickles/parquets que a nova arch espera ver em `models/`, `scores/`,
+        # `results/`). UI consome essa flag pra exibir diálogo de migração.
+        self._has_legacy_layout = has_legacy_layout
 
     # =========================================================================
     # PROPRIEDADES — somente leitura
@@ -93,6 +98,17 @@ class FaceAuditProject:
         return self._integrity_results
 
     @property
+    def has_legacy_layout(self) -> bool:
+        """True quando o projeto tem `artifacts/` populada (layout pré-reorg).
+
+        Sinaliza pra UI que precisa oferecer migração wipe-and-rerun: apagar
+        recursos DERIVED de todas as estratégias + remover `artifacts/`, e
+        deixar o usuário re-executar nas novas subpastas hierárquicas
+        (`models/<sid>/...`, `scores/<sid>/...`, `results/<sid>/...`).
+        """
+        return self._has_legacy_layout
+
+    @property
     def has_integrity_problems(self) -> bool:
         """
         True se a última verificação encontrou artefatos AUSENTES ou MODIFICADOS.
@@ -114,15 +130,81 @@ class FaceAuditProject:
         artifact_ref de seus recursos. Para cada referência com hash registrado,
         recalcula o SHA-256 e compara.
 
+        Antes da varredura faz limpeza silenciosa de sidecars órfãos
+        (`_dist.json`/`_metrics.json`/`_stats.json` cujo arquivo pai não
+        existe mais — tipicamente sobrevivem a re-execuções onde o path
+        do principal mudou). Sidecars são 100% derivados, sem perda de
+        informação.
+
         O resultado é armazenado em self.integrity_results e também retornado.
 
         Returns:
             Lista de ArtifactIntegrityResult, uma por artefato verificado.
             Entradas com status MODIFIED ou MISSING indicam problemas.
         """
+        definitions = self._definition_repository.list_definitions()
+
+        # Cleanup silencioso de sidecars órfãos antes da varredura. Log
+        # no console pra audit trail (não vira QMessageBox — sidecars
+        # são regeneráveis).
+        try:
+            deleted_sidecars = self._storage.cleanup_orphan_sidecars()
+            if deleted_sidecars:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_sidecars)} sidecar(s) órfão(s) apagado(s)."
+                )
+                for path in deleted_sidecars:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar sidecars órfãos: {exc}")
+
+        # Cleanup de subpastas de estratégia legadas (`<sid>/`) quando
+        # a versão canônica `<name>_<sid>/` existe na mesma pasta
+        # hierárquica. Cobre o caso de PNGs/files deixados no formato
+        # antigo após migração pra `<name>_<sid>`.
+        try:
+            from faceaudit.models.strategy.strategy_folder import (
+                strategy_folder_name,
+            )
+            strategy_pairs = [
+                (
+                    d.strategy_id,
+                    strategy_folder_name(d.strategy_id, d.name or ""),
+                )
+                for d in definitions
+            ]
+            deleted_legacy = self._storage.cleanup_legacy_strategy_subfolders(
+                strategy_pairs,
+            )
+            if deleted_legacy:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_legacy)} subpasta(s) legada(s) apagada(s)."
+                )
+                for path in deleted_legacy:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar subpastas legadas: {exc}")
+
+        # Cleanup de diretórios vazios em models/scores/results/graphics.
+        # Roda DEPOIS do legacy cleanup pra capturar pastas que ficaram
+        # vazias após a remoção do legado.
+        try:
+            deleted_empty = self._storage.cleanup_empty_strategy_subfolders()
+            if deleted_empty:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_empty)} diretório(s) vazio(s) apagado(s)."
+                )
+                for path in deleted_empty:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar dirs vazios: {exc}")
+
         refs: List[StrategyArtifactReference] = []
 
-        for definition in self._definition_repository.list_definitions():
+        for definition in definitions:
             for resource in definition.resources:
                 if resource.artifact_ref is not None:
                     refs.append(resource.artifact_ref)
@@ -285,12 +367,19 @@ class FaceAuditProjectService:
         root = fa_path.parent
         storage = LocalProjectArtifactStorage(project_root=root)
 
+        # Detecta layout legado: pasta `artifacts/` com conteúdo. Nova arch
+        # escreve em `models/`, `scores/`, `results/` — `artifacts/` populada
+        # indica projeto criado antes da reorg, precisa de migração.
+        legacy_dir = root / "artifacts"
+        has_legacy_layout = legacy_dir.is_dir() and any(legacy_dir.iterdir())
+
         project = FaceAuditProject(
             metadata=metadata,
             root=root,
             storage=storage,
             definition_repository=StrategyDefinitionRepository(artifact_storage=storage),
             model_repository=StrategyTrainedModelRepository(artifact_storage=storage),
+            has_legacy_layout=has_legacy_layout,
         )
 
         if verify_integrity:

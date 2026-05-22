@@ -396,18 +396,241 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return results
 
+    def cleanup_orphan_sidecars(self) -> List[str]:
+        """Apaga sidecars (`_stats.json`/`_dist.json`/`_metrics.json`) cujo
+        arquivo principal não existe mais no mesmo diretório.
+
+        Convenção do sistema: sidecars são SEMPRE escritos ao lado de um
+        arquivo principal (parquet/pkl) via `parent_path.with_name(stem + suffix)`.
+        Quando o principal é re-gravado em um path diferente (ex: filename
+        ganhou `_{id}` numa refactor de naming) ou é apagado, o sidecar
+        antigo fica órfão. Como sidecars são 100% derivados (regerados
+        sob demanda a partir do principal), apagá-los é seguro — zero
+        perda de informação.
+
+        Retorna a lista de paths relativos apagados (forward-slash POSIX),
+        pra log/telemetria do caller. Falhas individuais são engolidas
+        (filesystem locks, permission denied) — cleanup é best-effort.
+        """
+        deleted: List[str] = []
+        for folder in self._ORPHAN_SCAN_FOLDERS:
+            folder_path = self._root / folder.value
+            if not folder_path.exists():
+                continue
+
+            for file_path in folder_path.rglob("*"):
+                if not file_path.is_file():
+                    continue
+
+                # Detecta qual suffix bate, se algum.
+                matched_suffix = None
+                for suffix in self._SIDECAR_SUFFIXES:
+                    if file_path.name.endswith(suffix):
+                        matched_suffix = suffix
+                        break
+                if matched_suffix is None:
+                    continue
+
+                # Stem do arquivo pai (sem o sufixo do sidecar). Ex:
+                # 'PLDA MODEL_TS-abcd_dist.json' → 'PLDA MODEL_TS-abcd'.
+                parent_stem = file_path.name[: -len(matched_suffix)]
+
+                # Pai pode ter qualquer extensão registrada (.parquet/.pkl
+                # cobrem todos os tipos de sidecar atuais). Cheque genérica
+                # via glob — qualquer sibling com mesmo stem qualifica.
+                has_parent = any(
+                    sibling.is_file()
+                    and sibling.stem == parent_stem
+                    and sibling.name != file_path.name
+                    for sibling in file_path.parent.iterdir()
+                )
+                if has_parent:
+                    continue
+
+                try:
+                    rel_path = file_path.relative_to(self._root).as_posix()
+                    file_path.unlink()
+                    deleted.append(rel_path)
+                except Exception:
+                    pass
+
+        return deleted
+
+    # Pastas hierárquicas onde cada estratégia ocupa uma subpasta. Usado
+    # pelos cleanups que sabem que `<folder>/<X>/` é um agrupamento por
+    # estratégia. Não inclui DATASETS/etc. que são flat (sem subpasta
+    # por estratégia).
+    _STRATEGY_SUBFOLDER_PARENTS = (
+        ProjectFolder.MODELS,
+        ProjectFolder.SCORES,
+        ProjectFolder.RESULTS,
+        ProjectFolder.GRAPHICS,
+    )
+
+    @staticmethod
+    def _rmtree_force(path) -> bool:
+        """`shutil.rmtree` resistente a Windows READONLY attr.
+
+        Windows seta READONLY em pastas/arquivos por vários motivos
+        (OneDrive sync, criação via copy de fonte READONLY, etc.).
+        `rmtree` padrão falha com PermissionError quando encontra um
+        item READONLY. `ignore_errors=True` mascara isso silenciosamente
+        e o filesystem fica em estado inconsistente com o que o código
+        loga.
+
+        Esta versão usa o callback `onerror` pra tirar a flag READONLY
+        e retentar. Retorna True se a pasta sumiu de fato (False se
+        ainda persiste após tentativa).
+        """
+        import os
+        import stat
+        import shutil
+
+        def _on_rm_error(func, target, exc_info):
+            try:
+                os.chmod(target, stat.S_IWRITE)
+                func(target)
+            except Exception:
+                pass
+
+        try:
+            shutil.rmtree(path, onerror=_on_rm_error)
+        except Exception:
+            pass
+        # Verifica deleção real — onerror swallow garante que rmtree
+        # sempre retorna, mas a pasta pode permanecer se o chmod+retry
+        # também falhou (ex: file lock por outro processo).
+        from pathlib import Path as _P
+        return not _P(path).exists()
+
+    @staticmethod
+    def _rmdir_force(path) -> bool:
+        """`Path.rmdir` resistente a Windows READONLY attr.
+
+        Análogo a `_rmtree_force` mas pra diretório vazio.
+        """
+        import os
+        import stat
+        try:
+            path.rmdir()
+        except PermissionError:
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                path.rmdir()
+            except Exception:
+                return False
+        except OSError:
+            return False
+        return not path.exists()
+
+    def cleanup_legacy_strategy_subfolders(
+        self,
+        strategy_pairs: List[tuple],
+    ) -> List[str]:
+        """Apaga subpastas legadas `<sid>/` quando a versão canônica
+        `<name>_<sid>/` existe na mesma pasta hierárquica.
+
+        Contexto: a refactor que adicionou `<name>_<sid>` nas subpastas
+        de estratégia pode deixar resíduos do nome antigo (`<sid>` puro)
+        quando a estratégia é re-executada com o novo template. Os
+        arquivos novos vão pra `<name>_<sid>/`, e a pasta legada fica
+        ou vazia (caso comum em models/scores/results — cleanup por
+        arquivo já rodou) ou ainda com arquivos (caso de graphics/,
+        cujos PNGs não são individualmente referenciados).
+
+        Critério: legacy `<sid>/` é safe de apagar se há sibling
+        `<name>_<sid>/` (com name != "") — sinal de que a estratégia já
+        produziu artefatos no novo path e o legado é residual.
+
+        Args:
+            strategy_pairs: Lista de `(strategy_id, current_folder_name)`
+                            pra cada estratégia. `current_folder_name`
+                            vem de `strategy_folder_name(sid, name)`.
+
+        Returns:
+            Lista de paths relativos (POSIX) das subpastas apagadas.
+        """
+        deleted: List[str] = []
+        for strategy_id, current_folder in strategy_pairs:
+            if not strategy_id or not current_folder:
+                continue
+            if current_folder == strategy_id:
+                # Sem rename / nome vazio — não há legacy distinto.
+                continue
+            for folder in self._STRATEGY_SUBFOLDER_PARENTS:
+                parent = self._root / folder.value
+                if not parent.is_dir():
+                    continue
+                current_dir = parent / current_folder
+                legacy_dir = parent / strategy_id
+                # Só apaga legacy se canônica existe (estratégia migrou).
+                if not current_dir.is_dir():
+                    continue
+                if not legacy_dir.is_dir():
+                    continue
+                rel_path = legacy_dir.relative_to(self._root).as_posix()
+                # _rmtree_force lida com Windows READONLY + verifica
+                # deleção real. Só reporta como deletado se a pasta
+                # SUMIU de fato.
+                if self._rmtree_force(legacy_dir):
+                    deleted.append(rel_path + "/")
+
+        return deleted
+
+    def cleanup_empty_strategy_subfolders(self) -> List[str]:
+        """Apaga diretórios vazios em models/, scores/, results/, graphics/
+        via walk bottom-up.
+
+        Contexto: `_unlink_old_artifact_with_sidecars` apaga arquivos
+        individuais mas não chama `rmdir` no pai. Quando todos os arquivos
+        de `models/<sid>/calibration/` foram apagados (path-changed
+        re-execução), a subpasta vazia fica como ruído visual no
+        filesystem. Walk bottom-up garante que `models/<sid>/calibration/`
+        é apagada ANTES de tentar `models/<sid>/` (caso fique tudo vazio).
+
+        Retorna lista de paths relativos (POSIX) dos diretórios apagados.
+        Falhas individuais (permission, race com outra process) são
+        engolidas.
+        """
+        deleted: List[str] = []
+        for folder in self._STRATEGY_SUBFOLDER_PARENTS:
+            root = self._root / folder.value
+            if not root.is_dir():
+                continue
+            # Sort por profundidade descendente — leaves primeiro.
+            all_dirs = [p for p in root.rglob("*") if p.is_dir()]
+            all_dirs.sort(key=lambda p: -len(p.parts))
+            for path in all_dirs:
+                try:
+                    if any(path.iterdir()):
+                        continue
+                except Exception:
+                    continue
+                rel_path = path.relative_to(self._root).as_posix()
+                # _rmdir_force lida com Windows READONLY + verifica
+                # deleção real.
+                if self._rmdir_force(path):
+                    deleted.append(rel_path + "/")
+        return deleted
+
     # Subpastas escaneadas em busca de arquivos órfãos. Mantemos apenas as pastas
     # cujos arquivos são tipicamente referenciados via StrategyArtifactReference.
     # GRAPHICS/REPORTS/CHECKPOINTS são produzidos por executores mas não entram em
     # `artifact_ref` (snapshots, exports, estados intermediários — todos derivativos).
-    # DEFINITIONS é a fonte das próprias referências, MODELS é varrido pelo
-    # repositório de modelos treinados, IMAGES contém cópias originais referenciadas
-    # por FaceInfo (não por artifact_ref).
+    # DEFINITIONS é a fonte das próprias referências, IMAGES contém cópias originais
+    # referenciadas por FaceInfo (não por artifact_ref).
+    # MODELS/SCORES/RESULTS são as 3 pastas hierárquicas da nova arquitetura
+    # (subpastas por strategy_id e tipo). ARTIFACTS é mantida pra detectar arquivos
+    # de projetos com layout legado que ainda não foram migrados — rglob ignora
+    # se a pasta não existir.
     _ORPHAN_SCAN_FOLDERS = (
         ProjectFolder.DATASETS,
         ProjectFolder.PIPELINES,
         ProjectFolder.SPLIT_CONFIGS,
         ProjectFolder.MINING_CONFIGS,
+        ProjectFolder.MODELS,
+        ProjectFolder.SCORES,
+        ProjectFolder.RESULTS,
         ProjectFolder.ARTIFACTS,
     )
 
@@ -418,7 +641,6 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         "_stats.json",
         "_dist.json",
         "_metrics.json",
-        "_scores_stats.json",
     )
 
     def scan_orphans(

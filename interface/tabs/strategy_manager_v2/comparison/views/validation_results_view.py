@@ -433,6 +433,7 @@ class ValidationResultsView(QtWidgets.QWidget):
             return None
         return validation_result_png_paths(
             self._project_root, item.strategy_id, item.resource_id,
+            strategy_name=item.strategy_name or "",
         ).get(png_key)
 
     # ── Plot drawing functions (overlays) ────────────────────────────────────
