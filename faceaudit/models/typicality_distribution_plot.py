@@ -98,10 +98,7 @@ def draw_typicality_distribution_from_model(
         )
 
     if show_title:
-        pop = getattr(model, "population_label", None) or "(sem rótulo)"
-        ax.set_title(
-            f"Distribuição empírica de T_k (LOO) — {pop}", fontsize=11,
-        )
+        ax.set_title("Distribuição empírica de T_k (LOO)", fontsize=11)
     ax.set_xlabel(r"$T_k$ — similaridade média aos $k$ vizinhos")
     ax.set_ylabel("Densidade")
     ax.grid(True, linestyle="--", alpha=0.4)

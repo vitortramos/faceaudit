@@ -54,11 +54,6 @@ class TypicalityPairScoringInstruction(StrategyInstructionDefinition):
         },
     )
 
-    embedding_column: str = field(
-        default="embedding_v2",
-        metadata={"help": "Coluna de embedding a usar (deve casar com a do modelo)."},
-    )
-
     score_type: TypicalityScoreType = field(
         default=TypicalityScoreType.MEAN_KNN_SIMILARITY,
         metadata={"help": "Qual métrica de tipicidade individual por face combinar."},
@@ -146,12 +141,6 @@ class TypicalityPairScoringInstruction(StrategyInstructionDefinition):
 
     def get_value_field_specs(self) -> List[ValueFieldSpec]:
         return [
-            ValueFieldSpec(
-                field_name="embedding_column",
-                label="Coluna de Embedding",
-                value_type="str",
-                placeholder="embedding_v2",
-            ),
             ValueFieldSpec(
                 field_name="is_casework",
                 label="Modo Casework (sem ground truth)",
@@ -248,6 +237,9 @@ class TypicalityPairScoringInstruction(StrategyInstructionDefinition):
             processed_data["instruction_type"] = StrategyInstructionType.from_str(
                 processed_data["instruction_type"]
             )
+
+        # Backward compat: campo removido.
+        processed_data.pop("embedding_column", None)
 
         if "score_type" in processed_data and processed_data["score_type"]:
             processed_data["score_type"] = TypicalityScoreType.from_str(

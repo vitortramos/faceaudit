@@ -7,8 +7,10 @@ from typing import List, Optional, Type, TypeVar
 
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
 from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.instructions.strategy_instruction_definition import (
+    ChoiceFieldSpec,
     ResourceFieldSpec,
     StrategyInstructionDefinition,
     ValueFieldSpec,
@@ -23,21 +25,24 @@ T = TypeVar("T", bound="KNNTypicalityModelTrainingInstruction")
 class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
     """
     Treina um modelo de tipicidade não-paramétrico (kNN esférico) a partir
-    de um dataset de referência. O dataset DEVE chegar já estratificado
-    pela subpopulação relevante ao caso forense (gênero, etnia, faixa
-    etária, condição de captura) — o serviço não estratifica por dentro.
+    de um dataset de referência. O dataset DEVE ser representativo da
+    população relevante ao caso forense — esta instrução não estratifica
+    por dentro.
+
+    A coluna de embedding é a definida na estratégia (lida do contexto
+    em runtime), não configurável por instrução.
 
     Hiperparâmetros embutidos no DTO:
       - k: número de vizinhos. Heurística defensável: k ≈ √N.
       - ood_quantile: corte para flag is_in_distribution.
-      - population_label: rótulo descritivo (livre, atravessa pro DTO de
-        inferência e aparece nos relatórios).
-      - embedding_column: qual coluna do dataset usar (default embedding_v2).
+      - reference_mode: PER_IDENTITY (default, centroide por pessoa) ou
+        PER_FACE (cada foto é um ponto). PER_IDENTITY é o defensável
+        forense — robusto a desbalanceamento de fotos por identidade.
     """
 
     input_dataset_resource_id: Optional[str] = field(
         default=None,
-        metadata={"help": "Dataset de referência (já estratificado) usado pra construir o modelo."}
+        metadata={"help": "Dataset de referência usado pra construir o modelo."}
     )
 
     k: int = field(
@@ -50,14 +55,9 @@ class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
         metadata={"help": "Quantil de T_k usado como corte de fora-de-distribuição. 0 desativa."}
     )
 
-    population_label: Optional[str] = field(
-        default=None,
-        metadata={"help": "Rótulo livre da subpopulação (ex.: 'homens_adultos_br_frontal')."}
-    )
-
-    embedding_column: str = field(
-        default="embedding_v2",
-        metadata={"help": "Coluna do dataset que contém o embedding L2-normalizado."}
+    reference_mode: TypicalityReferenceMode = field(
+        default=TypicalityReferenceMode.PER_IDENTITY,
+        metadata={"help": "PER_IDENTITY (centroide por pessoa, defensável forense) ou PER_FACE."}
     )
 
     trained_typicality_model_resource_id: Optional[str] = field(
@@ -90,6 +90,17 @@ class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
             ),
         ]
 
+    def get_choice_field_specs(self) -> List[ChoiceFieldSpec]:
+        choices = TypicalityReferenceMode.choices()
+        return [
+            ChoiceFieldSpec(
+                field_name="reference_mode",
+                label="Modo de Referência",
+                choices=tuple(value for value, _ in choices),
+                enum_type=TypicalityReferenceMode,
+            ),
+        ]
+
     def get_value_field_specs(self) -> List[ValueFieldSpec]:
         return [
             ValueFieldSpec(
@@ -108,18 +119,6 @@ class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
                 max_value=0.49,
                 decimals=4,
                 placeholder="0.01",
-            ),
-            ValueFieldSpec(
-                field_name="population_label",
-                label="Rótulo da Subpopulação",
-                value_type="str",
-                placeholder="ex.: homens_adultos_br_frontal",
-            ),
-            ValueFieldSpec(
-                field_name="embedding_column",
-                label="Coluna de Embedding",
-                value_type="str",
-                placeholder="embedding_v2",
             ),
         ]
 
@@ -146,6 +145,12 @@ class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
             warning abaixo de 1000 (referência muito pequena perde poder
             estatístico).
           - MAX_SAMPLES_WARNING: avisa se referência > 50k (custo O(N²) no fit).
+
+        Nota: em PER_IDENTITY o k é checado contra n_faces, não n_identities.
+        Isso é conservador — geralmente n_identities < n_faces, então
+        passar o check em faces implica passar em identidades também na
+        maioria dos casos. A validação real (n_ref >= k+1) acontece no
+        fit do service.
         """
         if self.validation_rules_user_managed:
             return
@@ -185,6 +190,15 @@ class KNNTypicalityModelTrainingInstruction(StrategyInstructionDefinition):
         if "instruction_type" in processed_data and processed_data["instruction_type"]:
             processed_data["instruction_type"] = StrategyInstructionType.from_str(
                 processed_data["instruction_type"]
+            )
+
+        # Backward compat: campos removidos.
+        processed_data.pop("embedding_column", None)
+        processed_data.pop("population_label", None)
+
+        if "reference_mode" in processed_data and processed_data["reference_mode"]:
+            processed_data["reference_mode"] = TypicalityReferenceMode.from_str(
+                processed_data["reference_mode"]
             )
 
         return cls(**processed_data)

@@ -21,15 +21,24 @@ Filosofia:
        log p̂(x) ≈ log k - log N - (d-1) * log(theta_k)
        Pode entrar como p(x | H_d) num LR generativo.
 
+Modos de referência (reference_mode):
+  - PER_IDENTITY (default): a referência tem 1 ponto por identidade
+    (centroide L2-renormalizado dos embeddings dela). Tipicidade mede
+    "esta pessoa é típica na população", insensível a desbalanceamento
+    de fotos por pessoa. Identidades singleton mantidas — centroide
+    é a própria face única.
+  - PER_FACE: a referência tem 1 ponto por face. Mede "esta foto é
+    típica no conjunto de fotos", vulnerável a hubness intra-identidade.
+
 Vantagens vs MoVMF:
   - Sem suposição de simetria rotacional (que hubness viola em FR).
   - Sem inversão de Bessel/Newton.
   - Hubness vira sinal: faces em região densa têm T_k alto.
-  - ~100 linhas vs ~1400.
 
 Custo:
   - O "modelo" carrega a referência inteira na memória/disco.
-  - Para N=10000, D=512, float32: ~20 MB. Aceitável.
+  - Para PER_IDENTITY com 5 fotos/id médio, a referência fica 5× menor
+    que PER_FACE — modelos compactos sem perda de poder forense.
   - Inferência: O(N·D) por query. Para uso forense exato e auditável,
     é o preço justo. Backends aproximados (FAISS) ficam para uma V2 se
     N >> 100k tornar isso problemático.
@@ -38,10 +47,11 @@ Custo:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
 from faceaudit.models.knn_typicality_info import KNNTypicalityInfo
 
 
@@ -51,12 +61,16 @@ ArrayLike = Union[np.ndarray, Iterable[float], Iterable[Iterable[float]]]
 @dataclass
 class _KNNRefState:
     """Estado interno congelado pós-fit. Imutável conceitualmente."""
-    reference: np.ndarray              # (N, D), L2-normalizado, float32
-    loo_mean_knn_sorted: np.ndarray    # (N,), float64, ordem crescente
+    reference: np.ndarray              # (N_ref, D), L2-normalizado, float32
+    loo_mean_knn_sorted: np.ndarray    # (N_ref,), float64, ordem crescente
     ood_threshold: float
-    population_label: Optional[str]
     k: int
     dim: int
+    reference_mode: TypicalityReferenceMode
+    # Diagnóstico — quantas faces de origem foram agrupadas no PER_IDENTITY,
+    # ou shape original em PER_FACE.
+    n_input_faces: int
+    n_singleton_identities: int  # só relevante em PER_IDENTITY
 
 
 class KNNTypicalityModel:
@@ -64,8 +78,8 @@ class KNNTypicalityModel:
     Tipicidade não-paramétrica via k-NN esférico.
 
     Uso:
-        model = KNNTypicalityModel(k=50)
-        model.fit(reference_embeddings, population_label="adultos_br_m_frontal")
+        model = KNNTypicalityModel(k=50, reference_mode=TypicalityReferenceMode.PER_IDENTITY)
+        model.fit(reference_embeddings, identities=reference_identities)
         info = model.get_typicality_info(query_embedding)
         print(info.typicality_percentile, info.log_density_knn)
     """
@@ -74,6 +88,7 @@ class KNNTypicalityModel:
         self,
         k: int = 50,
         ood_quantile: float = 0.01,
+        reference_mode: TypicalityReferenceMode = TypicalityReferenceMode.PER_IDENTITY,
         model_name: str = "KNNTypicalityModel",
         eps: float = 1e-12,
     ):
@@ -84,6 +99,9 @@ class KNNTypicalityModel:
 
         self.k = int(k)
         self.ood_quantile = float(ood_quantile)
+        self.reference_mode = TypicalityReferenceMode.from_str(reference_mode) \
+            if not isinstance(reference_mode, TypicalityReferenceMode) \
+            else reference_mode
         self.model_name = model_name
         self.eps = float(eps)
 
@@ -98,45 +116,57 @@ class KNNTypicalityModel:
         self,
         embeddings: ArrayLike,
         *,
-        population_label: Optional[str] = None,
+        identities: Optional[Sequence[str]] = None,
     ) -> "KNNTypicalityModel":
         """
-        Armazena a referência e pré-computa a CDF empírica leave-one-out
-        de T_k pra suporte a percentile lookup.
+        Armazena a referência (faces ou centroides por identidade) e
+        pré-computa a CDF empírica leave-one-out de T_k pra suporte a
+        percentile lookup.
 
         Args:
             embeddings: (N, D). Será L2-normalizado se ainda não estiver.
-            population_label: rótulo descritivo da subpopulação (gênero,
-                etnia, faixa etária). Atravessa pro KNNTypicalityInfo.
+            identities: sequência paralela a embeddings com o rótulo de
+                identidade de cada face. Obrigatório em PER_IDENTITY,
+                ignorado em PER_FACE.
         """
-        x = self._validate_and_normalize_2d(embeddings)
-        n, d = x.shape
+        x_raw = self._validate_and_normalize_2d(embeddings)
+        n_input, d = x_raw.shape
 
-        if n < self.k + 1:
+        if self.reference_mode is TypicalityReferenceMode.PER_IDENTITY:
+            if identities is None:
+                raise ValueError(
+                    "reference_mode=PER_IDENTITY exige `identities` "
+                    "paralelo a `embeddings`."
+                )
+            if len(identities) != n_input:
+                raise ValueError(
+                    f"len(identities)={len(identities)} difere de "
+                    f"len(embeddings)={n_input}."
+                )
+            reference, n_singletons = self._aggregate_by_identity(x_raw, identities)
+        else:
+            reference = x_raw.copy()
+            n_singletons = 0
+
+        n_ref = reference.shape[0]
+        if n_ref < self.k + 1:
             raise ValueError(
-                f"k+1 ({self.k + 1}) amostras são necessárias para LOO. "
-                f"Recebidas: {n}."
+                f"k+1 ({self.k + 1}) pontos de referência são necessários para LOO. "
+                f"Obtidos: {n_ref} (modo={self.reference_mode.to_str()})."
             )
 
-        # Similaridade NxN. Exclui self via diagonal = -inf.
-        # Vetorizado, mas O(N²) — aceitável até ~50k. Acima disso, considerar
-        # blocking ou aproximação.
-        sims = x @ x.T
+        # Similaridade N_ref × N_ref. Exclui self via diagonal = -inf.
+        sims = reference @ reference.T
         np.fill_diagonal(sims, -np.inf)
 
-        # Top-k por linha. argpartition é O(N) vs sort que seria O(N log N).
         top_k_idx = np.argpartition(-sims, self.k - 1, axis=1)[:, : self.k]
         top_k_sim = np.take_along_axis(sims, top_k_idx, axis=1)
-
         loo_T_k = top_k_sim.mean(axis=1).astype(np.float64)
 
-        # Validação: se a referência for "patológica" (vMF muito concentrado),
-        # T_k pode saturar em 1.0 e a CDF ficar degenerada. Avisamos via
-        # estado mas não levantamos — uso legítimo.
         if not np.all(np.isfinite(loo_T_k)):
             raise RuntimeError(
                 "Cálculo LOO produziu valores não finitos. Verifique se a "
-                "referência tem embeddings degenerados (norma zero)."
+                "referência tem pontos degenerados (norma zero)."
             )
 
         loo_sorted = np.sort(loo_T_k)
@@ -147,12 +177,14 @@ class KNNTypicalityModel:
         )
 
         self._state = _KNNRefState(
-            reference=x.astype(np.float32),
+            reference=reference.astype(np.float32),
             loo_mean_knn_sorted=loo_sorted,
             ood_threshold=ood_threshold,
-            population_label=population_label,
             k=self.k,
             dim=int(d),
+            reference_mode=self.reference_mode,
+            n_input_faces=int(n_input),
+            n_singleton_identities=int(n_singletons),
         )
         return self
 
@@ -201,21 +233,16 @@ class KNNTypicalityModel:
     # =========================================================================
 
     def to_dict(self) -> dict:
-        """
-        Exporta o modelo treinado para um dict JSON-serializável.
-
-        NOTA: a referência é incluída como lista aninhada. Para datasets
-        grandes (N > 10k), prefira pickle (via StrategyTrainedModelRepository)
-        — JSON cresce ~3× em texto e fica lento de carregar.
-        """
+        """Exporta o modelo treinado para um dict JSON-serializável."""
         self._ensure_fitted()
         st = self._state
         assert st is not None
         return {
-            "format_version": 1,
+            "format_version": 2,
             "hyperparameters": {
                 "k": self.k,
                 "ood_quantile": self.ood_quantile,
+                "reference_mode": self.reference_mode.to_str(),
                 "model_name": self.model_name,
                 "eps": self.eps,
             },
@@ -223,22 +250,35 @@ class KNNTypicalityModel:
                 "reference": st.reference.tolist(),
                 "loo_mean_knn_sorted": st.loo_mean_knn_sorted.tolist(),
                 "ood_threshold": st.ood_threshold,
-                "population_label": st.population_label,
                 "k": st.k,
                 "dim": st.dim,
+                "reference_mode": st.reference_mode.to_str(),
+                "n_input_faces": st.n_input_faces,
+                "n_singleton_identities": st.n_singleton_identities,
             },
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "KNNTypicalityModel":
         version = data.get("format_version", 1)
-        if version != 1:
+        if version not in (1, 2):
             raise ValueError(f"Versão de formato não suportada: {version}")
 
-        hp = data["hyperparameters"]
+        hp = dict(data["hyperparameters"])
+
+        # Migração v1 → v2: campos removidos (population_label) + novo
+        # campo reference_mode default PER_FACE (era o comportamento
+        # implícito antes desse toggle existir).
+        if version == 1:
+            hp.pop("population_label", None)
+            hp.setdefault("reference_mode", TypicalityReferenceMode.PER_FACE.to_str())
+
         model = cls(
             k=int(hp["k"]),
             ood_quantile=float(hp["ood_quantile"]),
+            reference_mode=TypicalityReferenceMode.from_str(
+                hp.get("reference_mode", TypicalityReferenceMode.PER_IDENTITY.to_str())
+            ),
             model_name=hp.get("model_name", "KNNTypicalityModel"),
             eps=float(hp.get("eps", 1e-12)),
         )
@@ -247,13 +287,12 @@ class KNNTypicalityModel:
         reference = np.asarray(ls["reference"], dtype=np.float32)
         loo = np.asarray(ls["loo_mean_knn_sorted"], dtype=np.float64)
 
-        # Validação de invariantes (defesa contra JSON corrompido)
         if reference.ndim != 2:
             raise ValueError("reference deve ser 2D.")
         if reference.shape[0] != loo.shape[0]:
             raise ValueError(
                 f"Inconsistência: reference tem {reference.shape[0]} "
-                f"amostras, loo_mean_knn_sorted tem {loo.shape[0]}."
+                f"pontos, loo_mean_knn_sorted tem {loo.shape[0]}."
             )
         norms = np.linalg.norm(reference, axis=1)
         if not np.allclose(norms, 1.0, atol=1e-4):
@@ -262,13 +301,20 @@ class KNNTypicalityModel:
                 f"max={norms.max()})."
             )
 
+        # v1 não carregava reference_mode no state — inferimos PER_FACE.
+        state_mode = TypicalityReferenceMode.from_str(
+            ls.get("reference_mode", TypicalityReferenceMode.PER_FACE.to_str())
+        )
+
         model._state = _KNNRefState(
             reference=reference,
             loo_mean_knn_sorted=loo,
             ood_threshold=float(ls["ood_threshold"]),
-            population_label=ls.get("population_label"),
             k=int(ls["k"]),
             dim=int(ls["dim"]),
+            reference_mode=state_mode,
+            n_input_faces=int(ls.get("n_input_faces", reference.shape[0])),
+            n_singleton_identities=int(ls.get("n_singleton_identities", 0)),
         )
         return model
 
@@ -286,9 +332,11 @@ class KNNTypicalityModel:
         return {
             "status": "fitted",
             "model_name": self.model_name,
-            "population_label": st.population_label,
+            "reference_mode": st.reference_mode.to_str(),
             "k": st.k,
             "sample_count": st.reference.shape[0],
+            "n_input_faces": st.n_input_faces,
+            "n_singleton_identities": st.n_singleton_identities,
             "embedding_dim": st.dim,
             "ood_quantile": self.ood_quantile,
             "ood_threshold": st.ood_threshold,
@@ -304,12 +352,19 @@ class KNNTypicalityModel:
     # =========================================================================
 
     @property
-    def population_label(self) -> Optional[str]:
-        return self._state.population_label if self._state is not None else None
+    def sample_count(self) -> Optional[int]:
+        """Tamanho da referência (faces em PER_FACE, identidades em PER_IDENTITY)."""
+        return int(self._state.reference.shape[0]) if self._state is not None else None
 
     @property
-    def sample_count(self) -> Optional[int]:
-        return int(self._state.reference.shape[0]) if self._state is not None else None
+    def n_input_faces(self) -> Optional[int]:
+        """Quantas faces foram passadas pro fit (antes de qualquer agregação)."""
+        return self._state.n_input_faces if self._state is not None else None
+
+    @property
+    def n_singleton_identities(self) -> Optional[int]:
+        """Em PER_IDENTITY: quantas identidades têm uma única face."""
+        return self._state.n_singleton_identities if self._state is not None else None
 
     @property
     def embedding_dim(self) -> Optional[int]:
@@ -325,6 +380,50 @@ class KNNTypicalityModel:
         if self._state is None:
             return None
         return self._state.loo_mean_knn_sorted.copy()
+
+    # =========================================================================
+    # AGREGAÇÃO POR IDENTIDADE
+    # =========================================================================
+
+    def _aggregate_by_identity(
+        self, embeddings: np.ndarray, identities: Sequence[str],
+    ) -> Tuple[np.ndarray, int]:
+        """
+        Soma os embeddings de cada identidade e L2-renormaliza para obter
+        o centroide esférico (direção média na hiperesfera unitária).
+
+        Identidades singleton viram centroide = a face única (renormalizada,
+        mantém norma 1). Não há descarte — toda identidade pesa igual no
+        espaço de referência.
+
+        Retorna:
+            (matriz_centroides, n_singletons_count)
+        """
+        ids_arr = np.asarray(identities)
+        unique_ids, inverse_idx = np.unique(ids_arr, return_inverse=True)
+
+        n_ids = unique_ids.shape[0]
+        d = embeddings.shape[1]
+        sums = np.zeros((n_ids, d), dtype=np.float64)
+        counts = np.zeros(n_ids, dtype=np.int64)
+
+        np.add.at(sums, inverse_idx, embeddings)
+        np.add.at(counts, inverse_idx, 1)
+
+        # L2-renormaliza cada centroide. Identidades singleton já estão
+        # normalizadas (sums = a face única), mas a divisão segura cobre
+        # tudo.
+        norms = np.linalg.norm(sums, axis=1, keepdims=True)
+        centroids = sums / np.maximum(norms, self.eps)
+
+        if not np.all(np.isfinite(centroids)):
+            raise RuntimeError(
+                "Centroides por identidade contêm valores não finitos. "
+                "Verifique embeddings degenerados."
+            )
+
+        n_singletons = int(np.sum(counts == 1))
+        return centroids.astype(np.float64), n_singletons
 
     # =========================================================================
     # CORE COMPUTATION
@@ -356,7 +455,6 @@ class KNNTypicalityModel:
         top_sim = sims[top_idx]
         top_sim = np.sort(top_sim)[::-1]  # desc
 
-        # Se o maior > 1 - eps, é (quase certamente) self-match — descarta
         if top_sim[0] > 1.0 - 1e-6 and kp > self.k:
             top_sim = top_sim[1 : self.k + 1]
         else:
@@ -365,16 +463,11 @@ class KNNTypicalityModel:
         T_k = float(np.mean(top_sim))
         theta_k = float(np.arccos(np.clip(top_sim[-1], -1.0, 1.0)))
 
-        # Percentile via searchsorted na CDF LOO
         rank = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="left"))
         rank_right = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="right"))
         mid_rank = 0.5 * (rank + rank_right)
         percentile = 100.0 * mid_rank / len(st.loo_mean_knn_sorted)
 
-        # Log-density Loftsgaarden-Quesenberry esférico:
-        #   log p̂(x) = log k - log N - (d-1) log(theta_k) + const(d)
-        # A constante depende só de d, não de x — cancela em razões. Reportamos
-        # sem a constante.
         d = st.dim
         theta_safe = max(theta_k, 1e-12)
         log_density = (
@@ -385,7 +478,6 @@ class KNNTypicalityModel:
 
         return KNNTypicalityInfo(
             model_name=self.model_name,
-            population_label=st.population_label,
             embedding_dim=d,
             k=self.k,
             sample_count=st.reference.shape[0],

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import List, Optional, Tuple
+
 import numpy as np
 
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
+from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
 from faceaudit.executors.instructions.strategy_instruction_executor_base import (
     StrategyInstructionExecutorBase,
 )
@@ -30,10 +33,13 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
     """
     Executor da instrução KNN_TYPICALITY_MODEL_TRAINING.
 
-    Lê o dataset de referência da subpopulação (já estratificada pelo usuário),
-    extrai a matriz de embeddings da coluna indicada, e ajusta um
-    KNNTypicalityModel. O recurso de saída carrega o modelo treinado (que
-    inclui a referência inteira + CDF empírica LOO de T_k).
+    Lê o dataset de referência, extrai a matriz de embeddings da coluna
+    definida na estratégia (`context.embedding_column`), e ajusta um
+    KNNTypicalityModel no modo escolhido (PER_FACE ou PER_IDENTITY).
+
+    Em PER_IDENTITY, extrai também as identidades do dataset pra agregar
+    via centroide L2-renormalizado — identidades singleton são preservadas
+    (centroide = face única).
     """
 
     def execute(
@@ -52,31 +58,49 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
 
         self._log(
             context,
-            f"▶ Iniciando treino de modelo de tipicidade (kNN): "
+            f"▶ Iniciando treino de modelo de tipicidade (kNN, "
+            f"{instruction.reference_mode.label_pt}): "
             f"{instruction.name} ({instruction.instruction_id})",
         )
 
         try:
+            embedding_column = self._resolve_embedding_column(context)
+
             input_resource = context.get_resource(instruction.input_dataset_resource_id)
             payload = input_resource.payload
 
-            embeddings = self._extract_embeddings(
-                payload, instruction.embedding_column
+            embeddings, identities = self._extract_embeddings_and_identities(
+                payload, embedding_column,
+                need_identities=(
+                    instruction.reference_mode is TypicalityReferenceMode.PER_IDENTITY
+                ),
             )
 
             self._log(
                 context,
-                f"📦 Referência: N={embeddings.shape[0]}, D={embeddings.shape[1]}, "
-                f"k={instruction.k}.",
+                f"📦 Input: N_faces={embeddings.shape[0]}, D={embeddings.shape[1]}, "
+                f"k={instruction.k}, embedding_column='{embedding_column}'.",
             )
 
             model = KNNTypicalityModel(
                 k=instruction.k,
                 ood_quantile=instruction.ood_quantile,
+                reference_mode=instruction.reference_mode,
             )
-            model.fit(embeddings, population_label=instruction.population_label)
+            model.fit(embeddings, identities=identities)
 
             summary = model.summary()
+            if instruction.reference_mode is TypicalityReferenceMode.PER_IDENTITY:
+                n_singletons = summary.get("n_singleton_identities", 0)
+                n_ids = summary["sample_count"]
+                singleton_pct = (100.0 * n_singletons / max(n_ids, 1))
+                self._log(
+                    context,
+                    f"🆔 Agregação por identidade: "
+                    f"{n_ids:,} identidades a partir de {summary['n_input_faces']:,} faces"
+                    .replace(",", ".")
+                    + f" ({n_singletons:,} singletons, {singleton_pct:.1f}%).".replace(",", "."),
+                )
             self._log(
                 context,
                 f"✅ Modelo treinado. T_k mediano LOO={summary['loo_T_k_median']:.4f}, "
@@ -97,13 +121,15 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
                 "instruction_id": instruction.instruction_id,
                 "instruction_name": instruction.name,
                 "input_dataset_resource_id": instruction.input_dataset_resource_id,
-                "embedding_column": instruction.embedding_column,
+                "embedding_column": embedding_column,
+                "reference_mode": instruction.reference_mode.to_str(),
                 "k": instruction.k,
                 "ood_quantile": instruction.ood_quantile,
-                "population_label": instruction.population_label,
                 "trained_typicality_model_resource_id": output_resource_id,
-                "n_reference": int(embeddings.shape[0]),
-                "embedding_dim": int(embeddings.shape[1]),
+                "n_input_faces": int(summary["n_input_faces"]),
+                "n_reference_points": int(summary["sample_count"]),
+                "n_singleton_identities": int(summary.get("n_singleton_identities", 0)),
+                "embedding_dim": int(summary["embedding_dim"]),
                 "ood_threshold": float(summary["ood_threshold"]),
                 "loo_T_k_median": float(summary["loo_T_k_median"]),
                 "loo_T_k_min": float(summary["loo_T_k_min"]),
@@ -153,13 +179,17 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
                 )
             else:
                 try:
-                    self._extract_embeddings(
-                        ds_resource.payload, instruction.embedding_column
+                    embedding_column = self._resolve_embedding_column(context)
+                    self._extract_embeddings_and_identities(
+                        ds_resource.payload, embedding_column,
+                        need_identities=(
+                            instruction.reference_mode
+                            is TypicalityReferenceMode.PER_IDENTITY
+                        ),
                     )
                 except Exception as e:
                     result.add_error(
-                        f"Coluna de embedding '{instruction.embedding_column}' "
-                        f"inválida no dataset: {e}"
+                        f"Falha ao extrair embeddings do dataset: {e}"
                     )
 
         if instruction.k < 1:
@@ -190,26 +220,51 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
     # ─────────────────────────── helpers ────────────────────────────
 
     @staticmethod
-    def _extract_embeddings(payload, embedding_column: str) -> np.ndarray:
-        """
-        Extrai matriz (N, D) de embeddings do payload do dataset.
+    def _resolve_embedding_column(
+        context: StrategyExecutionContextProtocol,
+    ) -> str:
+        """Lê a coluna de embedding da estratégia (via contexto). Erro
+        explícito se a estratégia não tiver definido — não tem default
+        local pra evitar inconsistência silenciosa."""
+        col = getattr(context, "embedding_column", None)
+        if not col:
+            raise ValueError(
+                "A estratégia não definiu 'embedding_column'. Configure "
+                "a coluna de embedding no nível da estratégia antes de "
+                "executar a instrução de tipicidade."
+            )
+        return str(col)
 
-        Aceita:
-        - EmbeddingDataset: usa o `matrix` property (vstack dos items).
-        - FaceDataset com a coluna requerida: tenta converter via
-          embedding_column lookup nos items.
+    @staticmethod
+    def _extract_embeddings_and_identities(
+        payload,
+        embedding_column: str,
+        *,
+        need_identities: bool,
+    ) -> Tuple[np.ndarray, Optional[List[str]]]:
+        """
+        Extrai (matriz (N, D) de embeddings, lista de N identidades).
+
+        identities=None quando need_identities=False (PER_FACE).
         """
         if payload is None:
             raise ValueError("Payload do dataset é None.")
 
-        # Caminho rápido: EmbeddingDataset já tem matriz pronta.
         if isinstance(payload, EmbeddingDataset):
             m = payload.matrix
             if m.size == 0:
                 raise ValueError("EmbeddingDataset vazio.")
             if m.ndim != 2:
                 raise ValueError(f"matrix shape inesperada: {m.shape}")
-            return m
+            identities = None
+            if need_identities:
+                identities = [str(item.identity) for item in payload.items]
+                if any(ident is None or ident == "None" for ident in identities):
+                    raise ValueError(
+                        "PER_IDENTITY exige todas as faces com identidade "
+                        "definida — encontradas faces com identidade None."
+                    )
+            return m, identities
 
         # Fallback: dataset genérico (FaceDataset) com a coluna requerida.
         items = getattr(payload, "items", None)
@@ -219,6 +274,7 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
             )
 
         vectors = []
+        identities_list: List[str] = [] if need_identities else None  # type: ignore[assignment]
         for it in items:
             v = getattr(it, embedding_column, None)
             if v is None:
@@ -231,11 +287,18 @@ class KNNTypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorB
                 )
             arr = np.asarray(v, dtype=np.float64).ravel()
             if arr.size == 0:
-                raise ValueError(f"Embedding vazio em item.")
+                raise ValueError("Embedding vazio em item.")
             vectors.append(arr)
+            if need_identities:
+                ident = getattr(it, "identity", None)
+                if ident is None:
+                    raise ValueError(
+                        "PER_IDENTITY exige todas as faces com identidade definida."
+                    )
+                identities_list.append(str(ident))
 
         if not vectors:
             raise ValueError("Dataset não tem items.")
 
         m = np.vstack(vectors)
-        return m
+        return m, (identities_list if need_identities else None)

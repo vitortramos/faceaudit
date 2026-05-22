@@ -182,7 +182,13 @@ def test_cosine_plus_typicality_lowers_cllr(seed: int):
     test_ids = np.concatenate([test_ids_a, test_ids_b])
 
     # 4) Treina o modelo de tipicidade na referência (só A)
-    typ_model = KNNTypicalityModel(k=20).fit(ref_emb, population_label="A_only")
+    # PER_FACE explícito: este teste mede o ganho de Cllr usando cada
+    # face como ponto da referência (não há identities aqui — o teste
+    # simula um cenário sintético sem rótulo de identidade).
+    from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
+    typ_model = KNNTypicalityModel(
+        k=20, reference_mode=TypicalityReferenceMode.PER_FACE,
+    ).fit(ref_emb)
 
     # 5) Tipicidades por face no train e test
     train_typ = typ_model.get_percentiles(train_emb) / 100.0

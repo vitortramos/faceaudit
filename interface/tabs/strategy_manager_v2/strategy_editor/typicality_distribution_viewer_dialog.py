@@ -28,13 +28,11 @@ class TypicalityDistributionViewerDialog(QtWidgets.QDialog):
     ):
         super().__init__(parent)
         self._model = model
-        pop = getattr(model, "population_label", None) or "(sem rótulo)"
         n = getattr(model, "sample_count", "?")
         d = getattr(model, "embedding_dim", "?")
         k = getattr(model, "k", "?")
         self.setWindowTitle(
-            f"Modelo de Tipicidade — {pop}  "
-            f"|  N={n}  D={d}  k={k}"
+            f"Modelo de Tipicidade — N={n}  D={d}  k={k}"
         )
         self.resize(900, 620)
 
