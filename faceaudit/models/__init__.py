@@ -46,6 +46,7 @@ from .validation_plot_data import ValidationPlotData
 from .split_config import SplitConfig
 from .split_simulation_result import SplitSimulationResult
 from .typicality_info import TypicalityInfo
+from .knn_typicality_info import KNNTypicalityInfo
 from .ablation_scenario_info import AblationScenarioInfo
 from .ablation_study_info import AblationStudyInfo
 from .hubness_analysis_info import HubnessAnalysisInfo
@@ -115,4 +116,5 @@ __all__ = ["AblationScenarioInfo",
            "SplitConfig",
            "SplitSimulationResult",
            "TypicalityInfo",
+           "KNNTypicalityInfo",
           ]

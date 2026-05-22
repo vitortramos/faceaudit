@@ -149,6 +149,28 @@ class StrategyInstructionType(Enum):
         "O(N²) em N subsets.",
     )
 
+    KNN_TYPICALITY_MODEL_TRAINING = (
+        "KNN_TYPICALITY_MODEL_TRAINING",
+        "kNN Typicality Model Training",
+        "Treinar Modelo de Tipicidade (kNN)",
+        "Treina um modelo de tipicidade não-paramétrico baseado em k-NN esférico "
+        "a partir de um dataset de referência da subpopulação relevante (já "
+        "estratificada). Persiste a referência inteira como modelo e pré-computa "
+        "a CDF empírica leave-one-out de T_k pra inferência de percentile.",
+    )
+
+    TYPICALITY_PAIR_SCORING = (
+        "TYPICALITY_PAIR_SCORING",
+        "Typicality Pair Scoring",
+        "Calcular Score de Tipicidade por Par",
+        "Aplica um modelo de tipicidade treinado a cada face de cada par "
+        "(probe, reference) de um dataset, e produz um SimilarityScoreDataset "
+        "onde o score de cada par é a combinação simétrica (MEAN/MIN/MAX/PRODUCT/"
+        "ABS_DIFF) das tipicidades individuais. Pareado com SIMILARITY_SCORES "
+        "pelo SCORE_VECTORIZATION pra treinar calibrador 2D+ que conheça "
+        "raridade local.",
+    )
+
     def __init__(
         self,
         value: str,

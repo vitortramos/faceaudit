@@ -54,6 +54,11 @@ class StrategyFileType(Enum):
         ProjectFolder.ARTIFACTS,
         "{strategy_id}_{resource_id}_calibration_model",
     )
+    TRAINED_TYPICALITY_MODEL = (
+        ".pkl",
+        ProjectFolder.ARTIFACTS,
+        "{strategy_id}_{resource_id}_typicality_model",
+    )
 
     # --- DATASETS ---
     # Path físico pra DATASETs DERIVADOS (produzidos por instrução).
@@ -262,6 +267,7 @@ class StrategyFileType(Enum):
             StrategyArtifactType.TRAINED_PIPELINE:          cls.TRAINED_PIPELINE,
             StrategyArtifactType.TRAINED_SIMILARITY_MODEL:  cls.TRAINED_SIMILARITY_MODEL,
             StrategyArtifactType.TRAINED_CALIBRATION_MODEL: cls.TRAINED_CALIBRATION_MODEL,
+            StrategyArtifactType.TRAINED_TYPICALITY_MODEL:  cls.TRAINED_TYPICALITY_MODEL,
             StrategyArtifactType.DERIVED_DATASET:           cls.DERIVED_DATASET,
             StrategyArtifactType.TRANSFORMED_DATASET:       cls.TRANSFORMED_DATASET,
             StrategyArtifactType.SPLIT_RESULT:              cls.SPLIT_RESULT,

@@ -55,6 +55,12 @@ from faceaudit.executors.instructions.hubness_ablation_instruction_executor impo
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
 )
+from faceaudit.executors.instructions.knn_typicality_model_training_instruction_executor import (
+    KNNTypicalityModelTrainingInstructionExecutor,
+)
+from faceaudit.executors.instructions.typicality_pair_scoring_instruction_executor import (
+    TypicalityPairScoringInstructionExecutor,
+)
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
@@ -169,6 +175,16 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.HUBNESS_ABLATION,
             HubnessAblationInstructionExecutor(comparison_service=comparison_service),
+        )
+
+        registry.register(
+            StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
+            KNNTypicalityModelTrainingInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.TYPICALITY_PAIR_SCORING,
+            TypicalityPairScoringInstructionExecutor(),
         )
 
         return registry

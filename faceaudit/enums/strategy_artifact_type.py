@@ -19,6 +19,7 @@ class StrategyArtifactType(Enum):
     TRAINED_PIPELINE = "trained_pipeline"
     TRAINED_SIMILARITY_MODEL = "trained_similarity_model"
     TRAINED_CALIBRATION_MODEL = "trained_calibration_model"
+    TRAINED_TYPICALITY_MODEL = "trained_typicality_model"
 
     # --- DADOS DERIVADOS ---
     # Datasets produzidos por execução de instrução (PIPELINE_APPLICATION,

@@ -156,6 +156,7 @@ class StrategyResourceLoaderService:
             StrategyResourceType.TRAINED_PIPELINE,
             StrategyResourceType.TRAINED_SIMILARITY_MODEL,
             StrategyResourceType.TRAINED_CALIBRATION_MODEL,
+            StrategyResourceType.TRAINED_TYPICALITY_MODEL,
             StrategyResourceType.TRAJECTORY_DATA,
             StrategyResourceType.VALIDATION_RESULT,
             StrategyResourceType.CASEWORK_VISUALIZATION,

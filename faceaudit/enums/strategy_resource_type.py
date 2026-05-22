@@ -35,6 +35,7 @@ class StrategyResourceType(Enum):
     TRAINED_PIPELINE = "TRAINED_PIPELINE"
     TRAINED_SIMILARITY_MODEL = "TRAINED_SIMILARITY_MODEL"
     TRAINED_CALIBRATION_MODEL = "TRAINED_CALIBRATION_MODEL"
+    TRAINED_TYPICALITY_MODEL = "TRAINED_TYPICALITY_MODEL"
 
     # --- SCORES DE SIMILARIDADE ---
     SIMILARITY_SCORES = "SIMILARITY_SCORES"
@@ -71,6 +72,7 @@ class StrategyResourceType(Enum):
             "TRAINED_PIPELINE":         "Pipeline Treinado",
             "TRAINED_SIMILARITY_MODEL": "Modelo de Similaridade Treinado",
             "TRAINED_CALIBRATION_MODEL":"Calibrador Treinado",
+            "TRAINED_TYPICALITY_MODEL": "Modelo de Tipicidade Treinado",
             "SIMILARITY_SCORES":        "Scores de Similaridade",
             "CALIBRATED_SCORES":        "Scores Calibrados (log-LR)",
             "TRAJECTORY_DATA":          "Trajetória de Pipeline",
@@ -99,6 +101,7 @@ class StrategyResourceType(Enum):
             StrategyResourceType.TRAINED_PIPELINE:          StrategyArtifactType.TRAINED_PIPELINE,
             StrategyResourceType.TRAINED_SIMILARITY_MODEL:  StrategyArtifactType.TRAINED_SIMILARITY_MODEL,
             StrategyResourceType.TRAINED_CALIBRATION_MODEL: StrategyArtifactType.TRAINED_CALIBRATION_MODEL,
+            StrategyResourceType.TRAINED_TYPICALITY_MODEL:  StrategyArtifactType.TRAINED_TYPICALITY_MODEL,
             # DATASET (derivado) usa o tipo físico DERIVED_DATASET — path
             # `{strategy_id}_{resource_id}.parquet` em `datasets/`.
             # Primários nunca chegam aqui: `StrategyResource.to_artifact_type`

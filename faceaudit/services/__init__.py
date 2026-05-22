@@ -15,6 +15,7 @@ from .trajectory_plotter_service import TrajectoryPlotterService
 from .validation_math_service import ValidationMathService
 from .plda_split_service import PLDASplitService
 from .typicality_model import TypicalityModel
+from .knn_typicality_model import KNNTypicalityModel
 from .hubness_analysis_service import HubnessAnalysisService
 from .hubness_plot_service import HubnessPlotService
 
@@ -37,6 +38,7 @@ __all__ = [
     "ValidationMathService",
     "PLDASplitService",
     "TypicalityModel",
+    "KNNTypicalityModel",
     "HubnessAnalysisService",
     "HubnessPlotService",
 ]

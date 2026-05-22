@@ -100,6 +100,8 @@ from .services.validation_math_service import ValidationMathService
 from .services.plda_split_service import PLDASplitService
 from .services.typicality_model import TypicalityModel
 from .services.typicality_model import TypicalityInfo
+from .services.knn_typicality_model import KNNTypicalityModel
+from .models.knn_typicality_info import KNNTypicalityInfo
 from .services.hubness_analysis_service import HubnessAnalysisService
 from .services.hubness_plot_service import HubnessPlotService
 from .services.gaussianity_analyzer import GaussianityAnalyzer
