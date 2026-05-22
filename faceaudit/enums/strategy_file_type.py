@@ -31,33 +31,36 @@ class StrategyFileType(Enum):
         "{strategy_id}_definition",
     )
 
-    # --- MODELO TREINADO FINAL ---
+    # --- MODELO TREINADO FINAL (wrapper Run All) ---
+    # Layout hierárquico: `models/<strategy_id>/strategy_model.pkl`.
+    # Demais modelos da estratégia vivem em subpastas irmãs
+    # (pipeline/similarity/calibration/typicality).
     TRAINED_STRATEGY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}_trained_model",
+        "{strategy_id}/strategy_model",
     )
 
-    # --- ARTEFATOS INTERMEDIÁRIOS ---
+    # --- MODELOS COMPONENTES (subpastas em models/<strategy_id>/) ---
     TRAINED_PIPELINE = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{step_id}_pipeline",
+        ProjectFolder.MODELS,
+        "{strategy_id}/pipeline/{step_id}",
     )
     TRAINED_SIMILARITY_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_similarity_model",
+        ProjectFolder.MODELS,
+        "{strategy_id}/similarity/{resource_id}",
     )
     TRAINED_CALIBRATION_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_calibration_model",
+        ProjectFolder.MODELS,
+        "{strategy_id}/calibration/{resource_id}",
     )
     TRAINED_TYPICALITY_MODEL = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}_typicality_model",
+        ProjectFolder.MODELS,
+        "{strategy_id}/typicality/{resource_id}",
     )
 
     # --- DATASETS ---
@@ -85,53 +88,65 @@ class StrategyFileType(Enum):
         "{strategy_id}_{resource_id}_merged",
     )
 
-    # --- LOGS E MÉTRICAS ---
+    # --- LOGS E MÉTRICAS (results/<strategy_id>/) ---
     EXECUTION_LOG = (
         ".log",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_execution_log",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/execution_log",
     )
     METRICS = (
         ".json",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_metrics",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/metrics",
     )
 
-    # --- VISUALIZAÇÕES E TRAJETÓRIA ---
-    TRAJECTORY_DATA = (
-        ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
-    )
+    # --- SCORE DATASETS (scores/<strategy_id>/<subtipo>/) ---
     SIMILARITY_SCORES = (
         ".parquet",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.SCORES,
+        "{strategy_id}/raw/{resource_id}",
+    )
+    MINED_SCORES = (
+        ".parquet",
+        ProjectFolder.SCORES,
+        "{strategy_id}/mined/{resource_id}",
+    )
+    VECTORIZED_SCORES = (
+        ".parquet",
+        ProjectFolder.SCORES,
+        "{strategy_id}/vectorized/{resource_id}",
     )
     CALIBRATED_SCORES = (
         ".parquet",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.SCORES,
+        "{strategy_id}/calibrated/{resource_id}",
+    )
+
+    # --- RESULTADOS DE ANÁLISE (results/<strategy_id>/<tipo>/) ---
+    TRAJECTORY_DATA = (
+        ".pkl",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/trajectory/{resource_id}",
     )
     VALIDATION_RESULT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/validation/{resource_id}",
     )
     CASEWORK_VISUALIZATION = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/casework/{resource_id}",
     )
     HUBNESS_REPORT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/hubness/{resource_id}",
     )
     HUBNESS_ABLATION_RESULT = (
         ".pkl",
-        ProjectFolder.ARTIFACTS,
-        "{strategy_id}_{resource_id}",
+        ProjectFolder.RESULTS,
+        "{strategy_id}/hubness/{resource_id}_ablation",
     )
     GRAPHIC = (
         ".png",
@@ -195,7 +210,7 @@ class StrategyFileType(Enum):
             # → Path("definitions/ST_01_definition.json")
 
             StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a")
-            # → Path("artifacts/ST_01_pipe_a_pipeline.pkl")
+            # → Path("models/ST_01/pipeline/pipe_a.pkl")
 
         Args:
             **kwargs: Variáveis necessárias para preencher o name_template.
@@ -276,6 +291,8 @@ class StrategyFileType(Enum):
             StrategyArtifactType.METRICS:                   cls.METRICS,
             StrategyArtifactType.TRAJECTORY_DATA:           cls.TRAJECTORY_DATA,
             StrategyArtifactType.SIMILARITY_SCORES:         cls.SIMILARITY_SCORES,
+            StrategyArtifactType.MINED_SCORES:              cls.MINED_SCORES,
+            StrategyArtifactType.VECTORIZED_SCORES:         cls.VECTORIZED_SCORES,
             StrategyArtifactType.CALIBRATED_SCORES:         cls.CALIBRATED_SCORES,
             StrategyArtifactType.VALIDATION_RESULT:         cls.VALIDATION_RESULT,
             StrategyArtifactType.CASEWORK_VISUALIZATION:    cls.CASEWORK_VISUALIZATION,

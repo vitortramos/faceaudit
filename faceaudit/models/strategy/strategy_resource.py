@@ -187,11 +187,32 @@ class StrategyResource(JSONSerializableMixin):
         em disco — foram importados; substituir destruiria o original).
         Pra DERIVED, delega ao `StrategyResourceType.to_artifact_type()`.
 
+        Score datasets têm 3 subtipos físicos distinguidos via metadata
+        do payload (`is_mined`/`is_score_vector`) — usados pelo
+        `StrategyFileType` pra rotear pra subpasta correta:
+            scores/<sid>/raw/         → default
+            scores/<sid>/mined/       → metadata.is_mined=True
+            scores/<sid>/vectorized/  → metadata.is_score_vector=True
+
         Retorna None pra (PRIMARY) ou tipos sem mapeamento de artefato.
         """
+        from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+        from faceaudit.enums.strategy_resource_type import StrategyResourceType
+
         if self.category == ResourceCategory.PRIMARY:
             return None
-        return self.resource_type.to_artifact_type()
+
+        base = self.resource_type.to_artifact_type()
+        if (
+            self.resource_type == StrategyResourceType.SIMILARITY_SCORES
+            and self.payload is not None
+        ):
+            metadata = getattr(self.payload, "metadata", None) or {}
+            if metadata.get("is_score_vector"):
+                return StrategyArtifactType.VECTORIZED_SCORES
+            if metadata.get("is_mined"):
+                return StrategyArtifactType.MINED_SCORES
+        return base
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:

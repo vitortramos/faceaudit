@@ -400,14 +400,20 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
     # cujos arquivos são tipicamente referenciados via StrategyArtifactReference.
     # GRAPHICS/REPORTS/CHECKPOINTS são produzidos por executores mas não entram em
     # `artifact_ref` (snapshots, exports, estados intermediários — todos derivativos).
-    # DEFINITIONS é a fonte das próprias referências, MODELS é varrido pelo
-    # repositório de modelos treinados, IMAGES contém cópias originais referenciadas
-    # por FaceInfo (não por artifact_ref).
+    # DEFINITIONS é a fonte das próprias referências, IMAGES contém cópias originais
+    # referenciadas por FaceInfo (não por artifact_ref).
+    # MODELS/SCORES/RESULTS são as 3 pastas hierárquicas da nova arquitetura
+    # (subpastas por strategy_id e tipo). ARTIFACTS é mantida pra detectar arquivos
+    # de projetos com layout legado que ainda não foram migrados — rglob ignora
+    # se a pasta não existir.
     _ORPHAN_SCAN_FOLDERS = (
         ProjectFolder.DATASETS,
         ProjectFolder.PIPELINES,
         ProjectFolder.SPLIT_CONFIGS,
         ProjectFolder.MINING_CONFIGS,
+        ProjectFolder.MODELS,
+        ProjectFolder.SCORES,
+        ProjectFolder.RESULTS,
         ProjectFolder.ARTIFACTS,
     )
 
@@ -418,7 +424,6 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
         "_stats.json",
         "_dist.json",
         "_metrics.json",
-        "_scores_stats.json",
     )
 
     def scan_orphans(

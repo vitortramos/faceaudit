@@ -39,6 +39,7 @@ class FaceAuditProject:
         definition_repository: StrategyDefinitionRepository,
         model_repository: StrategyTrainedModelRepository,
         integrity_results: Optional[List[ArtifactIntegrityResult]] = None,
+        has_legacy_layout: bool = False,
     ) -> None:
         self._metadata = metadata
         self._root = root
@@ -46,6 +47,10 @@ class FaceAuditProject:
         self._definition_repository = definition_repository
         self._model_repository = model_repository
         self._integrity_results: Optional[List[ArtifactIntegrityResult]] = integrity_results
+        # True quando o projeto tem layout pré-reorg (pasta `artifacts/` populada
+        # com pickles/parquets que a nova arch espera ver em `models/`, `scores/`,
+        # `results/`). UI consome essa flag pra exibir diálogo de migração.
+        self._has_legacy_layout = has_legacy_layout
 
     # =========================================================================
     # PROPRIEDADES — somente leitura
@@ -91,6 +96,17 @@ class FaceAuditProject:
         Lista com entradas se algum artefato está ausente, modificado ou sem hash.
         """
         return self._integrity_results
+
+    @property
+    def has_legacy_layout(self) -> bool:
+        """True quando o projeto tem `artifacts/` populada (layout pré-reorg).
+
+        Sinaliza pra UI que precisa oferecer migração wipe-and-rerun: apagar
+        recursos DERIVED de todas as estratégias + remover `artifacts/`, e
+        deixar o usuário re-executar nas novas subpastas hierárquicas
+        (`models/<sid>/...`, `scores/<sid>/...`, `results/<sid>/...`).
+        """
+        return self._has_legacy_layout
 
     @property
     def has_integrity_problems(self) -> bool:
@@ -285,12 +301,19 @@ class FaceAuditProjectService:
         root = fa_path.parent
         storage = LocalProjectArtifactStorage(project_root=root)
 
+        # Detecta layout legado: pasta `artifacts/` com conteúdo. Nova arch
+        # escreve em `models/`, `scores/`, `results/` — `artifacts/` populada
+        # indica projeto criado antes da reorg, precisa de migração.
+        legacy_dir = root / "artifacts"
+        has_legacy_layout = legacy_dir.is_dir() and any(legacy_dir.iterdir())
+
         project = FaceAuditProject(
             metadata=metadata,
             root=root,
             storage=storage,
             definition_repository=StrategyDefinitionRepository(artifact_storage=storage),
             model_repository=StrategyTrainedModelRepository(artifact_storage=storage),
+            has_legacy_layout=has_legacy_layout,
         )
 
         if verify_integrity:

@@ -288,7 +288,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
             QtWidgets.QApplication.restoreOverrideCursor()
 
         self._set_project(project)
-        self._process_integrity_results(project.integrity_results or [])
+        # Oferece migração wipe-and-rerun ANTES de processar integridade —
+        # se o usuário aceitar, integrity_results pré-migração ficam stale
+        # (arquivos legados foram apagados, definitions invalidadas), e
+        # `_migrate_legacy_artifacts_layout_if_needed` re-roda check_integrity
+        # ao final pra refletir o novo estado.
+        migrated = self._migrate_legacy_artifacts_layout_if_needed()
+        if not migrated:
+            self._process_integrity_results(project.integrity_results or [])
 
     def _on_verify_integrity_requested(self) -> None:
         """Re-roda check_integrity on-demand pelo botão "Verificar Integridade".
@@ -2020,18 +2027,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
             except Exception:
                 pass
 
-            # Sweep defensivo: pega órfãos com prefixo `<strategy_id>_`
-            # em pastas conhecidas de outputs. Cobre arquivos que ficaram
-            # fora de `definition.resources` por inconsistência (ex:
-            # output cuja referência foi limpa por Apply Alterações mas
-            # o file ficou no disco).
-            sweep_folders = (
-                ProjectFolder.DATASETS,
+            # Sweep defensivo: pega órfãos da estratégia em pastas conhecidas
+            # de outputs. Cobre arquivos que ficaram fora de
+            # `definition.resources` por inconsistência (ex: output cuja
+            # referência foi limpa por Apply Alterações mas o file ficou
+            # no disco).
+            #
+            # MODELS/SCORES/RESULTS são pastas hierárquicas (`<folder>/<sid>/...`)
+            # — apaga a subpasta inteira da estratégia.
+            for folder in (
                 ProjectFolder.MODELS,
+                ProjectFolder.SCORES,
+                ProjectFolder.RESULTS,
+            ):
+                target_dir = project_root / folder.value / safe_strategy
+                if target_dir.exists():
+                    shutil.rmtree(target_dir, ignore_errors=True)
+            # DATASETS/CHECKPOINTS/ARTIFACTS continuam flat (datasets derivados
+            # de PIPELINE_APPLICATION/SPLIT, checkpoints, e arquivos legados
+            # de projetos pré-migração). Iterdir + prefixo `<sid>_`.
+            for folder in (
+                ProjectFolder.DATASETS,
                 ProjectFolder.CHECKPOINTS,
                 ProjectFolder.ARTIFACTS,
-            )
-            for folder in sweep_folders:
+            ):
                 fp = project_root / folder.value
                 if not fp.exists():
                     continue
@@ -2650,6 +2669,127 @@ class StrategyManagerV2Controller(QtCore.QObject):
                         ctx_res.payload = None
 
         return invalidated
+
+    def _migrate_legacy_artifacts_layout_if_needed(self) -> bool:
+        """Detecta projeto com layout pré-reorg (`artifacts/` populada) e
+        oferece migração wipe-and-rerun via diálogo.
+
+        Retorna True se a migração foi executada (caller deve pular o
+        `_process_integrity_results` do estado pré-migração — após wipe
+        os results ficam stale e este método já roda check_integrity novo).
+        Retorna False se não há layout legado OU se o usuário cancelou.
+
+        Estratégia escolhida pelo usuário: NÃO mover arquivos pra paths
+        novos (path-rewriting). Em vez disso, apagar tudo que é DERIVED
+        e re-executar instruções — os outputs reescrevem nas novas
+        subpastas (`models/<sid>/`, `scores/<sid>/`, `results/<sid>/`).
+        Recursos PRIMARY (datasets/configs importados) permanecem
+        intactos — não vivem em `artifacts/`.
+        """
+        if not self._project or not self._project.has_legacy_layout:
+            return False
+
+        import shutil
+
+        legacy_dir = self._project.root / "artifacts"
+        try:
+            legacy_files = [p for p in legacy_dir.iterdir() if p.is_file()]
+        except Exception:
+            legacy_files = []
+        n_files = len(legacy_files)
+        n_strategies = len(self._definitions)
+
+        # Lista até 3 nomes de estratégias afetadas pra exibir contexto.
+        sample_names = [d.name for d in self._definitions[:3]]
+        sample_str = ", ".join(sample_names)
+        if n_strategies > 3:
+            sample_str += f", ... (+{n_strategies - 3})"
+
+        reply = QtWidgets.QMessageBox.question(
+            self._view,
+            "Migração de layout do projeto",
+            (
+                "Este projeto tem o layout antigo de pasta <code>artifacts/</code>. "
+                "A nova versão organiza artefatos em três pastas hierárquicas:<br><br>"
+                "&nbsp;&nbsp;• <code>models/&lt;estratégia&gt;/</code> "
+                "(pipeline, similarity, calibration, typicality)<br>"
+                "&nbsp;&nbsp;• <code>scores/&lt;estratégia&gt;/</code> "
+                "(raw, mined, vectorized, calibrated)<br>"
+                "&nbsp;&nbsp;• <code>results/&lt;estratégia&gt;/</code> "
+                "(validation, casework, hubness, trajectory)<br><br>"
+                f"<b>{n_files} arquivo(s)</b> serão apagados de "
+                f"<code>artifacts/</code> e os recursos derivados das "
+                f"<b>{n_strategies} estratégia(s)</b> serão invalidados — "
+                "você precisará re-executar as instruções pra repopular os "
+                f"outputs no novo layout.<br><br>"
+                f"Estratégias afetadas: {sample_str}<br><br>"
+                "Recursos primários (datasets, pipelines, configs importados) "
+                "<b>não serão tocados</b>. Confirmar migração?"
+            ),
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+            QtWidgets.QMessageBox.StandardButton.No,  # default conservador
+        )
+        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
+            return False
+
+        try:
+            QtWidgets.QApplication.setOverrideCursor(
+                QtGui.QCursor(QtCore.Qt.CursorShape.WaitCursor)
+            )
+
+            # 1. Pra cada definition: invalida TODOS os derivados
+            #    (apaga arquivos das subpastas novas se existirem,
+            #    zera artifact_ref/payload, remove do contexto vivo).
+            for defn in self._definitions:
+                self._current_definition = defn  # _invalidate_all_derived usa o atual pra cleanup do contexto
+                self._invalidate_all_derived(defn)
+                try:
+                    self._project.definition_repository.save_definition(defn)
+                except Exception as exc:
+                    QtWidgets.QMessageBox.warning(
+                        self._view,
+                        "Erro ao salvar definição",
+                        f"Falha ao salvar '{defn.name}' após migração: {exc}",
+                    )
+            self._current_definition = None
+
+            # 2. Remove a pasta `artifacts/` inteira — derivados antigos
+            #    estavam todos lá; recursos primários nunca vivem em
+            #    `artifacts/`. Atomicidade é best-effort.
+            try:
+                shutil.rmtree(legacy_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+            # 3. Atualiza state em memória + re-roda integridade.
+            self._executed_instruction_ids.clear()
+            results = self._project.check_integrity()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        # 4. Refresh UI completa.
+        self._refresh_left_panel()
+        self._refresh_instruction_states()
+        self._refresh_produced_resources()
+
+        QtWidgets.QMessageBox.information(
+            self._view,
+            "Migração concluída",
+            (
+                f"{n_files} arquivo(s) legados removidos e {n_strategies} "
+                "estratégia(s) invalidadas. Execute as instruções pra "
+                "repopular os outputs no novo layout."
+            ),
+        )
+
+        # Reporta integridade pós-migração se ainda houver problemas
+        # (raro, mas pode pegar arquivos órfãos em datasets/ ou outras
+        # pastas que ficaram desreferenciados).
+        if results and any(r.is_problem for r in results):
+            self._process_integrity_results(results)
+
+        return True
 
     def _compute_executed_ids_from_disk(self) -> set:
         """

@@ -79,6 +79,10 @@ class PairMiningInstructionExecutor(StrategyInstructionExecutorBase):
                 config=mining_config,
             )
 
+            # Carimba origem de mineração — roteia a persistência pra
+            # `scores/<sid>/mined/` via `StrategyResource.to_artifact_type`.
+            mined.metadata["is_mined"] = True
+
             output_name = (
                 instruction.output_mined_scores_name
                 or mined.name

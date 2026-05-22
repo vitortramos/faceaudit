@@ -19,7 +19,9 @@ class ProjectFolder(Enum):
 
     # --- NOVA ARQUITETURA ---
     DEFINITIONS = "definitions" # Definições declarativas de estratégia (LRStrategyDefinition JSON)
-    MODELS = "models"           # Modelos treinados da nova arch (LRStrategyTrainedModel pkl)
+    MODELS = "models"           # Modelos treinados — subpastas por strategy_id + tipo (pipeline/similarity/calibration/typicality + strategy_model.pkl wrapper)
+    SCORES = "scores"           # Score datasets — subpastas por strategy_id + subtipo (raw/mined/vectorized/calibrated)
+    RESULTS = "results"         # Resultados de análise — subpastas por strategy_id + tipo (validation/casework/hubness/trajectory)
     VALIDATION_RULES = "validation_rules"  # Templates de regra de validação (ValidationRuleConfig JSON)
 
     def __str__(self) -> str:
