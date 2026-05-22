@@ -329,6 +329,71 @@ class TestLocalProjectArtifactStorage:
         assert sidecar.exists(), "Sidecar com pai NÃO deveria ter sido apagado"
         assert parent.exists()
 
+    def test_cleanup_legacy_strategy_subfolders_deletes_when_canonical_exists(
+        self, storage, tmp_path,
+    ):
+        """Apaga `<sid>/` legacy quando `<name>_<sid>/` existe em alguma
+        das pastas hierárquicas."""
+        # Cria estrutura: graphics/ tem AMBOS os formatos pra SID_X.
+        (tmp_path / "graphics" / "SID_X").mkdir(parents=True)
+        (tmp_path / "graphics" / "SID_X" / "legacy_png.png").write_bytes(b"\x00")
+        (tmp_path / "graphics" / "MyStrat_SID_X").mkdir(parents=True)
+        (tmp_path / "graphics" / "MyStrat_SID_X" / "new_png.png").write_bytes(b"\x00")
+
+        # Outra estratégia (SID_Y) NÃO tem versão canônica — não deve ser apagada
+        (tmp_path / "graphics" / "SID_Y").mkdir(parents=True)
+        (tmp_path / "graphics" / "SID_Y" / "other_png.png").write_bytes(b"\x00")
+
+        deleted = storage.cleanup_legacy_strategy_subfolders(
+            [
+                ("SID_X", "MyStrat_SID_X"),  # tem canônica → apaga legacy
+                ("SID_Y", "MyStrat_SID_Y"),  # canônica não existe → preserva
+            ]
+        )
+        assert any("SID_X" in d for d in deleted)
+        assert not (tmp_path / "graphics" / "SID_X").exists()
+        # Canônica e SID_Y permanecem
+        assert (tmp_path / "graphics" / "MyStrat_SID_X").exists()
+        assert (tmp_path / "graphics" / "SID_Y").exists()
+
+    def test_cleanup_legacy_strategy_subfolders_skips_when_name_is_empty(
+        self, storage, tmp_path,
+    ):
+        """Quando current_folder == strategy_id (sem nome), não há
+        legacy distinto — não apaga nada."""
+        (tmp_path / "models" / "SID_Z").mkdir(parents=True)
+        (tmp_path / "models" / "SID_Z" / "file.pkl").write_bytes(b"\x00")
+        deleted = storage.cleanup_legacy_strategy_subfolders(
+            [("SID_Z", "SID_Z")],  # current == legacy → skip
+        )
+        assert deleted == []
+        assert (tmp_path / "models" / "SID_Z" / "file.pkl").exists()
+
+    def test_cleanup_empty_strategy_subfolders_removes_empties(
+        self, storage, tmp_path,
+    ):
+        """Bottom-up rmdir: leaves vazios são apagados, depois pais
+        vazios são apagados."""
+        # Cria models/SID_A/pipeline/ vazio + models/SID_A/similarity/file.pkl
+        (tmp_path / "models" / "SID_A" / "pipeline").mkdir(parents=True)
+        (tmp_path / "models" / "SID_A" / "similarity").mkdir(parents=True)
+        (tmp_path / "models" / "SID_A" / "similarity" / "file.pkl").write_bytes(b"\x00")
+        # scores/SID_B/ inteiramente vazio (com 2 subpastas vazias)
+        (tmp_path / "scores" / "SID_B" / "raw").mkdir(parents=True)
+        (tmp_path / "scores" / "SID_B" / "calibrated").mkdir(parents=True)
+
+        deleted = storage.cleanup_empty_strategy_subfolders()
+        # pipeline vazio é apagado, similarity (com arquivo) NÃO
+        assert not (tmp_path / "models" / "SID_A" / "pipeline").exists()
+        assert (tmp_path / "models" / "SID_A" / "similarity").exists()
+        assert (tmp_path / "models" / "SID_A" / "similarity" / "file.pkl").exists()
+        # SID_A não é apagado porque similarity ainda existe
+        assert (tmp_path / "models" / "SID_A").exists()
+        # SID_B inteiramente apagado (raw + calibrated + SID_B)
+        assert not (tmp_path / "scores" / "SID_B").exists()
+        # Reporta cada dir apagado
+        assert len(deleted) >= 3  # pipeline, raw, calibrated, SID_B = 4
+
     def test_cleanup_orphan_sidecars_ignores_non_sidecar_files(self, storage, tmp_path):
         """Arquivos que não batem com suffixes de sidecar são ignorados."""
         d = tmp_path / "scores" / "ST_X" / "raw"

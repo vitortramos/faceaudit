@@ -456,6 +456,106 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return deleted
 
+    # Pastas hierárquicas onde cada estratégia ocupa uma subpasta. Usado
+    # pelos cleanups que sabem que `<folder>/<X>/` é um agrupamento por
+    # estratégia. Não inclui DATASETS/etc. que são flat (sem subpasta
+    # por estratégia).
+    _STRATEGY_SUBFOLDER_PARENTS = (
+        ProjectFolder.MODELS,
+        ProjectFolder.SCORES,
+        ProjectFolder.RESULTS,
+        ProjectFolder.GRAPHICS,
+    )
+
+    def cleanup_legacy_strategy_subfolders(
+        self,
+        strategy_pairs: List[tuple],
+    ) -> List[str]:
+        """Apaga subpastas legadas `<sid>/` quando a versão canônica
+        `<name>_<sid>/` existe na mesma pasta hierárquica.
+
+        Contexto: a refactor que adicionou `<name>_<sid>` nas subpastas
+        de estratégia pode deixar resíduos do nome antigo (`<sid>` puro)
+        quando a estratégia é re-executada com o novo template. Os
+        arquivos novos vão pra `<name>_<sid>/`, e a pasta legada fica
+        ou vazia (caso comum em models/scores/results — cleanup por
+        arquivo já rodou) ou ainda com arquivos (caso de graphics/,
+        cujos PNGs não são individualmente referenciados).
+
+        Critério: legacy `<sid>/` é safe de apagar se há sibling
+        `<name>_<sid>/` (com name != "") — sinal de que a estratégia já
+        produziu artefatos no novo path e o legado é residual.
+
+        Args:
+            strategy_pairs: Lista de `(strategy_id, current_folder_name)`
+                            pra cada estratégia. `current_folder_name`
+                            vem de `strategy_folder_name(sid, name)`.
+
+        Returns:
+            Lista de paths relativos (POSIX) das subpastas apagadas.
+        """
+        import shutil
+
+        deleted: List[str] = []
+        for strategy_id, current_folder in strategy_pairs:
+            if not strategy_id or not current_folder:
+                continue
+            if current_folder == strategy_id:
+                # Sem rename / nome vazio — não há legacy distinto.
+                continue
+            for folder in self._STRATEGY_SUBFOLDER_PARENTS:
+                parent = self._root / folder.value
+                if not parent.is_dir():
+                    continue
+                current_dir = parent / current_folder
+                legacy_dir = parent / strategy_id
+                # Só apaga legacy se canônica existe (estratégia migrou).
+                if not current_dir.is_dir():
+                    continue
+                if not legacy_dir.is_dir():
+                    continue
+                try:
+                    rel_path = legacy_dir.relative_to(self._root).as_posix()
+                    shutil.rmtree(legacy_dir, ignore_errors=True)
+                    deleted.append(rel_path + "/")
+                except Exception:
+                    pass
+
+        return deleted
+
+    def cleanup_empty_strategy_subfolders(self) -> List[str]:
+        """Apaga diretórios vazios em models/, scores/, results/, graphics/
+        via walk bottom-up.
+
+        Contexto: `_unlink_old_artifact_with_sidecars` apaga arquivos
+        individuais mas não chama `rmdir` no pai. Quando todos os arquivos
+        de `models/<sid>/calibration/` foram apagados (path-changed
+        re-execução), a subpasta vazia fica como ruído visual no
+        filesystem. Walk bottom-up garante que `models/<sid>/calibration/`
+        é apagada ANTES de tentar `models/<sid>/` (caso fique tudo vazio).
+
+        Retorna lista de paths relativos (POSIX) dos diretórios apagados.
+        Falhas individuais (permission, race com outra process) são
+        engolidas.
+        """
+        deleted: List[str] = []
+        for folder in self._STRATEGY_SUBFOLDER_PARENTS:
+            root = self._root / folder.value
+            if not root.is_dir():
+                continue
+            # Sort por profundidade descendente — leaves primeiro.
+            all_dirs = [p for p in root.rglob("*") if p.is_dir()]
+            all_dirs.sort(key=lambda p: -len(p.parts))
+            for path in all_dirs:
+                try:
+                    if not any(path.iterdir()):
+                        rel_path = path.relative_to(self._root).as_posix()
+                        path.rmdir()
+                        deleted.append(rel_path + "/")
+                except Exception:
+                    pass
+        return deleted
+
     # Subpastas escaneadas em busca de arquivos órfãos. Mantemos apenas as pastas
     # cujos arquivos são tipicamente referenciados via StrategyArtifactReference.
     # GRAPHICS/REPORTS/CHECKPOINTS são produzidos por executores mas não entram em

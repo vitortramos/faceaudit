@@ -142,6 +142,8 @@ class FaceAuditProject:
             Lista de ArtifactIntegrityResult, uma por artefato verificado.
             Entradas com status MODIFIED ou MISSING indicam problemas.
         """
+        definitions = self._definition_repository.list_definitions()
+
         # Cleanup silencioso de sidecars órfãos antes da varredura. Log
         # no console pra audit trail (não vira QMessageBox — sidecars
         # são regeneráveis).
@@ -157,9 +159,52 @@ class FaceAuditProject:
         except Exception as exc:
             print(f"[FaceAuditProject] Falha ao limpar sidecars órfãos: {exc}")
 
+        # Cleanup de subpastas de estratégia legadas (`<sid>/`) quando
+        # a versão canônica `<name>_<sid>/` existe na mesma pasta
+        # hierárquica. Cobre o caso de PNGs/files deixados no formato
+        # antigo após migração pra `<name>_<sid>`.
+        try:
+            from faceaudit.models.strategy.strategy_folder import (
+                strategy_folder_name,
+            )
+            strategy_pairs = [
+                (
+                    d.strategy_id,
+                    strategy_folder_name(d.strategy_id, d.name or ""),
+                )
+                for d in definitions
+            ]
+            deleted_legacy = self._storage.cleanup_legacy_strategy_subfolders(
+                strategy_pairs,
+            )
+            if deleted_legacy:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_legacy)} subpasta(s) legada(s) apagada(s)."
+                )
+                for path in deleted_legacy:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar subpastas legadas: {exc}")
+
+        # Cleanup de diretórios vazios em models/scores/results/graphics.
+        # Roda DEPOIS do legacy cleanup pra capturar pastas que ficaram
+        # vazias após a remoção do legado.
+        try:
+            deleted_empty = self._storage.cleanup_empty_strategy_subfolders()
+            if deleted_empty:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_empty)} diretório(s) vazio(s) apagado(s)."
+                )
+                for path in deleted_empty:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar dirs vazios: {exc}")
+
         refs: List[StrategyArtifactReference] = []
 
-        for definition in self._definition_repository.list_definitions():
+        for definition in definitions:
             for resource in definition.resources:
                 if resource.artifact_ref is not None:
                     refs.append(resource.artifact_ref)
