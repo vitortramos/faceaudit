@@ -256,7 +256,28 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
 
         raw_type = processed_data.get("instruction_type")
         if raw_type:
-            processed_data["instruction_type"] = StrategyInstructionType.from_str(raw_type)
+            resolved_type = StrategyInstructionType.from_str(raw_type)
+            processed_data["instruction_type"] = resolved_type
+            # Defensa contra instruction_type extinto: `from_str` faz
+            # fallback pra PIPELINE_TRAINING quando não reconhece (ex:
+            # `SCORE_FUSION` removido). Detecta o fallback comparando
+            # o valor original com o resolvido — se for um fallback de
+            # tipo desconhecido, retorna None pra que o caller filtre
+            # essa instrução em vez de fazer dispatch errado.
+            if not isinstance(raw_type, StrategyInstructionType):
+                norm = (
+                    str(raw_type).strip().upper()
+                    .replace("-", "_").replace(" ", "_")
+                )
+                known_values = {t.value for t in StrategyInstructionType}
+                known_names = {t.name for t in StrategyInstructionType}
+                if norm not in known_values and norm not in known_names:
+                    print(
+                        f"[StrategyInstructionDefinition] AVISO: tipo "
+                        f"de instrução extinto/desconhecido '{raw_type}' "
+                        f"— instrução ignorada na carga da definition."
+                    )
+                    return None
 
         # Retrocompat: campo extinto `validation_rule_ids: List[str]` é
         # descartado em silêncio — defaults vão ser repopulados no

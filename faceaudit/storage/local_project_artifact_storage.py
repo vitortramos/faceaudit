@@ -771,6 +771,84 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return deleted
 
+    def cleanup_orphan_flat_datasets(
+        self, referenced_paths: List[str],
+    ) -> List[str]:
+        """Apaga arquivos flat em `datasets/` que NÃO estão na lista
+        de paths referenciados.
+
+        Contexto: após a migração que moveu primary pra `datasets/primary/`
+        e derived pra `datasets/<strategy_folder>/`, sobram no flat
+        `datasets/` arquivos pré-migração que:
+          - Pertencem a strategies removidas (refs não existem mais)
+          - São versões antigas de derived (refs já apontam pra files
+            novos no subfolder com `_DS-id`)
+          - Belongam a strategies cujo load falha por bug DTO legacy
+
+        Critério: arquivo flat (direto em `datasets/`, sem subfolder)
+        cujo path não está em `referenced_paths` é orfão.
+
+        Args:
+            referenced_paths: Lista de paths relativos (POSIX) referenciados
+                              por qualquer artifact_ref. Caller deve ler
+                              JSONs raw pra ser tolerante a definitions
+                              que não carregam (ex: instruction_type extinto).
+
+        Returns:
+            Lista de paths relativos (POSIX) dos arquivos apagados (incluindo
+            companions: _stats.json, _dist.json, _metrics.json, .audit.json).
+        """
+        datasets_root = self._root / ProjectFolder.DATASETS.value
+        if not datasets_root.is_dir():
+            return []
+
+        referenced = {p.replace("\\", "/") for p in referenced_paths if p}
+        # Também marca companions associados a referenced como "ref-aware"
+        # — sidecar de um arquivo referenciado NÃO é órfão.
+        referenced_stems: set = set()
+        for p in referenced:
+            if p.startswith("datasets/") and "/" not in p[len("datasets/"):]:
+                stem = Path(p).stem
+                referenced_stems.add(stem)
+
+        deleted: List[str] = []
+        for entry in datasets_root.iterdir():
+            if not entry.is_file():
+                continue
+            rel = f"datasets/{entry.name}"
+
+            # Decide pelo stem do arquivo (sem sufixo de sidecar).
+            stem = entry.stem
+            for sc_suffix in self._ARTIFACT_COMPANION_SUFFIXES:
+                if sc_suffix.startswith("."):
+                    # `.audit.json` — substitui extensão
+                    if entry.name.endswith(sc_suffix):
+                        stem = entry.name[: -len(sc_suffix)]
+                        break
+                else:
+                    # `_stats.json` — sufixo embutido
+                    if entry.stem.endswith(sc_suffix.rsplit(".", 1)[0]):
+                        stem = entry.stem[
+                            : -len(sc_suffix.rsplit(".", 1)[0])
+                        ]
+                        break
+
+            # Path canônico do "principal" (com .parquet) — verifica
+            # se ele OU o próprio sidecar está referenciado.
+            principal_rel = f"datasets/{stem}.parquet"
+            if rel in referenced or principal_rel in referenced:
+                continue
+            if stem in referenced_stems:
+                continue
+
+            try:
+                entry.unlink()
+                deleted.append(rel)
+            except Exception:
+                pass
+
+        return deleted
+
     def cleanup_empty_strategy_subfolders(self) -> List[str]:
         """Apaga diretórios vazios em models/, scores/, results/, graphics/
         via walk bottom-up.

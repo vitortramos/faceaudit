@@ -228,6 +228,44 @@ class FaceAuditProject:
         except Exception as exc:
             print(f"[FaceAuditProject] Falha na migração de datasets: {exc}")
 
+        # Cleanup de arquivos flat órfãos em datasets/ (pré-migração que
+        # não pertencem a nenhuma definition). Lê JSONs RAW pra coletar
+        # refs — robusto contra definitions que não carregam por bug
+        # DTO legacy (ex: instruction_type extinto).
+        try:
+            import json
+            referenced_paths: List[str] = []
+            defs_dir = self._root / "definitions"
+            if defs_dir.is_dir():
+                for jf in defs_dir.glob("*_definition.json"):
+                    try:
+                        raw = json.loads(jf.read_text(encoding="utf-8"))
+                    except Exception:
+                        continue
+                    for r in raw.get("resources", []):
+                        ar = r.get("artifact_ref") if isinstance(r, dict) else None
+                        if isinstance(ar, dict):
+                            p = ar.get("path")
+                            if p:
+                                referenced_paths.append(
+                                    p.replace("\\", "/")
+                                )
+            deleted_orphan_ds = self._storage.cleanup_orphan_flat_datasets(
+                referenced_paths,
+            )
+            if deleted_orphan_ds:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_orphan_ds)} arquivo(s) órfão(s) "
+                    f"em datasets/ flat apagado(s)."
+                )
+                for path in deleted_orphan_ds[:10]:
+                    print(f"  • {path}")
+                if len(deleted_orphan_ds) > 10:
+                    print(f"  ... e mais {len(deleted_orphan_ds) - 10}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar datasets órfãos: {exc}")
+
         # Cleanup de diretórios vazios em models/scores/results/graphics.
         # Roda DEPOIS do legacy cleanup pra capturar pastas que ficaram
         # vazias após a remoção do legado.
