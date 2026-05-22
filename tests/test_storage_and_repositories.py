@@ -153,6 +153,28 @@ class TestStrategyFileType:
         assert ablation == Path("results/ST_01/hubness/HUB-1_HA-aabbccdd_ablation.pkl")
         assert report != ablation
 
+    def test_build_path_source_dataset_primary_subfolder(self):
+        """Primary datasets (importados) ficam em `datasets/primary/<name>.parquet`."""
+        p = StrategyFileType.SOURCE_DATASET.build_path(dataset_id="BFW - Frontais")
+        assert p == Path("datasets/primary/BFW - Frontais.parquet")
+
+    def test_build_path_derived_dataset_strategy_subfolder(self):
+        """Derived datasets ficam em `datasets/<strategy_folder>/<rid>_<id>.parquet`."""
+        p = StrategyFileType.DERIVED_DATASET.build_path(
+            strategy_id="ST_01", resource_id="CFP_TRANSFORMADO", id="DS-abcd1234",
+            strategy_name="My Strategy",
+        )
+        assert p == Path(
+            "datasets/My_Strategy_ST_01/CFP_TRANSFORMADO_DS-abcd1234.parquet"
+        )
+
+    def test_build_path_derived_dataset_auto_fill_without_name(self):
+        """Sem `strategy_name`, derived dataset cai em `datasets/<sid>/` (autofill)."""
+        p = StrategyFileType.DERIVED_DATASET.build_path(
+            strategy_id="ST_01", resource_id="X", id="DS-x",
+        )
+        assert p == Path("datasets/ST_01/X_DS-x.parquet")
+
     def test_build_path_filename_disambiguates_same_resource_id(self):
         """Mesmo `resource_id` em duas estratégias produz filenames
         diferentes graças ao `_{id}` sufixo. Garante que dois recursos

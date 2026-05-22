@@ -1769,21 +1769,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 # (ex: criar `pipe_v2` com `pipe` já declarado descartaria
                 # silenciosamente o novo).
                 if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
-                    # (1) Stem começa com UUID de strategy_id seguido de
-                    # `_` → arquivo produzido pela convenção do executor
-                    # (`{strategy_id}_{resource_id}.parquet`). É derivado
-                    # por construção, mesmo que a strategy original tenha
-                    # sido removida (arquivo órfão).
-                    if _UUID_PREFIX_RE.match(resource_id):
-                        continue
-                    # (2) Stem começa com `{primary_id}_` — match por
-                    # PREFIXO + `_` (não substring solto, pra não pegar
-                    # nomes onde o id aparece no meio).
-                    if any(
-                        rid and resource_id.startswith(f"{rid}_")
-                        for rid in seen_primary_ids
-                    ):
-                        continue
+                    # Layout novo: `datasets/primary/<X>.parquet` = PRIMARY,
+                    # `datasets/<strategy_folder>/<X>_<id>.parquet` = DERIVED.
+                    # Detecta DERIVED pela subpasta (qualquer pasta != `primary`).
+                    norm_path = ref.path.replace("\\", "/")
+                    parts = norm_path.split("/")
+                    if len(parts) >= 3 and parts[0] == "datasets":
+                        # `datasets/<subfolder>/<file>` — só aceita se for
+                        # `primary/`. Qualquer outra subpasta é DERIVED
+                        # (pertence a uma estratégia).
+                        if parts[1] != "primary":
+                            continue
+                    # Layout legado (pré-migração, raro pós-cleanup):
+                    # `datasets/<X>.parquet` flat. Aplica filtros antigos
+                    # pra distinguir DERIVED (UUID prefix) vs PRIMARY (sem).
+                    elif len(parts) == 2 and parts[0] == "datasets":
+                        # (1) Stem começa com UUID → DERIVED legacy.
+                        if _UUID_PREFIX_RE.match(resource_id):
+                            continue
+                        # (2) Stem começa com `{primary_id}_` → DERIVED.
+                        if any(
+                            rid and resource_id.startswith(f"{rid}_")
+                            for rid in seen_primary_ids
+                        ):
+                            continue
 
                 seen_primary_ids.add(resource_id)
                 # category=PRIMARY: tudo que vem de `_import_scan` foi
@@ -2130,18 +2139,22 @@ class StrategyManagerV2Controller(QtCore.QObject):
             # subpasta inteira da estratégia, tentando o novo formato
             # `<name>_<sid>` E o legado `<sid>` (defesa contra rename
             # parcial / migrações antigas).
+            # DATASETS entra aqui também (pós-refactor que separou primary
+            # de derived): `datasets/<strategy_folder>/` agrupa derivados.
             for folder in (
                 ProjectFolder.MODELS,
                 ProjectFolder.SCORES,
                 ProjectFolder.RESULTS,
+                ProjectFolder.DATASETS,
             ):
                 for folder_name in (strategy_folder, safe_strategy_legacy):
                     target_dir = project_root / folder.value / folder_name
                     if target_dir.exists():
                         shutil.rmtree(target_dir, ignore_errors=True)
-            # DATASETS/CHECKPOINTS/ARTIFACTS continuam flat (datasets derivados
-            # de PIPELINE_APPLICATION/SPLIT, checkpoints, e arquivos legados
-            # de projetos pré-migração). Iterdir + prefixo `<sid>_`.
+            # CHECKPOINTS/ARTIFACTS continuam flat (legados de projetos
+            # pré-migração). DATASETS legado (pré-refactor primary/derived):
+            # também varre `<sid>_*` no flat datasets/ pra capturar
+            # leftovers de migração incompleta.
             for folder in (
                 ProjectFolder.DATASETS,
                 ProjectFolder.CHECKPOINTS,

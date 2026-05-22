@@ -66,31 +66,31 @@ class StrategyFileType(Enum):
         "{strategy_folder}/typicality/{resource_id}_{id}",
     )
 
-    # --- DATASETS ---
-    # Path físico pra DATASETs DERIVADOS (produzidos por instrução).
-    # Distinto de SOURCE_DATASET (cópia do dataset importado, nome
-    # escolhido pelo usuário) — ver mapping em `for_artifact`.
-    # Filename `{strategy_id}_{resource_id}_{id}` — `_{id}` desambigua
-    # contra colisão de nome dentro da mesma estratégia.
+    # --- DATASETS DERIVADOS (datasets/<strategy_folder>/) ---
+    # Filename `{resource_id}_{id}` — `_{id}` desambigua nomes; subpasta
+    # `<strategy_folder>` agrupa derivados por estratégia. Mesma convenção
+    # de models/, scores/, results/.
+    # Distinto de SOURCE_DATASET (importados pelo usuário, ficam em
+    # `datasets/primary/`).
     DERIVED_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}_{id}",
+        "{strategy_folder}/{resource_id}_{id}",
     )
     TRANSFORMED_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}_transformed",
+        "{strategy_folder}/{resource_id}_{id}_transformed",
     )
     SPLIT_RESULT = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}_split",
+        "{strategy_folder}/{resource_id}_{id}_split",
     )
     MERGE_RESULT = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}_merged",
+        "{strategy_folder}/{resource_id}_{id}_merged",
     )
 
     # --- LOGS E MÉTRICAS (results/<strategy_id>/) ---
@@ -169,10 +169,13 @@ class StrategyFileType(Enum):
 
     # --- RECURSOS IMPORTADOS DA BIBLIOTECA GLOBAL ---
     # Usados quando copy_artifact_to_project() recebe um tipo de biblioteca global.
+    # PRIMARY datasets ficam em `datasets/primary/<dataset_id>.parquet` —
+    # subfolder dedicado separa visualmente do que é DERIVADO (em
+    # `datasets/<strategy_folder>/`).
     SOURCE_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{dataset_id}",
+        "primary/{dataset_id}",
     )
     PROJECT_SPLIT_CONFIG = (
         ".json",
