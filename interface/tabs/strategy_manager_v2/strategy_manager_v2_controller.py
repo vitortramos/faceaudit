@@ -2188,6 +2188,32 @@ class StrategyManagerV2Controller(QtCore.QObject):
         except Exception:
             pass  # falha individual não aborta a varredura
 
+    def _unlink_old_artifact_with_sidecars(self, old_rel_path: str) -> None:
+        """Apaga o arquivo principal e seus sidecars convencionais
+        (`_stats.json`/`_dist.json`/`_metrics.json`) dado um path
+        RELATIVO ao project_root.
+
+        Usado quando a re-execução de uma instrução grava o output num
+        path novo (ex: filename ganhou `_{id}` na refactor de naming) e
+        precisamos limpar o arquivo + sidecars antigos que ficaram
+        órfãos. Falhas individuais são engolidas — limpeza órfã não
+        pode bloquear a sincronização do contexto.
+        """
+        if not self._project or not old_rel_path:
+            return
+        try:
+            old_abs = self._project.storage.project_root / old_rel_path
+            if old_abs.exists():
+                old_abs.unlink()
+            parent = old_abs.parent
+            stem = old_abs.stem
+            for suffix in ("_stats.json", "_dist.json", "_metrics.json"):
+                sc = parent / (stem + suffix)
+                if sc.exists():
+                    sc.unlink()
+        except Exception:
+            pass  # cleanup órfã é best-effort
+
     def _delete_instruction_output_files(
         self,
         instruction: StrategyInstructionDefinition,
@@ -5332,12 +5358,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 and old_ref.path.replace("\\", "/")
                     != resource.artifact_ref.path.replace("\\", "/")
             ):
-                try:
-                    old_abs = self._project.storage.project_root / old_ref.path
-                    if old_abs.exists():
-                        old_abs.unlink()
-                except Exception:
-                    pass
+                self._unlink_old_artifact_with_sidecars(old_ref.path)
 
         # Run All: limpa órfãos por rename/remoção/toggle antes do save
         # final (mesma lógica que o caminho single-instruction usa via
@@ -5386,12 +5407,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 and old_ref.path.replace("\\", "/")
                     != artifact_ref.path.replace("\\", "/")
             ):
-                try:
-                    old_abs = self._project.storage.project_root / old_ref.path
-                    if old_abs.exists():
-                        old_abs.unlink()
-                except Exception:
-                    pass
+                self._unlink_old_artifact_with_sidecars(old_ref.path)
 
         self._save_current_definition()
 
