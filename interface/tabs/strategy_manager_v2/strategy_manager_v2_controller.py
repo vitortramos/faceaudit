@@ -549,36 +549,48 @@ class StrategyManagerV2Controller(QtCore.QObject):
         if not new_hashes:
             return (0, 0)
 
-        # Atualiza hash + coleta ids únicos afetados (pra cascade).
-        affected_unique_ids: Set[str] = set()
+        # Atualiza hash + coleta (uid, strategy_id) pra cascade ESCOPADO.
+        # CRÍTICO: só atualiza ref + cascade quando o hash da ref específica
+        # estava STALE. Refs que JÁ tinham hash correto (caso comum em
+        # primary compartilhado entre strategies onde só uma teve load
+        # falhado e ficou com hash antigo) NÃO são tocadas — preservam
+        # seus derivados.
+        affected_per_strategy: dict = {}  # strategy_id -> set of unique_ids
         updated_count = 0
         touched_strategy_ids: Set[str] = set()
         for defn in self._definitions:
             for res in defn.resources:
                 ref = res.artifact_ref
-                if ref and ref.path in new_hashes:
-                    ref.hash = new_hashes[ref.path]
-                    # Força re-hidratação na próxima leitura. Crítico
-                    # pra que `_collect_primary_embedding_columns` veja
-                    # `column_specs` novos (ex: dataset re-enriquecido
-                    # com nova coluna de embedding).
-                    res.payload = None
-                    if (
-                        self._execution_context is not None
-                        and self._execution_context.has_resource(res.resource_id)
-                    ):
-                        try:
-                            ctx_res = self._execution_context.get_resource(
-                                res.resource_id
-                            )
-                            if ctx_res is not None:
-                                ctx_res.payload = None
-                        except Exception:
-                            pass
-                    updated_count += 1
-                    if res.id:
-                        affected_unique_ids.add(res.id)
-                    touched_strategy_ids.add(defn.strategy_id)
+                if not (ref and ref.path in new_hashes):
+                    continue
+                new_h = new_hashes[ref.path]
+                # SKIP refs já com hash correto — elas não estão modified.
+                if ref.hash == new_h:
+                    continue
+                ref.hash = new_h
+                # Força re-hidratação na próxima leitura. Crítico
+                # pra que `_collect_primary_embedding_columns` veja
+                # `column_specs` novos (ex: dataset re-enriquecido
+                # com nova coluna de embedding).
+                res.payload = None
+                if (
+                    self._execution_context is not None
+                    and self._execution_context.has_resource(res.resource_id)
+                ):
+                    try:
+                        ctx_res = self._execution_context.get_resource(
+                            res.resource_id
+                        )
+                        if ctx_res is not None:
+                            ctx_res.payload = None
+                    except Exception:
+                        pass
+                updated_count += 1
+                if res.id:
+                    affected_per_strategy.setdefault(
+                        defn.strategy_id, set(),
+                    ).add(res.id)
+                touched_strategy_ids.add(defn.strategy_id)
 
         # Salva primeiro as definitions com hash atualizado.
         for defn in self._definitions:
@@ -588,22 +600,30 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 except Exception:
                     pass
 
-        # Cascade: invalida todos os dependentes de cada id único afetado.
-        # `_invalidate_dependents_of` já cuida do save após.
+        # Cascade ESCOPADO: invalida dependentes APENAS dentro da strategy
+        # que tinha a ref stale. Strategies com hash já correto NÃO são
+        # cascadadas — seus derivados permanecem válidos.
         total_invalidated = 0
-        for uid in affected_unique_ids:
-            before = len([
-                r for defn in self._definitions for r in defn.resources
-                if r.category == ResourceCategory.DERIVED
-                and r.artifact_ref is not None
-            ])
-            self._invalidate_dependents_of(uid)
-            after = len([
-                r for defn in self._definitions for r in defn.resources
-                if r.category == ResourceCategory.DERIVED
-                and r.artifact_ref is not None
-            ])
-            total_invalidated += max(0, before - after)
+        for strategy_id, uids in affected_per_strategy.items():
+            for uid in uids:
+                before = len([
+                    r for d in self._definitions
+                    if d.strategy_id == strategy_id
+                    for r in d.resources
+                    if r.category == ResourceCategory.DERIVED
+                    and r.artifact_ref is not None
+                ])
+                self._invalidate_dependents_of(
+                    uid, scope_strategy_ids={strategy_id},
+                )
+                after = len([
+                    r for d in self._definitions
+                    if d.strategy_id == strategy_id
+                    for r in d.resources
+                    if r.category == ResourceCategory.DERIVED
+                    and r.artifact_ref is not None
+                ])
+                total_invalidated += max(0, before - after)
 
         return (updated_count, total_invalidated)
 
@@ -2382,7 +2402,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         return touched
 
-    def _invalidate_dependents_of(self, root_unique_id: str) -> None:
+    def _invalidate_dependents_of(
+        self,
+        root_unique_id: str,
+        scope_strategy_ids: Optional[Set[str]] = None,
+    ) -> None:
         """Invalida em cascata todas as instruções que dependem direta ou
         transitivamente do recurso editado.
 
@@ -2397,9 +2421,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
           sem precisar de filtro de strategy_id.
         - **PRIMARY**: configs/datasets importados compartilham `id` entre
           todas as estratégias que os referenciam (representam mesma
-          identidade física). O BFS naturalmente atinge todas — exatamente
-          o que se espera de edição de config compartilhada via ✎ ou
-          re-save de dataset primário externo.
+          identidade física). Sem `scope_strategy_ids`, o BFS atinge
+          todas — comportamento padrão pra edição de config compartilhada
+          via ✎ ou re-save de dataset primário externo.
+
+        `scope_strategy_ids` (opcional): restringe o BFS apenas às strategies
+        listadas. Usado pelo handler de "modified artifact_refs" (integrity
+        check), onde APENAS as strategies cujo ref específico tinha hash
+        stale devem ter dependents invalidados — strategies cujo ref já
+        estava com hash correto NÃO precisam de cascade (seus derivados
+        permanecem válidos).
 
         O mapeamento `resource_id → id` é local por estratégia, porque
         cada `instr.input_resource_ids` usa `resource_id` (label).
@@ -2418,6 +2449,11 @@ class StrategyManagerV2Controller(QtCore.QObject):
             processed |= to_process
 
             for defn in self._definitions:
+                if (
+                    scope_strategy_ids is not None
+                    and defn.strategy_id not in scope_strategy_ids
+                ):
+                    continue
                 # Map local desta defn: resource_id (label) -> id (chave única).
                 # Recalculado a cada iteração porque outputs invalidados
                 # podem ter sido removidos/zerados em iterações anteriores
