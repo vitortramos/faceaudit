@@ -275,6 +275,51 @@ class TestLocalProjectArtifactStorage:
         assert "TP-12345678" in ref.path
         assert (tmp_path / "models" / "ST_09" / "pipeline").is_dir()
 
+    def test_cleanup_orphan_sidecars_deletes_orphans(self, storage, tmp_path):
+        """Sidecars sem arquivo pai no mesmo dir são deletados."""
+        # Cria 3 sidecars órfãos (sem pai) em diretórios diferentes
+        scores_dir = tmp_path / "scores" / "ST_OR" / "raw"
+        scores_dir.mkdir(parents=True)
+        (scores_dir / "GhostScore_dist.json").write_text("{}", encoding="utf-8")
+
+        results_dir = tmp_path / "results" / "ST_OR" / "validation"
+        results_dir.mkdir(parents=True)
+        (results_dir / "GhostResult_metrics.json").write_text("{}", encoding="utf-8")
+
+        datasets_dir = tmp_path / "datasets"
+        (datasets_dir / "GhostDataset_stats.json").write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert len(deleted) == 3
+        assert not (scores_dir / "GhostScore_dist.json").exists()
+        assert not (results_dir / "GhostResult_metrics.json").exists()
+        assert not (datasets_dir / "GhostDataset_stats.json").exists()
+
+    def test_cleanup_orphan_sidecars_preserves_paired(self, storage, tmp_path):
+        """Sidecar com arquivo pai no mesmo dir NÃO é deletado."""
+        scores_dir = tmp_path / "scores" / "ST_OK" / "raw"
+        scores_dir.mkdir(parents=True)
+        parent = scores_dir / "RealScore.parquet"
+        sidecar = scores_dir / "RealScore_dist.json"
+        parent.write_bytes(b"\x00")  # arquivo pai (qualquer conteúdo)
+        sidecar.write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert deleted == []
+        assert sidecar.exists(), "Sidecar com pai NÃO deveria ter sido apagado"
+        assert parent.exists()
+
+    def test_cleanup_orphan_sidecars_ignores_non_sidecar_files(self, storage, tmp_path):
+        """Arquivos que não batem com suffixes de sidecar são ignorados."""
+        d = tmp_path / "scores" / "ST_X" / "raw"
+        d.mkdir(parents=True)
+        random_json = d / "config.json"  # não é sidecar
+        random_json.write_text("{}", encoding="utf-8")
+
+        deleted = storage.cleanup_orphan_sidecars()
+        assert deleted == []
+        assert random_json.exists()
+
     def test_list_artifacts_finds_files_in_nested_subdirs(self, storage):
         """`list_artifacts` usa rglob — deve achar arquivos em subpastas."""
         from faceaudit.models.transformation_pipeline_config import (

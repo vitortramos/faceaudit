@@ -130,12 +130,33 @@ class FaceAuditProject:
         artifact_ref de seus recursos. Para cada referência com hash registrado,
         recalcula o SHA-256 e compara.
 
+        Antes da varredura faz limpeza silenciosa de sidecars órfãos
+        (`_dist.json`/`_metrics.json`/`_stats.json` cujo arquivo pai não
+        existe mais — tipicamente sobrevivem a re-execuções onde o path
+        do principal mudou). Sidecars são 100% derivados, sem perda de
+        informação.
+
         O resultado é armazenado em self.integrity_results e também retornado.
 
         Returns:
             Lista de ArtifactIntegrityResult, uma por artefato verificado.
             Entradas com status MODIFIED ou MISSING indicam problemas.
         """
+        # Cleanup silencioso de sidecars órfãos antes da varredura. Log
+        # no console pra audit trail (não vira QMessageBox — sidecars
+        # são regeneráveis).
+        try:
+            deleted_sidecars = self._storage.cleanup_orphan_sidecars()
+            if deleted_sidecars:
+                print(
+                    f"[FaceAuditProject] Limpeza automática: "
+                    f"{len(deleted_sidecars)} sidecar(s) órfão(s) apagado(s)."
+                )
+                for path in deleted_sidecars:
+                    print(f"  • {path}")
+        except Exception as exc:
+            print(f"[FaceAuditProject] Falha ao limpar sidecars órfãos: {exc}")
+
         refs: List[StrategyArtifactReference] = []
 
         for definition in self._definition_repository.list_definitions():

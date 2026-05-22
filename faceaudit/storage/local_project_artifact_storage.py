@@ -396,6 +396,66 @@ class LocalProjectArtifactStorage(ArtifactStorageProtocol):
 
         return results
 
+    def cleanup_orphan_sidecars(self) -> List[str]:
+        """Apaga sidecars (`_stats.json`/`_dist.json`/`_metrics.json`) cujo
+        arquivo principal não existe mais no mesmo diretório.
+
+        Convenção do sistema: sidecars são SEMPRE escritos ao lado de um
+        arquivo principal (parquet/pkl) via `parent_path.with_name(stem + suffix)`.
+        Quando o principal é re-gravado em um path diferente (ex: filename
+        ganhou `_{id}` numa refactor de naming) ou é apagado, o sidecar
+        antigo fica órfão. Como sidecars são 100% derivados (regerados
+        sob demanda a partir do principal), apagá-los é seguro — zero
+        perda de informação.
+
+        Retorna a lista de paths relativos apagados (forward-slash POSIX),
+        pra log/telemetria do caller. Falhas individuais são engolidas
+        (filesystem locks, permission denied) — cleanup é best-effort.
+        """
+        deleted: List[str] = []
+        for folder in self._ORPHAN_SCAN_FOLDERS:
+            folder_path = self._root / folder.value
+            if not folder_path.exists():
+                continue
+
+            for file_path in folder_path.rglob("*"):
+                if not file_path.is_file():
+                    continue
+
+                # Detecta qual suffix bate, se algum.
+                matched_suffix = None
+                for suffix in self._SIDECAR_SUFFIXES:
+                    if file_path.name.endswith(suffix):
+                        matched_suffix = suffix
+                        break
+                if matched_suffix is None:
+                    continue
+
+                # Stem do arquivo pai (sem o sufixo do sidecar). Ex:
+                # 'PLDA MODEL_TS-abcd_dist.json' → 'PLDA MODEL_TS-abcd'.
+                parent_stem = file_path.name[: -len(matched_suffix)]
+
+                # Pai pode ter qualquer extensão registrada (.parquet/.pkl
+                # cobrem todos os tipos de sidecar atuais). Cheque genérica
+                # via glob — qualquer sibling com mesmo stem qualifica.
+                has_parent = any(
+                    sibling.is_file()
+                    and sibling.stem == parent_stem
+                    and sibling.name != file_path.name
+                    for sibling in file_path.parent.iterdir()
+                )
+                if has_parent:
+                    continue
+
+                try:
+                    rel_path = file_path.relative_to(self._root).as_posix()
+                    file_path.unlink()
+                    deleted.append(rel_path)
+                except Exception:
+                    pass
+
+        return deleted
+
     # Subpastas escaneadas em busca de arquivos órfãos. Mantemos apenas as pastas
     # cujos arquivos são tipicamente referenciados via StrategyArtifactReference.
     # GRAPHICS/REPORTS/CHECKPOINTS são produzidos por executores mas não entram em
