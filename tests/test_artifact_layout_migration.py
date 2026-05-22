@@ -118,11 +118,11 @@ class TestStrategyIsolationInHierarchicalLayout:
         cfg = TransformationPipelineConfig(name="pipe", transformators=[])
         ref_a = s.save_artifact(
             StrategyArtifactType.TRAINED_PIPELINE, cfg,
-            strategy_id="SID_A", step_id="pipe_x",
+            strategy_id="SID_A", step_id="pipe_x", id="TP-aaaaaaaa",
         )
         ref_b = s.save_artifact(
             StrategyArtifactType.TRAINED_PIPELINE, cfg,
-            strategy_id="SID_B", step_id="pipe_y",
+            strategy_id="SID_B", step_id="pipe_y", id="TP-bbbbbbbb",
         )
 
         path_a = tmp_path / ref_a.path

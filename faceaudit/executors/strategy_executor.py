@@ -266,11 +266,23 @@ class StrategyExecutor:
         if not resource.has_payload or self._artifact_storage is None:
             return None
 
-        artifact_type = resource.resource_type.to_artifact_type()
+        # CRÍTICO: usar `resource.to_artifact_type()` (método do StrategyResource)
+        # e não `resource.resource_type.to_artifact_type()` (método do enum).
+        # O método do resource inspeciona `payload.metadata` pra rotear
+        # `SIMILARITY_SCORES` em MINED_SCORES / VECTORIZED_SCORES quando
+        # apropriado — sem isso PAIR_MINING e SCORE_VECTORIZATION caem
+        # todos em `scores/<sid>/raw/` errado.
+        artifact_type = resource.to_artifact_type()
         if artifact_type is None:
             return None
 
-        kwargs = {"strategy_id": strategy_id, "resource_id": resource.resource_id}
+        kwargs = {
+            "strategy_id": strategy_id,
+            "resource_id": resource.resource_id,
+            # `id` técnico (`SS-abc12345`, `TP-...`, etc) entra no filename
+            # como sufixo pra disambiguação contra colisão de nome.
+            "id": resource.id,
+        }
 
         # TRAINED_PIPELINE usa step_id ao invés de resource_id no template
         if artifact_type == StrategyArtifactType.TRAINED_PIPELINE:

@@ -72,64 +72,80 @@ class TestStrategyFileType:
         assert p == Path("models/ST_01/strategy_model.pkl")
 
     def test_build_path_trained_pipeline(self):
-        p = StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a")
-        assert p == Path("models/ST_01/pipeline/pipe_a.pkl")
+        p = StrategyFileType.TRAINED_PIPELINE.build_path(
+            strategy_id="ST_01", step_id="pipe_a", id="TP-12345678",
+        )
+        assert p == Path("models/ST_01/pipeline/pipe_a_TP-12345678.pkl")
 
     def test_build_path_trained_similarity_model(self):
         p = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
-            strategy_id="ST_01", resource_id="SIM-1",
+            strategy_id="ST_01", resource_id="SIM-1", id="TS-aabbccdd",
         )
-        assert p == Path("models/ST_01/similarity/SIM-1.pkl")
+        assert p == Path("models/ST_01/similarity/SIM-1_TS-aabbccdd.pkl")
 
     def test_build_path_similarity_scores(self):
         p = StrategyFileType.SIMILARITY_SCORES.build_path(
-            strategy_id="ST_01", resource_id="SC-1",
+            strategy_id="ST_01", resource_id="SC-1", id="SS-aabbccdd",
         )
-        assert p == Path("scores/ST_01/raw/SC-1.parquet")
+        assert p == Path("scores/ST_01/raw/SC-1_SS-aabbccdd.parquet")
 
     def test_build_path_mined_scores(self):
         p = StrategyFileType.MINED_SCORES.build_path(
-            strategy_id="ST_01", resource_id="SC-MIN",
+            strategy_id="ST_01", resource_id="SC-MIN", id="SS-11111111",
         )
-        assert p == Path("scores/ST_01/mined/SC-MIN.parquet")
+        assert p == Path("scores/ST_01/mined/SC-MIN_SS-11111111.parquet")
 
     def test_build_path_vectorized_scores(self):
         p = StrategyFileType.VECTORIZED_SCORES.build_path(
-            strategy_id="ST_01", resource_id="SC-VEC",
+            strategy_id="ST_01", resource_id="SC-VEC", id="SS-22222222",
         )
-        assert p == Path("scores/ST_01/vectorized/SC-VEC.parquet")
+        assert p == Path("scores/ST_01/vectorized/SC-VEC_SS-22222222.parquet")
 
     def test_build_path_calibrated_scores(self):
         p = StrategyFileType.CALIBRATED_SCORES.build_path(
-            strategy_id="ST_01", resource_id="SC-CAL",
+            strategy_id="ST_01", resource_id="SC-CAL", id="CS-aabbccdd",
         )
-        assert p == Path("scores/ST_01/calibrated/SC-CAL.parquet")
+        assert p == Path("scores/ST_01/calibrated/SC-CAL_CS-aabbccdd.parquet")
 
     def test_build_path_validation_result(self):
         p = StrategyFileType.VALIDATION_RESULT.build_path(
-            strategy_id="ST_01", resource_id="VAL-1",
+            strategy_id="ST_01", resource_id="VAL-1", id="VR-aabbccdd",
         )
-        assert p == Path("results/ST_01/validation/VAL-1.pkl")
+        assert p == Path("results/ST_01/validation/VAL-1_VR-aabbccdd.pkl")
 
     def test_build_path_casework_visualization(self):
         p = StrategyFileType.CASEWORK_VISUALIZATION.build_path(
-            strategy_id="ST_01", resource_id="CASE-1",
+            strategy_id="ST_01", resource_id="CASE-1", id="CV-aabbccdd",
         )
-        assert p == Path("results/ST_01/casework/CASE-1.pkl")
+        assert p == Path("results/ST_01/casework/CASE-1_CV-aabbccdd.pkl")
 
     def test_build_path_hubness_ablation_has_distinct_suffix(self):
         """HUBNESS_REPORT e HUBNESS_ABLATION_RESULT compartilham subpasta
         `results/<sid>/hubness/`. Pra não colidirem o ablation tem o
-        sufixo `_ablation` no nome do arquivo."""
+        sufixo `_ablation` no nome do arquivo (depois do id)."""
         report = StrategyFileType.HUBNESS_REPORT.build_path(
-            strategy_id="ST_01", resource_id="HUB-1",
+            strategy_id="ST_01", resource_id="HUB-1", id="HR-aabbccdd",
         )
         ablation = StrategyFileType.HUBNESS_ABLATION_RESULT.build_path(
-            strategy_id="ST_01", resource_id="HUB-1",
+            strategy_id="ST_01", resource_id="HUB-1", id="HA-aabbccdd",
         )
-        assert report == Path("results/ST_01/hubness/HUB-1.pkl")
-        assert ablation == Path("results/ST_01/hubness/HUB-1_ablation.pkl")
+        assert report == Path("results/ST_01/hubness/HUB-1_HR-aabbccdd.pkl")
+        assert ablation == Path("results/ST_01/hubness/HUB-1_HA-aabbccdd_ablation.pkl")
         assert report != ablation
+
+    def test_build_path_filename_disambiguates_same_resource_id(self):
+        """Mesmo `resource_id` em duas estratégias produz filenames
+        diferentes graças ao `_{id}` sufixo. Garante que dois recursos
+        com nome igual não colidem."""
+        a = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
+            strategy_id="ST_01", resource_id="PLDA MODEL", id="TS-aaaaaaaa",
+        )
+        b = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(
+            strategy_id="ST_02", resource_id="PLDA MODEL", id="TS-bbbbbbbb",
+        )
+        assert a != b
+        assert a.name == "PLDA MODEL_TS-aaaaaaaa.pkl"
+        assert b.name == "PLDA MODEL_TS-bbbbbbbb.pkl"
 
     def test_build_path_missing_kwarg_raises(self):
         with pytest.raises(ValueError, match="strategy_id"):
@@ -237,8 +253,8 @@ class TestLocalProjectArtifactStorage:
         assert found[0].artifact_type == StrategyArtifactType.STRATEGY_DEFINITION
 
     def test_save_artifact_creates_nested_subdirs(self, storage, tmp_path):
-        """Templates com slashes (`models/<sid>/pipeline/<step_id>`) devem
-        criar subpastas automaticamente via `mkdir(parents=True)`."""
+        """Templates com slashes (`models/<sid>/pipeline/<step_id>_<id>`)
+        devem criar subpastas automaticamente via `mkdir(parents=True)`."""
         from faceaudit.models.transformation_pipeline_config import (
             TransformationPipelineConfig,
         )
@@ -248,13 +264,15 @@ class TestLocalProjectArtifactStorage:
             cfg,
             strategy_id="ST_09",
             step_id="pipe_a",
+            id="TP-12345678",
         )
         resolved = storage.resolve_artifact(ref)
         assert resolved is not None
         assert resolved.exists()
-        # Path inclui subpastas — `models/ST_09/pipeline/pipe_a.pkl`
+        # Path inclui subpastas — `models/ST_09/pipeline/pipe_a_TP-12345678.pkl`
         assert "ST_09" in ref.path
         assert "pipeline" in ref.path
+        assert "TP-12345678" in ref.path
         assert (tmp_path / "models" / "ST_09" / "pipeline").is_dir()
 
     def test_list_artifacts_finds_files_in_nested_subdirs(self, storage):
@@ -268,6 +286,7 @@ class TestLocalProjectArtifactStorage:
             cfg,
             strategy_id="ST_NESTED",
             step_id="step_x",
+            id="TP-abcdefab",
         )
         found = storage.list_artifacts(StrategyArtifactType.TRAINED_PIPELINE)
         assert len(found) == 1

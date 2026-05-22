@@ -42,35 +42,40 @@ class StrategyFileType(Enum):
     )
 
     # --- MODELOS COMPONENTES (subpastas em models/<strategy_id>/) ---
+    # Filenames combinam `{resource_id}_{id}` pra evitar colisão quando
+    # dois recursos compartilham nome (resource_id) — o id técnico
+    # (`TP-abcd1234`, `TS-...`, etc.) é único globalmente.
     TRAINED_PIPELINE = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/pipeline/{step_id}",
+        "{strategy_id}/pipeline/{step_id}_{id}",
     )
     TRAINED_SIMILARITY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/similarity/{resource_id}",
+        "{strategy_id}/similarity/{resource_id}_{id}",
     )
     TRAINED_CALIBRATION_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/calibration/{resource_id}",
+        "{strategy_id}/calibration/{resource_id}_{id}",
     )
     TRAINED_TYPICALITY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/typicality/{resource_id}",
+        "{strategy_id}/typicality/{resource_id}_{id}",
     )
 
     # --- DATASETS ---
     # Path físico pra DATASETs DERIVADOS (produzidos por instrução).
     # Distinto de SOURCE_DATASET (cópia do dataset importado, nome
     # escolhido pelo usuário) — ver mapping em `for_artifact`.
+    # Filename `{strategy_id}_{resource_id}_{id}` — `_{id}` desambigua
+    # contra colisão de nome dentro da mesma estratégia.
     DERIVED_DATASET = (
         ".parquet",
         ProjectFolder.DATASETS,
-        "{strategy_id}_{resource_id}",
+        "{strategy_id}_{resource_id}_{id}",
     )
     TRANSFORMED_DATASET = (
         ".parquet",
@@ -101,52 +106,53 @@ class StrategyFileType(Enum):
     )
 
     # --- SCORE DATASETS (scores/<strategy_id>/<subtipo>/) ---
+    # Filename: `{resource_id}_{id}` — disambiguação igual aos modelos.
     SIMILARITY_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/raw/{resource_id}",
+        "{strategy_id}/raw/{resource_id}_{id}",
     )
     MINED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/mined/{resource_id}",
+        "{strategy_id}/mined/{resource_id}_{id}",
     )
     VECTORIZED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/vectorized/{resource_id}",
+        "{strategy_id}/vectorized/{resource_id}_{id}",
     )
     CALIBRATED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/calibrated/{resource_id}",
+        "{strategy_id}/calibrated/{resource_id}_{id}",
     )
 
     # --- RESULTADOS DE ANÁLISE (results/<strategy_id>/<tipo>/) ---
     TRAJECTORY_DATA = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/trajectory/{resource_id}",
+        "{strategy_id}/trajectory/{resource_id}_{id}",
     )
     VALIDATION_RESULT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/validation/{resource_id}",
+        "{strategy_id}/validation/{resource_id}_{id}",
     )
     CASEWORK_VISUALIZATION = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/casework/{resource_id}",
+        "{strategy_id}/casework/{resource_id}_{id}",
     )
     HUBNESS_REPORT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/hubness/{resource_id}",
+        "{strategy_id}/hubness/{resource_id}_{id}",
     )
     HUBNESS_ABLATION_RESULT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/hubness/{resource_id}_ablation",
+        "{strategy_id}/hubness/{resource_id}_{id}_ablation",
     )
     GRAPHIC = (
         ".png",
@@ -209,8 +215,8 @@ class StrategyFileType(Enum):
             StrategyFileType.STRATEGY_DEFINITION.build_path(strategy_id="ST_01")
             # → Path("definitions/ST_01_definition.json")
 
-            StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a")
-            # → Path("models/ST_01/pipeline/pipe_a.pkl")
+            StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a", id="TP-abc12345")
+            # → Path("models/ST_01/pipeline/pipe_a_TP-abc12345.pkl")
 
         Args:
             **kwargs: Variáveis necessárias para preencher o name_template.
