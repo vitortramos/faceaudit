@@ -33,6 +33,7 @@ class InstructionExecutionWorker(QtCore.QObject):
         instruction,
         context,
         strategy_id: Optional[str] = None,
+        strategy_name: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -40,6 +41,7 @@ class InstructionExecutionWorker(QtCore.QObject):
         self._instruction = instruction
         self._context = context
         self._strategy_id = strategy_id
+        self._strategy_name = strategy_name
 
     @QtCore.pyqtSlot()
     def run(self):
@@ -110,6 +112,7 @@ class InstructionExecutionWorker(QtCore.QObject):
                 artifact_ref = self._executor.persist_produced_resource(
                     resource=resource,
                     strategy_id=self._strategy_id,
+                    strategy_name=self._strategy_name,
                     progress_callback=self.log_message.emit,
                 )
                 if artifact_ref is not None:

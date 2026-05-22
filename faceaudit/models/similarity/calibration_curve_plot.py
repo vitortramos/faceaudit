@@ -209,23 +209,29 @@ def calibration_curve_png_path(
     project_root: Union[str, Path],
     strategy_id: str,
     resource_id: str,
+    *,
+    strategy_name: str = "",
 ) -> Path:
     """Path absoluto do PNG snapshot da curva de calibração.
 
     Convenção:
-    `<project>/graphics/<strategy_id>/calibrated_scores/<resource_id>_curve.png`.
+    `<project>/graphics/<strategy_folder>/calibrated_scores/<resource_id>_curve.png`,
+    com `strategy_folder` = `<sanitize(strategy_name)>_<strategy_id>`.
 
     Estável e determinístico — mesmo path é usado pra gravar (executor
     pós-persist), ler (painel de resultados) e apagar (Apply Changes).
     Subfolder `calibrated_scores` reusa a convenção da distribuição
     pra que tudo associado a um output CALIBRATED_SCORES viva junto.
     """
+    from faceaudit.models.strategy.strategy_folder import (
+        sanitize_name, strategy_folder_name,
+    )
     return (
         Path(project_root)
         / ProjectFolder.GRAPHICS.value
-        / _sanitize_name(strategy_id)
+        / strategy_folder_name(strategy_id, strategy_name)
         / "calibrated_scores"
-        / f"{_sanitize_name(resource_id)}_curve.png"
+        / f"{sanitize_name(resource_id)}_curve.png"
     )
 
 

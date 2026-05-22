@@ -68,14 +68,34 @@ class TestStrategyFileType:
         assert p == Path("definitions/ST_01_definition.json")
 
     def test_build_path_trained_model(self):
+        """Sem `strategy_folder`/`strategy_name`, auto-fill usa apenas
+        `strategy_id` como folder — backward-compat com callers legados."""
         p = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(strategy_id="ST_01")
         assert p == Path("models/ST_01/strategy_model.pkl")
+
+    def test_build_path_trained_model_with_name(self):
+        """Com `strategy_name`, folder vira `<name>_<sid>`."""
+        p = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(
+            strategy_id="ST_01", strategy_name="My Strategy",
+        )
+        assert p == Path("models/My_Strategy_ST_01/strategy_model.pkl")
 
     def test_build_path_trained_pipeline(self):
         p = StrategyFileType.TRAINED_PIPELINE.build_path(
             strategy_id="ST_01", step_id="pipe_a", id="TP-12345678",
         )
         assert p == Path("models/ST_01/pipeline/pipe_a_TP-12345678.pkl")
+
+    def test_build_path_trained_pipeline_with_explicit_strategy_folder(self):
+        """Caller pode passar `strategy_folder` direto — override do
+        auto-fill."""
+        p = StrategyFileType.TRAINED_PIPELINE.build_path(
+            strategy_id="ST_01",
+            strategy_folder="PLDA_ST_01",
+            step_id="pipe_a",
+            id="TP-12345678",
+        )
+        assert p == Path("models/PLDA_ST_01/pipeline/pipe_a_TP-12345678.pkl")
 
     def test_build_path_trained_similarity_model(self):
         p = StrategyFileType.TRAINED_SIMILARITY_MODEL.build_path(

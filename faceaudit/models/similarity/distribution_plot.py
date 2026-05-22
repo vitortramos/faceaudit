@@ -165,33 +165,36 @@ def score_distribution_png_path(
     strategy_id: str,
     resource_id: str,
     *,
+    strategy_name: str = "",
     calibrated: bool = False,
 ) -> Path:
     """Path absoluto do PNG snapshot de distribuição de scores.
 
     Convenção:
-    `<project>/graphics/<strategy_id>/<subfolder>/<resource_id>_dist.png`,
-    com `subfolder` = `similarity_scores` (default) ou `calibrated_scores`
-    (quando `calibrated=True`). Subfolders por tipo de saída evitam que
-    a pasta `graphics/` vire um lixão flat de centenas de PNGs.
+    `<project>/graphics/<strategy_folder>/<subfolder>/<resource_id>_dist.png`,
+    com `strategy_folder` = `<sanitize(strategy_name)>_<strategy_id>` (ou
+    apenas `<strategy_id>` em fallback) e `subfolder` = `similarity_scores`
+    (default) ou `calibrated_scores` (quando `calibrated=True`).
 
     Estável e determinístico — mesmo path é usado pra gravar (executor
     pós-persist), ler (painel de resultados) e apagar (Apply Changes).
     """
+    from faceaudit.models.strategy.strategy_folder import strategy_folder_name
     subfolder = "calibrated_scores" if calibrated else "similarity_scores"
     return (
         Path(project_root)
         / ProjectFolder.GRAPHICS.value
-        / _sanitize_name(strategy_id)
+        / strategy_folder_name(strategy_id, strategy_name)
         / subfolder
         / f"{_sanitize_name(resource_id)}_dist.png"
     )
 
 
 def _sanitize_name(raw: str) -> str:
-    """Normaliza um identificador pra uso em nome de arquivo."""
-    bad = '\\/:*?"<>| '
-    out = raw or "unknown"
-    for ch in bad:
-        out = out.replace(ch, "_")
-    return out
+    """DEPRECATED: usa `faceaudit.models.strategy.strategy_folder.sanitize_name`.
+
+    Wrapper kept for backward-compat — vários módulos ainda importam de
+    aqui via `from faceaudit.models.similarity.distribution_plot import _sanitize_name`.
+    """
+    from faceaudit.models.strategy.strategy_folder import sanitize_name
+    return sanitize_name(raw)

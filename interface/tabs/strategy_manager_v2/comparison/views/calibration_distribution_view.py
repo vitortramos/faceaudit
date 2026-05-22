@@ -268,6 +268,7 @@ class CalibrationDistributionView(QtWidgets.QWidget):
             return None
         return score_distribution_png_path(
             self._project_root, item.strategy_id, item.resource_id,
+            strategy_name=item.strategy_name or "",
             calibrated=False,
         )
 

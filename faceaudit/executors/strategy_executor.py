@@ -253,11 +253,18 @@ class StrategyExecutor:
         self,
         resource: StrategyResource,
         strategy_id: str,
+        strategy_name: str = "",
         progress_callback=None,
     ) -> Optional[StrategyArtifactReference]:
         """
         Persiste um recurso produzido em disco via artifact_storage.
         Retorna o StrategyArtifactReference ou None se não for persistível.
+
+        `strategy_name` (opcional): usado pra compor a subpasta canônica
+        `<sanitize(name)>_<strategy_id>` nas pastas hierárquicas
+        (models/, scores/, results/, graphics/). Caller deve passar
+        `definition.name` quando disponível pra obter folders legíveis.
+        Fallback (string vazia): subpasta vira apenas `<strategy_id>`.
 
         progress_callback (opcional): callable(str) chamada com mensagens de
         progresso durante a serialização. Útil para refletir no dialog de UI
@@ -276,8 +283,14 @@ class StrategyExecutor:
         if artifact_type is None:
             return None
 
+        from faceaudit.models.strategy.strategy_folder import strategy_folder_name
+
         kwargs = {
             "strategy_id": strategy_id,
+            # `strategy_folder` = `<sanitize(name)>_<strategy_id>` — usado
+            # nos templates hierárquicos pra ter subpasta legível.
+            # Templates flat (datasets/, etc.) usam só `strategy_id`.
+            "strategy_folder": strategy_folder_name(strategy_id, strategy_name),
             "resource_id": resource.resource_id,
             # `id` técnico (`SS-abc12345`, `TP-...`, etc) entra no filename
             # como sufixo pra disambiguação contra colisão de nome.
@@ -333,6 +346,7 @@ class StrategyExecutor:
                         )
                         png_path = score_distribution_png_path(
                             project_root, strategy_id, resource.resource_id,
+                            strategy_name=strategy_name,
                             calibrated=is_calibrated,
                         )
                         resource.payload.write_distribution_png(png_path)
@@ -348,6 +362,7 @@ class StrategyExecutor:
                             )
                             curve_png_path = calibration_curve_png_path(
                                 project_root, strategy_id, resource.resource_id,
+                                strategy_name=strategy_name,
                             )
                             resource.payload.write_calibration_curve_png(
                                 curve_png_path,
@@ -366,6 +381,7 @@ class StrategyExecutor:
                     if isinstance(resource.payload, CaseworkVisualizationResult):
                         png_path = casework_visualization_png_path(
                             project_root, strategy_id, resource.resource_id,
+                            strategy_name=strategy_name,
                         )
                         render_casework_png(resource.payload, png_path)
                 elif (
@@ -386,6 +402,7 @@ class StrategyExecutor:
                     if isinstance(resource.payload, KNNTypicalityModel):
                         png_path = typicality_distribution_png_path(
                             project_root, strategy_id, resource.resource_id,
+                            strategy_name=strategy_name,
                         )
                         render_typicality_distribution_png(
                             resource.payload, png_path,
@@ -405,6 +422,7 @@ class StrategyExecutor:
                     if isinstance(resource.payload, StrategyValidationResult):
                         paths = validation_result_png_paths(
                             project_root, strategy_id, resource.resource_id,
+                            strategy_name=strategy_name,
                         )
                         render_validation_pngs(resource.payload, paths)
                         # Sidecar de métricas escalares — sobrevive ao

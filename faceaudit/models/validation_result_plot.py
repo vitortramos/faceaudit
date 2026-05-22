@@ -437,23 +437,26 @@ def validation_result_png_paths(
     project_root: Union[str, Path],
     strategy_id: str,
     resource_id: str,
+    *,
+    strategy_name: str = "",
 ) -> Dict[str, Path]:
     """Paths absolutos dos 4 PNGs snapshot pra um output de STRATEGY_EVALUATION.
 
     Convenção:
-    `<project>/graphics/<strategy_id>/validation_result/<resource_id>_<plot>.png`
-    com `<plot>` ∈ {`lr_distribution`, `tippett`, `det`, `ece`}.
+    `<project>/graphics/<strategy_folder>/validation_result/<resource_id>_<plot>.png`
+    com `<plot>` ∈ {`lr_distribution`, `tippett`, `det`, `ece`} e
+    `strategy_folder` = `<sanitize(strategy_name)>_<strategy_id>`.
     """
-    # Reusa o `_sanitize_name` de distribution_plot pra evitar drift.
-    from faceaudit.models.similarity.distribution_plot import _sanitize_name
-
+    from faceaudit.models.strategy.strategy_folder import (
+        sanitize_name, strategy_folder_name,
+    )
     folder = (
         Path(project_root)
         / ProjectFolder.GRAPHICS.value
-        / _sanitize_name(strategy_id)
+        / strategy_folder_name(strategy_id, strategy_name)
         / "validation_result"
     )
-    safe_resource = _sanitize_name(resource_id)
+    safe_resource = sanitize_name(resource_id)
     return {
         key: folder / f"{safe_resource}{_PLOT_SUFFIX[key]}.png"
         for key in PLOT_KEYS

@@ -1918,17 +1918,98 @@ class StrategyManagerV2Controller(QtCore.QObject):
         new_name = new_name.strip()
         if new_name == definition.name:
             return
-        definition.name = new_name
+
+        # Rename atualiza o nome lógico E move as subpastas físicas
+        # (`models/<folder>`, `scores/<folder>`, `results/<folder>`,
+        # `graphics/<folder>`) do padrão `<old_name>_<sid>` pro
+        # `<new_name>_<sid>`. Sem o mv físico, os `artifact_ref.path`
+        # continuariam apontando pra `<old_name>_<sid>/...` (que existe
+        # no disco), mas re-execução iria gravar em `<new_name>_<sid>/...`
+        # (path novo), criando inconsistência.
+        old_name = definition.name
         try:
+            self._rename_strategy_folders_and_refs(
+                definition, old_name=old_name, new_name=new_name,
+            )
+            definition.name = new_name
             self._project.definition_repository.save_definition(definition)
             self._is_dirty = False
             self._refresh_left_panel()
-            if self._current_definition and self._current_definition.strategy_id == definition.strategy_id:
+            if (
+                self._current_definition
+                and self._current_definition.strategy_id == definition.strategy_id
+            ):
                 self._strategy_editor.set_strategy_name(new_name)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(
                 self._view, "Erro", f"Não foi possível renomear a estratégia:\n{exc}"
             )
+
+    def _rename_strategy_folders_and_refs(
+        self,
+        definition: LRStrategyDefinition,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        """Move as subpastas físicas da estratégia (models/, scores/,
+        results/, graphics/) do padrão `<old_name>_<sid>` pro
+        `<new_name>_<sid>` e reescreve os `artifact_ref.path` em todos
+        os resources da definição.
+
+        Best-effort no I/O: falha de mv em uma pasta não aborta as outras
+        (resultado: state misto que vira limpeza órfã via re-execução).
+        artifact_refs são atualizados antes do `save_definition()` do
+        caller, então JSON e disco ficam consistentes mesmo se uma das
+        pastas estava ausente (algumas estratégias só usam parte das 4).
+        """
+        import shutil
+        from faceaudit.enums.project_folder import ProjectFolder
+        from faceaudit.models.strategy.strategy_folder import strategy_folder_name
+
+        strategy_id = definition.strategy_id
+        old_folder = strategy_folder_name(strategy_id, old_name)
+        new_folder = strategy_folder_name(strategy_id, new_name)
+        if old_folder == new_folder:
+            return
+
+        project_root = self._project.storage.project_root
+        # Pastas hierárquicas onde a estratégia tem subpasta própria.
+        target_parents = (
+            ProjectFolder.MODELS,
+            ProjectFolder.SCORES,
+            ProjectFolder.RESULTS,
+            ProjectFolder.GRAPHICS,
+        )
+        for folder in target_parents:
+            src = project_root / folder.value / old_folder
+            if not src.exists():
+                continue
+            dst = project_root / folder.value / new_folder
+            try:
+                if dst.exists():
+                    # Edge case: dst já existe (rename pra nome de uma
+                    # estratégia que tinha o mesmo nome+id — impossível
+                    # na prática, sid é único). Merge defensivo via
+                    # cópia + apaga src.
+                    shutil.rmtree(dst, ignore_errors=True)
+                shutil.move(str(src), str(dst))
+            except Exception:
+                pass  # cleanup órfão via re-exec compensará
+
+        # Atualiza `artifact_ref.path` em TODOS os resources DERIVED.
+        # Match prefixo `<folder>/<old_folder>/` → `<folder>/<new_folder>/`.
+        # Uso de slash como delimitador evita falsos positivos em
+        # filenames que casualmente contenham o old_folder como substring.
+        old_segment = f"/{old_folder}/"
+        new_segment = f"/{new_folder}/"
+        for res in definition.resources:
+            if res.artifact_ref is None or not res.artifact_ref.path:
+                continue
+            normalized = res.artifact_ref.path.replace("\\", "/")
+            if old_segment not in normalized:
+                continue
+            updated = normalized.replace(old_segment, new_segment, 1)
+            res.artifact_ref.path = updated
 
     def _on_remove_strategy(self, definition: LRStrategyDefinition) -> None:
         """Remove a estratégia e TODOS os seus artefatos derivados em disco.
@@ -1968,14 +2049,22 @@ class StrategyManagerV2Controller(QtCore.QObject):
         from faceaudit.enums.project_folder import ProjectFolder
         from faceaudit.enums.strategy_artifact_type import StrategyArtifactType as SAT
         from faceaudit.enums.strategy_file_type import StrategyFileType
-        from faceaudit.models.similarity.distribution_plot import _sanitize_name
         from faceaudit.models.storage.strategy_artifact_reference import (
             StrategyArtifactReference,
+        )
+        from faceaudit.models.strategy.strategy_folder import (
+            sanitize_name, strategy_folder_name,
         )
 
         project_root = self._project.storage.project_root
         strategy_id = definition.strategy_id
-        safe_strategy = _sanitize_name(strategy_id)
+        strategy_name = definition.name or ""
+        # `strategy_folder` é o nome de pasta hierárquica usado por
+        # models/, scores/, results/, graphics/ (padrão `<name>_<sid>`).
+        # `safe_strategy_legacy` é o prefixo flat `<sid>_*` usado em
+        # datasets/, checkpoints/, artifacts/ (layout legado).
+        strategy_folder = strategy_folder_name(strategy_id, strategy_name)
+        safe_strategy_legacy = sanitize_name(strategy_id)
         sidecar_suffixes = ("_stats.json", "_dist.json", "_metrics.json")
 
         try:
@@ -2009,17 +2098,21 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 except Exception:
                     pass  # individual file failure não aborta a varredura
 
-            # 2. Pasta de gráficos da estratégia (recursiva).
-            graphics_dir = (
-                project_root / ProjectFolder.GRAPHICS.value / safe_strategy
-            )
-            if graphics_dir.exists():
-                shutil.rmtree(graphics_dir, ignore_errors=True)
+            # 2. Pasta de gráficos da estratégia (recursiva). Apaga ambas
+            # versões do nome (legacy `<sid>` e novo `<name>_<sid>`) pra
+            # cobrir projetos pré-rename de pastas.
+            for folder_name in (strategy_folder, safe_strategy_legacy):
+                graphics_dir = (
+                    project_root / ProjectFolder.GRAPHICS.value / folder_name
+                )
+                if graphics_dir.exists():
+                    shutil.rmtree(graphics_dir, ignore_errors=True)
 
             # 3. Pickle do LRStrategyTrainedModel (output de Run All).
             try:
                 model_rel = StrategyFileType.TRAINED_STRATEGY_MODEL.build_path(
                     strategy_id=strategy_id,
+                    strategy_folder=strategy_folder,
                 )
                 model_abs = project_root / model_rel
                 if model_abs.exists():
@@ -2033,16 +2126,19 @@ class StrategyManagerV2Controller(QtCore.QObject):
             # referência foi limpa por Apply Alterações mas o file ficou
             # no disco).
             #
-            # MODELS/SCORES/RESULTS são pastas hierárquicas (`<folder>/<sid>/...`)
-            # — apaga a subpasta inteira da estratégia.
+            # MODELS/SCORES/RESULTS são pastas hierárquicas. Apaga a
+            # subpasta inteira da estratégia, tentando o novo formato
+            # `<name>_<sid>` E o legado `<sid>` (defesa contra rename
+            # parcial / migrações antigas).
             for folder in (
                 ProjectFolder.MODELS,
                 ProjectFolder.SCORES,
                 ProjectFolder.RESULTS,
             ):
-                target_dir = project_root / folder.value / safe_strategy
-                if target_dir.exists():
-                    shutil.rmtree(target_dir, ignore_errors=True)
+                for folder_name in (strategy_folder, safe_strategy_legacy):
+                    target_dir = project_root / folder.value / folder_name
+                    if target_dir.exists():
+                        shutil.rmtree(target_dir, ignore_errors=True)
             # DATASETS/CHECKPOINTS/ARTIFACTS continuam flat (datasets derivados
             # de PIPELINE_APPLICATION/SPLIT, checkpoints, e arquivos legados
             # de projetos pré-migração). Iterdir + prefixo `<sid>_`.
@@ -2057,7 +2153,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 for p in fp.iterdir():
                     if not p.is_file():
                         continue
-                    if p.name.startswith(safe_strategy + "_"):
+                    if p.name.startswith(safe_strategy_legacy + "_"):
                         try:
                             p.unlink()
                         except Exception:
@@ -2115,6 +2211,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self,
         resource: StrategyResource,
         strategy_id: Optional[str] = None,
+        strategy_name: str = "",
     ) -> None:
         """Apaga do disco artefato + sidecars + PNGs de UM recurso persistido.
 
@@ -2134,6 +2231,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
         project_root = self._project.storage.project_root
         if strategy_id is None and self._current_definition is not None:
             strategy_id = self._current_definition.strategy_id
+        if not strategy_name and self._current_definition is not None:
+            strategy_name = self._current_definition.name or ""
 
         try:
             abs_path = project_root / ref.path
@@ -2149,7 +2248,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if not strategy_id:
                 return
 
-            # PNGs em `<project>/graphics/<strategy_id>/...` — gating
+            # PNGs em `<project>/graphics/<strategy_folder>/...` — gating
             # por resource_type, mesmo padrão que o executor usa pra gravar.
             if resource.resource_type in (
                 StrategyResourceType.SIMILARITY_SCORES,
@@ -2160,6 +2259,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 )
                 png_path = score_distribution_png_path(
                     project_root, strategy_id, resource.resource_id,
+                    strategy_name=strategy_name,
                     calibrated=(
                         resource.resource_type
                         == StrategyResourceType.CALIBRATED_SCORES
@@ -2173,6 +2273,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 )
                 png_path = casework_visualization_png_path(
                     project_root, strategy_id, resource.resource_id,
+                    strategy_name=strategy_name,
                 )
                 if png_path.exists():
                     png_path.unlink()
@@ -2182,6 +2283,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 )
                 for png in validation_result_png_paths(
                     project_root, strategy_id, resource.resource_id,
+                    strategy_name=strategy_name,
                 ).values():
                     if png.exists():
                         png.unlink()
@@ -2247,6 +2349,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             return []
 
         strategy_id = definition.strategy_id
+        strategy_name = definition.name or ""
         touched: List[str] = []
 
         for spec in specs:
@@ -2260,7 +2363,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
             existing = definition.get_resource_by_id(output_id)
             if existing is None:
                 continue
-            self._delete_persisted_resource_files(existing, strategy_id=strategy_id)
+            self._delete_persisted_resource_files(
+                existing, strategy_id=strategy_id, strategy_name=strategy_name,
+            )
 
         return touched
 
@@ -4491,6 +4596,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             instruction,
             self._execution_context,
             strategy_id=self._current_definition.strategy_id,
+            strategy_name=self._current_definition.name or "",
         )
         worker.moveToThread(thread)
 
@@ -5433,6 +5539,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 artifact_ref = self._executor.persist_produced_resource(
                     resource=resource,
                     strategy_id=self._current_definition.strategy_id,
+                    strategy_name=self._current_definition.name or "",
                 )
                 if artifact_ref:
                     resource.artifact_ref = artifact_ref
@@ -5533,6 +5640,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 artifact_ref = executor.persist_produced_resource(
                     resource=resource,
                     strategy_id=self._current_definition.strategy_id,
+                    strategy_name=self._current_definition.name or "",
                 )
                 if artifact_ref:
                     resource.artifact_ref = artifact_ref

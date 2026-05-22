@@ -38,7 +38,7 @@ class StrategyFileType(Enum):
     TRAINED_STRATEGY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/strategy_model",
+        "{strategy_folder}/strategy_model",
     )
 
     # --- MODELOS COMPONENTES (subpastas em models/<strategy_id>/) ---
@@ -48,22 +48,22 @@ class StrategyFileType(Enum):
     TRAINED_PIPELINE = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/pipeline/{step_id}_{id}",
+        "{strategy_folder}/pipeline/{step_id}_{id}",
     )
     TRAINED_SIMILARITY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/similarity/{resource_id}_{id}",
+        "{strategy_folder}/similarity/{resource_id}_{id}",
     )
     TRAINED_CALIBRATION_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/calibration/{resource_id}_{id}",
+        "{strategy_folder}/calibration/{resource_id}_{id}",
     )
     TRAINED_TYPICALITY_MODEL = (
         ".pkl",
         ProjectFolder.MODELS,
-        "{strategy_id}/typicality/{resource_id}_{id}",
+        "{strategy_folder}/typicality/{resource_id}_{id}",
     )
 
     # --- DATASETS ---
@@ -97,12 +97,12 @@ class StrategyFileType(Enum):
     EXECUTION_LOG = (
         ".log",
         ProjectFolder.RESULTS,
-        "{strategy_id}/execution_log",
+        "{strategy_folder}/execution_log",
     )
     METRICS = (
         ".json",
         ProjectFolder.RESULTS,
-        "{strategy_id}/metrics",
+        "{strategy_folder}/metrics",
     )
 
     # --- SCORE DATASETS (scores/<strategy_id>/<subtipo>/) ---
@@ -110,49 +110,49 @@ class StrategyFileType(Enum):
     SIMILARITY_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/raw/{resource_id}_{id}",
+        "{strategy_folder}/raw/{resource_id}_{id}",
     )
     MINED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/mined/{resource_id}_{id}",
+        "{strategy_folder}/mined/{resource_id}_{id}",
     )
     VECTORIZED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/vectorized/{resource_id}_{id}",
+        "{strategy_folder}/vectorized/{resource_id}_{id}",
     )
     CALIBRATED_SCORES = (
         ".parquet",
         ProjectFolder.SCORES,
-        "{strategy_id}/calibrated/{resource_id}_{id}",
+        "{strategy_folder}/calibrated/{resource_id}_{id}",
     )
 
     # --- RESULTADOS DE ANÁLISE (results/<strategy_id>/<tipo>/) ---
     TRAJECTORY_DATA = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/trajectory/{resource_id}_{id}",
+        "{strategy_folder}/trajectory/{resource_id}_{id}",
     )
     VALIDATION_RESULT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/validation/{resource_id}_{id}",
+        "{strategy_folder}/validation/{resource_id}_{id}",
     )
     CASEWORK_VISUALIZATION = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/casework/{resource_id}_{id}",
+        "{strategy_folder}/casework/{resource_id}_{id}",
     )
     HUBNESS_REPORT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/hubness/{resource_id}_{id}",
+        "{strategy_folder}/hubness/{resource_id}_{id}",
     )
     HUBNESS_ABLATION_RESULT = (
         ".pkl",
         ProjectFolder.RESULTS,
-        "{strategy_id}/hubness/{resource_id}_{id}_ablation",
+        "{strategy_folder}/hubness/{resource_id}_{id}_ablation",
     )
     GRAPHIC = (
         ".png",
@@ -215,8 +215,16 @@ class StrategyFileType(Enum):
             StrategyFileType.STRATEGY_DEFINITION.build_path(strategy_id="ST_01")
             # → Path("definitions/ST_01_definition.json")
 
-            StrategyFileType.TRAINED_PIPELINE.build_path(strategy_id="ST_01", step_id="pipe_a", id="TP-abc12345")
-            # → Path("models/ST_01/pipeline/pipe_a_TP-abc12345.pkl")
+            StrategyFileType.TRAINED_PIPELINE.build_path(
+                strategy_id="ST_01", step_id="pipe_a", id="TP-abc12345",
+                strategy_folder="My Strategy_ST_01",
+            )
+            # → Path("models/My Strategy_ST_01/pipeline/pipe_a_TP-abc12345.pkl")
+
+        Auto-fill: se o template contém `{strategy_folder}` e o caller não
+        passou esse kwarg, deriva via `strategy_folder_name(strategy_id)`
+        (fallback sem nome, vira só `<strategy_id>`). Permite que callers
+        legados que só conhecem `strategy_id` continuem funcionando.
 
         Args:
             **kwargs: Variáveis necessárias para preencher o name_template.
@@ -227,6 +235,19 @@ class StrategyFileType(Enum):
         Raises:
             ValueError: Se uma variável obrigatória do template estiver ausente.
         """
+        # Auto-fill `strategy_folder` quando o template precisa e caller
+        # não passou explicit (caso comum: repositórios que só recebem
+        # `strategy_id`).
+        if (
+            "{strategy_folder}" in self.name_template
+            and "strategy_folder" not in kwargs
+        ):
+            from faceaudit.models.strategy.strategy_folder import strategy_folder_name
+            kwargs["strategy_folder"] = strategy_folder_name(
+                kwargs.get("strategy_id", ""),
+                kwargs.get("strategy_name", ""),
+            )
+
         try:
             file_name = self.name_template.format(**kwargs)
         except KeyError as e:

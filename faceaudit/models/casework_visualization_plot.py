@@ -190,20 +190,22 @@ def casework_visualization_png_path(
     project_root: Union[str, Path],
     strategy_id: str,
     resource_id: str,
+    *,
+    strategy_name: str = "",
 ) -> Path:
     """Path absoluto do PNG snapshot pra um output de CASEWORK_VISUALIZATION.
 
     Convenção:
-    `<project>/graphics/<strategy_id>/casework_visualization/<resource_id>_casework.png`.
+    `<project>/graphics/<strategy_folder>/casework_visualization/<resource_id>_casework.png`.
+    `strategy_folder` = `<sanitize(strategy_name)>_<strategy_id>`.
     """
-    # Reusa `_sanitize_name` de distribution_plot pra evitar drift entre
-    # os dois resolvers (mesmas regras de saneamento de nome de arquivo).
-    from faceaudit.models.similarity.distribution_plot import _sanitize_name
-
+    from faceaudit.models.strategy.strategy_folder import (
+        sanitize_name, strategy_folder_name,
+    )
     return (
         Path(project_root)
         / ProjectFolder.GRAPHICS.value
-        / _sanitize_name(strategy_id)
+        / strategy_folder_name(strategy_id, strategy_name)
         / "casework_visualization"
-        / f"{_sanitize_name(resource_id)}_casework.png"
+        / f"{sanitize_name(resource_id)}_casework.png"
     )
