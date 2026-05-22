@@ -69,7 +69,17 @@ class StrategyDefinitionRepository(StrategyDefinitionRepositoryProtocol):
     def list_definitions(self) -> List[LRStrategyDefinition]:
         """
         Lista todas as definições de estratégia presentes no projeto.
+
+        Apenas arquivos cujo nome bate com a forma canônica
+        `<strategy_id>_definition.json` são considerados. Cópias/backups
+        com nome divergente (ex: `<id>_definition.backup_2026....json`)
+        ficam invisíveis ao repositório — antes esses arquivos eram
+        carregados como definitions extras, duplicando artifact_refs e
+        causando falso-positivo MODIFIED na verificação de integridade
+        quando o backup carregava um hash stale do mesmo path físico.
         """
+        from pathlib import Path
+
         refs = self._storage.list_artifacts(StrategyArtifactType.STRATEGY_DEFINITION)
 
         found: List[LRStrategyDefinition] = []
@@ -81,8 +91,15 @@ class StrategyDefinitionRepository(StrategyDefinitionRepositoryProtocol):
             try:
                 data = json.loads(abs_path.read_text(encoding="utf-8"))
                 definition = LRStrategyDefinition.from_dict(data)
-                if definition is not None:
-                    found.append(definition)
+                if definition is None:
+                    continue
+                expected_name = (
+                    f"{definition.strategy_id}_definition"
+                    f"{StrategyFileType.STRATEGY_DEFINITION.extension}"
+                )
+                if Path(abs_path).name != expected_name:
+                    continue
+                found.append(definition)
             except Exception:
                 continue
 

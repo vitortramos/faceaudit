@@ -265,6 +265,32 @@ class TestStrategyDefinitionRepository:
         assert len(found) == 1
         assert found[0].strategy_id == "ST_30"
 
+    def test_list_definitions_ignores_non_canonical_filenames(self, repos, tmp_path):
+        """Arquivos JSON válidos mas com nome fora da forma canônica
+        `<strategy_id>_definition.json` (ex: backups manuais com sufixo
+        `_definition.backup_<timestamp>.json`) NÃO devem ser carregados —
+        senão duplicariam `artifact_ref`s e poluiriam a verificação de
+        integridade com hash stale do mesmo path físico.
+        """
+        repo = repos["def_repo"]
+        # Salva uma definition canônica
+        repo.save_definition(_make_definition("ST_40"))
+
+        # Cria um "backup" da mesma definition com nome não-canônico
+        canonical = tmp_path / "definitions" / "ST_40_definition.json"
+        backup = tmp_path / "definitions" / "ST_40_definition.backup_20260522.json"
+        backup.write_text(canonical.read_text(encoding="utf-8"), encoding="utf-8")
+
+        # Também cria um arquivo com strategy_id divergente do nome
+        impostor = tmp_path / "definitions" / "ST_99_definition.json"
+        defn_impostor = _make_definition("ST_41")  # strategy_id ≠ ST_99
+        impostor.write_text(json.dumps(defn_impostor.to_dict()), encoding="utf-8")
+
+        found = repo.list_definitions()
+        # Apenas a definition canônica é retornada
+        assert len(found) == 1
+        assert found[0].strategy_id == "ST_40"
+
     def test_save_definition_none_raises(self, repos):
         with pytest.raises((ValueError, AttributeError)):
             repos["def_repo"].save_definition(None)
