@@ -285,7 +285,11 @@ class ImagePipelineBatchService:
                 raise RuntimeError(
                     "input_source=ALIGNED_FACE requer FFService"
                 )
-            aligned = ff_service.align_face_from_array(bgr)
+            # `align_face_from_array` retorna (bgr_aligned, aligned_kps);
+            # esse path só materializa o crop em disco, então descartamos
+            # os keypoints — caso queira KPRPE downstream, basta detectar
+            # de novo na re-extração.
+            aligned, _aligned_kps = ff_service.align_face_from_array(bgr)
             if aligned is None:
                 raise RuntimeError("nenhuma face detectada")
             bgr = aligned

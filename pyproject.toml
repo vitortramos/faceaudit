@@ -28,7 +28,7 @@ dependencies = [
     # repositório upstream via git URL (PEP 508).
     # Note: o usuário ainda precisa baixar os arquivos de modelo em
     # ~/.forensicface/models/ — o pacote não distribui pesos.
-    "forensicface @ git+https://github.com/rafribeiro/forensicface.git@v0.6.0",
+    "forensicface @ git+https://github.com/rafribeiro/forensicface.git@v0.7.0",
     # Plotting (used by validation, casework, hubness widgets and
     # by generate_arch_doc.py PDF generation)
     "matplotlib",

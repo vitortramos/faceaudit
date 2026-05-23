@@ -255,6 +255,28 @@ class FFService:
         return name, self._engines[name]
 
     @staticmethod
+    def _normalize_process_image_result(res) -> Optional[dict]:
+        """Adapter pra `engine.process_image(..., single_face=True)`.
+
+        Forward-compat com a transição do retorno anunciada na v0.7.0:
+        atualmente devolve `dict | []`; uma futura versão vai devolver
+        `list[dict] | []`. Esse helper unifica os dois formatos num
+        `Optional[dict]` (`None` quando não há face).
+
+        Sem isso, os callsites que fazem `res.get(...)` ou
+        `for k in (...): res[k]` quebrariam silenciosamente quando a lib
+        for atualizada.
+        """
+        if not res:
+            return None
+        if isinstance(res, dict):
+            return res
+        if isinstance(res, (list, tuple)) and res:
+            first = res[0]
+            return first if isinstance(first, dict) else None
+        return None
+
+    @staticmethod
     def _slot_for_model(model_name: str) -> str:
         """
         Retorna o atributo de FFInfo onde o embedding do `model_name` deve
@@ -285,7 +307,9 @@ class FFService:
         """
         try:
             _, engine = self._resolve_engine(model)
-            res = engine.process_image(img_array)
+            res = self._normalize_process_image_result(
+                engine.process_image(img_array)
+            )
             if res and "embedding" in res:
                 return res["embedding"]
         except Exception:
@@ -301,7 +325,7 @@ class FFService:
         bgr_image: np.ndarray,
         *,
         model: Optional[str] = None,
-    ) -> Optional[np.ndarray]:
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Variante de `align_face_only` que recebe ndarray direto
         em vez de `FaceInfo` (PR I3).
 
@@ -310,29 +334,47 @@ class FFService:
         de imagens calculando scores de qualidade da imagem
         processada (que existe só em RAM).
 
-        Pipeline interno idêntico: `backend.detect_faces` →
-        `_get_best_face` → `backend.norm_crop`. Pula o
-        `_safe_read_image` (input já é ndarray).
+        Internamente delega ao `engine.align_only(bgr_image, single_face=True)`
+        do `forensicface` (>= 0.7.0), que faz `detect_faces` →
+        `_get_best_face` → `norm_crop` + `_align_keypoints` numa única
+        chamada e devolve os keypoints alinhados (no sistema de
+        coordenadas 112×112) prontos pra serem repassados na extração
+        com modelos KPRPE (sepaelv6). Antes do PR atual, esse pipeline
+        era reconstruído manualmente e os aligned_keypoints eram
+        descartados — quebrando a extração com v6.
 
         Args:
             bgr_image: ndarray BGR (H, W, 3) uint8.
             model: nome do modelo (None = default).
 
         Returns:
-            ndarray BGR (112, 112, 3) uint8 ou None se não detectou.
+            Tupla `(bgr_aligned, aligned_keypoints)`:
+            - `bgr_aligned`: ndarray BGR (112, 112, 3) uint8.
+            - `aligned_keypoints`: ndarray float (5, 2) com os 5 pontos
+              (olho esq., olho dir., nariz, canto esq. da boca,
+              canto dir. da boca) em coordenadas do crop 112×112.
+              Necessário pra modelos KPRPE (sepaelv6); ignorado pelos
+              demais.
+            Ambos `None` se nenhuma face foi detectada / erro.
         """
         if bgr_image is None or bgr_image.size == 0:
-            return None
+            return None, None
         try:
             _, engine = self._resolve_engine(model)
-            faces = engine.backend.detect_faces(bgr_image)
-            if not faces:
-                return None
-            face = engine._get_best_face(bgr_image, faces, criterion="size")
-            return engine.backend.norm_crop(bgr_image, face.kps)
+            item = engine.align_only(bgr_image, single_face=True)
+            if not item:
+                return None, None
+            # align_only retorna `aligned_face` em RGB; convertemos pra BGR
+            # pra preservar o contrato anterior (callers consomem BGR).
+            rgb_aligned = item.get("aligned_face")
+            aligned_kps = item.get("aligned_keypoints")
+            if rgb_aligned is None:
+                return None, None
+            bgr_aligned = cv2.cvtColor(rgb_aligned, cv2.COLOR_RGB2BGR)
+            return bgr_aligned, aligned_kps
         except Exception as e:
             print(f"Error in align_face_from_array: {e}")
-            return None
+            return None, None
 
     def align_face_only(
         self,
@@ -388,6 +430,7 @@ class FFService:
         self,
         bgr_aligned_face: np.ndarray,
         *,
+        aligned_keypoints: Optional[np.ndarray] = None,
         model: Optional[str] = None,
         models: Optional[List[str]] = None,
     ) -> Optional[FFInfo]:
@@ -442,7 +485,12 @@ class FFService:
         for m in target_models:
             try:
                 model_name, engine = self._resolve_engine(m)
-                res = engine.process_aligned_face_image(rgb_aligned_face)
+                # `aligned_keypoints` é obrigatório pra modelos KPRPE
+                # (sepaelv6) no forensicface >= 0.7.0. Pra modelos não-KPRPE
+                # (v2/v3/v4/v5) é ignorado pela lib; passar None é seguro.
+                res = engine.process_aligned_face_image(
+                    rgb_aligned_face, keypoints=aligned_keypoints,
+                )
                 if not res:
                     continue
                 # Cada engine carrega só 1 modelo internamente com
@@ -757,7 +805,9 @@ class FFService:
         for m in target_models:
             try:
                 model_name, engine = self._resolve_engine(m)
-                resultado = engine.process_image(img_array)
+                resultado = self._normalize_process_image_result(
+                    engine.process_image(img_array)
+                )
                 if not resultado:
                     continue
 

@@ -18,7 +18,7 @@ Custo total típico (CPU):
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from PyQt6 import QtCore
@@ -53,11 +53,11 @@ class QualityScoresWorker(QtCore.QObject):
         `QualityScoresResult` (mesmo quando faces não são detectadas
         — campos viram None nesse caso)."""
         try:
-            orig_aligned = self._get_aligned(self._original_bgr)
-            proc_aligned = self._get_aligned(self._processed_bgr)
+            orig_aligned, orig_kps = self._get_aligned(self._original_bgr)
+            proc_aligned, proc_kps = self._get_aligned(self._processed_bgr)
 
-            orig_metrics = self._extract_metrics(orig_aligned)
-            proc_metrics = self._extract_metrics(proc_aligned)
+            orig_metrics = self._extract_metrics(orig_aligned, orig_kps)
+            proc_metrics = self._extract_metrics(proc_aligned, proc_kps)
 
             cosine = self._cosine(
                 orig_metrics["embedding"],
@@ -81,22 +81,30 @@ class QualityScoresWorker(QtCore.QObject):
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 
-    def _get_aligned(self, bgr: Optional[np.ndarray]) -> Optional[np.ndarray]:
-        """Devolve a face alinhada conforme `input_source`.
+    def _get_aligned(
+        self, bgr: Optional[np.ndarray],
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Devolve `(face_alinhada, aligned_keypoints)` conforme `input_source`.
 
-        ALIGNED_FACE: input já é a face — devolve direto.
-        ORIGINAL: chama `align_face_from_array` (detect + crop).
+        ALIGNED_FACE: input já é a face — devolve direto sem keypoints
+            (não temos como reconstruir keypoints alinhados a partir de
+            uma face já recortada). Modelos KPRPE (sepaelv6) não funcionarão
+            nesse caminho — mas o cenário típico desse worker é qualidade
+            via v2/v4 onde keypoints são ignorados.
+        ORIGINAL: chama `align_face_from_array` (detect + crop + keypoints).
         """
         if bgr is None:
-            return None
+            return None, None
         if self._input_source == ImageInputSource.ALIGNED_FACE:
-            return bgr
+            return bgr, None
         if self._ff_service is None:
-            return None
+            return None, None
         return self._ff_service.align_face_from_array(bgr)
 
     def _extract_metrics(
-        self, aligned: Optional[np.ndarray],
+        self,
+        aligned: Optional[np.ndarray],
+        aligned_keypoints: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """Extrai FIQA + embedding + ‖emb‖ a partir da face alinhada.
 
@@ -106,7 +114,9 @@ class QualityScoresWorker(QtCore.QObject):
         empty = {"fiqa": None, "norm": None, "embedding": None}
         if aligned is None or self._ff_service is None:
             return empty
-        ff_info = self._ff_service.extract_embeddings_from_aligned_face(aligned)
+        ff_info = self._ff_service.extract_embeddings_from_aligned_face(
+            aligned, aligned_keypoints=aligned_keypoints,
+        )
         if ff_info is None:
             return empty
         # Procura embedding no slot disponível (sepaelv2 default,
