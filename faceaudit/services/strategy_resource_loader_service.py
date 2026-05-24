@@ -368,16 +368,25 @@ class StrategyResourceLoaderService:
         for row in df.itertuples(index=False):
             row_dict = row._asdict() if hasattr(row, "_asdict") else {}
 
+            # `probe_face_hash`/`reference_face_hash` foram adicionados como
+            # colunas obrigatórias do to_parquet — a infra de pareamento
+            # downstream (SCORE_VECTORIZATION + ScoreVectorPairCompatibilityRule)
+            # depende delas. Parquets antigos não têm essas colunas: nesses
+            # casos `row_dict.get(...)` devolve None e o sample fica com hash
+            # vazio (mesmo comportamento de antes — não regride). Datasets
+            # gerados a partir deste commit têm hashes válidos no roundtrip.
+            probe_hash = row_dict.get("probe_face_hash") or ""
+            ref_hash = row_dict.get("reference_face_hash") or ""
             probe = EmbeddingInfo(
                 embedding=empty_emb,
-                face_hash="",
+                face_hash=str(probe_hash),
                 image_path="",
                 identity=row_dict.get("probe_identity"),
                 file_name="",
             )
             reference = EmbeddingInfo(
                 embedding=empty_emb,
-                face_hash="",
+                face_hash=str(ref_hash),
                 image_path="",
                 identity=row_dict.get("reference_identity"),
                 file_name="",

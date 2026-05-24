@@ -78,6 +78,21 @@ class MinCalibrationPairsRule(ValidationRuleBase):
             )
             return result
 
+        # Casework: `same_person` é None em todos os samples (não há ground
+        # truth na hora do caso real). total_genuines/total_impostors
+        # sempre dão 0 — checar mínimo aqui faria a regra sempre falhar
+        # quando aplicada a score datasets de caso (output de
+        # SIMILARITY_SCORING/TYPICALITY_PAIR_SCORING com is_casework=True).
+        # SCORE_VECTORIZATION também aceita inputs casework (pra combinar
+        # múltiplos sistemas antes de calibrar), e os defaults atuais
+        # populam MIN_CALIBRATION_PAIRS sobre o input A — sem essa checagem
+        # a regra explode em qualquer vetorização de caso. A regra
+        # protege CALIBRAÇÃO; em casework não há calibração a treinar
+        # (calibrador já foi treinado em training set).
+        if bool(payload.metadata.get("is_casework", False)):
+            result.mark_ok()
+            return result
+
         n_genuines = payload.total_genuines
         n_impostors = payload.total_impostors
 

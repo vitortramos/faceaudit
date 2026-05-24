@@ -215,10 +215,19 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
         Estratégia para datasets MUITO grandes (testado até 5M+ pares):
 
-        1. **Colunas mínimas** — apenas raw_score, label, same_person,
-           probe_identity, reference_identity. file_name/image_path/face_hash
-           descartados (consumidores downstream — calibração, plot — só
-           precisam de score+label+identity).
+        1. **Colunas mínimas** — raw_score, label, same_person,
+           probe_identity, reference_identity, probe_face_hash,
+           reference_face_hash. file_name/image_path/face_image
+           descartados (não usados downstream).
+           `probe_face_hash`/`reference_face_hash` são OBRIGATÓRIOS:
+           toda a infra de pareamento downstream (SCORE_VECTORIZATION,
+           ScoreVectorPairCompatibilityRule) usa o par de hashes como
+           chave canônica do sample. Sem persistir, qualquer dataset
+           recarregado do disco viria com hashes vazios e batia em
+           sample fantasma `("", "")` na hora de cruzar com um dataset
+           ainda em memória. Strings repetidas (~poucos hashes únicos
+           por dataset) ganham dictionary-encoding automático no
+           pyarrow — custo de espaço marginal.
 
         2. **GC desativado durante a escrita**. Com 5M+ samples no heap, cada
            coleção cíclica de gen-2 do Python percorre todos os objetos
@@ -285,6 +294,8 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             ("similarity_score_dataset_name", pa.string()),
             ("probe_identity",     pa.string()),
             ("reference_identity", pa.string()),
+            ("probe_face_hash",     pa.string()),
+            ("reference_face_hash", pa.string()),
             ("same_person", pa.bool_()),
             ("label",       pa.int8()),
             ("raw_score",   pa.float64()),
@@ -347,6 +358,8 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                     same_person = np.empty(size, dtype=object)
                     probe_id    = np.empty(size, dtype=object)
                     ref_id      = np.empty(size, dtype=object)
+                    probe_hash  = np.empty(size, dtype=object)
+                    ref_hash    = np.empty(size, dtype=object)
                     log_lr_arr  = np.empty(size, dtype=np.float64) if has_log_lr else None
 
                     items_local = self.items
@@ -358,6 +371,8 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                         same_person[j] = s.same_person  # None preservado como null no Parquet bool
                         probe_id[j]    = s.probe.identity
                         ref_id[j]      = s.reference.identity
+                        probe_hash[j]  = getattr(s.probe, "face_hash", "") or ""
+                        ref_hash[j]    = getattr(s.reference, "face_hash", "") or ""
                         if has_log_lr:
                             md = getattr(s, "metadata", None)
                             v = md.get("log_lr") if isinstance(md, dict) else None
@@ -367,6 +382,8 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                         "similarity_score_dataset_name": pa.array([self.name] * size, type=pa.string()),
                         "probe_identity":     pa.array(probe_id, type=pa.string()),
                         "reference_identity": pa.array(ref_id, type=pa.string()),
+                        "probe_face_hash":     pa.array(probe_hash, type=pa.string()),
+                        "reference_face_hash": pa.array(ref_hash, type=pa.string()),
                         "same_person": pa.array(same_person, type=pa.bool_()),
                         "label":       pa.array(labels, type=pa.int8()),
                         "raw_score":   pa.array(scores, type=pa.float64()),
@@ -388,7 +405,8 @@ class SimilarityScoreDataset(JSONSerializableMixin):
 
                     # Libera referências locais para o GC desligado não
                     # acumular trabalho — refcount cuida da limpeza.
-                    del scores, labels, same_person, probe_id, ref_id, cols
+                    del scores, labels, same_person, probe_id, ref_id
+                    del probe_hash, ref_hash, cols
                     if log_lr_arr is not None:
                         del log_lr_arr
 
