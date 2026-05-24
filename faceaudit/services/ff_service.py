@@ -334,9 +334,9 @@ class FFService:
         de imagens calculando scores de qualidade da imagem
         processada (que existe só em RAM).
 
-        Internamente delega ao `engine.align_only(bgr_image, single_face=True)`
-        do `forensicface` (>= 0.7.0), que faz `detect_faces` →
-        `_get_best_face` → `norm_crop` + `_align_keypoints` numa única
+        Internamente delega ao `engine.detect_and_align(bgr_image, single_face=True)`
+        do `forensicface` (>= 0.7.1), que faz `detect_faces` →
+        seleção da melhor face → `norm_crop` + `_align_keypoints` numa única
         chamada e devolve os keypoints alinhados (no sistema de
         coordenadas 112×112) prontos pra serem repassados na extração
         com modelos KPRPE (sepaelv6). Antes do PR atual, esse pipeline
@@ -361,11 +361,11 @@ class FFService:
             return None, None
         try:
             _, engine = self._resolve_engine(model)
-            item = engine.align_only(bgr_image, single_face=True)
+            item = engine.detect_and_align(bgr_image, single_face=True)
             if not item:
                 return None, None
-            # align_only retorna `aligned_face` em RGB; convertemos pra BGR
-            # pra preservar o contrato anterior (callers consomem BGR).
+            # detect_and_align retorna `aligned_face` em RGB; convertemos
+            # pra BGR pra preservar o contrato anterior (callers consomem BGR).
             rgb_aligned = item.get("aligned_face")
             aligned_kps = item.get("aligned_keypoints")
             if rgb_aligned is None:
@@ -386,9 +386,8 @@ class FFService:
         """Detecta + alinha SEM extrair embedding (~30-50% mais rápido
         que `process_face`).
 
-        Pipeline interno: `_safe_read_image` → `backend.detect_faces` →
-        `_get_best_face` (criterion=size) → `backend.norm_crop`. Pula
-        o `_compute_embeddings` que é a etapa cara (AdaFace ONNX).
+        Pipeline interno: `_safe_read_image` → `engine.detect_and_align`.
+        Pula o `_compute_embeddings` que é a etapa cara (ONNX recognition).
 
         Útil pra COPY_ALIGNED em datasets grandes onde só queremos
         guardar a face alinhada como PNG, sem rodar embedding.
@@ -417,11 +416,18 @@ class FFService:
             return None
         try:
             _, engine = self._resolve_engine(model)
-            faces = engine.backend.detect_faces(img_array)
-            if not faces:
+            item = engine.detect_and_align(img_array, single_face=True)
+            if not item:
                 return None
-            face = engine._get_best_face(img_array, faces, criterion="size")
-            return engine.backend.norm_crop(img_array, face.kps)
+            # detect_and_align retorna `aligned_face` em RGB — convertemos
+            # pra BGR pra preservar o contrato anterior. Keypoints alinhados
+            # são descartados aqui (esse método é usado em COPY_ALIGNED onde
+            # só queremos materializar o crop em disco; KPRPE precisa de
+            # detect novo na re-extração).
+            rgb_aligned = item.get("aligned_face")
+            if rgb_aligned is None:
+                return None
+            return cv2.cvtColor(rgb_aligned, cv2.COLOR_RGB2BGR)
         except Exception as e:
             print(f"Error in align_face_only for {image_path}: {e}")
             return None
@@ -613,10 +619,18 @@ class FFService:
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Roda o batch em um engine ForensicFace específico.
 
-        Prefere `_try_compute_embeddings_batch` (lib >= 0.6.0, com OOM
-        recovery + suporte sepaelv6). Cai num fallback inline pra
-        compatibilidade com lib 0.5.x — mesmo cálculo manual que o
-        FFService usava antes da migração.
+        Caminhos suportados em ordem de preferência:
+
+        1. **v0.7.x**: `engine._recognition_runner().try_compute_batch(...)`
+           — método do `RecognitionRunner` (recognition.py) com OOM auto-recovery
+           (halving recursivo até batch_size=1) e suporte nativo a KPRPE
+           (`aligned_keypoints_batch`).
+
+        2. **v0.6.x (legado)**: `engine._try_compute_embeddings_batch(...)` —
+           mesmo método antes da reorganização em `RecognitionRunner`.
+
+        3. **v0.5.x (legado)**: inferência inline via `rec_inference_sessions[0]`.
+           Sem OOM recovery, sem suporte a KPRPE.
 
         Retorna `(embeddings, fiqa_scores)`. Embeddings shape `(N, dim)`;
         fiqa_scores shape `(N,)` ou None quando `extended=False`. Ambos
@@ -624,30 +638,39 @@ class FFService:
         via `error_callback`).
         """
         try:
+            # Captura `warnings.warn(...)` emitidos pela lib durante o batch
+            # — o helper de OOM avisa quando acontece auto-recovery (halving).
+            import warnings as _warnings
+
+            # Caminho moderno (v0.7+): RecognitionRunner.try_compute_batch
+            recognition_runner = getattr(engine, "_recognition_runner", None)
+            if callable(recognition_runner):
+                runner = recognition_runner()
+                if hasattr(runner, "try_compute_batch"):
+                    with _warnings.catch_warnings(record=True) as caught:
+                        _warnings.simplefilter("always")
+                        embeddings, fiqa_scores = runner.try_compute_batch(
+                            bgr_aligned_faces,
+                            aligned_keypoints_batch=aligned_keypoints_batch,
+                        )
+                    for w in caught:
+                        (error_callback or print)(f"⚠ [forensicface] {w.message}")
+                    if isinstance(embeddings, list) and len(embeddings) == 1:
+                        embeddings = embeddings[0]
+                    return embeddings, fiqa_scores
+
+            # Legado v0.6.x: método privado no próprio engine
             if hasattr(engine, "_try_compute_embeddings_batch"):
-                # Caminho moderno: lib v0.6+ devolve emb (N, dim) e
-                # fiqa (N,) já achatado. `concat_embeddings=True` no
-                # construtor garante que com 1 modelo o emb sai 2D.
                 kwargs = {}
                 if aligned_keypoints_batch is not None:
                     kwargs["aligned_keypoints_batch"] = aligned_keypoints_batch
-                # Captura `warnings.warn(...)` emitidos pela lib durante
-                # o batch — o `_try_compute_embeddings_batch` avisa quando
-                # acontece OOM auto-recovery (halving) via `warnings.warn`,
-                # que normalmente sai pelo stderr. Repassa pro
-                # `error_callback` pra que apareça no LogProgressDialog
-                # da UI — sem isso, o usuário só percebe pelo tempo extra.
-                import warnings as _warnings
                 with _warnings.catch_warnings(record=True) as caught:
                     _warnings.simplefilter("always")
                     embeddings, fiqa_scores = engine._try_compute_embeddings_batch(
                         bgr_aligned_faces, **kwargs,
                     )
                 for w in caught:
-                    msg = f"⚠ [forensicface] {w.message}"
-                    (error_callback or print)(msg)
-                # Defensivo: se algum dia a lib mudar e retornar lista
-                # com 1 modelo (concat=False), achata.
+                    (error_callback or print)(f"⚠ [forensicface] {w.message}")
                 if isinstance(embeddings, list) and len(embeddings) == 1:
                     embeddings = embeddings[0]
                 return embeddings, fiqa_scores
