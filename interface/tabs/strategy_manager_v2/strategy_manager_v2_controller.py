@@ -628,45 +628,42 @@ class StrategyManagerV2Controller(QtCore.QObject):
         return (updated_count, total_invalidated)
 
     def _handle_missing_artifact_refs(self, missing_results: list) -> None:
-        """Pergunta ao usuário se quer limpar refs cujos arquivos sumiram.
+        """Auto-limpa refs órfãs (path no JSON sem arquivo correspondente).
 
-        Caso afirmativo, zera `artifact_ref`/`payload` de cada `StrategyResource`
-        cujo path consta em `missing_results`, salva as definitions tocadas
-        e atualiza a UI (instruções afetadas perdem o ✅).
+        Antes pedia confirmação via QMessageBox com listagem; em projetos
+        grandes a lista estourava a altura disponível no MacBook 14",
+        deixando os botões inacessíveis. Além disso, ref órfã é SEMPRE
+        bug — o ✅ associado já está mentindo (arquivo não existe), então
+        perguntar "quer manter o ✅ falso?" não faz sentido.
+
+        Comportamento atual: limpa silenciosamente, loga no console e
+        avisa o usuário via QMessageBox.information CURTO (cabe em
+        qualquer tela). Instruções afetadas perdem o ✅ e podem ser
+        re-executadas. Lista completa fica no console pra debug.
         """
         n = len(missing_results)
-        # Mostra primeiros 10 paths como amostra; lista completa fica longa
-        # demais pra um diálogo.
-        sample_lines = [r.describe() for r in missing_results[:10]]
-        sample = "\n".join(sample_lines)
-        more = f"\n... e mais {n - 10}" if n > 10 else ""
-
-        reply = QtWidgets.QMessageBox.question(
-            self._view,
-            "Referências quebradas",
-            f"O projeto tem {n} referência(s) a arquivos que não existem "
-            "no disco. Pode ter sido limpeza manual ou um salvamento que "
-            "falhou em sessão anterior.\n\n"
-            f"Exemplos:\n{sample}{more}\n\n"
-            "Deseja limpar essas referências? As instruções correspondentes "
-            "perderão o ✅ verde e precisarão ser re-executadas para "
-            "produzir os arquivos novamente.",
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.Yes,
+        # Log estruturado pra debug — fica no stderr, capturável se o
+        # usuário rodar pelo terminal e quiser rastrear o que sumiu.
+        print(
+            f"[strategy_manager_v2] {n} ref(s) órfã(s) detectada(s) na "
+            f"abertura; limpando automaticamente."
         )
-        if reply != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
+        for r in missing_results:
+            print(f"  • AUSENTE {r.artifact_ref.path}")
 
         cleaned = self._clear_missing_artifact_refs(missing_results)
         if cleaned == 0:
             return
 
+        # Mensagem CURTA — cabe em qualquer tela. Lista detalhada já
+        # está no console pra quem quiser inspecionar.
         QtWidgets.QMessageBox.information(
             self._view,
-            "Referências limpas",
-            f"{cleaned} referência(s) zerada(s) nas definitions. "
-            "Re-execute as instruções afetadas pra gerar os arquivos.",
+            "Referências quebradas limpas",
+            f"{cleaned} referência(s) a arquivo(s) inexistente(s) foram "
+            f"zeradas nas definições do projeto. As instruções "
+            f"correspondentes perderam o ✅ verde e devem ser "
+            f"re-executadas. Detalhes no console.",
         )
         # Refresh UI: árvore esquerda, dropdowns, estados das instruções.
         # Estados dependem do current_definition; recém abertos não têm
@@ -1287,14 +1284,37 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if cancel_state["requested"]:
                 dialog.accept()
 
+        # Captura a definition que estava ativa quando o worker iniciou.
+        # `self._current_definition` pode mudar entre o término do worker
+        # e o processing do sinal `finished` (usuário clica em outra
+        # estratégia no left panel mid-flight). Sem essa captura, o sync
+        # escreveria trained_resources de X em Y e o cleanup apagaria
+        # arquivos de Y como "órfãos" — bug histórico de refs órfãs após
+        # Run All.
+        executed_definition = self._current_definition
+
         def on_finished(model):
-            for instr in self._current_definition.instructions:
-                self._executed_instruction_ids.add(instr.instruction_id)
+            if executed_definition is not None:
+                for instr in executed_definition.instructions:
+                    # Só atualiza o set in-memory se a estratégia ativa
+                    # ainda é a que rodou; senão o usuário trocou e a
+                    # UI da nova estratégia leria estado errado.
+                    if (
+                        self._current_definition is not None
+                        and self._current_definition.strategy_id
+                            == executed_definition.strategy_id
+                    ):
+                        self._executed_instruction_ids.add(instr.instruction_id)
 
             # A persistência (pickle/parquet pesado) já rodou na thread do
             # worker — aqui só sincronizamos os artifact_refs já gravados
             # com a definição em memória (operação rápida, sem I/O).
-            self._sync_trained_model_to_definition(model)
+            # Passa `executed_definition` explicitamente — sem isso, o sync
+            # e o cleanup rodam contra `self._current_definition`, que pode
+            # ser outra estratégia.
+            self._sync_trained_model_to_definition(
+                model, definition=executed_definition
+            )
 
             self._refresh_instruction_states()
             self._refresh_produced_resources()
@@ -2270,6 +2290,24 @@ class StrategyManagerV2Controller(QtCore.QObject):
         try:
             abs_path = project_root / ref.path
             if abs_path.exists():
+                # Telemetria: deixa rastro no console de QUEM apagou o
+                # arquivo. Crítico pra diagnosticar bugs onde refs órfãs
+                # aparecem do nada — sem isso a única evidência é o
+                # integrity check da próxima abertura, longe demais do
+                # call site responsável.
+                import traceback as _tb
+                caller = "(stack indisponível)"
+                try:
+                    frames = _tb.extract_stack(limit=6)[:-1]
+                    caller = " ← ".join(
+                        f"{f.name}:{f.lineno}" for f in reversed(frames)
+                    )
+                except Exception:
+                    pass
+                print(
+                    f"[FF-UNLINK] _delete_persisted_resource_files "
+                    f"apagando: {ref.path}  [{caller}]"
+                )
                 abs_path.unlink()
             stem = abs_path.stem
             parent = abs_path.parent
@@ -2974,14 +3012,26 @@ class StrategyManagerV2Controller(QtCore.QObject):
     def _compute_executed_ids_from_disk(self) -> set:
         """
         Retorna o conjunto de instruction_ids cujos outputs declarados estão
-        TODOS persistidos no projeto (têm StrategyResource com artifact_ref
-        na definição). Usado para reconstruir o estado "executada" ao abrir
-        o projeto e para sobreviver a resets em memória.
+        TODOS persistidos no projeto E têm o arquivo correspondente em disco.
+        Usado para reconstruir o estado "executada" ao abrir o projeto e
+        para sobreviver a resets em memória.
+
+        Verifica DUAS condições por output:
+        1. `existing.has_artifact` — JSON tem `artifact_ref` populado.
+        2. `(project_root / ref.path).exists()` — arquivo físico está lá.
+
+        Sem a checagem #2, refs órfãs (arquivo apagado mas ref no JSON)
+        marcariam a instrução como ✅, e o Run All pularia. Loop:
+        usuário reabre projeto, vê refs órfãs detectadas pelo integrity
+        check, clica Run All, instruções com ref órfã ficam ✅ e não
+        executam, salvar reaviva o ciclo. Forçar a checagem real garante
+        que o Run All sempre regere o que falta no disco.
         """
         executed: set = set()
-        if not self._current_definition:
+        if not self._current_definition or not self._project:
             return executed
 
+        project_root = self._project.storage.project_root
         for instr in self._current_definition.instructions:
             try:
                 specs = instr.get_resource_field_specs()
@@ -2999,6 +3049,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     break
                 existing = self._current_definition.get_resource_by_id(resource_id)
                 if existing is None or not existing.has_artifact:
+                    all_persisted = False
+                    break
+                # Checa que o arquivo físico de fato existe — `has_artifact`
+                # só garante que o JSON tem um path, não que o arquivo
+                # sobreviveu desde a última execução.
+                ref_path = (existing.artifact_ref.path or "").replace("\\", "/")
+                if not ref_path or not (project_root / ref_path).exists():
                     all_persisted = False
                     break
             if all_persisted:
@@ -4668,18 +4725,41 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if cancel_state["requested"]:
                 dialog.accept()
 
+        # Captura a definition + context ativos quando o worker iniciou —
+        # ambos podem mudar entre `worker.finished` ser enfileirado e
+        # processado (user troca de estratégia no left panel,
+        # `_reset_execution_state` zera o context). Sem essa captura, o
+        # sync teria early-return e os artifact_refs novos ficariam em
+        # disco mas sem ref no JSON da estratégia que rodou.
+        executed_definition = self._current_definition
+        executed_context = self._execution_context
+
         def on_finished(result):
             if result.success:
-                self._executed_instruction_ids.add(instruction.instruction_id)
+                if (
+                    self._current_definition is not None
+                    and executed_definition is not None
+                    and self._current_definition.strategy_id
+                        == executed_definition.strategy_id
+                ):
+                    self._executed_instruction_ids.add(instruction.instruction_id)
                 # A persistência (pickle.dump pesado) já rodou na thread do
                 # worker — aqui só sincronizamos os artifact_refs já gravados
                 # com a definição em memória (operação rápida, sem I/O).
-                self._sync_persisted_resources_to_definition(result.produced_resource_ids)
+                # Passa definition + context capturados explicitamente.
+                self._sync_persisted_resources_to_definition(
+                    result.produced_resource_ids,
+                    definition=executed_definition,
+                    context=executed_context,
+                )
                 # Apaga recursos órfãos: outputs persistidos que deixaram
                 # de ser declarados (ex: usuário renomeou A→B antes de
-                # re-executar). Sem isso, A.<ext> + sidecars + PNG ficam
-                # no disco como lixo, e A continua em definition.resources.
-                self._cleanup_orphan_persisted_resources()
+                # re-executar). Passa `executed_definition` pra evitar
+                # rodar cleanup contra outra estratégia (bug histórico de
+                # Run All com mid-flight switch).
+                self._cleanup_orphan_persisted_resources(
+                    definition=executed_definition
+                )
                 dialog.finish(True)
             else:
                 dialog.finish(False)
@@ -5406,10 +5486,23 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 if not resource.has_payload and not resource.has_artifact:
                     self._current_definition.remove_resource(resource.resource_id)
 
-    def _cleanup_orphan_persisted_resources(self) -> None:
+    def _cleanup_orphan_persisted_resources(
+        self,
+        definition: Optional[LRStrategyDefinition] = None,
+    ) -> None:
         """Apaga do disco e remove de `definition.resources` recursos
         persistidos que não são mais output declarado de NENHUMA instrução
-        da estratégia atual.
+        da estratégia.
+
+        `definition` é OBRIGATÓRIO logicamente — pode vir None só por
+        compat com chamadas antigas que ainda assumem a estratégia ativa.
+        Sempre passe explicitamente em paths assíncronos (Run All), porque
+        `self._current_definition` pode ter mudado entre o término do
+        worker e o processamento do sinal `finished` na main thread. Bug
+        histórico: o usuário selecionava outra estratégia mid-flight,
+        `_current_definition` apontava pra estratégia X, mas o cleanup
+        rodava sobre os trained_resources da estratégia Y — apagando
+        arquivos físicos de Y que pareciam "órfãos" sob a lente de X.
 
         Cobre três cenários equivalentes:
           1. Output de instrução renomeado (A→B): "A" sobrevivia ao
@@ -5437,10 +5530,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
         chamar em `_on_strategy_modified` porque o usuário pode estar
         digitando o novo nome do output mid-keystroke.
         """
-        if not self._project or not self._current_definition:
+        if not self._project:
             return
-
-        definition = self._current_definition
+        if definition is None:
+            definition = self._current_definition
+        if definition is None:
+            return
 
         declared_output_ids: Set[str] = set()
         for instr in definition.instructions:
@@ -5450,6 +5545,32 @@ class StrategyManagerV2Controller(QtCore.QObject):
             except Exception:
                 pass
 
+        # Telemetria: deixa rastro do que o cleanup VIU no momento da
+        # chamada. Crítico pra diagnosticar bug onde resources que de
+        # fato estão declarados como output desaparecem do `declared_set`
+        # transitoriamente (ex: instrução com campo de output zerado
+        # temporariamente, _sync_all_output_placeholders fora de ordem).
+        print(
+            f"[FF-CLEANUP] _cleanup_orphan_persisted_resources em "
+            f"'{definition.name}' (id={definition.strategy_id[:8]}): "
+            f"{len(declared_output_ids)} outputs declarados, "
+            f"{len(definition.resources)} resources na definição."
+        )
+        print(
+            f"  declared_output_ids = {sorted(declared_output_ids)}"
+        )
+
+        # ID curto + completo da estratégia atual — usado pra detectar
+        # paths que pertencem a OUTRA estratégia. Bug histórico: o sync
+        # adicionava contaminantes (resources de outras estratégias que
+        # vazaram via additional_resources / disk scan) em
+        # `definition.resources`. O cleanup os via como "órfãos" e
+        # apagava os arquivos físicos — que pertencem a outra estratégia.
+        # Solução: se o path não contém o strategy_id desta estratégia,
+        # só remove da definition (limpa contaminação histórica do JSON)
+        # mas NUNCA toca no arquivo físico.
+        own_strategy_id = (definition.strategy_id or "").lower()
+
         removed_any = False
         for resource in list(definition.resources):
             if resource.category == ResourceCategory.PRIMARY:
@@ -5457,7 +5578,32 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if resource.resource_id in declared_output_ids:
                 continue
 
-            self._delete_persisted_resource_files(resource)
+            ref_path = (
+                resource.artifact_ref.path.replace("\\", "/")
+                if resource.artifact_ref and resource.artifact_ref.path
+                else ""
+            )
+            path_belongs_to_other_strategy = (
+                bool(ref_path)
+                and bool(own_strategy_id)
+                and own_strategy_id not in ref_path.lower()
+            )
+
+            if path_belongs_to_other_strategy:
+                # Contaminação histórica — só remove do JSON da definição,
+                # NÃO apaga o arquivo (pertence a outra estratégia).
+                print(
+                    f"[FF-CLEANUP] CONTAMINAÇÃO (sem unlink): "
+                    f"rid={resource.resource_id!r} path={ref_path!r} "
+                    f"não pertence a {definition.name!r}; só removendo da definição."
+                )
+            else:
+                # Órfão genuíno: output renomeado/removido/toggle-off.
+                print(
+                    f"[FF-CLEANUP] resource ÓRFÃO: rid={resource.resource_id!r} "
+                    f"id={getattr(resource, 'id', None)!r} path={ref_path!r}"
+                )
+                self._delete_persisted_resource_files(resource)
             if (
                 self._execution_context is not None
                 and self._execution_context.has_resource(resource.resource_id)
@@ -5470,25 +5616,68 @@ class StrategyManagerV2Controller(QtCore.QObject):
             removed_any = True
 
         if removed_any:
-            self._save_current_definition()
+            # Salva a definition que foi limpa — não necessariamente
+            # `self._current_definition` (paths assíncronos podem ter
+            # trocado a seleção).
+            self._save_definition(definition)
 
-    def _sync_trained_model_to_definition(self, model) -> None:
+    def _sync_trained_model_to_definition(
+        self,
+        model,
+        definition: Optional[LRStrategyDefinition] = None,
+    ) -> None:
         """
         Sincroniza recursos do LRStrategyTrainedModel já persistidos pelo
         StrategyExecutionWorker com a definição em memória (Run All).
 
+        `definition` é a estratégia QUE RODOU — sempre passar explicitamente
+        em paths assíncronos. Default para `self._current_definition` só
+        por compat com chamadas antigas. Bug histórico: usar
+        `self._current_definition` aqui causava corrupção quando o usuário
+        trocava de estratégia mid-flight (sync escrevia trained_resources
+        de X em definition Y, cleanup apagava como "órfão").
+
         Não faz I/O — apenas copia artifact_ref/payload do `model.trained_resources`
         para a `definition.resources`.
         """
-        if not self._current_definition or model is None:
+        if model is None:
             return
+        if definition is None:
+            definition = self._current_definition
+        if definition is None:
+            return
+
+        # Outputs declarados pelas instruções da ESTRATÉGIA QUE RODOU —
+        # esse é o conjunto branco-listado. `model.trained_resources` vem
+        # de `context.list_resources()` e contém TUDO que o contexto viu:
+        # PRIMARYs compartilhados (datasets/configs importados), outputs
+        # de outras estratégias que entraram via `additional_resources`
+        # (porque o `_collect_project_resources` faz disk scan + agrega
+        # resources de TODAS as definitions do projeto), e os outputs
+        # legítimos desta execução. Sem filtrar, o sync grudava todo o
+        # lixo do contexto em `definition.resources`, e o cleanup
+        # imediatamente seguinte apagava esses "intrusos" como órfãos
+        # — incluindo os arquivos físicos de outras estratégias.
+        declared_output_ids: Set[str] = set()
+        for instr in definition.instructions:
+            try:
+                for placeholder in instr.get_output_resource_placeholders():
+                    declared_output_ids.add(placeholder.resource_id)
+            except Exception:
+                pass
 
         trained_resources = list(getattr(model, "trained_resources", []) or [])
         for resource in trained_resources:
             if not getattr(resource, "has_payload", False):
                 continue
 
-            existing = self._current_definition.get_resource_by_id(resource.resource_id)
+            # Filtro crítico: só sincroniza outputs declarados pelas
+            # instruções DESTA estratégia. Tudo mais é contaminação do
+            # contexto compartilhado e não pertence à definição.
+            if resource.resource_id not in declared_output_ids:
+                continue
+
+            existing = definition.get_resource_by_id(resource.resource_id)
             old_ref = existing.artifact_ref if existing else None
 
             if existing:
@@ -5499,7 +5688,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             elif resource.artifact_ref is not None:
                 # Só adiciona se foi efetivamente persistido em disco;
                 # caso contrário não é um recurso "produzido" do projeto.
-                self._current_definition.add_resource(resource)
+                definition.add_resource(resource)
 
             # Limpa arquivo órfão quando o path mudou.
             # Normaliza '\' para '/' antes de comparar — projetos abertos do
@@ -5517,11 +5706,19 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         # Run All: limpa órfãos por rename/remoção/toggle antes do save
         # final (mesma lógica que o caminho single-instruction usa via
-        # `on_finished` no `_run_instruction_worker`).
-        self._cleanup_orphan_persisted_resources()
-        self._save_current_definition()
+        # `on_finished` no `_run_instruction_worker`). Passa a definition
+        # explicitamente — sem isso, o cleanup poderia rodar contra outra
+        # estratégia se `_current_definition` mudou entre o término do
+        # worker e o processamento do sinal `finished`.
+        self._cleanup_orphan_persisted_resources(definition=definition)
+        self._save_definition(definition)
 
-    def _sync_persisted_resources_to_definition(self, resource_ids: list) -> None:
+    def _sync_persisted_resources_to_definition(
+        self,
+        resource_ids: list,
+        definition: Optional[LRStrategyDefinition] = None,
+        context=None,
+    ) -> None:
         """
         Sincroniza recursos já persistidos pelo worker com a definição em memória.
 
@@ -5530,16 +5727,26 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Aqui só copiamos artifact_ref/resource_type/payload do contexto vivo
         para o `existing` na definição da estratégia, e tratamos o caso de
         arquivo antigo órfão quando o caminho mudou.
+
+        `definition` e `context` são opcionais por compat, mas paths
+        assíncronos (handler `on_finished`) DEVEM passar explicitamente
+        — captura feita antes do worker iniciar. Sem isso, mid-flight
+        switch de estratégia no left panel deixaria os arquivos novos
+        em disco sem ref no JSON da estratégia que rodou.
         """
-        if not self._execution_context or not self._current_definition:
+        if definition is None:
+            definition = self._current_definition
+        if context is None:
+            context = self._execution_context
+        if not context or definition is None:
             return
 
         for resource_id in resource_ids or []:
-            resource = self._execution_context.get_resource(resource_id)
+            resource = context.get_resource(resource_id)
             if resource is None:
                 continue
 
-            existing = self._current_definition.get_resource_by_id(resource_id)
+            existing = definition.get_resource_by_id(resource_id)
             old_ref = existing.artifact_ref if existing else None
 
             artifact_ref = resource.artifact_ref
@@ -5549,7 +5756,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                     existing.artifact_ref = artifact_ref
                 existing.payload = resource.payload
             else:
-                self._current_definition.add_resource(resource)
+                definition.add_resource(resource)
 
             # Limpa arquivo órfão quando o path mudou (ex: tipo do recurso
             # mudou e a extensão/pasta de destino também). Normaliza '\' → '/'
@@ -5564,7 +5771,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             ):
                 self._unlink_old_artifact_with_sidecars(old_ref.path)
 
-        self._save_current_definition()
+        self._save_definition(definition)
 
     def _persist_produced_resources(self, resource_ids: list) -> None:
         """Persiste recursos produzidos em disco e atualiza a definição."""
@@ -5638,30 +5845,44 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._save_current_definition()
 
     def _save_current_definition(self) -> None:
-        """Salva a definição da estratégia atual no repositório.
+        """Salva a definição da estratégia atual no repositório."""
+        if self._project and self._current_definition:
+            self._save_definition(self._current_definition)
+
+    def _save_definition(self, definition: LRStrategyDefinition) -> None:
+        """Salva UMA definição específica no repositório.
 
         Erros de persistência são surfaceados como QMessageBox — antes
         eram silenciosamente engolidos via `except: pass`, o que mascarava
         bugs onde mutações in-memory (ex: novo hash após edição inline de
         pipeline/mining) nunca chegavam ao disco e o `check_integrity` do
         próximo `open` flagava o arquivo como MODIFICADO.
+
+        Útil em paths assíncronos (Run All) onde a estratégia salva NÃO
+        é necessariamente `_current_definition` — o usuário pode ter
+        trocado de seleção entre o término do worker e o
+        on_finished. Sempre passar a definition que estava ativa quando
+        o worker iniciou (capturada via `worker._definition`).
         """
-        if self._project and self._current_definition:
-            try:
-                self._project.definition_repository.save_definition(
-                    self._current_definition
-                )
+        if not self._project or definition is None:
+            return
+        try:
+            self._project.definition_repository.save_definition(definition)
+            if (
+                self._current_definition is not None
+                and self._current_definition.strategy_id == definition.strategy_id
+            ):
                 self._is_dirty = False
-            except Exception as exc:
-                QtWidgets.QMessageBox.critical(
-                    self._view,
-                    "Erro ao salvar estratégia",
-                    f"Não foi possível persistir a estratégia "
-                    f"'{self._current_definition.name}':\n{exc}\n\n"
-                    "Alterações em memória não foram salvas. Tente "
-                    "novamente; se o problema persistir, verifique "
-                    "permissões de escrita na pasta do projeto.",
-                )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self._view,
+                "Erro ao salvar estratégia",
+                f"Não foi possível persistir a estratégia "
+                f"'{definition.name}':\n{exc}\n\n"
+                "Alterações em memória não foram salvas. Tente "
+                "novamente; se o problema persistir, verifique "
+                "permissões de escrita na pasta do projeto.",
+            )
 
     def _refresh_produced_resources(self) -> None:
         """Atualiza o widget de recursos produzidos em todas as abas."""
