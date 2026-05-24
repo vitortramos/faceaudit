@@ -112,17 +112,50 @@ class StrategyExecutionWorker(QtCore.QObject):
         strategy_id = self._definition.strategy_id
         strategy_name = self._definition.name or ""
 
+        # Acesso ao project_root pra checar existência real dos arquivos
+        # referenciados. Sem isso, o worker tratava `artifact_ref` no JSON
+        # como prova de que o arquivo está em disco — mas ref órfã
+        # (arquivo apagado por cleanup intermediário, JSON manteve o path)
+        # passava como "já persistido" e a re-execução não regrava o
+        # arquivo. Ref ficava órfã indefinidamente.
+        project_root = None
+        try:
+            project_root = self._executor._resource_loader._storage.project_root
+        except Exception:
+            project_root = None
+
+        from faceaudit.enums.resource_category import ResourceCategory
+
         for resource in trained_resources:
             if not getattr(resource, "has_payload", False):
                 continue
 
-            # Pular recursos que já estão em disco (project resources como
-            # PIPELINE_CONFIG / MINING_CONFIG / DATASET importados, ou
-            # qualquer resource que veio com artifact_ref preexistente).
+            # PRIMARY (project resources como PIPELINE_CONFIG /
+            # MINING_CONFIG / DATASET importados) sempre são pulados.
             # Regravar exigiria kwargs específicos por tipo (config_id,
             # dataset_id, etc.) que o caller genérico não tem.
-            if getattr(resource, "artifact_ref", None) is not None:
+            if getattr(resource, "category", None) == ResourceCategory.PRIMARY:
                 continue
+
+            # DERIVED com ref preexistente: pula APENAS se o arquivo de
+            # fato existe no disco. Ref órfã (arquivo sumiu) força nova
+            # persistência. Sem essa checagem, refs órfãs ficavam pra
+            # sempre porque "tem artifact_ref" era suficiente pro skip.
+            existing_ref = getattr(resource, "artifact_ref", None)
+            if existing_ref is not None and project_root is not None:
+                ref_path = (existing_ref.path or "").replace("\\", "/")
+                if ref_path and (project_root / ref_path).exists():
+                    continue
+                # Arquivo sumiu — zera o ref pra que persist_produced_resource
+                # gere UID novo (em vez de tentar reusar o path antigo).
+                # Log explícito pra deixar visível na UI que o fix está
+                # tomando conta de uma ref órfã (debug de "por que minhas
+                # refs continuam órfãs depois do Run All").
+                self.log_message.emit(
+                    f"🔁 Recurso '{resource.resource_id}' tem ref pra "
+                    f"arquivo apagado ({ref_path}); regravando com UID novo."
+                )
+                resource.artifact_ref = None
 
             # Pular recursos sem mapeamento de artifact (ex: project resources
             # que já estão em disco e não precisam ser regravados).
