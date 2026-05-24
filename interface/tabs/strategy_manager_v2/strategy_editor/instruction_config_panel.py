@@ -908,6 +908,19 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 self._form_cfg.addRow(f"{spec.label}:", row_widget)
                 rendered_field_names.add(spec.field_name)
 
+                # Wire triggers_rebuild também no caminho não-pareado.
+                # Antes só o `_render_paired_inputs` conectava esse signal,
+                # então specs single como `DATASET_BALANCING.dataset_resource_id`
+                # e `TYPICALITY_PAIR_SCORING.reference_dataset_resource_id`
+                # tinham `triggers_rebuild=True` mas nunca disparavam rebuild
+                # — o usuário precisava clicar em "Aplicar alterações" pra
+                # ver dropdowns dependentes aparecerem.
+                if getattr(spec, "triggers_rebuild", False):
+                    combo.currentIndexChanged.connect(
+                        lambda _idx, fn=spec.field_name:
+                            self._on_resource_triggers_rebuild(fn)
+                    )
+
             i += 1
 
         # DTOs aninhados (PipelineApplicationPolicy / ComparisonMiningConfig /

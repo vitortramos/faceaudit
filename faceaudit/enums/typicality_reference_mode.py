@@ -30,9 +30,21 @@ class TypicalityReferenceMode(Enum):
     PER_FACE = ("PER_FACE", "Por face")
     PER_IDENTITY = ("PER_IDENTITY", "Por identidade (centroide)")
 
-    def __init__(self, value: str, label_pt: str):
-        self._value_ = value
-        self.label_pt = label_pt
+    def __new__(cls, value: str, label_pt: str):
+        # Definir `_value_` em `__new__` (não em `__init__`) é o pattern
+        # canônico do CPython pra enums com valor composto (string id +
+        # label PT). Em `__init__` o `_value2member_map_` já foi populado
+        # pelo metaclass com a tupla original — sobrescrever `_value_`
+        # depois quebra `MyEnum(value)` e o roundtrip de pickle:
+        # `pickle.dumps(member)` salva `_value_` (a string), mas
+        # `pickle.loads` chama `MyEnum('PER_IDENTITY')` que falha porque
+        # o mapa interno só tem a tupla como chave. Modelos serializados
+        # antes desse fix (knn_typicality_model.pkl) começam a carregar
+        # de novo após esse ajuste.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label_pt = label_pt
+        return obj
 
     def __str__(self) -> str:
         return self.label_pt

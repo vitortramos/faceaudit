@@ -140,7 +140,14 @@ class TypicalityPairScoringInstruction(StrategyInstructionDefinition):
             ),
             ResourceFieldSpec("probe_dataset_resource_id", "Dataset 1 (probe)", DS),
             ResourceFieldSpec(
-                "reference_dataset_resource_id", "Dataset 2 (reference, opcional)", DS,
+                "reference_dataset_resource_id",
+                "Dataset 2 (reference, opcional)",
+                DS,
+                # Preencher esse campo destrava o spec do segundo modelo
+                # de tipicidade (ver bloco condicional abaixo). Sem o
+                # rebuild, o dropdown extra nunca aparece até salvar +
+                # recarregar a instrução.
+                triggers_rebuild=True,
             ),
         ]
 

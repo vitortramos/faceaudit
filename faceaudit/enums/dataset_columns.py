@@ -60,16 +60,22 @@ class DatasetColumns(Enum):
     OFIQ_UNDER_EXP    = ("ofiq_under_exposure_scalar", "Subexposição", False, False, 923)
     OFIQ_OVER_EXP     = ("ofiq_over_exposure_scalar", "Superexposição", False, False, 924)
 
-    def __init__(self, key: str, label: str, show_in_table: bool, editable: bool, order: int):
-        self._value_ = key # A key do DataFrame é o valor real do Enum
-        self.key = key
-        self.label = label
+    def __new__(cls, key: str, label: str, show_in_table: bool, editable: bool, order: int):
+        # Definir `_value_` em `__new__` (não `__init__`) é o pattern
+        # canônico do CPython pra enums com valor composto. Senão,
+        # `_value2member_map_` fica com a tupla original como chave e
+        # o roundtrip de pickle quebra.
+        obj = object.__new__(cls)
+        obj._value_ = key  # A key do DataFrame é o valor real do Enum
+        obj.key = key
+        obj.label = label
         # label_pt alias — `label` já está em PT-BR. Mantido por consistência
         # de API com outros enums do projeto.
-        self.label_pt = label
-        self.show_in_table = show_in_table
-        self.editable = editable
-        self.order = order
+        obj.label_pt = label
+        obj.show_in_table = show_in_table
+        obj.editable = editable
+        obj.order = order
+        return obj
 
     def __str__(self) -> str:
         return self.label_pt

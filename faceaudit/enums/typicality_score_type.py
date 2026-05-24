@@ -31,9 +31,13 @@ class TypicalityScoreType(Enum):
     TYPICALITY_PERCENTILE = ("TYPICALITY_PERCENTILE", "Percentil de tipicidade")
     LOG_DENSITY_KNN = ("LOG_DENSITY_KNN", "Log-densidade kNN")
 
-    def __init__(self, value: str, label_pt: str):
-        self._value_ = value
-        self.label_pt = label_pt
+    def __new__(cls, value: str, label_pt: str):
+        # Pattern canônico de Enum com valor composto — ver
+        # typicality_reference_mode.py pra explicação completa.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label_pt = label_pt
+        return obj
 
     def __str__(self) -> str:
         return self.label_pt

@@ -64,10 +64,14 @@ class TypicalityCombiner(Enum):
         "questionada vs padrão de referência demograficamente distintos).",
     )
 
-    def __init__(self, value: str, label_pt: str, description: str):
-        self._value_ = value
-        self.label_pt = label_pt
-        self.description = description
+    def __new__(cls, value: str, label_pt: str, description: str):
+        # Pattern canônico de Enum com valor composto — ver
+        # typicality_reference_mode.py pra explicação completa.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label_pt = label_pt
+        obj.description = description
+        return obj
 
     def __str__(self) -> str:
         return self.label_pt

@@ -43,11 +43,17 @@ class CalibrationModelType(Enum):
         "duas gaussianas equi-variantes (Morrison 2024).",
     )
 
-    def __init__(self, value: str, label: str, label_pt: str, description: str):
-        self._value_ = value
-        self.label = label
-        self.label_pt = label_pt
-        self.description = description
+    def __new__(cls, value: str, label: str, label_pt: str, description: str):
+        # Definir `_value_` em `__new__` (não `__init__`) é o pattern
+        # canônico do CPython pra enums com valor composto. Senão,
+        # `_value2member_map_` fica com a tupla original como chave e
+        # o roundtrip de pickle quebra (ValueError no pickle.loads).
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label = label
+        obj.label_pt = label_pt
+        obj.description = description
+        return obj
 
     def __str__(self) -> str:
         """Retorna o label PT-BR para a interface."""

@@ -35,11 +35,15 @@ class SimilarityModelType(Enum):
         "Usa um modelo PLDA treinado sobre embeddings e identidades para produzir scores de similaridade.",
     )
 
-    def __init__(self, value: str, label: str, label_pt: str, description: str):
-        self._value_ = value
-        self.label = label
-        self.label_pt = label_pt
-        self.description = description
+    def __new__(cls, value: str, label: str, label_pt: str, description: str):
+        # Pattern canônico de Enum com valor composto — ver
+        # typicality_reference_mode.py pra explicação completa.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label = label
+        obj.label_pt = label_pt
+        obj.description = description
+        return obj
 
     def __str__(self) -> str:
         """Retorna o label PT-BR para a interface."""

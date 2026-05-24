@@ -167,13 +167,17 @@ class ValidationRuleType(Enum):
         "multivariado e geram log-LRs sem sentido (EER/Cllr explodem).",
     )
 
-    def __init__(self, value: str, label: str, description: str):
-        self._value_ = value
-        self.label = label
+    def __new__(cls, value: str, label: str, description: str):
+        # Pattern canônico de Enum com valor composto — ver
+        # typicality_reference_mode.py pra explicação completa.
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.label = label
         # label_pt alias — `label` já está em PT-BR. Mantido por consistência
         # de API com outros enums do projeto.
-        self.label_pt = label
-        self.description = description
+        obj.label_pt = label
+        obj.description = description
+        return obj
 
     def __str__(self) -> str:
         return self.label_pt
