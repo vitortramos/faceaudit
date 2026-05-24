@@ -142,24 +142,47 @@ class SepaelModel(Enum):
         return Path.home() / ".forensicface" / "models"
 
     def installed_on_disk(self, models_root: Optional[Path] = None) -> bool:
-        """True quando os ONNX essenciais do modelo estão presentes em
-        `<models_root>/<ff_name>/`. Mínimo exigido:
+        """True quando o detector + encoder principal do modelo estão
+        no disco. Suporta os dois layouts que a `forensicface >= 0.7.0`
+        aceita:
 
-        - `det_10g.onnx` (detector RetinaFace).
-        - Pelo menos 1 `.onnx` que NÃO seja sidecar conhecido
-          (`det_10g`, `genderage`, `1k3d68`, `cr_fiqa`) — esse é o
-          encoder principal. Sem encoder, o modelo não produz embeddings
-          mesmo que detector e atributos estejam lá.
+        - **Shared (novo)**:
+          `<models_root>/detection/det_10g.onnx` +
+          `<models_root>/recognition/<ff_name>/*face*.onnx`.
+        - **Legacy (per-model)**:
+          `<models_root>/<ff_name>/det_10g.onnx` +
+          `<models_root>/<ff_name>/<encoder_subdir>/*.onnx` (onde
+          `encoder_subdir` é qualquer pasta que não seja sidecar
+          conhecido).
+
+        A `ForensicFace.__init__` da v0.7.0 tenta o layout shared primeiro
+        e cai no legacy. Esse helper imita o mesmo comportamento para que
+        `available_on_disk()` reflita o que a lib de fato consegue
+        carregar — mesmo depois do usuário rodar
+        `python -m forensicface.tools.migrate_shared --apply`.
         """
-        root = (models_root or self.models_root()) / self.ff_name
-        if not root.exists():
+        root = models_root or self.models_root()
+
+        # Tenta layout shared primeiro: detector compartilhado + encoder
+        # em `recognition/<ff_name>/`. Pasta `recognition/` pode existir
+        # parcialmente populada — exige tanto o detector quanto pelo
+        # menos um arquivo `*face*.onnx` na subpasta do modelo.
+        shared_detector = root / "detection" / "det_10g.onnx"
+        shared_recog_dir = root / "recognition" / self.ff_name
+        if shared_detector.exists() and shared_recog_dir.exists():
+            if any(shared_recog_dir.glob("*face*.onnx")):
+                return True
+
+        # Fallback layout legacy: detector embutido na pasta do modelo +
+        # subdir do encoder.
+        legacy_root = root / self.ff_name
+        if not legacy_root.exists():
             return False
-        if not (root / "det_10g.onnx").exists():
+        if not (legacy_root / "det_10g.onnx").exists():
             return False
         sidecar_stems = {"det_10g", "genderage", "1k3d68", "cr_fiqa", "cr_fiqa_l"}
-        for onnx_path in root.rglob("*.onnx"):
-            stem = onnx_path.stem
-            if stem in sidecar_stems:
+        for onnx_path in legacy_root.rglob("*.onnx"):
+            if onnx_path.stem in sidecar_stems:
                 continue
             return True
         return False
