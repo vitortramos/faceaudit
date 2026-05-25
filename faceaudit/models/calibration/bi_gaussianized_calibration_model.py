@@ -152,10 +152,14 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         )
 
         # ── Passo 5: CDF empírica G(x) ─────────────────────────────────────────
-        self._build_g_cdf(scores_arr, labels_arr)
+        self._build_g_cdf(scores_arr, labels_arr, logger_callback=logger_callback)
 
         # ── Pré-computa F⁻¹ da mistura se INTERP1D ─────────────────────────────
         if self.config.inversion_method == BiGaussInversionMethod.INTERP1D:
+            logger_callback(
+                f"[{self.name}] Construindo F⁻¹ da mistura "
+                f"(grid {int(self.config.interpolation_points)} pontos)..."
+            )
             self._mixture_inv_interp = self._build_mixture_inverse(sigma)
         else:
             self._mixture_inv_interp = None
@@ -381,10 +385,15 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
     # CDF EMPÍRICA G(x)
     # =========================================================================
 
-    def _build_g_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
+    def _build_g_cdf(
+        self,
+        scores: np.ndarray,
+        labels: np.ndarray,
+        logger_callback: Callable[[str], None] = print,
+    ) -> None:
         """Dispatcher: constrói G(x) conforme `config.gx_method`."""
         if self.config.gx_method == BiGaussGxMethod.KDE_SMOOTHED:
-            self._build_smoothed_cdf(scores, labels)
+            self._build_smoothed_cdf(scores, labels, logger_callback=logger_callback)
         else:
             self._build_empirical_cdf(scores, labels)
 
@@ -424,7 +433,12 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             assume_sorted=True,
         )
 
-    def _build_smoothed_cdf(self, scores: np.ndarray, labels: np.ndarray) -> None:
+    def _build_smoothed_cdf(
+        self,
+        scores: np.ndarray,
+        labels: np.ndarray,
+        logger_callback: Callable[[str], None] = print,
+    ) -> None:
         """G(x) via KDE-smoothing (variante deste projeto, não-canônica).
 
         Constrói G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) onde F̂_c é a CDF do KDE
@@ -468,9 +482,20 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
 
         x_grid = np.linspace(grid_lo, grid_hi, n_grid)
 
+        logger_callback(
+            f"[{self.name}] Construindo G(x) smoothed "
+            f"(N_grid={n_grid}, h_gen={bw_gen:.4f}, h_imp={bw_imp:.4f})..."
+        )
+
         # G(x) = 0.5·F̂_g(x) + 0.5·F̂_i(x) onde F̂_c = (1/N_c) Σ Φ((x - x_ci)/h_c).
         # Broadcasting é O(N_grid · N_c) — chunkado pra evitar matrizes grandes.
+        logger_callback(
+            f"[{self.name}]   • F̂_g(x): {gen.size:,} genuínos × {n_grid:,} grid pts..."
+        )
         f_gen = self._kernel_cdf_grid(x_grid, gen, bw_gen)
+        logger_callback(
+            f"[{self.name}]   • F̂_i(x): {imp.size:,} impostores × {n_grid:,} grid pts..."
+        )
         f_imp = self._kernel_cdf_grid(x_grid, imp, bw_imp)
         g_grid = 0.5 * f_gen + 0.5 * f_imp
 
@@ -634,21 +659,56 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         if kind == BiGaussInitialCalibrator.KDE:
             # KDE simples sobre os scores brutos (não Fisher-transformados),
             # bandwidth via Silverman se config.initial_kde_bandwidth == 0.
+            #
+            # Subsampling: sklearn.KernelDensity é O(N²) no pior caso (atol=0
+            # default). Com 40k+ impostores o fit + score_samples leva minutos
+            # sem feedback. O resultado é usado apenas para estimar Cllr que
+            # alimenta σ² — uma amostra de 10k já é estatisticamente farto.
             from sklearn.neighbors import KernelDensity
             logger_callback(f"[{self.name}] Calibrador inicial: KDE")
+
+            max_per_class = int(self.config.initial_kde_max_samples_per_class)
+            rng = np.random.default_rng(int(self.config.random_seed))
+
+            def _maybe_subsample(arr: np.ndarray, label: str) -> np.ndarray:
+                if max_per_class <= 0 or arr.size <= max_per_class:
+                    return arr
+                logger_callback(
+                    f"[{self.name}]   • Subsampling {label}: "
+                    f"{arr.size:,} → {max_per_class:,} (seed={self.config.random_seed})"
+                )
+                idx = rng.choice(arr.size, size=max_per_class, replace=False)
+                return arr[idx]
+
+            gen_fit = _maybe_subsample(gen, "genuínos")
+            imp_fit = _maybe_subsample(imp, "impostores")
+
             bw_cfg = float(self.config.initial_kde_bandwidth)
-            bw_gen = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(gen)
-            bw_imp = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(imp)
+            bw_gen = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(gen_fit)
+            bw_imp = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(imp_fit)
+
+            logger_callback(
+                f"[{self.name}]   • Fitting KDE_gen "
+                f"(N={gen_fit.size:,}, h={bw_gen:.4f})..."
+            )
             kde_g = KernelDensity(kernel="gaussian", bandwidth=bw_gen).fit(
-                gen.reshape(-1, 1)
+                gen_fit.reshape(-1, 1)
+            )
+            logger_callback(
+                f"[{self.name}]   • Fitting KDE_imp "
+                f"(N={imp_fit.size:,}, h={bw_imp:.4f})..."
             )
             kde_i = KernelDensity(kernel="gaussian", bandwidth=bw_imp).fit(
-                imp.reshape(-1, 1)
+                imp_fit.reshape(-1, 1)
             )
-            log_p_g_on_gen = kde_g.score_samples(gen.reshape(-1, 1))
-            log_p_i_on_gen = kde_i.score_samples(gen.reshape(-1, 1))
-            log_p_g_on_imp = kde_g.score_samples(imp.reshape(-1, 1))
-            log_p_i_on_imp = kde_i.score_samples(imp.reshape(-1, 1))
+
+            # Scoring: avalia no MESMO conjunto subsampled usado no fit.
+            # Cllr é estimado sobre esse subsample — consistente e rápido.
+            logger_callback(f"[{self.name}]   • Scoring KDEs em {gen_fit.size:,} gen + {imp_fit.size:,} imp...")
+            log_p_g_on_gen = kde_g.score_samples(gen_fit.reshape(-1, 1))
+            log_p_i_on_gen = kde_i.score_samples(gen_fit.reshape(-1, 1))
+            log_p_g_on_imp = kde_g.score_samples(imp_fit.reshape(-1, 1))
+            log_p_i_on_imp = kde_i.score_samples(imp_fit.reshape(-1, 1))
             llr_gen = (log_p_g_on_gen - log_p_i_on_gen).astype(np.float64)
             llr_imp = (log_p_g_on_imp - log_p_i_on_imp).astype(np.float64)
             return llr_gen, llr_imp

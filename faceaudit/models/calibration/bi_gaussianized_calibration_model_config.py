@@ -231,6 +231,22 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         },
     )
 
+    initial_kde_max_samples_per_class: int = field(
+        default=10000,
+        metadata={
+            "help": (
+                "<html><b>Subsampling do KDE inicial</b> (só aplica se "
+                "initial_calibrator=KDE). Limita N por classe usado em fit + "
+                "score_samples. Razão: sklearn KernelDensity tem custo O(N²) "
+                "no pior caso (atol=0) — com 42k impostores o fit demora ~2 "
+                "min sem feedback intermediário. Sample de 10k já é suficiente "
+                "para estimativa de Cllr que alimenta σ². <br/>"
+                "<code>0</code> = sem subsampling (usa todos os pontos, lento)."
+                "</html>"
+            )
+        },
+    )
+
     random_seed: int = field(
         default=42,
         metadata={"help": "Semente para amostragens internas."}
@@ -325,6 +341,8 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
             raise ValueError("initial_logreg_C deve ser positivo.")
         if self.initial_kde_bandwidth < 0:
             raise ValueError("initial_kde_bandwidth não pode ser negativo.")
+        if self.initial_kde_max_samples_per_class < 0:
+            raise ValueError("initial_kde_max_samples_per_class não pode ser negativo.")
         if self.gx_kde_bandwidth_gen < 0:
             raise ValueError("gx_kde_bandwidth_gen não pode ser negativo.")
         if self.gx_kde_bandwidth_imp < 0:
