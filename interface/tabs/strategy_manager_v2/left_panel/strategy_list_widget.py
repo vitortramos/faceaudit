@@ -173,12 +173,20 @@ class StrategyListWidget(QtWidgets.QWidget):
         """
         Repopula a lista com as definições fornecidas.
 
+        Sempre exibe em **ordem alfabética case-insensitive** pelo nome da
+        estratégia. Estratégias sem nome (ou com nome vazio) ficam no final.
+
         Quando `selected_strategy_id` é informado e bate com alguma das
         definições, esse item fica selecionado visualmente — preserva o
         feedback de "qual estratégia está aberta no editor" através de
         refreshes da lista (após edição, execução, rename etc.).
         """
-        self._definitions = list(definitions)
+        # Ordenação canônica: case-insensitive por nome. Definitions sem
+        # nome vão pro final (sort key "~~~" + id como tiebreaker).
+        self._definitions = sorted(
+            definitions,
+            key=lambda d: ((d.name or "~~~").casefold(), d.strategy_id or ""),
+        )
         # blockSignals evita reemitir strategy_selected durante o setCurrentRow
         # programático — só queremos o highlight visual, não um novo evento de
         # abertura que dispararia _on_strategy_opened de novo.
