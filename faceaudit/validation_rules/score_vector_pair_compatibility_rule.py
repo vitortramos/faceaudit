@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Sequence, Set, Tuple
+from typing import Any, FrozenSet, List, Optional, Sequence, Set
 
 from faceaudit.enums.validation_severity import ValidationSeverity
 from faceaudit.models.similarity.similarity_score_dataset import (
@@ -22,7 +22,7 @@ class ScoreVectorPairCompatibilityRule(ValidationRuleBase):
     """
     Verifica que **N (≥2) SimilarityScoreDataset** compartilham
     EXATAMENTE o mesmo conjunto de pares
-    `(probe.face_hash, reference.face_hash)`.
+    `{probe.face_hash, reference.face_hash}` (chave NÃO-ordenada).
 
     Catch antecipado pra evitar erro tardio do
     `ScoreVectorizationInstructionExecutor._build_vectorized_dataset` (que
@@ -30,6 +30,17 @@ class ScoreVectorPairCompatibilityRule(ValidationRuleBase):
     processaram o mesmo conjunto de pares, a combinação score-vector é
     segura; qualquer divergência pode indicar que o usuário cruzou splits
     diferentes ou usou PAIR_MINING em apenas um dos lados.
+
+    Pareamento simétrico (`frozenset({p, r})` ao invés de tupla
+    `(p, r)`): todos os scoring models do projeto (Cosseno, PLDA) e
+    todos os combiners da tipicidade (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) são
+    simétricos por construção. O par `(F1, L1)` representa o mesmo objeto
+    forense que `(L1, F1)` — não faz sentido marcá-los como divergentes
+    quando a única diferença é qual face foi enumerada como probe vs
+    reference. Antes essa divergência aparecia quando o usuário definia
+    probe/reference em ordem trocada entre SIMILARITY_SCORING e
+    TYPICALITY_PAIR_SCORING (erro de configuração comum em casos cross-
+    pose).
 
     Algoritmo: o primeiro input é o **anchor**; cada input subsequente
     é comparado contra o anchor. Diferenças mostradas com hashes truncados
@@ -69,19 +80,24 @@ class ScoreVectorPairCompatibilityRule(ValidationRuleBase):
         self._max_examples = int(max_examples)
 
     @staticmethod
-    def _pair_key(sample: SimilarityScoreSample) -> Tuple[str, str]:
+    def _pair_key(sample: SimilarityScoreSample) -> FrozenSet[str]:
         probe_hash = getattr(sample.probe, "face_hash", None) or ""
         ref_hash = getattr(sample.reference, "face_hash", None) or ""
-        return (str(probe_hash), str(ref_hash))
+        return frozenset({str(probe_hash), str(ref_hash)})
 
     def _collect_keys(
         self, payload: SimilarityScoreDataset
-    ) -> Set[Tuple[str, str]]:
+    ) -> Set[FrozenSet[str]]:
         return {self._pair_key(s) for s in payload.items}
 
-    def _fmt_missing(self, missing: Set[Tuple[str, str]]) -> str:
+    def _fmt_missing(self, missing: Set[FrozenSet[str]]) -> str:
         head = list(missing)[:self._max_examples]
-        rendered = ", ".join(f"{p[:8]}..→{r[:8]}.." for p, r in head)
+        # frozenset não tem ordem definida — usa sorted pra render
+        # determinístico nas mensagens (importante pra testes/diff).
+        rendered = ", ".join(
+            "{" + ", ".join(h[:8] + ".." for h in sorted(fs)) + "}"
+            for fs in head
+        )
         more = "" if len(missing) <= self._max_examples else (
             f" (+{len(missing) - self._max_examples} outros)"
         )

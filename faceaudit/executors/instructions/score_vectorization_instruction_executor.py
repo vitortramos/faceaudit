@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import FrozenSet, List, Tuple
 
 import numpy as np
 
@@ -238,21 +238,39 @@ class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
         n = sizes[0]
 
         # Alinha cada input != anchor contra ele.
+        #
+        # Pareamento simétrico via `frozenset({probe_hash, ref_hash})`:
+        # `(F1, L1)` casa com `(L1, F1)`. Justificado porque TODOS os
+        # scoring models (Cosseno, PLDA) e combiners da tipicidade
+        # (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) são simétricos por construção
+        # — então `(p, r)` e `(r, p)` representam o mesmo objeto forense.
+        # Antes, a divergência aparecia quando o usuário definia
+        # probe/reference em ordem trocada entre SIMILARITY_SCORING e
+        # TYPICALITY_PAIR_SCORING.
+        #
+        # Estratégia: fast path posicional (zip), com fallback automático
+        # pra reorder se a ordem diferir mas os conjuntos baterem.
+        # O flag `require_pair_match` continua aceito pra compat de
+        # JSON antigo, mas perdeu efeito prático — fast path + fallback
+        # cobrem ambos os casos sem necessidade de toggle.
         aligned_items_per_input: List[List[SimilarityScoreSample]] = [anchor.items]
         for other, other_id in zip(datasets[1:], source_ids[1:]):
-            if require_pair_match:
-                if len(other.items) != n:
-                    raise ValueError(
-                        f"Dataset '{other_id}' tem {len(other.items)} pares, "
-                        f"anchor '{anchor_id}' tem {n} — defina "
-                        "require_pair_match=False para reordenar por hash."
-                    )
-                self._validate_strict_pair_alignment(
-                    anchor=anchor, other=other,
-                    anchor_id=anchor_id, other_id=other_id,
+            if len(other.items) != n:
+                raise ValueError(
+                    f"Dataset '{other_id}' tem {len(other.items)} pares, "
+                    f"anchor '{anchor_id}' tem {n}. Score vectorization "
+                    "exige que TODOS os sistemas tenham processado "
+                    "exatamente os mesmos pares — verifique se há "
+                    "PAIR_MINING em apenas um lado."
                 )
+            if self._is_positionally_aligned(anchor, other):
                 aligned_items_per_input.append(other.items)
             else:
+                self._log(
+                    context,
+                    f"  ↻ '{other_id}' não está na mesma ordem que "
+                    f"'{anchor_id}' — reordenando por chave simétrica…",
+                )
                 aligned_items_per_input.append(
                     self._reorder_to_match_anchor(
                         anchor=anchor, other=other,
@@ -306,50 +324,40 @@ class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
         )
         return vectorized, n, int(score_vector_matrix.shape[1])
 
-    def _validate_strict_pair_alignment(
+    def _is_positionally_aligned(
         self,
         anchor: SimilarityScoreDataset,
         other: SimilarityScoreDataset,
-        anchor_id: str,
-        other_id: str,
-    ) -> None:
-        """Verifica que `other.items` tem a mesma sequência de pares
-        `(probe.face_hash, reference.face_hash)` que `anchor.items`.
+    ) -> bool:
+        """True quando `other.items` já está na mesma ordem que
+        `anchor.items` pela chave simétrica do par. Fast path que evita
+        construir o dict de reorder (~50MB pra 835k pares).
 
-        Quando difere, levanta ValueError mostrando as primeiras 5
-        posições divergentes com hashes truncados — diagnóstico útil
-        em vez da mensagem genérica anterior.
+        Caller que receba False deve invocar `_reorder_to_match_anchor`.
         """
-        mismatches: List[Tuple[int, Tuple[str, str], Tuple[str, str]]] = []
-        MAX_MISMATCH_EXAMPLES = 5
-        for i, (sa, so) in enumerate(zip(anchor.items, other.items)):
-            key_a = self._pair_key(sa)
-            key_o = self._pair_key(so)
-            if key_a != key_o:
-                mismatches.append((i, key_a, key_o))
-                if len(mismatches) >= MAX_MISMATCH_EXAMPLES:
-                    break
-        if mismatches:
-            rendered = "; ".join(
-                f"pos {i}: anchor={a[0][:8]}..→{a[1][:8]}.. vs "
-                f"other={o[0][:8]}..→{o[1][:8]}.."
-                for i, a, o in mismatches
-            )
-            raise ValueError(
-                f"Pares não batem entre '{anchor_id}' (anchor) e "
-                f"'{other_id}' em posições alinhadas (primeiros "
-                f"{len(mismatches)} divergentes — {rendered}). "
-                "Defina require_pair_match=False para reordenar por hash, "
-                "ou verifique que ambos os sistemas processaram o mesmo "
-                "conjunto de pares na mesma ordem."
-            )
+        for sa, so in zip(anchor.items, other.items):
+            if self._pair_key(sa) != self._pair_key(so):
+                return False
+        return True
 
     @staticmethod
-    def _pair_key(sample: SimilarityScoreSample) -> Tuple[str, str]:
-        """Identifica unicamente um par (probe, reference) por face_hash."""
+    def _pair_key(sample: SimilarityScoreSample) -> FrozenSet[str]:
+        """Identifica unicamente um par por face_hash, simetricamente.
+
+        `frozenset({probe_hash, reference_hash})` — `(F1, L1)` casa
+        com `(L1, F1)` porque cosseno/PLDA e todos os combiners da
+        tipicidade são simétricos por construção. Evita falha quando
+        o usuário define probe/reference em ordem trocada entre
+        SIMILARITY_SCORING e TYPICALITY_PAIR_SCORING.
+        """
         probe_hash = getattr(sample.probe, "face_hash", None) or ""
         ref_hash = getattr(sample.reference, "face_hash", None) or ""
-        return (str(probe_hash), str(ref_hash))
+        return frozenset({str(probe_hash), str(ref_hash)})
+
+    @staticmethod
+    def _fmt_pair_key(key: FrozenSet[str]) -> str:
+        """Renderiza a chave do par determinísticamente pra mensagens."""
+        return "{" + ", ".join(h[:8] + ".." for h in sorted(key)) + "}"
 
     def _reorder_to_match_anchor(
         self,
@@ -358,15 +366,15 @@ class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
         anchor_id: str,
         other_id: str,
     ) -> List[SimilarityScoreSample]:
-        """Reordena `other` para casar com `anchor` por
-        `(probe.face_hash, reference.face_hash)`.
+        """Reordena `other` para casar com `anchor` por chave simétrica
+        `frozenset({probe_hash, reference_hash})`.
 
         Falha se algum par do anchor não estiver em `other`. `other`
         pode ter pares extras — são silenciosamente descartados.
         """
         index_other = {self._pair_key(s): s for s in other.items}
         aligned: List[SimilarityScoreSample] = []
-        missing: List[Tuple[str, str]] = []
+        missing: List[FrozenSet[str]] = []
         for sa in anchor.items:
             key = self._pair_key(sa)
             sb = index_other.get(key)
@@ -377,9 +385,7 @@ class ScoreVectorizationInstructionExecutor(StrategyInstructionExecutorBase):
             else:
                 aligned.append(sb)
         if missing:
-            sample_str = ", ".join(
-                f"{m[0][:8]}..→{m[1][:8]}.." for m in missing[:5]
-            )
+            sample_str = ", ".join(self._fmt_pair_key(m) for m in missing[:5])
             raise ValueError(
                 f"{len(missing)}+ pares do anchor '{anchor_id}' não estão "
                 f"em '{other_id}' (ex: {sample_str}). Verifique que ambos "
