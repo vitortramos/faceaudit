@@ -132,7 +132,14 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         N = int(X_train.shape[0])
 
         # Ramificação por variante.
-        if self.config.uses_two_covariance_variant:
+        if self.config.uses_shrinkage_two_covariance_variant:
+            self._fit_shrinkage_two_covariance(
+                X_train=X_train,
+                y_train=y_train,
+                D=D, C=C, N=N,
+                logger_callback=logger_callback,
+            )
+        elif self.config.uses_two_covariance_variant:
             self._fit_two_covariance(
                 X_train=X_train,
                 y_train=y_train,
@@ -251,6 +258,55 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         # marcador (covariância full-rank).
         self.trained_rank = D
 
+    def _fit_shrinkage_two_covariance(
+        self,
+        X_train: np.ndarray,
+        y_train: np.ndarray,
+        D: int, C: int, N: int,
+        logger_callback: Callable[[str], None],
+    ) -> None:
+        """Backend Brümmer 2010 + shrinkage de W (Ledoit-Wolf ou manual)."""
+        # Imports preguiçosos — vide nota no topo do arquivo.
+        from faceaudit.services.shrinkage_two_covariance_plda_service import (
+            fit_shrinkage_two_covariance,
+        )
+        from faceaudit.services.two_covariance_plda_service import (
+            _compute_scoring_kernels,
+        )
+
+        mode = self.config.shrinkage_mode
+        intensity_log = (
+            f" | intensity={self.config.shrinkage_intensity:g}"
+            if mode.value == "MANUAL" else ""
+        )
+        logger_callback(
+            f"[{self.name}] 🧠 Treinando PLDA SHRINKAGE_TWO_COVARIANCE "
+            f"(forma fechada | shrinkage={mode.value}{intensity_log} | "
+            f"regularization={self.config.regularization} | "
+            f"seed={self.config.random_seed})..."
+        )
+
+        logger_callback(
+            f"[{self.name}] 📊 Treino: N={N} | Classes={C} | D={D}"
+        )
+
+        self.two_cov_state = fit_shrinkage_two_covariance(
+            X=X_train,
+            y=y_train,
+            shrinkage_mode=mode,
+            shrinkage_intensity=self.config.shrinkage_intensity,
+            regularization=self.config.regularization,
+        )
+
+        alpha_w = self.two_cov_state.shrinkage_alpha_w
+        if alpha_w is not None:
+            logger_callback(
+                f"[{self.name}] 🎯 α_w aplicado a W: {alpha_w:.4f}"
+            )
+
+        self._two_cov_kernels = _compute_scoring_kernels(self.two_cov_state)
+        self.trained_rank = D
+
     # =========================================================================
     # SCORING
     # =========================================================================
@@ -288,7 +344,7 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if v1.shape[0] != v2.shape[0]:
             raise ValueError("Os vetores devem ter a mesma dimensionalidade.")
 
-        if self.config.uses_two_covariance_variant:
+        if self.config.uses_any_two_covariance_variant:
             from faceaudit.services.two_covariance_plda_service import (
                 score_two_covariance_pair,
             )
@@ -340,7 +396,7 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if n_p == 0 or n_r == 0:
             return np.empty((n_p, n_r), dtype=np.float64)
 
-        if self.config.uses_two_covariance_variant:
+        if self.config.uses_any_two_covariance_variant:
             from faceaudit.services.two_covariance_plda_service import (
                 score_two_covariance_matrix,
             )
@@ -378,14 +434,16 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         Persiste o estado do modelo em disco. O payload inclui o estado
         de ambas as variantes — apenas a relevante estará populada.
         """
-        backend = (
-            "two_covariance"
-            if self.config.uses_two_covariance_variant
-            else "speechbrain"
-        )
+        if self.config.uses_shrinkage_two_covariance_variant:
+            backend = "shrinkage_two_covariance"
+        elif self.config.uses_two_covariance_variant:
+            backend = "two_covariance"
+        else:
+            backend = "speechbrain"
 
-        # Estado da variante TWO_COVARIANCE serializado como dict (cópia
-        # rasa do dataclass frozen, JSON/pickle-friendly).
+        # Estado das variantes two-cov serializado como dict (cópia rasa do
+        # dataclass frozen, JSON/pickle-friendly). Inclui metadados de
+        # shrinkage — None para TWO_COVARIANCE puro.
         two_cov_serialized = None
         if self.two_cov_state is not None:
             two_cov_serialized = {
@@ -395,6 +453,10 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 "n_classes": self.two_cov_state.n_classes,
                 "n_samples": self.two_cov_state.n_samples,
                 "D": self.two_cov_state.D,
+                "shrinkage_mode": getattr(self.two_cov_state, "shrinkage_mode", None),
+                "shrinkage_target": getattr(self.two_cov_state, "shrinkage_target", None),
+                "shrinkage_alpha_w": getattr(self.two_cov_state, "shrinkage_alpha_w", None),
+                "shrinkage_alpha_b": getattr(self.two_cov_state, "shrinkage_alpha_b", None),
             }
 
         payload = {
@@ -455,6 +517,10 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 n_classes=int(two_cov_dict["n_classes"]),
                 n_samples=int(two_cov_dict["n_samples"]),
                 D=int(two_cov_dict["D"]),
+                shrinkage_mode=two_cov_dict.get("shrinkage_mode"),
+                shrinkage_target=two_cov_dict.get("shrinkage_target"),
+                shrinkage_alpha_w=two_cov_dict.get("shrinkage_alpha_w"),
+                shrinkage_alpha_b=two_cov_dict.get("shrinkage_alpha_b"),
             )
             # Recomputa kernels — não persistidos para evitar bloat e desync
             # quando regularização muda.
@@ -482,11 +548,11 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 "Modelo PLDASimilarityModel não treinado. Execute fit() primeiro."
             )
 
-        if self.config.uses_two_covariance_variant:
+        if self.config.uses_any_two_covariance_variant:
             if self.two_cov_state is None:
                 raise RuntimeError(
-                    "Variante TWO_COVARIANCE marcada como treinada mas sem "
-                    "estado interno (two_cov_state)."
+                    f"Variante {self.config.plda_variant.value} marcada como "
+                    "treinada mas sem estado interno (two_cov_state)."
                 )
         else:
             if self.plda is None:

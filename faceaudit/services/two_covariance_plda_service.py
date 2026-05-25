@@ -50,6 +50,15 @@ class TwoCovariancePLDAState:
         n_classes: número de classes (com ≥ 2 amostras) usadas no treino
         n_samples: total de amostras usadas no treino
         D: dimensionalidade dos embeddings
+
+    Metadados de shrinkage (populados pela variante SHRINKAGE_TWO_COVARIANCE;
+    ficam `None` no TWO_COVARIANCE puro para preservar compat):
+        shrinkage_mode: string do modo usado (NONE/LEDOIT_WOLF/MANUAL) ou None.
+        shrinkage_target: alvo do shrinkage (atualmente sempre SCALED_IDENTITY
+            na variante de shrinkage) ou None.
+        shrinkage_alpha_w: α efetivo aplicado a W (∈ [0, 1]) ou None.
+        shrinkage_alpha_b: α efetivo aplicado a B. Reservado para futura
+            extensão B_AND_W; na v1 fica sempre None pois B é mantida empírica.
     """
     mu: np.ndarray
     B: np.ndarray
@@ -57,6 +66,10 @@ class TwoCovariancePLDAState:
     n_classes: int
     n_samples: int
     D: int
+    shrinkage_mode: Optional[str] = None
+    shrinkage_target: Optional[str] = None
+    shrinkage_alpha_w: Optional[float] = None
+    shrinkage_alpha_b: Optional[float] = None
 
 
 def fit_two_covariance(

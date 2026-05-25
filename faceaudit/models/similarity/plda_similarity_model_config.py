@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
+from faceaudit.enums.covariance_shrinkage_mode import CovarianceShrinkageMode
 from faceaudit.enums.plda_mode import PLDAMode
 from faceaudit.enums.plda_variant import PLDAVariant
 
@@ -112,6 +113,46 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
         )}
     )
 
+    shrinkage_mode: CovarianceShrinkageMode = field(
+        default=CovarianceShrinkageMode.MANUAL,
+        metadata={"help": (
+            "<html><b>Modo de shrinkage para a covariância intra-classe W.</b><br/><br/>"
+            "Usado apenas em <b>plda_variant=SHRINKAGE_TWO_COVARIANCE</b>. "
+            "Substitui a estimativa empírica de W por uma mistura convexa com o "
+            "alvo <code>tr(W)/D · I</code>:<br/>"
+            "<code>W_shrunk = (1 − α) · W_emp + α · tr(W)/D · I</code><br/><br/>"
+            "<b>MANUAL</b> (default) — α fixo fornecido pelo usuário em "
+            "<code>[0, 1]</code> via <code>shrinkage_intensity</code>. Default "
+            "α=0.10 é o valor empiricamente recomendado para a configuração "
+            "típica do FaceAudit (pipeline Centering + CORAL + Whitening em "
+            "embeddings AdaFace 512D → 175D após PCA).<br/>"
+            "<b>LEDOIT_WOLF</b> — α ótimo computado em forma fechada (Ledoit "
+            "& Wolf 2004). Sem hiperparâmetro mas tende a escolher α agressivo "
+            "demais para calibração via LogReg (α~0.23 no nosso dataset de "
+            "validação). Útil para ablação/comparativo, não como default.<br/>"
+            "<b>NONE</b> — sem shrinkage; reproduz TWO_COVARIANCE puro. Use "
+            "para ablação ou comparativo.<br/><br/>"
+            "B (entre-classes) permanece <b>empírica</b> para não injetar "
+            "variância entre-classes artificial.</html>"
+        )}
+    )
+
+    shrinkage_intensity: float = field(
+        default=0.1,
+        metadata={"help": (
+            "<html><b>Intensidade de shrinkage α ∈ [0, 1]</b> "
+            "(usado apenas quando <code>shrinkage_mode=MANUAL</code>).<br/><br/>"
+            "<code>α = 0</code> → sem shrinkage (W = W_emp).<br/>"
+            "<code>α = 1</code> → W colapsa para <code>(tr(W)/D) · I</code> "
+            "(diagonal pura).<br/><br/>"
+            "<b>Valores típicos</b>:<ul>"
+            "<li><code>0.05–0.30</code> — faixa que Ledoit-Wolf costuma escolher "
+            "em embeddings faciais 256–512D. Default 0.1 é meio-termo seguro.</li>"
+            "<li><code>&gt; 0.5</code> — alvo domina; só use em diagnóstico ou "
+            "quando o dataset for muito pequeno.</li></ul></html>"
+        )}
+    )
+
     random_seed: int = field(
         default=42,
         metadata={"help": "Semente aleatória para reprodutibilidade, quando aplicável."}
@@ -126,6 +167,9 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
 
         if self.regularization < 0:
             raise ValueError("regularization deve ser ≥ 0.")
+
+        if not (0.0 <= self.shrinkage_intensity <= 1.0):
+            raise ValueError("shrinkage_intensity deve estar em [0, 1].")
 
     @property
     def uses_full_rank(self) -> bool:
@@ -143,27 +187,50 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
     def uses_two_covariance_variant(self) -> bool:
         return self.plda_variant == PLDAVariant.TWO_COVARIANCE
 
+    @property
+    def uses_shrinkage_two_covariance_variant(self) -> bool:
+        return self.plda_variant == PLDAVariant.SHRINKAGE_TWO_COVARIANCE
+
+    @property
+    def uses_any_two_covariance_variant(self) -> bool:
+        return self.uses_two_covariance_variant or self.uses_shrinkage_two_covariance_variant
+
     # ── Visibilidade de campos na UI ─────────────────────────────────
 
     # Campos cuja mudança deve disparar rebuild do nested form (afetam
     # visibilidade ou estado de outros fields). Lido pelo nested_dto_widget.
-    REACTIVE_FIELDS = ("plda_variant", "plda_mode")
+    REACTIVE_FIELDS = ("plda_variant", "plda_mode", "shrinkage_mode")
 
     def get_hidden_fields(self):
         """
         Retorna o conjunto de nomes de campos que devem ser OCULTADOS pela
         UI dado o estado atual do config.
 
-        - SIMPLE: oculta `regularization` (só faz sentido em TWO_COVARIANCE).
+        - SIMPLE: oculta `regularization` e os fields de shrinkage (só fazem
+          sentido em variantes two-cov).
         - TWO_COVARIANCE: oculta `em_iterations`, `plda_mode`, `latent_dim`
-          (formulação Brümmer não usa EM nem subspace de baixo rank).
+          e os fields de shrinkage (variante pura, sem shrinkage).
+        - SHRINKAGE_TWO_COVARIANCE: oculta `em_iterations`, `plda_mode`,
+          `latent_dim`. `shrinkage_intensity` fica visível apenas quando
+          `shrinkage_mode == MANUAL` (em outros modos é ignorado).
 
         Returns:
             Set[str] com nomes de campos a esconder.
         """
         if self.uses_simple_variant:
-            return {"regularization"}
-        return {"em_iterations", "plda_mode", "latent_dim"}
+            return {"regularization", "shrinkage_mode", "shrinkage_intensity"}
+
+        if self.uses_two_covariance_variant:
+            return {
+                "em_iterations", "plda_mode", "latent_dim",
+                "shrinkage_mode", "shrinkage_intensity",
+            }
+
+        # SHRINKAGE_TWO_COVARIANCE
+        hidden = {"em_iterations", "plda_mode", "latent_dim"}
+        if self.shrinkage_mode != CovarianceShrinkageMode.MANUAL:
+            hidden.add("shrinkage_intensity")
+        return hidden
 
     def get_readonly_fields(self):
         """
@@ -201,6 +268,11 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
         if "plda_variant" in processed_data and processed_data["plda_variant"]:
             processed_data["plda_variant"] = PLDAVariant.from_str(
                 processed_data["plda_variant"]
+            )
+
+        if "shrinkage_mode" in processed_data and processed_data["shrinkage_mode"]:
+            processed_data["shrinkage_mode"] = CovarianceShrinkageMode.from_str(
+                processed_data["shrinkage_mode"]
             )
 
         return cls(**processed_data)

@@ -19,6 +19,13 @@ class PLDAVariant(Enum):
       e `plda_mode` são ignorados — B e W são sempre full-rank D×D.
       Recomendada na literatura forense (FoCal toolkit) por estabilidade
       numérica e calibração natural.
+
+    - SHRINKAGE_TWO_COVARIANCE: mesma formulação e scoring do TWO_COVARIANCE,
+      mas a covariância intra-classe W recebe shrinkage contra o alvo
+      tr(W)/D · I antes da inversão. B permanece empírica para não injetar
+      variância entre-classes artificial. Default: Ledoit-Wolf analítico
+      (sem hiperparâmetro). Usar quando W estiver mal-condicionada (poucas
+      amostras por identidade, D alto). Não usa `latent_dim` nem `plda_mode`.
     """
 
     SIMPLE = (
@@ -34,6 +41,15 @@ class PLDAVariant(Enum):
         "Modelo de duas covariâncias completas (B entre-classes, W intra-classe). "
         "Treino em forma fechada — sem EM iterativo. Não usa `latent_dim` nem "
         "`plda_mode`. Padrão na literatura forense (Brümmer & de Villiers 2010).",
+    )
+
+    SHRINKAGE_TWO_COVARIANCE = (
+        "SHRINKAGE_TWO_COVARIANCE",
+        "Duas Covariâncias + Shrinkage",
+        "Mesma formulação do TWO_COVARIANCE com shrinkage aplicado apenas a W "
+        "(intra-classe) contra o alvo tr(W)/D · I. Default Ledoit-Wolf "
+        "analítico — sem hiperparâmetro. Recomendada quando W é mal-condicionada "
+        "(poucas amostras por identidade, alta dimensionalidade).",
     )
 
     def __new__(cls, value: str, label: str, description: str) -> "PLDAVariant":

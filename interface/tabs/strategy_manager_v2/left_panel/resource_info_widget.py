@@ -1171,16 +1171,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         else:
             self.lbl_sim_input_dim.setText("—")
 
-        # Detalhes específicos por variante de PLDA. TWO_COVARIANCE não faz
-        # redução (B e W são full-rank D×D) e não usa EM/plda_mode/latent_dim;
-        # mostrar esses campos confundiria o usuário.
+        # Detalhes específicos por variante de PLDA. As variantes two-cov não
+        # fazem redução (B e W são full-rank D×D) e não usam EM/plda_mode/
+        # latent_dim; mostrar esses campos confundiria o usuário.
         cfg = getattr(payload, "config", None)
         plda_variant = getattr(cfg, "plda_variant", None) if cfg is not None else None
         variant_value = getattr(plda_variant, "value", None)
         is_two_cov = variant_value == "TWO_COVARIANCE"
+        is_shrinkage = variant_value == "SHRINKAGE_TWO_COVARIANCE"
+        is_any_two_cov = is_two_cov or is_shrinkage
         is_simple_plda = variant_value == "SIMPLE"
 
-        if is_two_cov:
+        if is_any_two_cov:
             # Em duas covariâncias o "latente" coincide com a entrada (sem
             # redução); mostrar D explícito ajuda a deixar isso claro.
             d_in = getattr(payload, "input_dimension", None) or getattr(
@@ -1201,14 +1203,30 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self.lbl_sim_latent_dim.setText("n/a")
 
         extras: list[str] = []
-        if is_two_cov:
-            extras.append("variante=TWO_COVARIANCE")
+        if is_any_two_cov:
+            extras.append(f"variante={variant_value}")
             reg = getattr(cfg, "regularization", None)
             if reg is not None:
                 extras.append(f"regularização={float(reg):g}")
             seed = getattr(cfg, "random_seed", None)
             if seed is not None:
                 extras.append(f"seed={int(seed)}")
+
+            if is_shrinkage:
+                # Metadados de shrinkage vêm do estado treinado (two_cov_state),
+                # não do config — refletem o α efetivamente aplicado (especialmente
+                # útil em LEDOIT_WOLF onde o config não fixa o valor).
+                two_cov_state = getattr(payload, "two_cov_state", None)
+                shrink_mode = getattr(two_cov_state, "shrinkage_mode", None)
+                shrink_alpha_w = getattr(two_cov_state, "shrinkage_alpha_w", None)
+                shrink_target = getattr(two_cov_state, "shrinkage_target", None)
+                if shrink_mode is not None:
+                    if shrink_alpha_w is not None:
+                        extras.append(f"shrinkage={shrink_mode} (α_w={float(shrink_alpha_w):.4f})")
+                    else:
+                        extras.append(f"shrinkage={shrink_mode}")
+                if shrink_target is not None:
+                    extras.append(f"target={shrink_target}")
         elif is_simple_plda:
             em_iters = getattr(cfg, "em_iterations", None)
             if em_iters is not None:
