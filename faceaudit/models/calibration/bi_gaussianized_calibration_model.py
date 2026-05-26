@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from scipy.interpolate import interp1d
@@ -32,6 +32,8 @@ from faceaudit.models.calibration.bi_gaussianized_calibration_model_config impor
     BiGaussianizedCalibrationModelConfig,
     BiGaussInitialCalibrator,
     BiGaussInversionMethod,
+    BiGaussScoreDirection,
+    BiGaussSigmaEstimationMode,
     BiGaussTargetMetric,
 )
 from faceaudit.protocols.calibration_model_protocol import CalibrationModelProtocol
@@ -55,7 +57,7 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
       - 0 = impostor / Hd
     """
 
-    MODEL_VERSION = 1
+    MODEL_VERSION = 2  # v2: + score_direction (_flip_sign) + sigma_estimation_mode + cllr_after
 
     def __init__(
         self,
@@ -75,6 +77,10 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
 
         # Inversa da CDF da mistura (preenchido se INTERP1D)
         self._mixture_inv_interp: Optional[interp1d] = None
+
+        # Score direction: True se "lower is genuine" e o modelo deve flipar
+        # o sinal dos scores em fit + calibrate_scores. Decidido em fit().
+        self._flip_sign: bool = False
 
         self.metadata: dict = {}
 
@@ -111,6 +117,14 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
     ) -> None:
         scores_arr, labels_arr = self._normalize_inputs(scores, labels)
 
+        # ── Passo 0: direção dos scores ────────────────────────────────────────
+        # Resolve score_direction (AUTO / HIGHER / LOWER). Se LOWER, flipa o
+        # sinal de scores_arr antes de tudo. _flip_sign é guardado e aplicado
+        # em calibrate_scores depois.
+        scores_arr, direction_resolved = self._resolve_score_direction(
+            scores_arr, labels_arr, logger_callback
+        )
+
         gen = scores_arr[labels_arr == 1]
         imp = scores_arr[labels_arr == 0]
 
@@ -124,7 +138,8 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             f"[{self.name}] 🧠 Treinando "
             f"(N_gen={n_gen} | N_imp={n_imp} | "
             f"metric={self.config.target_metric.value} | "
-            f"initial={self.config.initial_calibrator.value})..."
+            f"initial={self.config.initial_calibrator.value} | "
+            f"sigma_est={self.config.sigma_estimation_mode.value})..."
         )
 
         # ── Passos 2 e 3: calibrador inicial + métrica ─────────────────────────
@@ -132,9 +147,14 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         eer_value: Optional[float] = None
 
         if self.config.target_metric == BiGaussTargetMetric.CLLR:
-            llr_gen, llr_imp = self._apply_initial_calibrator(gen, imp, logger_callback)
+            llr_gen, llr_imp = self._compute_llrs_for_sigma_estimation(
+                gen, imp, logger_callback
+            )
             cllr_value = self._compute_cllr(llr_gen, llr_imp)
-            logger_callback(f"[{self.name}] Cllr no treino = {cllr_value:.6f}")
+            logger_callback(
+                f"[{self.name}] Cllr "
+                f"({self.config.sigma_estimation_mode.value.lower()}) = {cllr_value:.6f}"
+            )
             sigma_sq = self._sigma_sq_from_cllr(cllr_value)
         else:
             # EER usa scores diretamente — calibrador inicial não é necessário.
@@ -164,6 +184,20 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         else:
             self._mixture_inv_interp = None
 
+        # ── Marca como fitted ANTES do diagnóstico pós-fit (calibrate_scores
+        # exige _ensure_fitted).
+        self._n_total = n_gen + n_imp
+        self._is_fitted = True
+
+        # ── Diagnóstico pós-fit: Cllr realizado vs Cllr predito pela fórmula ───
+        # cllr_after: Cllr do output completo (após bi-gaussianização) no MESMO
+        # conjunto de treino. Bias-otimista mas útil pra detectar implementação
+        # quebrada — divergência grande contra `cllr_predicted` indica problema
+        # em G(x), F⁻¹ ou clipping agressivo.
+        cllr_after, cllr_predicted = self._compute_post_fit_diagnostic(
+            scores_arr, labels_arr, sigma_sq, logger_callback,
+        )
+
         self.metadata = {
             "model_version": self.MODEL_VERSION,
             "sigma_target": float(sigma),
@@ -173,15 +207,21 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             "inversion_method": self.config.inversion_method.value,
             "gx_method": self.config.gx_method.value,
             "shrinkage_factor": float(self.config.sigma_shrinkage_factor),
+            "sigma_estimation_mode": self.config.sigma_estimation_mode.value,
+            "score_direction_config": self.config.score_direction.value,
+            "score_direction_resolved": direction_resolved,
+            "flip_sign_applied": bool(self._flip_sign),
             "n_genuine": n_gen,
             "n_impostor": n_imp,
             "cllr_at_fit": float(cllr_value) if cllr_value is not None else None,
             "eer_at_fit": float(eer_value) if eer_value is not None else None,
+            "cllr_after": float(cllr_after) if cllr_after is not None else None,
+            "cllr_predicted_from_sigma": (
+                float(cllr_predicted) if cllr_predicted is not None else None
+            ),
             "min_log_lr": float(self.config.min_log_lr),
             "max_log_lr": float(self.config.max_log_lr),
         }
-        self._n_total = n_gen + n_imp
-        self._is_fitted = True
         logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
 
     # =========================================================================
@@ -205,6 +245,10 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         self._ensure_fitted()
         score_vec = self._normalize_scores_only(scores)
 
+        # Aplica flip de sinal SE foi determinado em fit (lower-is-genuine).
+        if self._flip_sign:
+            score_vec = -score_vec
+
         # G(x) → u ∈ (0, 1); clamp pra evitar 0/1 exatos.
         u = self._g_apply(score_vec)
         u = np.clip(u, _EPS, 1.0 - _EPS)
@@ -216,6 +260,73 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             log_lr = self._mixture_inv_brent(u, self._sigma_target)
 
         return np.clip(log_lr, self.config.min_log_lr, self.config.max_log_lr)
+
+    # =========================================================================
+    # DIAGNÓSTICO
+    # =========================================================================
+
+    def diagnose_scores(self, scores: np.ndarray) -> Dict[str, Any]:
+        """Diagnóstico forense de aplicação do calibrador a um conjunto de scores.
+
+        Retorna um dict com:
+          - n_scores, score_min_seen, score_max_seen
+          - training_score_range (x_min, x_max do treino)
+          - pct_below_training_range, pct_above_training_range
+              (extrapolação fora do range observado em treino)
+          - pct_at_min_log_lr, pct_at_max_log_lr
+              (saturação no clipping configurado)
+          - training_log_lr_range (min_log_lr, max_log_lr)
+          - flip_sign_applied (lower-is-genuine ativado)
+
+        Útil pra produção forense: alerta se scores do caso estão fora da
+        faixa do treino (mapeados pra valores de boundary) ou se muitos
+        log-LRs saturam no clipping (perda de informação extrema).
+        """
+        self._ensure_fitted()
+        score_vec = self._normalize_scores_only(scores)
+        # Aplica flip ANTES de comparar com x_min/x_max (que estão no espaço
+        # internamente armazenado, já flipado se foi o caso).
+        score_for_range = -score_vec if self._flip_sign else score_vec
+
+        n = int(score_vec.size)
+        if n == 0:
+            return {
+                "n_scores": 0,
+                "training_score_range": (
+                    float(self._x_min) if self._x_min is not None else None,
+                    float(self._x_max) if self._x_max is not None else None,
+                ),
+            }
+
+        log_lr = self.calibrate_scores(scores)
+
+        min_seen = float(score_vec.min())
+        max_seen = float(score_vec.max())
+        below = int((score_for_range < self._x_min).sum())
+        above = int((score_for_range > self._x_max).sum())
+
+        clip_lo = float(self.config.min_log_lr)
+        clip_hi = float(self.config.max_log_lr)
+        eps_clip = 1e-9
+        at_min = int((log_lr <= clip_lo + eps_clip).sum())
+        at_max = int((log_lr >= clip_hi - eps_clip).sum())
+
+        return {
+            "n_scores": n,
+            "score_min_seen": min_seen,
+            "score_max_seen": max_seen,
+            "training_score_range": (float(self._x_min), float(self._x_max)),
+            "training_log_lr_range": (clip_lo, clip_hi),
+            "pct_below_training_range": 100.0 * below / n,
+            "pct_above_training_range": 100.0 * above / n,
+            "pct_at_min_log_lr": 100.0 * at_min / n,
+            "pct_at_max_log_lr": 100.0 * at_max / n,
+            "n_below_training_range": below,
+            "n_above_training_range": above,
+            "n_at_min_log_lr": at_min,
+            "n_at_max_log_lr": at_max,
+            "flip_sign_applied": bool(self._flip_sign),
+        }
 
     # =========================================================================
     # PERSISTÊNCIA
@@ -231,6 +342,7 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             "x_min": self._x_min,
             "x_max": self._x_max,
             "n_total": self._n_total,
+            "flip_sign": bool(self._flip_sign),  # v2: score direction state
             # Salva os pontos do interpolador G(x), não o objeto interp1d
             # (mais portável e pequeno).
             "g_interp_x": (
@@ -266,6 +378,9 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         self._n_total = int(payload.get("n_total", 0))
         self.metadata = payload.get("metadata", {})
         self._is_fitted = bool(payload.get("is_fitted", False))
+        # v2: flip_sign — payloads de v1 não tinham → default False
+        # (comportamento idêntico ao v1: assume higher-is-genuine sem flip).
+        self._flip_sign = bool(payload.get("flip_sign", False))
 
         # Reconstrói o interpolador G(x).
         gx = payload.get("g_interp_x")
@@ -359,6 +474,274 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         t = (m1 - f1) / denom
         eer = float(f1 + t * (f2 - f1))
         return max(0.0, min(0.5, eer))
+
+    # =========================================================================
+    # SCORE DIRECTION (defensive)
+    # =========================================================================
+
+    def _resolve_score_direction(
+        self,
+        scores_arr: np.ndarray,
+        labels_arr: np.ndarray,
+        logger_callback: Callable[[str], None],
+    ) -> Tuple[np.ndarray, str]:
+        """Detecta/aplica a direção dos scores (higher vs lower is genuine).
+
+        Em AUTO: compara médias gen vs imp pra inferir. Loga decisão.
+        Em LOWER_IS_GENUINE: flipa sinal de scores_arr.
+        Em HIGHER_IS_GENUINE: sem flip.
+
+        Retorna (scores_arr possivelmente flipados, label da direção resolvida).
+        Seta self._flip_sign no estado do modelo.
+        """
+        direction_cfg = self.config.score_direction
+        gen = scores_arr[labels_arr == 1]
+        imp = scores_arr[labels_arr == 0]
+
+        if direction_cfg == BiGaussScoreDirection.AUTO:
+            if gen.size > 0 and imp.size > 0:
+                gen_mean = float(gen.mean())
+                imp_mean = float(imp.mean())
+                if gen_mean < imp_mean:
+                    resolved = "LOWER_IS_GENUINE"
+                    self._flip_sign = True
+                    logger_callback(
+                        f"[{self.name}] ⚠ Direção AUTO-detectada: LOWER_IS_GENUINE "
+                        f"(gen_mean={gen_mean:.4f} < imp_mean={imp_mean:.4f}). "
+                        "Aplicando flip de sinal."
+                    )
+                    scores_arr = -scores_arr
+                else:
+                    resolved = "HIGHER_IS_GENUINE"
+                    self._flip_sign = False
+                    logger_callback(
+                        f"[{self.name}] Direção AUTO-detectada: HIGHER_IS_GENUINE "
+                        f"(gen_mean={gen_mean:.4f} > imp_mean={imp_mean:.4f})."
+                    )
+            else:
+                resolved = "HIGHER_IS_GENUINE"
+                self._flip_sign = False
+        elif direction_cfg == BiGaussScoreDirection.LOWER_IS_GENUINE:
+            resolved = "LOWER_IS_GENUINE"
+            self._flip_sign = True
+            logger_callback(
+                f"[{self.name}] Direção configurada: LOWER_IS_GENUINE. "
+                "Aplicando flip de sinal."
+            )
+            scores_arr = -scores_arr
+        else:
+            resolved = "HIGHER_IS_GENUINE"
+            self._flip_sign = False
+
+        return scores_arr, resolved
+
+    # =========================================================================
+    # ESTIMAÇÃO DE σ² (in-sample ou cross-fitted)
+    # =========================================================================
+
+    def _compute_llrs_for_sigma_estimation(
+        self,
+        gen: np.ndarray,
+        imp: np.ndarray,
+        logger_callback: Callable[[str], None],
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Retorna (llr_gen, llr_imp) usados pra computar Cllr que alimenta σ².
+
+        IN_SAMPLE: fit + predict do calibrador inicial no mesmo dataset.
+        CROSS_FITTED: k-fold estratificado; predições held-out concatenadas.
+                       Sem efeito se initial=NONE (não há nada pra cross-fittar).
+        """
+        mode = self.config.sigma_estimation_mode
+        kind = self.config.initial_calibrator
+
+        if mode == BiGaussSigmaEstimationMode.IN_SAMPLE or kind == BiGaussInitialCalibrator.NONE:
+            return self._apply_initial_calibrator(gen, imp, logger_callback)
+
+        # CROSS_FITTED com calibrador inicial não-trivial
+        return self._cross_fitted_initial_llrs(gen, imp, logger_callback)
+
+    def _cross_fitted_initial_llrs(
+        self,
+        gen: np.ndarray,
+        imp: np.ndarray,
+        logger_callback: Callable[[str], None],
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """k-fold estratificado: cada amostra recebe llr predito por inicial
+        treinado em outras k-1 dobras. Sem data leak. Cllr resultante é
+        não-viesado pra estimação de σ².
+        """
+        from sklearn.model_selection import StratifiedKFold
+
+        scores_all = np.concatenate([gen, imp])
+        labels_all = np.concatenate([
+            np.ones(gen.size, dtype=np.int32),
+            np.zeros(imp.size, dtype=np.int32),
+        ])
+
+        # Reduz k se a classe minoritária tem poucos exemplos
+        k_cfg = int(self.config.sigma_cv_folds)
+        min_class = int(min(gen.size, imp.size))
+        k = min(k_cfg, max(2, min_class))
+        if k < k_cfg:
+            logger_callback(
+                f"[{self.name}] ⚠ Reduzindo k de {k_cfg} para {k} "
+                f"(classe minoritária tem {min_class} exemplos)."
+            )
+
+        logger_callback(
+            f"[{self.name}] Cross-fitted Cllr estimation "
+            f"(k={k} folds estratificados, initial={self.config.initial_calibrator.value})"
+        )
+
+        skf = StratifiedKFold(
+            n_splits=k,
+            shuffle=True,
+            random_state=int(self.config.random_seed),
+        )
+        held_out_llrs = np.empty(scores_all.size, dtype=np.float64)
+
+        for fold_idx, (train_idx, test_idx) in enumerate(
+            skf.split(scores_all, labels_all), start=1
+        ):
+            train_scores = scores_all[train_idx]
+            train_labels = labels_all[train_idx]
+            train_gen = train_scores[train_labels == 1]
+            train_imp = train_scores[train_labels == 0]
+            test_scores = scores_all[test_idx]
+
+            logger_callback(
+                f"[{self.name}]   • Fold {fold_idx}/{k}: "
+                f"train n_gen={train_gen.size:,}, n_imp={train_imp.size:,}; "
+                f"test n={test_scores.size:,}"
+            )
+
+            fitted = self._fit_initial_only(train_gen, train_imp, logger_callback)
+            held_out_llrs[test_idx] = self._predict_initial(fitted, test_scores)
+
+        llr_gen = held_out_llrs[labels_all == 1]
+        llr_imp = held_out_llrs[labels_all == 0]
+        return llr_gen, llr_imp
+
+    def _fit_initial_only(
+        self,
+        gen: np.ndarray,
+        imp: np.ndarray,
+        logger_callback: Callable[[str], None],
+    ) -> Tuple[str, Any]:
+        """Treina o calibrador inicial e retorna um handle opaco.
+        Não usado pelo path IN_SAMPLE — só pelo CROSS_FITTED, que precisa de
+        fit+predict separados.
+        """
+        kind = self.config.initial_calibrator
+
+        if kind == BiGaussInitialCalibrator.NONE:
+            return ("none", None)
+
+        if kind == BiGaussInitialCalibrator.LOGREG:
+            from sklearn.linear_model import LogisticRegression
+            x = np.concatenate([gen, imp]).reshape(-1, 1)
+            y = np.concatenate([
+                np.ones(gen.size, dtype=np.int32),
+                np.zeros(imp.size, dtype=np.int32),
+            ])
+            lr = LogisticRegression(
+                C=float(self.config.initial_logreg_C),
+                solver="lbfgs",
+                class_weight="balanced",
+                max_iter=1000,
+            )
+            lr.fit(x, y)
+            return ("logreg", lr)
+
+        if kind == BiGaussInitialCalibrator.KDE:
+            from sklearn.neighbors import KernelDensity
+            max_per_class = int(self.config.initial_kde_max_samples_per_class)
+            rng = np.random.default_rng(int(self.config.random_seed))
+
+            def _maybe_subsample(arr: np.ndarray) -> np.ndarray:
+                if max_per_class <= 0 or arr.size <= max_per_class:
+                    return arr
+                idx = rng.choice(arr.size, size=max_per_class, replace=False)
+                return arr[idx]
+
+            gen_fit = _maybe_subsample(gen)
+            imp_fit = _maybe_subsample(imp)
+            bw_cfg = float(self.config.initial_kde_bandwidth)
+            bw_gen = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(gen_fit)
+            bw_imp = bw_cfg if bw_cfg > 0 else self._silverman_bandwidth(imp_fit)
+            kde_g = KernelDensity(kernel="gaussian", bandwidth=bw_gen).fit(
+                gen_fit.reshape(-1, 1)
+            )
+            kde_i = KernelDensity(kernel="gaussian", bandwidth=bw_imp).fit(
+                imp_fit.reshape(-1, 1)
+            )
+            return ("kde", (kde_g, kde_i))
+
+        raise ValueError(f"initial_calibrator desconhecido: {kind}")
+
+    def _predict_initial(
+        self,
+        fitted: Tuple[str, Any],
+        scores: np.ndarray,
+    ) -> np.ndarray:
+        """Aplica o calibrador inicial treinado a `scores`, retorna llr 1D."""
+        kind, model = fitted
+        if kind == "none":
+            return scores.astype(np.float64)
+        if kind == "logreg":
+            return model.decision_function(scores.reshape(-1, 1)).astype(np.float64)
+        if kind == "kde":
+            kde_g, kde_i = model
+            log_p_g = kde_g.score_samples(scores.reshape(-1, 1))
+            log_p_i = kde_i.score_samples(scores.reshape(-1, 1))
+            return (log_p_g - log_p_i).astype(np.float64)
+        raise ValueError(f"handle desconhecido: {kind}")
+
+    # =========================================================================
+    # DIAGNÓSTICO PÓS-FIT
+    # =========================================================================
+
+    def _compute_post_fit_diagnostic(
+        self,
+        scores_arr: np.ndarray,
+        labels_arr: np.ndarray,
+        sigma_sq: float,
+        logger_callback: Callable[[str], None],
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Calcula Cllr realizado pós-bi-gaussianização vs Cllr predito pela
+        fórmula ln(Cllr) = b·(exp(-c·σ²) - 1). Divergência grande indica:
+          - G(x) não cobrindo bem as caudas
+          - F⁻¹ com precisão insuficiente
+          - Clipping min/max_log_lr ativo demais
+
+        Retorna (cllr_after, cllr_predicted). Ambos None se cálculo falhar.
+        """
+        try:
+            # `calibrate_scores` espera scores no espaço ORIGINAL (não-flipado),
+            # porque ele aplica `_flip_sign` internamente. Mas aqui já estamos
+            # com `scores_arr` flipado (pós-_resolve_score_direction). Então
+            # invertemos pra passar input "original".
+            input_scores = -scores_arr if self._flip_sign else scores_arr
+            log_lrs = self.calibrate_scores(input_scores)
+            cllr_after = float(self._compute_cllr(
+                log_lrs[labels_arr == 1],
+                log_lrs[labels_arr == 0],
+            ))
+            # Cllr predito pela fórmula: Cllr = exp(b·(exp(-c·σ²) - 1))
+            cllr_predicted = float(np.exp(
+                _CLLR_FIT_B * (np.exp(-_CLLR_FIT_C * sigma_sq) - 1.0)
+            ))
+            logger_callback(
+                f"[{self.name}] Diagnóstico pós-fit: "
+                f"Cllr_after={cllr_after:.6f} | Cllr_predicted={cllr_predicted:.6f} "
+                f"(divergência {abs(cllr_after - cllr_predicted):.4f})"
+            )
+            return cllr_after, cllr_predicted
+        except Exception as exc:
+            logger_callback(
+                f"[{self.name}] ⚠ Falha no diagnóstico pós-fit: {exc}"
+            )
+            return None, None
 
     # =========================================================================
     # σ ↔ MÉTRICA
@@ -463,6 +846,14 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         bw_imp = float(self.config.gx_kde_bandwidth_imp)
         if bw_imp <= 0:
             bw_imp = self._silverman_bandwidth(imp)
+
+        # Multiplicador uniforme aplicado em cima da bandwidth resolvida
+        # (Silverman ou explícita). Permite oversmoothing sem mexer no fluxo
+        # automático — defensável em laudo via `gx_kde_bandwidth_factor` no JSON.
+        bw_factor = float(self.config.gx_kde_bandwidth_factor)
+        if bw_factor != 1.0:
+            bw_gen *= bw_factor
+            bw_imp *= bw_factor
 
         x_min = float(scores.min())
         x_max = float(scores.max())
