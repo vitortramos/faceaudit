@@ -50,6 +50,38 @@ PLOT_TAB_TITLE = {
 # =========================================================================
 
 
+_ANNOTATION_BBOX = dict(
+    boxstyle="round,pad=0.5",
+    facecolor="white",
+    edgecolor="#bbb",
+    alpha=0.85,
+    linewidth=0.6,
+)
+
+
+def _add_annotation(ax, text: str, loc: str = "upper right") -> None:
+    """Anotação textual discreta num canto do plot.
+
+    `loc` aceita 'upper right', 'upper left', 'lower right', 'lower left'.
+    Posicionada em coordenadas dos axes (0-1), com bbox semi-transparente
+    pra não competir com os dados.
+    """
+    pos = {
+        "upper right": (0.98, 0.97, "right", "top"),
+        "upper left":  (0.02, 0.97, "left",  "top"),
+        "lower right": (0.98, 0.03, "right", "bottom"),
+        "lower left":  (0.02, 0.03, "left",  "bottom"),
+    }.get(loc, (0.98, 0.97, "right", "top"))
+    ax.text(
+        pos[0], pos[1], text,
+        transform=ax.transAxes,
+        ha=pos[2], va=pos[3],
+        fontsize=8.5, color="#333",
+        bbox=_ANNOTATION_BBOX,
+        family="monospace",
+    )
+
+
 def draw_lr_distribution(figure: Figure, result: Any) -> None:
     """Histograma + KDE dos log-LRs por classe."""
     figure.clear()
@@ -99,6 +131,18 @@ def draw_lr_distribution(figure: Figure, result: Any) -> None:
     ax.set_ylabel("Densidade")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="best", fontsize=9)
+
+    # Anotação: taxas de "sinal errado" (Tier 1 forense)
+    m = getattr(result, "metrics", None)
+    wsg = getattr(m, "wrong_sign_gen_rate", None) if m else None
+    wsi = getattr(m, "wrong_sign_imp_rate", None) if m else None
+    if wsg is not None and wsi is not None:
+        text = (
+            f"Falso+ (LR>0|Hd): {wsi*100:.2f}%\n"
+            f"Falso− (LR<0|Hp): {wsg*100:.2f}%"
+        )
+        _add_annotation(ax, text, loc="upper right")
+
     figure.tight_layout()
 
 
@@ -196,7 +240,19 @@ def draw_det_curve(figure: Figure, result: Any) -> None:
 
 
 def draw_ece(figure: Figure, result: Any) -> None:
-    """Empirical Cross-Entropy: curva real + curva mínima PAVA + cal_loss."""
+    """Empirical Cross-Entropy: curva real + curva mínima PAVA + curva de
+    referência (sistema neutro LR=1) + cal_loss.
+
+    A curva de referência é a **entropia do prior** — ECE de um sistema que
+    sempre reporta LR=1 (não decide). Convenção forense estabelecida
+    (Brümmer & van Leeuwen 2006): só dá pra dizer que o modelo é
+    informativo quando ECE_model < ECE_null. Se ECE_model ultrapassa
+    ECE_null em algum prior, o sistema é literalmente pior que não decidir
+    ali.
+
+    Computada on-the-fly de `ece_prior_log_odds` (não precisa regravar
+    pickles antigos).
+    """
     figure.clear()
     ax = figure.add_subplot(111)
 
@@ -210,25 +266,56 @@ def draw_ece(figure: Figure, result: Any) -> None:
                 transform=ax.transAxes, color="#888")
         return
 
+    # Curva de referência: ECE_null = H(P) onde P = sigmoid(x · ln10).
+    # Em log₁₀-odds=0, P=0.5 e H=1 bit (pico). Nas caudas, P→0 ou 1 e H→0.
+    p = 1.0 / (1.0 + np.exp(-x * np.log(10.0)))
+    # Clip pra evitar log(0). Bits → / ln2.
+    p_safe = np.clip(p, 1e-12, 1.0 - 1e-12)
+    y_null = (-p_safe * np.log(p_safe) - (1.0 - p_safe) * np.log(1.0 - p_safe)) / np.log(2.0)
+
     if y_min.size == y_real.size:
         ax.fill_between(x, y_min, y_real, where=(y_real >= y_min),
                         color="#E8A020", alpha=0.18,
                         label="Perda de calibração")
 
-    ax.plot(x, y_real, color="#1a4f8a", linewidth=1.8,
-            label="ECE (modelo)")
+    # Plot ordering: null (atrás, cinza) → min (verde tracejado) → real (azul).
+    ax.plot(x, y_null, color="#888", linewidth=1.2, linestyle=":",
+            label="Sistema neutro (LR=1) — referência")
     if y_min.size:
         ax.plot(x, y_min, color="#2e7d32", linewidth=1.6, linestyle="--",
                 label="ECE mínimo (PAVA)")
+    ax.plot(x, y_real, color="#1a4f8a", linewidth=1.8,
+            label="ECE (modelo)")
 
     ax.axvline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
 
     ax.set_title("Empirical Cross-Entropy (ECE)", fontsize=11)
     ax.set_xlabel("Prior log₁₀-odds (P(Hp)/P(Hd))")
     ax.set_ylabel("Cross-entropy (bits)")
-    ax.set_ylim(bottom=0)
+    # Y vai até 1.05 (pouco além da entropia máxima do prior = 1.0).
+    # Se modelo exceder 1.0 em algum prior (sistema pior que neutro nessa
+    # região), permite ver até onde vai sem clipar agressivamente.
+    y_max_plot = max(1.05, float(np.nanmax(y_real)) * 1.05)
+    ax.set_ylim(0, y_max_plot)
     ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="upper center", fontsize=9)
+    # `upper center` sobreposta no pico da curva. Mover pra esquerda — em
+    # forense ECE tipicamente tem pico no centro/direita, esquerda é onde
+    # priors de Hd dominam (área visualmente mais limpa).
+    ax.legend(loc="upper left", fontsize=8.5)
+
+    # Anotação: métricas numéricas da ECE (Tier 4)
+    m = getattr(result, "metrics", None)
+    loss_area = getattr(m, "ece_calibration_loss_area", None) if m else None
+    max_gap = getattr(m, "ece_max_gap", None) if m else None
+    argmax_prior = getattr(m, "ece_argmax_prior_log_odds", None) if m else None
+    if loss_area is not None and max_gap is not None:
+        lines = [f"Perda total: {loss_area:.4f} bits·dec"]
+        if argmax_prior is not None:
+            lines.append(f"Gap máx: {max_gap:.4f} @ prior={argmax_prior:+.2f}")
+        else:
+            lines.append(f"Gap máx: {max_gap:.4f} bits")
+        _add_annotation(ax, "\n".join(lines), loc="upper right")
+
     figure.tight_layout()
 
 
@@ -296,6 +383,28 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
     }
     draw_calibration_curve_from_summary(figure, summary, show_title=True)
 
+    # Anotação: parâmetros do affine fit (slope/intercept = correção ótima)
+    m = getattr(result, "metrics", None)
+    slope = getattr(m, "calibration_slope", None) if m else None
+    intercept = getattr(m, "calibration_intercept", None) if m else None
+    cllr_aff = getattr(m, "cllr_affine", None) if m else None
+    if slope is not None and intercept is not None:
+        ax = figure.axes[0] if figure.axes else None
+        if ax is not None:
+            if slope < 0.95:
+                slope_diag = " (over-confident)"
+            elif slope > 1.05:
+                slope_diag = " (under-confident)"
+            else:
+                slope_diag = " (~bem calibrado)"
+            lines = [
+                f"slope={slope:.3f}{slope_diag}",
+                f"intercept={intercept:+.3f}",
+            ]
+            if cllr_aff is not None:
+                lines.append(f"Cllr_affine={cllr_aff:.4f}")
+            _add_annotation(ax, "\n".join(lines), loc="upper left")
+
 
 _DRAW_FN = {
     "lr_distribution": draw_lr_distribution,
@@ -353,6 +462,180 @@ def render_validation_pngs(
 # =========================================================================
 
 
+def build_metrics_table_rows(
+    payload: Dict[str, Any],
+) -> "list[tuple[str, str, str, bool]]":
+    """Constrói rows da tabela de métricas a partir do schema do sidecar.
+
+    Aceita um dict (schema v1 ou v2 do `_metrics.json` sidecar) OU um
+    `dataclasses.asdict()` de `ValidationMetrics`. Campos None viram "—".
+
+    Retorna lista de `(label, value, description, is_section_header)`.
+    `description` é uma explicação curta da métrica (1 linha) usada na
+    3ª coluna da tabela. Section headers têm `is_section_header=True`
+    e `description=""`.
+
+    Útil pra **dois caminhos**: o `ValidationResultWidget` (dialog 🔍 Expandir)
+    e o painel inline `_TabbedPngSnapshotWidget` — ambos consomem a mesma
+    tabela; o helper garante consistência visual.
+    """
+    def _get(*keys):
+        for k in keys:
+            v = payload.get(k)
+            if v is not None:
+                return v
+        return None
+
+    def fmt_f(x, decimals=4):
+        return "—" if x is None else f"{float(x):.{decimals}f}"
+
+    def fmt_pct(x, decimals=2):
+        return "—" if x is None else f"{float(x)*100:.{decimals}f}%"
+
+    def fmt_thr(x):
+        return "—" if x is None else f"{float(x):+.4f}"
+
+    rows: list[tuple[str, str, str, bool]] = []
+
+    def add(label: str, value: str, desc: str = "") -> None:
+        rows.append((label, value, desc, False))
+
+    def section(label: str) -> None:
+        rows.append((label, "", "", True))
+
+    # ── Tier 1: Discriminação ───────────────────────────────────────────
+    section("DISCRIMINAÇÃO")
+    add("EER", fmt_pct(_get("eer")),
+        "Equal Error Rate — taxa onde FPR=FNR. Mede discriminação bruta independente de calibração.")
+    add("EER threshold (log-LR)", fmt_thr(_get("eer_threshold")),
+        "Valor de log-LR no ponto de igual erro. Threshold ótimo se aceitar igual taxa de falso+/falso−.")
+    add("AUC (ROC)", fmt_f(_get("auc"), 6),
+        "Área sob a curva ROC. 1.0 = discriminação perfeita; 0.5 = aleatório.")
+    add("Falso+ (LR>0 | Hd)", fmt_pct(_get("wrong_sign_imp_rate")),
+        "Fração de impostores com log-LR positivo — sistema diz 'genuíno' pra par de pessoas diferentes.")
+    add("Falso− (LR<0 | Hp)", fmt_pct(_get("wrong_sign_gen_rate")),
+        "Fração de genuínos com log-LR negativo — sistema diz 'impostor' pra par da mesma pessoa.")
+
+    # ── Calibração: principal ───────────────────────────────────────────
+    cllr = _get("cllr")
+    cllr_min = _get("cllr_min")
+    cal_loss = _get("cal_loss")
+    if cal_loss is None and cllr is not None and cllr_min is not None:
+        cal_loss = max(0.0, float(cllr) - float(cllr_min))
+    section("CALIBRAÇÃO — PRINCIPAL")
+    add("Cllr", fmt_f(cllr),
+        "Cost of Log-LR em bits. Mede o custo informacional médio das decisões. Menor é melhor.")
+    add("Cllr_min (PAVA)", fmt_f(cllr_min),
+        "Cllr ótimo após calibração isotônica (PAVA). Teto teórico — depende só da discriminação.")
+    add("cal_loss = Cllr − Cllr_min", fmt_f(cal_loss),
+        "Perda de calibração: custo extra por LRs mal escalados. Alto = recalibrar.")
+    if cal_loss is not None:
+        add("Bem calibrado? (cal_loss < 0.1)",
+            "Sim ✅" if cal_loss < 0.1 else "Não ⚠",
+            "Heurística forense: cal_loss < 0.1 bits = calibração aceitável pra laudo.")
+
+    # ── Per-hypothesis (Tier 2) ─────────────────────────────────────────
+    cllr_gen = _get("cllr_gen")
+    cllr_imp = _get("cllr_imp")
+    cllr_min_gen = _get("cllr_min_gen")
+    cllr_min_imp = _get("cllr_min_imp")
+    if cllr_gen is not None and cllr_imp is not None:
+        cal_loss_gen = (
+            max(0.0, float(cllr_gen) - float(cllr_min_gen))
+            if cllr_min_gen is not None else None
+        )
+        cal_loss_imp = (
+            max(0.0, float(cllr_imp) - float(cllr_min_imp))
+            if cllr_min_imp is not None else None
+        )
+        section("CALIBRAÇÃO — POR HIPÓTESE")
+        add("Cllr_gen (contrib. genuínos)", fmt_f(cllr_gen),
+            "Penaliza falsos negativos. Alto = LRs de genuínos puxados pro lado negativo (erro custoso).")
+        add("Cllr_imp (contrib. impostores)", fmt_f(cllr_imp),
+            "Penaliza falsos positivos. Alto = LRs de impostores puxados pro lado positivo (incriminação injusta).")
+        add("Cllr_min_gen", fmt_f(cllr_min_gen),
+            "Cllr_gen após calibração PAVA. Teto teórico do termo dos genuínos.")
+        add("Cllr_min_imp", fmt_f(cllr_min_imp),
+            "Cllr_imp após calibração PAVA. Teto teórico do termo dos impostores.")
+        add("cal_loss_gen", fmt_f(cal_loss_gen),
+            "Perda de calibração nos genuínos. Alto = sistema subestima evidência a favor da acusação.")
+        add("cal_loss_imp", fmt_f(cal_loss_imp),
+            "Perda nos impostores. Alto = sistema produz LRs altos pra pares diferentes (risco de incriminação).")
+
+    # ── Análise affine Brümmer (Tier 3) ─────────────────────────────────
+    cllr_affine = _get("cllr_affine")
+    slope = _get("calibration_slope")
+    intercept = _get("calibration_intercept")
+    if cllr_affine is not None:
+        affine_cal_loss = (
+            max(0.0, float(cllr) - float(cllr_affine))
+            if cllr is not None else None
+        )
+        nonlinear_cal_loss = (
+            max(0.0, float(cllr_affine) - float(cllr_min))
+            if cllr_min is not None else None
+        )
+        section("CALIBRAÇÃO — ANÁLISE AFFINE (Brümmer)")
+        add("Cllr_affine", fmt_f(cllr_affine),
+            "Cllr após recalibração linear ótima (slope · LR + intercept). Brümmer-Doddington.")
+        if slope is not None:
+            if slope < 0.95:
+                diag = " — over-confident: LRs precisam encolher pra calibrar."
+            elif slope > 1.05:
+                diag = " — under-confident: LRs precisam crescer pra calibrar."
+            else:
+                diag = " — afim quase ideal (~bem calibrado affinely)."
+            add("Calibration slope (a em a·x+b)", f"{slope:.4f}",
+                f"Inclinação da reta correta. < 1 = LRs muito extremos; > 1 = LRs muito tímidos.{diag}")
+        else:
+            add("Calibration slope (a em a·x+b)", "—",
+                "Inclinação da reta correta. < 1 = LRs muito extremos; > 1 = LRs muito tímidos.")
+        add("Calibration intercept (b)",
+            f"{intercept:+.4f}" if intercept is not None else "—",
+            "Offset da correção linear. ≠ 0 = viés sistemático na escala dos LRs.")
+        add("affine_cal_loss (recuperável)", fmt_f(affine_cal_loss),
+            "Perda que sumiria SÓ com rescaling linear (slope+intercept). Alto = recalibrar é fácil.")
+        add("nonlinear_cal_loss (residual)", fmt_f(nonlinear_cal_loss),
+            "Perda que sobra após affine. Alto = distorção estrutural, só PAVA/isotônica resolve.")
+
+    # ── ECE numérico (Tier 4) ───────────────────────────────────────────
+    ece_area = _get("ece_calibration_loss_area")
+    if ece_area is not None:
+        section("CALIBRAÇÃO — ECE NUMÉRICO")
+        add("Perda total ECE (área)", f"{ece_area:.4f} bits·dec",
+            "Área sombreada do plot ECE: integral da diferença entre ECE_real e ECE_min ao longo dos priors.")
+        add("Gap máx ECE", fmt_f(_get("ece_max_gap")),
+            "Pior diferença pontual entre ECE_real e ECE_min. Em bits — quantos bits de informação são perdidos no pior cenário.")
+        argmax_prior = _get("ece_argmax_prior_log_odds")
+        add("Prior log₁₀-odds do gap máx",
+            "—" if argmax_prior is None else f"{float(argmax_prior):+.3f}",
+            "Em qual cenário forense (log10 da prior odds) o sistema é menos calibrado. >0 = priors a favor da acusação.")
+
+    # ── Tail / outliers (Tier 5) ────────────────────────────────────────
+    if _get("loss_gen_q95") is not None:
+        section("CAUDA / OUTLIERS (diagnóstico)")
+        add("Loss q95 genuínos", fmt_f(_get("loss_gen_q95")),
+            "Percentil 95 do custo por amostra genuína. Indica magnitude do pior 5% dos genuínos.")
+        add("Loss q95 impostores", fmt_f(_get("loss_imp_q95")),
+            "Percentil 95 do custo por amostra impostora. Indica magnitude do pior 5% dos impostores.")
+        add("Top 1% loss share", fmt_pct(_get("top_1pct_loss_share")),
+            "Fração do Cllr total vinda dos 1% piores casos. > 50% = outliers dominam, considere robustez.")
+
+    # ── Contagens ───────────────────────────────────────────────────────
+    n_gen = payload.get("n_genuines")
+    n_imp = payload.get("n_impostors")
+    if n_gen is not None or n_imp is not None:
+        section("CONTAGENS")
+        add("N genuínos",
+            f"{int(n_gen):,}".replace(",", ".") if n_gen is not None else "—",
+            "Número de pares mesma-pessoa (Hp) no dataset de validação.")
+        add("N impostores",
+            f"{int(n_imp):,}".replace(",", ".") if n_imp is not None else "—",
+            "Número de pares pessoas-diferentes (Hd) no dataset de validação.")
+
+    return rows
+
+
 def validation_metrics_sidecar_path(pickle_path: Union[str, Path]) -> Path:
     """Path do sidecar `<stem>_metrics.json` ao lado do pickle do
     StrategyValidationResult. Carrega instantâneo (~200 bytes JSON) —
@@ -367,36 +650,62 @@ def write_validation_metrics_sidecar(
     pickle_path: Union[str, Path],
     result: Any,
 ) -> bool:
-    """Grava o sidecar JSON com métricas escalares + contagens.
+    """Grava o sidecar JSON com TODAS as métricas escalares + contagens.
 
-    Schema (key=valor, todos float/int):
-        n_genuines, n_impostors,
-        eer, eer_threshold, auc, cllr, cllr_min, cal_loss
+    Schema v2: inclui Tier 1 (discriminação) + Tier 2 (per-hypothesis) +
+    Tier 3 (affine Brümmer) + Tier 4 (ECE numérico) + Tier 5 (tail).
+    Campos não calculados (None nas métricas) viram None no JSON. Schema
+    v1 leitores ignoram campos novos sem quebrar.
 
-    `cal_loss` é derivado (cllr − cllr_min, com floor 0) pra evitar que
-    o consumidor tenha que recalcular. Falha silenciosa retorna False.
+    Falha silenciosa retorna False.
     """
     import json
     try:
         metrics = getattr(result, "metrics", None)
         if metrics is None:
             return False
-        cllr = getattr(metrics, "cllr", None)
-        cllr_min = getattr(metrics, "cllr_min", None)
-        cal_loss = None
-        if cllr is not None and cllr_min is not None:
-            cal_loss = max(0.0, float(cllr) - float(cllr_min))
+
+        def _get(attr):
+            v = getattr(metrics, attr, None)
+            return float(v) if v is not None else None
+
+        cllr = _get("cllr")
+        cllr_min = _get("cllr_min")
+        cal_loss = (
+            max(0.0, cllr - cllr_min)
+            if cllr is not None and cllr_min is not None else None
+        )
 
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "n_genuines": int(getattr(result, "n_genuines", 0) or 0),
             "n_impostors": int(getattr(result, "n_impostors", 0) or 0),
-            "eer": float(getattr(metrics, "eer", 0.0) or 0.0),
-            "eer_threshold": float(getattr(metrics, "eer_threshold", 0.0) or 0.0),
-            "auc": float(getattr(metrics, "auc", 0.0) or 0.0),
-            "cllr": float(cllr) if cllr is not None else None,
-            "cllr_min": float(cllr_min) if cllr_min is not None else None,
+            # Tier 1: principais
+            "eer": _get("eer") or 0.0,
+            "eer_threshold": _get("eer_threshold") or 0.0,
+            "auc": _get("auc") or 0.0,
+            "cllr": cllr,
+            "cllr_min": cllr_min,
             "cal_loss": cal_loss,
+            "wrong_sign_gen_rate": _get("wrong_sign_gen_rate"),
+            "wrong_sign_imp_rate": _get("wrong_sign_imp_rate"),
+            # Tier 2: per-hypothesis
+            "cllr_gen": _get("cllr_gen"),
+            "cllr_imp": _get("cllr_imp"),
+            "cllr_min_gen": _get("cllr_min_gen"),
+            "cllr_min_imp": _get("cllr_min_imp"),
+            # Tier 3: affine (Brümmer)
+            "cllr_affine": _get("cllr_affine"),
+            "calibration_slope": _get("calibration_slope"),
+            "calibration_intercept": _get("calibration_intercept"),
+            # Tier 4: ECE numérico
+            "ece_calibration_loss_area": _get("ece_calibration_loss_area"),
+            "ece_max_gap": _get("ece_max_gap"),
+            "ece_argmax_prior_log_odds": _get("ece_argmax_prior_log_odds"),
+            # Tier 5: tail / outliers
+            "loss_gen_q95": _get("loss_gen_q95"),
+            "loss_imp_q95": _get("loss_imp_q95"),
+            "top_1pct_loss_share": _get("top_1pct_loss_share"),
         }
         sidecar = validation_metrics_sidecar_path(pickle_path)
         sidecar.parent.mkdir(parents=True, exist_ok=True)

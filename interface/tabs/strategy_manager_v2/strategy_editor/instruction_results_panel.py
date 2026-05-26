@@ -85,28 +85,192 @@ _PngSnapshotWidget = PngSnapshotWidget
 
 class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
     """QTabWidget de `_PngSnapshotWidget`s — usado pra STRATEGY_EVALUATION,
-    que tem 4 plots (distribuição de LRs, Tippett, DET, ECE) em vez de 1.
+    que tem 5 plots (distribuição de LRs, Tippett, DET, ECE, curva de
+    calibração) em vez de 1.
 
-    Espelha visualmente o `ValidationResultWidget` (4 abas) mas substitui
-    cada FigureCanvas+plot vivo por um QPixmap pré-renderizado. Render
+    Espelha visualmente o `ValidationResultWidget` mas substitui cada
+    FigureCanvas+plot vivo por um QPixmap pré-renderizado. Render
     instantâneo, sem matplotlib na main thread. Plot vivo continua
     disponível pelo botão 🔍 Expandir → `ValidationResultViewerDialog`.
+
+    Quando `show_header=True` + `enable_metrics_tab=True`, exibe também:
+    - Header âmbar de duas linhas com métricas Tier 1 (idêntico ao dialog)
+    - Aba extra "Métricas" (QTableWidget) populada do sidecar JSON
+
+    Esses extras viabilizam o uso do painel inline pra forense (numérico)
+    sem precisar abrir o dialog 🔍 Expandir.
     """
 
-    def __init__(self, tab_keys, tab_titles: Dict[str, str],
-                 parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self,
+        tab_keys,
+        tab_titles: Dict[str, str],
+        parent: Optional[QtWidgets.QWidget] = None,
+        show_header: bool = False,
+        enable_metrics_tab: bool = False,
+    ):
         super().__init__(parent)
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._tabs = QtWidgets.QTabWidget()
+        self._show_header = show_header
+        self._enable_metrics_tab = enable_metrics_tab
+
+        if show_header:
+            self._header_label, self._header_label2, header_frame = (
+                self._build_header()
+            )
+            layout.addWidget(header_frame)
+        else:
+            self._header_label = None
+            self._header_label2 = None
+
+        self._tabs = QtWidgets.QTabWidget(parent=self)
+        # QTabWidget default size policy é Preferred — não estica pra ocupar
+        # espaço extra do parent. Aqui forço Expanding/Expanding pra que,
+        # quando o container do painel inline cresce, o conteúdo das abas
+        # (incluindo a tabela de Métricas) acompanhe.
+        self._tabs.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
         self._snapshots: Dict[str, _PngSnapshotWidget] = {}
         for key in tab_keys:
-            snap = _PngSnapshotWidget()
+            snap = _PngSnapshotWidget(parent=self)
             self._snapshots[key] = snap
             self._tabs.addTab(snap, tab_titles.get(key, key))
+
+        # Aba "Métricas" extra (QTableWidget populada via update_metrics)
+        self._metrics_table: Optional[QtWidgets.QTableWidget] = None
+        if enable_metrics_tab:
+            metrics_page = self._build_metrics_tab()
+            self._tabs.addTab(metrics_page, "Métricas")
+
         layout.addWidget(self._tabs, 1)
+
+    def _build_header(self):
+        from PyQt6 import QtCore as _QtCore
+        frame = QtWidgets.QFrame(parent=self)
+        frame.setStyleSheet(
+            "QFrame { background: #FFF8E8; "
+            "border-left: 3px solid #E8A020; border-radius: 2px; }"
+        )
+        v = QtWidgets.QVBoxLayout(frame)
+        v.setContentsMargins(10, 6, 10, 6)
+        v.setSpacing(2)
+        l1 = QtWidgets.QLabel("(aguardando resultado)", parent=frame)
+        l1.setStyleSheet(
+            "background: transparent; color: #5a4500; font-size: 11px;"
+        )
+        l1.setWordWrap(True)
+        l1.setTextFormat(_QtCore.Qt.TextFormat.RichText)
+        v.addWidget(l1)
+        l2 = QtWidgets.QLabel("", parent=frame)
+        l2.setStyleSheet(
+            "background: transparent; color: #6b5800; font-size: 10.5px;"
+        )
+        l2.setWordWrap(True)
+        l2.setTextFormat(_QtCore.Qt.TextFormat.RichText)
+        v.addWidget(l2)
+        return l1, l2, frame
+
+    def _build_metrics_tab(self) -> QtWidgets.QWidget:
+        page = QtWidgets.QWidget(parent=self)
+        page.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(6, 6, 6, 6)
+        page_layout.setSpacing(4)
+
+        table = QtWidgets.QTableWidget(parent=page)
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Métrica", "Valor", "Descrição"])
+        # Col 0 e 1 Interactive — user pode arrastar pra redimensionar.
+        # Largura inicial = `resizeColumnToContents` chamado após populate.
+        # Col 2 (Descrição) é Stretch — auto-fill no espaço restante.
+        # Quando viewport fica muito estreito, scrollbar horizontal aparece
+        # (col 2 colapsa até o min de header section antes do scroll).
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        hh.setMinimumSectionSize(60)  # allow narrow → trigger scrollbar
+        hh.setStretchLastSection(False)  # explicit: setSectionResizeMode(2,Stretch) já faz
+        table.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        table.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        # Word wrap OFF — descrições longas truncadas com ellipsis.
+        # Tooltip mostra o texto completo on-hover (set por célula em
+        # _update_metrics_table). Mantém rows compactas (1 linha cada).
+        table.setWordWrap(False)
+        table.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        # Altura compacta de row. Qt 6 default minimumSectionSize=24
+        # bloqueia valores menores; sobrescrevo pra 18 pra permitir 20px.
+        table.verticalHeader().setMinimumSectionSize(18)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Fixed
+        )
+        # CUIDADO: NÃO setar min height grande aqui. QTabWidget toma a maior
+        # sizeHint entre todas as abas — se essa tabela claim 900px, as abas
+        # de PNG também ficam com 900px de altura e plot é empurrado pro
+        # canto baixo (espaço branco). Min razoável + sizeAdjustPolicy
+        # AdjustIgnored faz a tabela aceitar qualquer altura do parent sem
+        # propagar o sizeHint inteiro do conteúdo (que seria ~700px). Com
+        # isso, a vertical scrollbar interna ATIVA corretamente quando
+        # viewport < conteúdo.
+        table.setMinimumHeight(250)
+        table.setSizeAdjustPolicy(
+            QtWidgets.QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
+        )
+        table.setStyleSheet(
+            "QTableWidget { font-size: 11px; background: white; gridline-color: #e0e0e0; }"
+            "QTableWidget::item { padding: 2px 6px; }"
+            "QHeaderView::section { background: #f0f4f8; padding: 4px 6px; "
+            "border: 0; border-bottom: 1px solid #c0c8d0; font-weight: bold; }"
+        )
+        table.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+        page_layout.addWidget(table, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_copy = QtWidgets.QPushButton("📋 Copiar tabela", parent=page)
+        btn_copy.setStyleSheet(
+            "QPushButton { border: 1px solid #ccc; border-radius: 3px; "
+            "background: white; padding: 3px 8px; font-size: 10.5px; }"
+            "QPushButton:hover { background: #e8f0fe; }"
+        )
+        btn_copy.clicked.connect(lambda: self._copy_metrics_table())
+        btn_row.addWidget(btn_copy)
+        page_layout.addLayout(btn_row)
+
+        self._metrics_table = table
+        return page
+
+    def _copy_metrics_table(self) -> None:
+        if self._metrics_table is None:
+            return
+        lines = []
+        for row in range(self._metrics_table.rowCount()):
+            cells = []
+            for col in range(self._metrics_table.columnCount()):
+                item = self._metrics_table.item(row, col)
+                cells.append(item.text() if item is not None else "")
+            lines.append("\t".join(cells))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
 
     def show_images(self, paths_dict: Dict[str, Any]) -> int:
         """Carrega os PNGs em cada aba. Retorna número de PNGs carregados
@@ -121,9 +285,135 @@ class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
                 snap.show_placeholder("(sem PNG disponível)")
         return loaded
 
+    def update_header_and_metrics(
+        self,
+        sidecar_payload: Optional[Dict[str, Any]],
+        strategy_name: Optional[str] = None,
+    ) -> None:
+        """Popula header (Tier 1) + tabela de métricas a partir do payload
+        do sidecar JSON `_metrics.json`.
+
+        Quando payload é None ou vazio, exibe placeholder.
+        """
+        if self._show_header and self._header_label is not None:
+            self._update_header(sidecar_payload, strategy_name)
+        if self._enable_metrics_tab and self._metrics_table is not None:
+            self._update_metrics_table(sidecar_payload)
+
+    def _update_header(
+        self,
+        payload: Optional[Dict[str, Any]],
+        strategy_name: Optional[str],
+    ) -> None:
+        if not payload:
+            self._header_label.setText("(aguardando resultado)")
+            self._header_label2.setText("")
+            return
+
+        def _gv(key, default=None):
+            v = payload.get(key)
+            return v if v is not None else default
+
+        n_gen = int(_gv("n_genuines", 0) or 0)
+        n_imp = int(_gv("n_impostors", 0) or 0)
+        eer = float(_gv("eer", 0.0) or 0.0)
+        auc_v = float(_gv("auc", 0.0) or 0.0)
+        cllr = _gv("cllr")
+        cllr_min = _gv("cllr_min")
+        cal_loss = _gv("cal_loss")
+        if cal_loss is None and cllr is not None and cllr_min is not None:
+            cal_loss = max(0.0, float(cllr) - float(cllr_min))
+
+        name = strategy_name or _gv("strategy_name") or "—"
+
+        parts1 = [
+            f"<b>{name}</b>",
+            f"{n_gen:,} genuínos / {n_imp:,} impostores".replace(",", "."),
+            f"<b>EER</b>={eer*100:.2f}%",
+            f"<b>AUC</b>={auc_v:.4f}",
+        ]
+        if cllr is not None:
+            parts1.append(f"<b>Cllr</b>={float(cllr):.4f}")
+        if cllr_min is not None:
+            parts1.append(f"<b>Cllr_min</b>={float(cllr_min):.4f}")
+        if cal_loss is not None:
+            parts1.append(f"<b>cal_loss</b>={float(cal_loss):.4f}")
+        self._header_label.setText(" &nbsp;·&nbsp; ".join(parts1))
+
+        parts2 = []
+        wsi = _gv("wrong_sign_imp_rate")
+        wsg = _gv("wrong_sign_gen_rate")
+        slope = _gv("calibration_slope")
+        cllr_aff = _gv("cllr_affine")
+        if wsi is not None:
+            parts2.append(f"<b>Falso+</b>={float(wsi)*100:.2f}%")
+        if wsg is not None:
+            parts2.append(f"<b>Falso−</b>={float(wsg)*100:.2f}%")
+        if slope is not None:
+            arrow = "≈" if 0.95 <= float(slope) <= 1.05 else (
+                "↑" if float(slope) > 1 else "↓"
+            )
+            parts2.append(f"<b>slope</b>={float(slope):.3f} {arrow}")
+        if cllr_aff is not None:
+            parts2.append(f"<b>Cllr_affine</b>={float(cllr_aff):.4f}")
+        self._header_label2.setText(" &nbsp;·&nbsp; ".join(parts2))
+
+    def _update_metrics_table(self, payload: Optional[Dict[str, Any]]) -> None:
+        table = self._metrics_table
+        if table is None:
+            return
+        table.setRowCount(0)
+        if not payload:
+            table.setRowCount(1)
+            placeholder = QtWidgets.QTableWidgetItem("(aguardando resultado)")
+            placeholder.setForeground(QtGui.QBrush(QtGui.QColor("#888")))
+            table.setItem(0, 0, placeholder)
+            return
+
+        from faceaudit.models.validation_result_plot import (
+            build_metrics_table_rows,
+        )
+        rows = build_metrics_table_rows(payload)
+        table.setRowCount(len(rows))
+        section_bg = QtGui.QBrush(QtGui.QColor("#e9eef5"))
+        section_font = QtGui.QFont()
+        section_font.setBold(True)
+        for r, (label, value, desc, is_section) in enumerate(rows):
+            label_item = QtWidgets.QTableWidgetItem(label)
+            value_item = QtWidgets.QTableWidgetItem(value)
+            desc_item = QtWidgets.QTableWidgetItem(desc)
+            desc_item.setForeground(QtGui.QBrush(QtGui.QColor("#555")))
+            # Tooltip com texto completo da descrição on-hover (rows são
+            # 1-linha com ellipsis, então o usuário não vê o resto sem isso)
+            if desc:
+                desc_item.setToolTip(desc)
+                # Tooltip no label também — facilita ler tudo sem precisar
+                # passar pela coluna 3.
+                label_item.setToolTip(f"{label}: {desc}")
+            if is_section:
+                label_item.setBackground(section_bg)
+                value_item.setBackground(section_bg)
+                desc_item.setBackground(section_bg)
+                label_item.setFont(section_font)
+                label_item.setForeground(QtGui.QBrush(QtGui.QColor("#1a3550")))
+            table.setItem(r, 0, label_item)
+            table.setItem(r, 1, value_item)
+            table.setItem(r, 2, desc_item)
+        # NÃO chama resizeRowsToContents — defaultSectionSize=20 fixa altura.
+        # Cols 0 e 1 são Interactive: sized inicialmente to contents, mas
+        # user pode arrastar depois. Col 2 (Stretch) auto-fill.
+        table.resizeColumnToContents(0)
+        table.resizeColumnToContents(1)
+
     def show_placeholder(self, text: str) -> None:
         for snap in self._snapshots.values():
             snap.show_placeholder(text)
+        if self._show_header and self._header_label is not None:
+            self._header_label.setText("(aguardando resultado)")
+            if self._header_label2 is not None:
+                self._header_label2.setText("")
+        if self._enable_metrics_tab and self._metrics_table is not None:
+            self._update_metrics_table(None)
 
 
 # Tipos de plot inline (não inclui trajetória — fica como botão).
@@ -448,11 +738,14 @@ class _ResultsCard(QtWidgets.QWidget):
                     show_toolbar=False,
                 )
         elif self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
-            # STRATEGY_EVALUATION: 4 PNGs (distribuição de LRs, Tippett,
-            # DET, ECE) gerados pelo executor durante a persistência.
-            # Tabbed snapshot widget reproduz o layout do
-            # `ValidationResultWidget` mas sem reconstruir 4 figuras
-            # matplotlib. Expandir abre o widget vivo completo.
+            # STRATEGY_EVALUATION: 5 PNGs (distribuição de LRs, Tippett,
+            # DET, ECE, curva de calibração) gerados pelo executor durante
+            # a persistência + aba "Métricas" (tabela populada do sidecar
+            # `_metrics.json`). Header NÃO é necessário aqui — o
+            # `OutputRowWidget` acima do plot já mostra EER/Cllr/etc.
+            # via `ResourceInfoWidget` quando o usuário expande Detalhes
+            # (não duplicar e poupar espaço vertical). Expandir 🔍 abre o
+            # widget vivo completo com header próprio.
             from faceaudit.models.validation_result_plot import (
                 PLOT_KEYS, PLOT_TAB_TITLE,
             )
@@ -460,6 +753,8 @@ class _ResultsCard(QtWidgets.QWidget):
                 tab_keys=PLOT_KEYS,
                 tab_titles=PLOT_TAB_TITLE,
                 parent=plot_page,
+                show_header=False,
+                enable_metrics_tab=True,
             )
         elif self._plot_kind == _PLOT_KIND_CASEWORK_VISUALIZATION:
             # CASEWORK_VISUALIZATION: mesma estratégia das instruções de
@@ -769,7 +1064,7 @@ class _ResultsCard(QtWidgets.QWidget):
         loaded = False
 
         if isinstance(widget, _TabbedPngSnapshotWidget):
-            # Multi-PNG: STRATEGY_EVALUATION (4 PNGs) ou SCORE_CALIBRATION
+            # Multi-PNG: STRATEGY_EVALUATION (5 PNGs) ou SCORE_CALIBRATION
             # (2 PNGs: distribuição + curva de calibração).
             paths_dict = self._resolve_png_paths_dict(
                 definition, target_resource_id or "", resource_loader,
@@ -782,6 +1077,14 @@ class _ResultsCard(QtWidgets.QWidget):
                 else:
                     placeholder_msg = "Execute para gerar visualização da calibração"
                 widget.show_placeholder(placeholder_msg)
+
+            # STRATEGY_EVALUATION-only: header (Tier 1) + aba Métricas
+            # populados do sidecar `_metrics.json` ao lado do pickle. Sem
+            # hidratar o payload — o sidecar tem todas as métricas.
+            if self._plot_kind == _PLOT_KIND_VALIDATION_RESULT:
+                self._populate_validation_metrics_inline(
+                    widget, definition, target_resource_id or "", resource_loader,
+                )
         elif isinstance(widget, _PngSnapshotWidget):
             # Plot único.
             png_path = self._resolve_png_path(
@@ -801,6 +1104,46 @@ class _ResultsCard(QtWidgets.QWidget):
             self._plot_stack.setCurrentIndex(1)
         if loaded:
             self._plot_rendered_once = True
+
+    def _populate_validation_metrics_inline(
+        self,
+        widget: "_TabbedPngSnapshotWidget",
+        definition: LRStrategyDefinition,
+        resource_id: str,
+        resource_loader: Any,
+    ) -> None:
+        """Carrega o sidecar `_metrics.json` (sem hidratar pickle) e popula
+        header + tabela. Falha silenciosa → placeholder permanece.
+        """
+        if not resource_id or definition is None or resource_loader is None:
+            widget.update_header_and_metrics(None, strategy_name=definition.name if definition else None)
+            return
+
+        storage = getattr(resource_loader, "_storage", None)
+        project_root = getattr(storage, "project_root", None) if storage else None
+        if project_root is None:
+            widget.update_header_and_metrics(None, strategy_name=definition.name)
+            return
+
+        # Acha a artifact_ref do resource validation
+        target_ref = None
+        for res in getattr(definition, "resources", []):
+            if getattr(res, "resource_id", None) == resource_id:
+                target_ref = getattr(res, "artifact_ref", None)
+                break
+        if target_ref is None or not getattr(target_ref, "path", None):
+            widget.update_header_and_metrics(None, strategy_name=definition.name)
+            return
+
+        from pathlib import Path as _Path
+        from faceaudit.models.validation_result_plot import (
+            try_load_validation_metrics_sidecar,
+        )
+        pickle_abs = _Path(project_root) / target_ref.path
+        payload = try_load_validation_metrics_sidecar(pickle_abs)
+        widget.update_header_and_metrics(
+            payload, strategy_name=definition.name,
+        )
 
     def _resolve_png_paths_dict(
         self,

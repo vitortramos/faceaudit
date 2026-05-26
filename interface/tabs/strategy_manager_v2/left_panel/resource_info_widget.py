@@ -584,40 +584,18 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         self._add_section_header(vr_layout, "Detalhes do Resultado de Validação")
 
-        vr_form = QtWidgets.QFormLayout()
-        vr_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
-        vr_form.setSpacing(4)
-
-        self.lbl_vr_n_genuines = QtWidgets.QLabel("—")
-        self.lbl_vr_n_impostors = QtWidgets.QLabel("—")
-        self.lbl_vr_eer = QtWidgets.QLabel("—")
-        self.lbl_vr_eer_threshold = QtWidgets.QLabel("—")
-        self.lbl_vr_auc = QtWidgets.QLabel("—")
-        self.lbl_vr_cllr = QtWidgets.QLabel("—")
-        self.lbl_vr_cllr_min = QtWidgets.QLabel("—")
-        self.lbl_vr_cal_loss = QtWidgets.QLabel("—")
-        for lbl in (
-            self.lbl_vr_n_genuines, self.lbl_vr_n_impostors,
-            self.lbl_vr_eer, self.lbl_vr_eer_threshold, self.lbl_vr_auc,
-            self.lbl_vr_cllr, self.lbl_vr_cllr_min, self.lbl_vr_cal_loss,
-        ):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
-
-        for text, value_lbl in [
-            ("Genuínos:", self.lbl_vr_n_genuines),
-            ("Impostores:", self.lbl_vr_n_impostors),
-            ("EER:", self.lbl_vr_eer),
-            ("EER threshold:", self.lbl_vr_eer_threshold),
-            ("AUC:", self.lbl_vr_auc),
-            ("Cllr:", self.lbl_vr_cllr),
-            ("Cllr_min:", self.lbl_vr_cllr_min),
-            ("cal_loss:", self.lbl_vr_cal_loss),
-        ]:
-            lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
-            vr_form.addRow(lbl, value_lbl)
-
-        vr_layout.addLayout(vr_form)
+        # Layout em flow horizontal — campos separados por " · " que
+        # quebram pra linha de baixo quando estouram a largura. Single
+        # QLabel rich text + word wrap dá esse comportamento sem precisar
+        # de FlowLayout custom — Qt wraps em separadores de espaço.
+        self.lbl_vr_summary = QtWidgets.QLabel("—", parent=self)
+        self.lbl_vr_summary.setStyleSheet("font-size: 11px; color: #333;")
+        self.lbl_vr_summary.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self.lbl_vr_summary.setWordWrap(True)
+        self.lbl_vr_summary.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        vr_layout.addWidget(self.lbl_vr_summary)
         props_layout.addWidget(self._validation_result_section)
 
         if self._compact:
@@ -2219,16 +2197,42 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         def _fmt_float(v, fmt: str) -> str:
             return fmt.format(float(v)) if v is not None else "—"
 
-        self.lbl_vr_n_genuines.setText(_fmt_int(metrics.get("n_genuines")))
-        self.lbl_vr_n_impostors.setText(_fmt_int(metrics.get("n_impostors")))
-        self.lbl_vr_eer.setText(_fmt_float(metrics.get("eer"), "{:.2%}"))
-        self.lbl_vr_eer_threshold.setText(
-            _fmt_float(metrics.get("eer_threshold"), "{:.4f}")
-        )
-        self.lbl_vr_auc.setText(_fmt_float(metrics.get("auc"), "{:.4f}"))
-        self.lbl_vr_cllr.setText(_fmt_float(metrics.get("cllr"), "{:.4f}"))
-        self.lbl_vr_cllr_min.setText(_fmt_float(metrics.get("cllr_min"), "{:.4f}"))
-        self.lbl_vr_cal_loss.setText(_fmt_float(metrics.get("cal_loss"), "{:.4f}"))
+        # Constrói flow HTML "label=value · label=value · …" — uma única
+        # QLabel rich-text + wordWrap fluem horizontalmente até estourar a
+        # largura, então quebram. Mesmo padrão visual do antigo
+        # Summary header do _TabbedPngSnapshotWidget.
+        parts: list[str] = []
+
+        def _add(label: str, value: Optional[str]) -> None:
+            if value is None or value == "—":
+                return
+            parts.append(f"<b>{label}</b>={value}")
+
+        n_gen_v = metrics.get("n_genuines")
+        n_imp_v = metrics.get("n_impostors")
+        if n_gen_v is not None and n_imp_v is not None:
+            parts.append(
+                f"{_fmt_int(n_gen_v)} genuínos / {_fmt_int(n_imp_v)} impostores"
+            )
+
+        _add("EER", _fmt_float(metrics.get("eer"), "{:.2%}"))
+        _add("EER thr", _fmt_float(metrics.get("eer_threshold"), "{:.4f}"))
+        _add("AUC", _fmt_float(metrics.get("auc"), "{:.4f}"))
+        _add("Falso+", _fmt_float(metrics.get("wrong_sign_imp_rate"), "{:.2%}"))
+        _add("Falso−", _fmt_float(metrics.get("wrong_sign_gen_rate"), "{:.2%}"))
+        _add("Cllr", _fmt_float(metrics.get("cllr"), "{:.4f}"))
+        _add("Cllr_min", _fmt_float(metrics.get("cllr_min"), "{:.4f}"))
+        _add("cal_loss", _fmt_float(metrics.get("cal_loss"), "{:.4f}"))
+        _add("Cllr_affine", _fmt_float(metrics.get("cllr_affine"), "{:.4f}"))
+
+        slope_val = metrics.get("calibration_slope")
+        if slope_val is not None:
+            arrow = "≈" if 0.95 <= float(slope_val) <= 1.05 else (
+                "↑" if float(slope_val) > 1 else "↓"
+            )
+            parts.append(f"<b>slope</b>={float(slope_val):.3f} {arrow}")
+
+        self.lbl_vr_summary.setText(" &nbsp;·&nbsp; ".join(parts) or "—")
 
     @staticmethod
     def _extract_validation_metrics_dict(
@@ -2259,6 +2263,11 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                         "cllr": cllr,
                         "cllr_min": cllr_min,
                         "cal_loss": cal_loss,
+                        # Tier 1 forense extras (podem ser None em pickles antigos)
+                        "wrong_sign_gen_rate": getattr(m, "wrong_sign_gen_rate", None),
+                        "wrong_sign_imp_rate": getattr(m, "wrong_sign_imp_rate", None),
+                        "cllr_affine": getattr(m, "cllr_affine", None),
+                        "calibration_slope": getattr(m, "calibration_slope", None),
                     }
             except Exception:
                 pass
@@ -2275,12 +2284,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             return None
 
     def _clear_validation_result(self) -> None:
-        for lbl in (
-            self.lbl_vr_n_genuines, self.lbl_vr_n_impostors,
-            self.lbl_vr_eer, self.lbl_vr_eer_threshold, self.lbl_vr_auc,
-            self.lbl_vr_cllr, self.lbl_vr_cllr_min, self.lbl_vr_cal_loss,
-        ):
-            lbl.setText("—")
+        self.lbl_vr_summary.setText("—")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:

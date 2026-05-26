@@ -118,14 +118,23 @@ class ValidationResultWidget(QtWidgets.QWidget):
             f"QFrame {{ background: {_BG_HEADER}; "
             f"border-left: 3px solid {_BORDER_HEADER}; border-radius: 2px; }}"
         )
-        h = QtWidgets.QHBoxLayout(frame)
-        h.setContentsMargins(10, 6, 10, 6)
-        self._header_label = QtWidgets.QLabel("(aguardando resultado)")
+        v = QtWidgets.QVBoxLayout(frame)
+        v.setContentsMargins(10, 6, 10, 6)
+        v.setSpacing(2)
+        self._header_label = QtWidgets.QLabel("(aguardando resultado)", parent=frame)
         self._header_label.setStyleSheet(
             "background: transparent; color: #5a4500; font-size: 11px;"
         )
         self._header_label.setWordWrap(True)
-        h.addWidget(self._header_label, 1)
+        self._header_label.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        v.addWidget(self._header_label)
+        self._header_label2 = QtWidgets.QLabel("", parent=frame)
+        self._header_label2.setStyleSheet(
+            "background: transparent; color: #6b5800; font-size: 10.5px;"
+        )
+        self._header_label2.setWordWrap(True)
+        self._header_label2.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        v.addWidget(self._header_label2)
         return frame
 
     def _refresh_header(self) -> None:
@@ -133,6 +142,7 @@ class ValidationResultWidget(QtWidgets.QWidget):
             return
         if self._result is None:
             self._header_label.setText("(aguardando resultado)")
+            self._header_label2.setText("")
             return
 
         m = self._result.metrics
@@ -140,19 +150,36 @@ class ValidationResultWidget(QtWidgets.QWidget):
         n_imp = self._result.n_impostors
         cal_loss = max(0.0, m.cllr - m.cllr_min)
 
-        text = (
+        # Linha 1: identidade + métricas principais Tier 1
+        text1 = (
             f"<b>{self._result.strategy_name}</b>"
             f" &nbsp;·&nbsp; {n_gen:,} genuínos / {n_imp:,} impostores"
             f" &nbsp;·&nbsp; <b>EER</b>={m.eer*100:.2f}%"
             f" &nbsp;·&nbsp; <b>AUC</b>={m.auc:.4f}"
-            f" &nbsp;·&nbsp; <b>Cllr</b>={m.cllr:.3f}"
-            f" &nbsp;·&nbsp; <b>Cllr_min</b>={m.cllr_min:.3f}"
-            f" &nbsp;·&nbsp; <b>cal_loss</b>={cal_loss:.3f}"
+            f" &nbsp;·&nbsp; <b>Cllr</b>={m.cllr:.4f}"
+            f" &nbsp;·&nbsp; <b>Cllr_min</b>={m.cllr_min:.4f}"
+            f" &nbsp;·&nbsp; <b>cal_loss</b>={cal_loss:.4f}"
         ).replace(",", ".")
-        self._header_label.setText(text)
+        self._header_label.setText(text1)
+
+        # Linha 2: métricas forenses + diagnóstico de calibração
+        parts2 = []
+        if m.wrong_sign_imp_rate is not None:
+            parts2.append(f"<b>Falso+</b>={m.wrong_sign_imp_rate*100:.2f}%")
+        if m.wrong_sign_gen_rate is not None:
+            parts2.append(f"<b>Falso−</b>={m.wrong_sign_gen_rate*100:.2f}%")
+        if m.calibration_slope is not None:
+            slope_emoji = "≈" if 0.95 <= m.calibration_slope <= 1.05 else (
+                "↑" if m.calibration_slope > 1 else "↓"
+            )
+            parts2.append(f"<b>slope</b>={m.calibration_slope:.3f} {slope_emoji}")
+        if m.cllr_affine is not None:
+            parts2.append(f"<b>Cllr_affine</b>={m.cllr_affine:.4f}")
+        text2 = " &nbsp;·&nbsp; ".join(parts2)
+        self._header_label2.setText(text2)
 
     def _setup_tabs(self) -> None:
-        """Cria as 5 abas vazias (figures populadas on-demand)."""
+        """Cria as 5 abas de plot + 1 aba de Métricas (tabela)."""
         self._add_lazy_tab("Distribuição de LRs",
                            self._draw_lr_distribution,
                            self._lr_distribution_help() if self._show_help else "")
@@ -168,6 +195,164 @@ class ValidationResultWidget(QtWidgets.QWidget):
         self._add_lazy_tab("Curva de Calibração",
                            self._draw_calibration_curve,
                            self._calibration_curve_help() if self._show_help else "")
+        self._add_metrics_tab()
+
+    def _add_metrics_tab(self) -> None:
+        """Cria a aba 'Métricas' com tabela completa agrupada por tier.
+
+        QTableWidget com 2 colunas (Métrica | Valor). Rows de section
+        header em fundo cinza, fonte negrito. Demais rows alternadas
+        em branco/cinza-claro. Copiável (Ctrl+C) em qualquer seleção.
+        """
+        page = QtWidgets.QWidget(parent=self)
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(8, 8, 8, 8)
+        page_layout.setSpacing(4)
+
+        table = QtWidgets.QTableWidget(parent=page)
+        table.setColumnCount(3)
+        table.setHorizontalHeaderLabels(["Métrica", "Valor", "Descrição"])
+        # Col 0/1 Interactive (user-resizable); Col 2 Stretch (auto-fill).
+        # Scrollbar horizontal aparece se viewport for muito estreito.
+        hh = table.horizontalHeader()
+        hh.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.Interactive)
+        hh.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        hh.setMinimumSectionSize(60)
+        hh.setStretchLastSection(False)
+        table.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        table.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+        # Word wrap OFF + ellipsis + altura fixa: rows compactas, descrição
+        # completa fica no tooltip on-hover.
+        table.setWordWrap(False)
+        table.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
+        table.verticalHeader().setMinimumSectionSize(18)
+        table.verticalHeader().setDefaultSectionSize(20)
+        table.verticalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.Fixed
+        )
+        # Min modesto pra não forçar QTabWidget alto demais quando outras
+        # abas são gráficos curtos. Vertical scrollbar do QTableWidget
+        # cobre o overflow. No dialog 🔍 Expandir (1100x780), há espaço
+        # suficiente pra tabela respirar (~700px disponíveis).
+        # AdjustIgnored: tabela aceita altura do parent sem propagar
+        # sizeHint do conteúdo (que seria ~700px) — sem isso QTabWidget
+        # tenta crescer pro tamanho total e bagunça o layout das abas PNG.
+        table.setMinimumHeight(300)
+        table.setSizeAdjustPolicy(
+            QtWidgets.QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
+        )
+        table.setStyleSheet(
+            "QTableWidget { font-size: 11px; background: white; gridline-color: #e0e0e0; }"
+            "QTableWidget::item { padding: 2px 6px; }"
+            "QHeaderView::section { background: #f0f4f8; padding: 4px 6px; "
+            "border: 0; border-bottom: 1px solid #c0c8d0; font-weight: bold; }"
+        )
+        page_layout.addWidget(table, 1)
+
+        # Botão "Copiar tudo" pra exportar tabela completa
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_copy = QtWidgets.QPushButton("📋 Copiar tabela completa", parent=page)
+        btn_copy.setStyleSheet(
+            "QPushButton { border: 1px solid #ccc; border-radius: 3px; "
+            "background: white; padding: 4px 10px; font-size: 11px; }"
+            "QPushButton:hover { background: #e8f0fe; }"
+        )
+        btn_copy.clicked.connect(lambda: self._copy_metrics_table_to_clipboard(table))
+        btn_row.addWidget(btn_copy)
+        page_layout.addLayout(btn_row)
+
+        idx = self.tabs.addTab(page, "Métricas")
+        # Reusa a mesma estrutura de cache do `_add_lazy_tab` pra que
+        # `_on_tab_changed` chame `_refresh_metrics_table` quando a aba
+        # ficar ativa.
+        self._tab_state[idx] = {
+            "canvas": None,
+            "figure": None,
+            "draw_fn": lambda _fig: self._refresh_metrics_table(table),
+            "drawn_token": None,
+            "is_metrics_table": True,
+            "table": table,
+        }
+
+    def _copy_metrics_table_to_clipboard(self, table: QtWidgets.QTableWidget) -> None:
+        """Copia a tabela inteira como TSV (colável em Excel/Sheets/etc.)."""
+        lines = []
+        for row in range(table.rowCount()):
+            cells = []
+            for col in range(table.columnCount()):
+                item = table.item(row, col)
+                cells.append(item.text() if item is not None else "")
+            lines.append("\t".join(cells))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+
+    def _refresh_metrics_table(self, table: QtWidgets.QTableWidget) -> None:
+        """Repopula a tabela de métricas. Chamada via `_on_tab_changed`."""
+        table.setRowCount(0)
+
+        if self._result is None:
+            table.setRowCount(1)
+            placeholder = QtWidgets.QTableWidgetItem("(aguardando resultado)")
+            placeholder.setForeground(QtGui.QBrush(QtGui.QColor("#888")))
+            table.setItem(0, 0, placeholder)
+            return
+
+        m = self._result.metrics
+        rows = self._build_metrics_rows(m)
+        table.setRowCount(len(rows))
+        section_bg = QtGui.QBrush(QtGui.QColor("#e9eef5"))
+        section_font = QtGui.QFont()
+        section_font.setBold(True)
+        for r, (label, value, desc, is_section) in enumerate(rows):
+            label_item = QtWidgets.QTableWidgetItem(label)
+            value_item = QtWidgets.QTableWidgetItem(value)
+            desc_item = QtWidgets.QTableWidgetItem(desc)
+            desc_item.setForeground(QtGui.QBrush(QtGui.QColor("#555")))
+            if desc:
+                desc_item.setToolTip(desc)
+                label_item.setToolTip(f"{label}: {desc}")
+            if is_section:
+                label_item.setBackground(section_bg)
+                value_item.setBackground(section_bg)
+                desc_item.setBackground(section_bg)
+                label_item.setFont(section_font)
+                label_item.setForeground(QtGui.QBrush(QtGui.QColor("#1a3550")))
+            table.setItem(r, 0, label_item)
+            table.setItem(r, 1, value_item)
+            table.setItem(r, 2, desc_item)
+        # NÃO chama resizeRowsToContents — defaultSectionSize fixa altura.
+        # Cols 0/1 sized inicialmente to contents; user pode arrastar depois.
+        table.resizeColumnToContents(0)
+        table.resizeColumnToContents(1)
+
+    def _build_metrics_rows(self, m) -> List[Tuple[str, str, bool]]:
+        """Constrói a sequência de rows da tabela. Cada entry é
+        (label, value, is_section_header).
+
+        Delega ao helper compartilhado `build_metrics_table_rows` (em
+        `validation_result_plot.py`) — mesma fonte de verdade do painel
+        inline. Converte `ValidationMetrics` → dict-like via `asdict()` +
+        merge de contagens.
+        """
+        from dataclasses import asdict
+        from faceaudit.models.validation_result_plot import (
+            build_metrics_table_rows,
+        )
+        payload = asdict(m)
+        # cal_loss não é field — é property; injeta manualmente
+        payload["cal_loss"] = m.cal_loss
+        payload["n_genuines"] = self._result.n_genuines
+        payload["n_impostors"] = self._result.n_impostors
+        return build_metrics_table_rows(payload)
 
     def _add_lazy_tab(
         self, title: str, draw_fn: Callable[[Figure], None], help_html: str = ""
@@ -225,6 +410,10 @@ class ValidationResultWidget(QtWidgets.QWidget):
         Cursor de espera durante a render — abas como Tippett e DET fazem
         sort/cumsum em milhões de pontos e podem travar a UI por segundos
         sem feedback visual nenhum.
+
+        A aba "Métricas" não tem figure — só uma QTableWidget; o draw_fn
+        é um wrapper sobre `_refresh_metrics_table` e o caminho de
+        rendering pula a parte de matplotlib.
         """
         state = self._tab_state.get(index)
         if state is None:
@@ -233,12 +422,7 @@ class ValidationResultWidget(QtWidgets.QWidget):
         if state["drawn_token"] == self._result_token:
             return  # já está desenhado para este resultado
 
-        figure: Figure = state["figure"]
-        canvas: FigureCanvas = state["canvas"]
-        draw_fn: Callable[[Figure], None] = state["draw_fn"]
-
-        # Wait cursor só quando há resultado pra renderizar — placeholder
-        # vazio é instantâneo e não precisa.
+        # Wait cursor só quando há resultado pra renderizar
         cursor_pushed = False
         if self._result is not None:
             QtWidgets.QApplication.setOverrideCursor(
@@ -248,6 +432,20 @@ class ValidationResultWidget(QtWidgets.QWidget):
             cursor_pushed = True
 
         try:
+            if state.get("is_metrics_table"):
+                # Aba "Métricas": só popula a tabela. Sem figure/canvas.
+                draw_fn = state["draw_fn"]
+                try:
+                    draw_fn(None)
+                except Exception:
+                    pass  # tabela vazia já é placeholder OK
+                state["drawn_token"] = self._result_token
+                return
+
+            figure: Figure = state["figure"]
+            canvas: FigureCanvas = state["canvas"]
+            draw_fn = state["draw_fn"]
+
             figure.clear()
             if self._result is None:
                 ax = figure.add_subplot(111)
@@ -383,23 +581,27 @@ class ValidationResultWidget(QtWidgets.QWidget):
             "<span style='color:#1a4f8a;'><b>Curva azul</b></span>: ECE do "
             "modelo atual. <span style='color:#2e7d32;'><b>Curva verde "
             "tracejada</b></span>: ECE mínimo possível após PAVA "
-            "(calibração ótima). A área <span style='color:#E8A020;'><b>âmbar</b></span> "
-            "entre as duas é a <b>perda de calibração</b> (cal_loss)."
+            "(calibração ótima). <span style='color:#888;'><b>Curva cinza "
+            "pontilhada</b></span>: ECE do <b>sistema neutro</b> — referência "
+            "de um sistema que sempre reporta LR=1. A área "
+            "<span style='color:#E8A020;'><b>âmbar</b></span> entre azul e "
+            "verde é a <b>perda de calibração</b> (cal_loss)."
             "<br><br>"
             "<b>Como interpretar:</b><br>"
             "• Eixo X: log₁₀-odds=0 é o cenário neutro (Hp e Hd igualmente "
             "prováveis). -3 = defesa 1000× mais provável a priori; +3 = "
-            "acusação 1000× mais provável. Curvas baixas em todo o intervalo "
-            "indicam que o sistema vale a pena em <b>todos</b> os cenários.<br>"
+            "acusação 1000× mais provável.<br>"
+            "• <b>Referência cinza tem pico em 1 bit</b> (em prior log-odds = 0) "
+            "— é a entropia do prior. Só dá pra dizer que o modelo é "
+            "<b>informativo</b> quando ECE_modelo (azul) fica abaixo dela. "
+            "Se a azul ultrapassa a cinza em algum prior, o sistema é pior "
+            "que <i>não decidir</i> ali — reportar LR=1 seria melhor.<br>"
             "• <b>Curvas próximas</b> (área âmbar pequena) = boa calibração "
             "— os LR reportados são honestos no peso da evidência.<br>"
             "• <b>Curva azul muito acima da verde</b> = sistema discrimina "
             "bem mas dá certezas <i>exageradas</i> (LRs muito altos/baixos "
             "que não se sustentam) ou <i>conservadoras</i> demais. Recalibrar "
-            "(refit do calibrador) reduz a área âmbar.<br>"
-            "• Se a curva azul fica acima de 1.0 em alguma região, o sistema "
-            "<b>perde informação</b> nesse cenário — relatar LR=1 (evidência "
-            "neutra) seria melhor que usar o modelo lá."
+            "(refit do calibrador) reduz a área âmbar."
         )
 
     @staticmethod
