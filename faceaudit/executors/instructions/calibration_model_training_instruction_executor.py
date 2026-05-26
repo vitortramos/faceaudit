@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 import numpy as np
 
 from faceaudit.enums.calibration_model_type import CalibrationModelType
+from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.executors.instructions.strategy_instruction_executor_base import (
     StrategyInstructionExecutorBase,
@@ -40,6 +43,10 @@ from faceaudit.models.validation.validation_result import ValidationResult
 from faceaudit.protocols.strategy_execution_context_protocol import (
     StrategyExecutionContextProtocol,
 )
+from faceaudit.services.calibrator_cross_validation_service import (
+    compute_calibrator_cllr_cv,
+)
+from faceaudit.services.cllr_math import compute_cllr
 
 
 class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBase):
@@ -124,6 +131,28 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                     f"{instruction.calibration_model_type}"
                 )
 
+            # ── Telemetria pós-fit: Cllr in-sample + CV diagnóstico ──
+            # In-sample sempre é computado. CV (out-of-fold) só roda quando
+            # config.k_folds > 0 — anexa no metadata pra propagar via
+            # SCORE_CALIBRATION até a tabela de métricas do STRATEGY_EVALUATION.
+            try:
+                self._attach_calibrator_telemetry(
+                    trained_model=trained_model,
+                    input_payload=input_payload,
+                    scores=scores,
+                    labels=labels,
+                    instruction=instruction,
+                    context=context,
+                )
+            except Exception as e:
+                # Telemetria nunca deve quebrar o treino do calibrador.
+                # Loga warning e segue. O modelo é persistido sem CV.
+                self._log(
+                    context,
+                    f"⚠ Falha ao computar telemetria do calibrador "
+                    f"({type(e).__name__}: {e}). Treino segue sem Cllr CV."
+                )
+
             # Quando o treino foi sobre um score vetorizado, propaga a
             # lista ordenada de modelos de similaridade que produziram
             # cada coluna pro modelo treinado. A regra
@@ -179,6 +208,23 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             sigma_target = getattr(trained_model, "sigma_target", None)
             if sigma_target is not None:
                 metadata["sigma_target"] = float(sigma_target)
+
+            # Espelha campos de telemetria CV (vazio se k_folds=0).
+            model_md = getattr(trained_model, "metadata", None) or {}
+            for key in (
+                "calibrator_cllr_train",
+                "calibrator_cllr_train_gen",
+                "calibrator_cllr_train_imp",
+                "calibrator_cllr_cv",
+                "calibrator_cllr_cv_gen",
+                "calibrator_cllr_cv_imp",
+                "calibrator_cv_gap",
+                "cv_folds_effective",
+                "cv_split_mode",
+                "cv_hyperparameter_mode",
+            ):
+                if key in model_md and model_md[key] is not None:
+                    metadata[key] = model_md[key]
 
             return InstructionExecutionResult.ok(
                 produced_resource_ids=[output_resource_id],
@@ -395,3 +441,122 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         model = BiGaussianizedCalibrationModel(config=config_payload)
         model.fit(scores=scores, labels=labels, logger_callback=context.log)
         return model
+
+    # =========================================================================
+    # TELEMETRIA: Cllr in-sample + CV diagnóstico
+    # =========================================================================
+
+    def _attach_calibrator_telemetry(
+        self,
+        trained_model,
+        input_payload,
+        scores: np.ndarray,
+        labels: np.ndarray,
+        instruction: CalibrationModelTrainingInstruction,
+        context: StrategyExecutionContextProtocol,
+    ) -> None:
+        """Computa Cllr in-sample + (se config.k_folds>0) Cllr CV out-of-fold
+        e anexa tudo a `trained_model.metadata`. Idempotente — pode ser
+        chamado várias vezes sem efeito colateral."""
+        # Garante bucket de metadata mesmo em modelos legados que não tinham.
+        if not hasattr(trained_model, "metadata") or trained_model.metadata is None:
+            trained_model.metadata = {}
+
+        scores_arr = np.asarray(scores, dtype=np.float64)
+        labels_arr = np.asarray(labels, dtype=np.int32)
+
+        # In-sample (otimista — mede ajuste, não generalização).
+        llrs_train = trained_model.calibrate_scores(scores_arr)
+        llrs_train = np.asarray(llrs_train, dtype=np.float64)
+        cllr_train, cllr_train_gen, cllr_train_imp = compute_cllr(
+            llrs_train[labels_arr == 1],
+            llrs_train[labels_arr == 0],
+        )
+        trained_model.metadata.update({
+            "calibrator_cllr_train": float(cllr_train),
+            "calibrator_cllr_train_gen": float(cllr_train_gen),
+            "calibrator_cllr_train_imp": float(cllr_train_imp),
+        })
+        self._log(
+            context,
+            f"📐 Cllr in-sample (treino do calibrador) = {cllr_train:.6f} "
+            f"(gen={cllr_train_gen:.6f}, imp={cllr_train_imp:.6f})"
+        )
+
+        # Resolve config do calibrador (dependendo da família escolhida).
+        config_payload = None
+        if instruction.uses_logistic_regression:
+            config_payload = instruction.logreg_config
+        elif instruction.calibration_model_type == CalibrationModelType.KDE:
+            config_payload = instruction.kde_config
+        elif instruction.uses_bigauss:
+            config_payload = instruction.bigauss_config
+
+        k_folds = int(getattr(config_payload, "k_folds", 0) or 0)
+        if k_folds < 2:
+            return  # CV desligado, in-sample já anexado.
+
+        split_mode = getattr(
+            config_payload, "cv_split_mode", CalibratorCVSplitMode.STRATIFIED_PAIR
+        )
+        if not isinstance(split_mode, CalibratorCVSplitMode):
+            split_mode = CalibratorCVSplitMode.from_str(split_mode)
+
+        groups: Optional[np.ndarray] = None
+        if split_mode == CalibratorCVSplitMode.STRATIFIED_GROUP:
+            groups = self._extract_groups_for_cv(input_payload)
+            if groups is None:
+                self._log(
+                    context,
+                    "⚠ STRATIFIED_GROUP requer dataset com probe_identity por amostra — "
+                    "usando STRATIFIED_PAIR como fallback."
+                )
+                split_mode = CalibratorCVSplitMode.STRATIFIED_PAIR
+
+        random_seed = int(getattr(config_payload, "random_seed", 42) or 42)
+
+        factory = trained_model._make_frozen_factory()
+        cv_result = compute_calibrator_cllr_cv(
+            scores=scores_arr,
+            labels=labels_arr,
+            factory=factory,
+            k_folds=k_folds,
+            random_seed=random_seed,
+            split_mode=split_mode,
+            groups=groups,
+            logger_callback=context.log,
+            model_name=getattr(trained_model, "name", type(trained_model).__name__),
+        )
+        if cv_result is None:
+            return
+
+        cllr_cv = float(cv_result["cllr_cv"])
+        trained_model.metadata.update({
+            "calibrator_cllr_cv": cllr_cv,
+            "calibrator_cllr_cv_gen": float(cv_result["cllr_cv_gen"]),
+            "calibrator_cllr_cv_imp": float(cv_result["cllr_cv_imp"]),
+            "calibrator_cv_gap": cllr_cv - float(cllr_train),
+            "cv_folds_effective": int(cv_result["cv_folds_effective"]),
+            "cv_split_mode": str(cv_result["cv_split_mode"]),
+            "cv_hyperparameter_mode": "FROZEN",
+        })
+
+    def _extract_groups_for_cv(self, input_payload) -> Optional[np.ndarray]:
+        """Extrai probe identity como array (N,) pra StratifiedGroupKFold.
+        Retorna None se o payload não for SimilarityScoreDataset, se não
+        tiver `items`, ou se alguma probe não tiver identidade setada.
+        SimilarityScoreSample.probe é um EmbeddingInfo com .identity."""
+        items = getattr(input_payload, "items", None)
+        if items is None:
+            return None
+        try:
+            groups = []
+            for item in items:
+                probe = getattr(item, "probe", None)
+                pid = getattr(probe, "identity", None) if probe is not None else None
+                if pid is None or pid == "":
+                    return None
+                groups.append(str(pid))
+            return np.asarray(groups)
+        except Exception:
+            return None

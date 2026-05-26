@@ -69,6 +69,18 @@ class ValidationMetrics:
     loss_imp_q95: Optional[float] = None         # quantil 95% de log2(1+e^(+llr_imp))
     top_1pct_loss_share: Optional[float] = None  # fração do Cllr vinda dos 1% piores samples
 
+    # ── Tier 1 (cont.): diagnóstico do calibrador (CV in-domain) ─────────
+    # Cllr in-sample e CV out-of-fold no DOMÍNIO de calibração. Anexados
+    # via SCORE_CALIBRATION → score_dataset.metadata → STRATEGY_EVALUATION.
+    # Permitem decompor a perda total em: overfit in-domain (cv_gap) e
+    # transfer loss / domain shift (calibrator_to_validation_gap).
+    calibrator_cllr_train: Optional[float] = None      # Cllr no próprio treino do calibrador (otimista)
+    calibrator_cllr_train_gen: Optional[float] = None  # decomposição genuínos
+    calibrator_cllr_train_imp: Optional[float] = None  # decomposição impostores
+    calibrator_cllr_cv: Optional[float] = None         # Cllr CV out-of-fold no domínio de calibração
+    calibrator_cllr_cv_gen: Optional[float] = None     # decomposição genuínos
+    calibrator_cllr_cv_imp: Optional[float] = None     # decomposição impostores
+
     # =========================================================================
     # PROPRIEDADES DERIVADAS
     # =========================================================================
@@ -110,3 +122,30 @@ class ValidationMetrics:
         if self.cllr_affine is None:
             return None
         return max(0.0, self.cllr_affine - self.cllr_min)
+
+    # ── Gaps diagnósticos do calibrador ──────────────────────────────────
+    # Decompõem a perda total em duas componentes ortogonais:
+    #   cv_gap                       = in-domain overfit do calibrador
+    #   calibrator_to_validation_gap = transfer loss (domain shift CFP→BFW etc)
+    # Um calibrador pode ter cv_gap≈0 (sem overfit interno) e ainda assim
+    # ter grande calibrator_to_validation_gap (caso típico CFP → BFW).
+
+    @property
+    def calibrator_cv_gap(self) -> Optional[float]:
+        """In-domain overfit do calibrador. > 0 = calibrador overfitou
+        sobre o próprio dataset de calibração. Comparação válida entre
+        train e CV no MESMO domínio. NÃO mede transfer pra validação
+        externa (use calibrator_to_validation_gap)."""
+        if self.calibrator_cllr_cv is None or self.calibrator_cllr_train is None:
+            return None
+        return self.calibrator_cllr_cv - self.calibrator_cllr_train
+
+    @property
+    def calibrator_to_validation_gap(self) -> Optional[float]:
+        """Transfer loss calibração → validação. > 0 = validação externa
+        é pior que o domínio de treino do calibrador (domain shift). NÃO
+        é overfit do calibrador — calibrador pode ter cv_gap≈0 e ainda
+        assim grande gap aqui."""
+        if self.calibrator_cllr_cv is None:
+            return None
+        return self.cllr - self.calibrator_cllr_cv

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Optional, Type, TypeVar
 
+from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
@@ -76,6 +77,39 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         )}
     )
 
+    # ── Cross-validation diagnóstico (opt-in) ────────────────────────────
+    k_folds: int = field(
+        default=0,
+        metadata={"help": (
+            "<html><b>🧪 K-fold CV diagnóstico (opt-in)</b> — pra estimar "
+            "Cllr CV out-of-fold no <b>domínio de calibração</b>.<br/><br/>"
+            "<code>0</code> (padrão) — desativado, comportamento atual idêntico.<br/>"
+            "<code>5</code> — recomendado quando ligado. Roda 5 folds "
+            "estratificados após o fit principal usando os hiperparâmetros "
+            "do production model (C congelado). Anexa <code>calibrator_cllr_cv</code> "
+            "ao metadata, propagado pra ValidationMetrics.<br/><br/>"
+            "<b>Atenção</b>: o Cllr CV mede generalização DENTRO do domínio "
+            "de calibração, NÃO performance em validação externa. Para LogReg, "
+            "o gap CV − in-sample tende a ser pequeno (calibrador robusto)."
+            "</html>"
+        )}
+    )
+
+    cv_split_mode: CalibratorCVSplitMode = field(
+        default=CalibratorCVSplitMode.STRATIFIED_PAIR,
+        metadata={"help": (
+            "<html><b>Estratégia de partição dos folds</b> em k-fold CV "
+            "(só aplicável quando <code>k_folds &gt; 0</code>).<br/><br/>"
+            "<b>STRATIFIED_PAIR</b> (padrão) — sklearn.StratifiedKFold. "
+            "Preserva proporção genuíno/impostor. Pares da mesma identidade "
+            "podem aparecer em ambos os folds → otimista.<br/><br/>"
+            "<b>STRATIFIED_GROUP</b> — sklearn.StratifiedGroupKFold por "
+            "<code>probe_identity</code>. Nenhuma identidade de probe usada "
+            "no treino do fold aparece no held-out. <b>Forense-defensável</b>, "
+            "mais pessimista, mais honesto. Recomendado em laudos.</html>"
+        )}
+    )
+
     def __post_init__(self) -> None:
         """
         Validação defensiva mínima do DTO.
@@ -90,6 +124,14 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
                 )
             if self.cv_folds < 2:
                 raise ValueError("cv_folds deve ser >= 2 quando use_gridsearch=True.")
+        # k_folds = 0 desativa CV diagnóstico; >=2 ativa; 1 inválido.
+        if self.k_folds < 0:
+            raise ValueError("k_folds não pode ser negativo.")
+        if self.k_folds == 1:
+            raise ValueError("k_folds deve ser 0 (desativado) ou >= 2.")
+        # Normaliza enum vindo de string (caso from_dict externo)
+        if not isinstance(self.cv_split_mode, CalibratorCVSplitMode):
+            self.cv_split_mode = CalibratorCVSplitMode.from_str(self.cv_split_mode)
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -114,5 +156,10 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
 
         if "scoring" in processed and isinstance(processed["scoring"], str):
             processed["scoring"] = LogRegGridScoringMetric.from_str(processed["scoring"])
+
+        if "cv_split_mode" in processed:
+            processed["cv_split_mode"] = CalibratorCVSplitMode.from_str(
+                processed["cv_split_mode"]
+            )
 
         return cls(**processed)

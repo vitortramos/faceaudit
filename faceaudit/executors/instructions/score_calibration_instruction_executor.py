@@ -135,6 +135,32 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 instruction.output_calibrated_scores_name
                 or f"{score_dataset.name}_calibrated"
             )
+            # Propaga telemetria de Cllr CV / in-sample (Cllr CV diagnóstico
+            # do calibrador no domínio de treino) pra `STRATEGY_EVALUATION`
+            # poder anexar tudo em ValidationMetrics.
+            calibrator_md = getattr(calibrator, "metadata", None) or {}
+            ds_metadata = {
+                "source_dataset_name": score_dataset.name,
+                "calibrator_type": type(calibrator).__name__,
+                # Propaga marcador de casework para downstream — preserva
+                # a semântica "sem ground truth" através da calibração.
+                "is_casework": bool(score_dataset.metadata.get("is_casework", False)),
+            }
+            for key in (
+                "calibrator_cllr_train",
+                "calibrator_cllr_train_gen",
+                "calibrator_cllr_train_imp",
+                "calibrator_cllr_cv",
+                "calibrator_cllr_cv_gen",
+                "calibrator_cllr_cv_imp",
+                "calibrator_cv_gap",
+                "cv_folds_effective",
+                "cv_split_mode",
+                "cv_hyperparameter_mode",
+            ):
+                if key in calibrator_md and calibrator_md[key] is not None:
+                    ds_metadata[key] = calibrator_md[key]
+
             calibrated_dataset = SimilarityScoreDataset(
                 name=output_name,
                 description=(
@@ -142,13 +168,7 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                     f"de {score_dataset.name}"
                 ),
                 items=output_items,
-                metadata={
-                    "source_dataset_name": score_dataset.name,
-                    "calibrator_type": type(calibrator).__name__,
-                    # Propaga marcador de casework para downstream — preserva
-                    # a semântica "sem ground truth" através da calibração.
-                    "is_casework": bool(score_dataset.metadata.get("is_casework", False)),
-                },
+                metadata=ds_metadata,
             )
 
             output_resource_id = instruction.output_calibrated_scores_resource_id

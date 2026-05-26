@@ -611,6 +611,36 @@ def build_metrics_table_rows(
             "—" if argmax_prior is None else f"{float(argmax_prior):+.3f}",
             "Em qual cenário forense (log10 da prior odds) o sistema é menos calibrado. >0 = priors a favor da acusação.")
 
+    # ── Calibrador — CV diagnóstico (in-domain) ─────────────────────────
+    # Mostrado apenas quando CALIBRATION_MODEL_TRAINING rodou com k_folds>0.
+    # Cllr CV mede generalização DENTRO do domínio de calibração, NÃO mede
+    # performance em validação externa — gaps decompõem efeitos diferentes.
+    cllr_cv = _get("calibrator_cllr_cv")
+    if cllr_cv is not None:
+        cllr_train = _get("calibrator_cllr_train")
+        section("CALIBRADOR — CV DIAGNÓSTICO (treino do calibrador)")
+        add("Cllr in-sample (treino calib)", fmt_f(cllr_train),
+            "Cllr do calibrador medido nos mesmos dados usados pra treiná-lo. Otimista — calibrador pode overfittar.")
+        add("Cllr CV out-of-fold (treino calib)", fmt_f(cllr_cv),
+            "Cllr não-viesado no DOMÍNIO de calibração via k-fold. NÃO mede performance em validação externa.")
+        if cllr_train is not None:
+            gap_in = float(cllr_cv) - float(cllr_train)
+            sign = "+" if gap_in >= 0 else ""
+            add("Gap CV − in-sample (in-domain overfit)", f"{sign}{gap_in:.4f}",
+                "Quanto o calibrador overfita no próprio treino. > 0 = overfit; ≈ 0 = generaliza bem dentro do domínio.")
+        if cllr is not None:
+            gap_out = float(cllr) - float(cllr_cv)
+            sign = "+" if gap_out >= 0 else ""
+            add("Gap validação − CV (transfer loss)", f"{sign}{gap_out:.4f}",
+                "Domain shift entre treino do calibrador e validação externa. > 0 = validação é pior (típico CFP → BFW).")
+        cv_gen = _get("calibrator_cllr_cv_gen")
+        cv_imp = _get("calibrator_cllr_cv_imp")
+        if cv_gen is not None and cv_imp is not None:
+            add("Cllr CV gen", fmt_f(cv_gen),
+                "Contribuição dos genuínos no CV. Compara com cllr_train_gen pra ver onde o overfit aparece.")
+            add("Cllr CV imp", fmt_f(cv_imp),
+                "Contribuição dos impostores no CV.")
+
     # ── Tail / outliers (Tier 5) ────────────────────────────────────────
     if _get("loss_gen_q95") is not None:
         section("CAUDA / OUTLIERS (diagnóstico)")
@@ -706,6 +736,13 @@ def write_validation_metrics_sidecar(
             "loss_gen_q95": _get("loss_gen_q95"),
             "loss_imp_q95": _get("loss_imp_q95"),
             "top_1pct_loss_share": _get("top_1pct_loss_share"),
+            # Calibrador — CV diagnóstico (in-domain)
+            "calibrator_cllr_train": _get("calibrator_cllr_train"),
+            "calibrator_cllr_train_gen": _get("calibrator_cllr_train_gen"),
+            "calibrator_cllr_train_imp": _get("calibrator_cllr_train_imp"),
+            "calibrator_cllr_cv": _get("calibrator_cllr_cv"),
+            "calibrator_cllr_cv_gen": _get("calibrator_cllr_cv_gen"),
+            "calibrator_cllr_cv_imp": _get("calibrator_cllr_cv_imp"),
         }
         sidecar = validation_metrics_sidecar_path(pickle_path)
         sidecar.parent.mkdir(parents=True, exist_ok=True)

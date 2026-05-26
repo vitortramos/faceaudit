@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from pathlib import Path
 from typing import Callable, Optional, Tuple
@@ -319,6 +320,36 @@ class KDECalibrationModel(CalibrationModelProtocol):
 
         if self._is_fitted:
             self._regenerate_interpolator()
+
+    # =========================================================================
+    # FACTORY DE FOLD (CV diagnóstico)
+    # =========================================================================
+
+    def _make_frozen_factory(self) -> Callable[[], "KDECalibrationModel"]:
+        """Factory pra k-fold CV diagnóstico: clona o config com bandwidths
+        finais (gen/imp) já resolvidos, GridSearch desligado, k_folds=0
+        pra impedir recursão. Cada call devolve instância nova, virgem,
+        que aprende novamente sua z-score normalization no fold (sem
+        leak de μ/σ do production model)."""
+        self._ensure_fitted()
+        bw_gen = float(self.metadata.get("bw_genuine_z", self.config.bandwidth_genuine))
+        bw_imp = float(self.metadata.get("bw_impostor_z", self.config.bandwidth_impostor))
+
+        frozen_config = copy.deepcopy(self.config)
+        frozen_config.use_gridsearch = False
+        frozen_config.bandwidth_genuine = bw_gen
+        frozen_config.bandwidth_impostor = bw_imp
+        frozen_config.k_folds = 0
+
+        base_name = self._name
+
+        def _make() -> "KDECalibrationModel":
+            return KDECalibrationModel(
+                config=copy.deepcopy(frozen_config),
+                name=f"{base_name} [CV-fold]",
+            )
+
+        return _make
 
     # =========================================================================
     # AUXILIARES DE ENTRADA

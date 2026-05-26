@@ -30,10 +30,20 @@ class ValidationMathService:
                           genuine_scores: List[float],
                           impostor_scores: List[float],
                           genuine_raw_scores: List[float] = None,
-                          impostor_raw_scores: List[float] = None) -> StrategyValidationResult:
+                          impostor_raw_scores: List[float] = None,
+                          calibrator_cllr_train: float = None,
+                          calibrator_cllr_train_gen: float = None,
+                          calibrator_cllr_train_imp: float = None,
+                          calibrator_cllr_cv: float = None,
+                          calibrator_cllr_cv_gen: float = None,
+                          calibrator_cllr_cv_imp: float = None) -> StrategyValidationResult:
         """
         Orquestra o cálculo de todas as métricas de validação e gera os vetores
         necessários para a plotagem dos gráficos de desempenho.
+
+        Os parâmetros `calibrator_cllr_*` são opcionais e são apenas propagados
+        do dataset.metadata (computados em CALIBRATION_MODEL_TRAINING) para o
+        ValidationMetrics. Não há cálculo novo aqui — só transporte para a UI.
         """
         if not genuine_scores or not impostor_scores:
             raise ValueError("As listas de scores genuínos e impostores não podem estar vazias.")
@@ -102,6 +112,14 @@ class ValidationMathService:
             loss_gen_q95=loss_gen_q95,
             loss_imp_q95=loss_imp_q95,
             top_1pct_loss_share=top_1pct_share,
+            # Telemetria CV do calibrador — transporte do metadata
+            # do CALIBRATED_SCORES, sem cálculo aqui.
+            calibrator_cllr_train=calibrator_cllr_train,
+            calibrator_cllr_train_gen=calibrator_cllr_train_gen,
+            calibrator_cllr_train_imp=calibrator_cllr_train_imp,
+            calibrator_cllr_cv=calibrator_cllr_cv,
+            calibrator_cllr_cv_gen=calibrator_cllr_cv_gen,
+            calibrator_cllr_cv_imp=calibrator_cllr_cv_imp,
         )
 
         # Raw scores opcionais

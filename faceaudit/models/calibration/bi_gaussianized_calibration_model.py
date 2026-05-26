@@ -18,6 +18,7 @@ EER e Cllr são portados localmente pra evitar acoplamento com `ValidationMathSe
 
 from __future__ import annotations
 
+import copy
 import pickle
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -57,7 +58,7 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
       - 0 = impostor / Hd
     """
 
-    MODEL_VERSION = 2  # v2: + score_direction (_flip_sign) + sigma_estimation_mode + cllr_after
+    MODEL_VERSION = 3  # v3: + calibrator_cllr_train/_cv (CV diagnóstico via executor)
 
     def __init__(
         self,
@@ -405,6 +406,32 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             self._mixture_inv_interp = self._build_mixture_inverse(self._sigma_target)
         else:
             self._mixture_inv_interp = None
+
+    # =========================================================================
+    # FACTORY DE FOLD (CV diagnóstico)
+    # =========================================================================
+
+    def _make_frozen_factory(self) -> Callable[[], "BiGaussianizedCalibrationModel"]:
+        """Factory pra k-fold CV diagnóstico: clona o config com k_folds=0
+        pra impedir recursão. Os hiperparâmetros do BiGauss (target_metric,
+        initial_calibrator, sigma_estimation_mode, gx_method, sigma_cv_folds,
+        bw_kde_factor, etc.) já são auto-contidos no DTO — não precisam ser
+        congelados como C/bandwidth do LogReg/KDE. O fit por fold roda o
+        pipeline interno completo (initial calibrator + σ² + G(x) + F⁻¹)
+        com hiperparâmetros idênticos ao production model."""
+        self._ensure_fitted()
+        frozen_config = copy.deepcopy(self.config)
+        frozen_config.k_folds = 0
+
+        base_name = self._name
+
+        def _make() -> "BiGaussianizedCalibrationModel":
+            return BiGaussianizedCalibrationModel(
+                config=copy.deepcopy(frozen_config),
+                name=f"{base_name} [CV-fold]",
+            )
+
+        return _make
 
     # =========================================================================
     # CÁLCULO DE Cllr e EER (PORTADOS LOCALMENTE; SEM ACOPLAR ValidationMathService)

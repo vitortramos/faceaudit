@@ -548,6 +548,8 @@ _LOGREG_CONFIG_LABELS = {
     "cv_folds":              "Folds do CV (GridSearch)",
     "scoring":               "Métrica do GridSearch",
     "standardize_features":  "Standardizar features (score vectorization)",
+    "k_folds":               "🧪 Cllr CV diagnóstico — k-folds (0 = desativado)",
+    "cv_split_mode":         "🧪 Modo de partição do CV diagnóstico",
 }
 
 _LOGREG_CONFIG_TOOLTIPS = {
@@ -586,6 +588,20 @@ _LOGREG_CONFIG_TOOLTIPS = {
         "μ/σ são persistidos com o modelo e re-aplicados automaticamente "
         "em validação e casework.\n\n"
         "Default: desativado (preserva comportamento legado).",
+    "k_folds":
+        "K-fold CV diagnóstico do calibrador (opt-in).\n\n"
+        "0 (padrão) → desativado, comportamento idêntico ao anterior.\n"
+        "5 → roda 5 folds estratificados após o fit principal usando "
+        "C congelado (best_C_) — anexa Cllr CV out-of-fold ao metadata, "
+        "propagado pra ValidationMetrics.\n\n"
+        "Cllr CV mede generalização DENTRO do domínio de calibração — "
+        "NÃO é a performance em validação externa.",
+    "cv_split_mode":
+        "Estratégia de partição dos folds (só aplica quando k_folds > 0).\n\n"
+        "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
+        "identidade podem aparecer em treino e held-out → otimista.\n\n"
+        "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
+        "Forense-defensável, mais pessimista, recomendado em laudos.",
 }
 
 
@@ -602,6 +618,8 @@ _KDE_CONFIG_LABELS = {
     "interpolation_points":      "Pontos da interpolação",
     "random_seed":               "Semente Aleatória",
     "kernel":                    "Kernel KDE",
+    "k_folds":                   "🧪 Cllr CV diagnóstico — k-folds (0 = desativado)",
+    "cv_split_mode":             "🧪 Modo de partição do CV diagnóstico",
 }
 
 _KDE_CONFIG_TOOLTIPS = {
@@ -637,6 +655,22 @@ _KDE_CONFIG_TOOLTIPS = {
         "Semente aleatória usada em amostragens internas, quando aplicável.",
     "kernel":
         "Kernel do sklearn.neighbors.KernelDensity. Padrão 'gaussian'.",
+    "k_folds":
+        "K-fold CV diagnóstico do calibrador (opt-in).\n\n"
+        "0 (padrão) → desativado, comportamento idêntico ao anterior.\n"
+        "5 → roda 5 folds estratificados após o fit principal usando os "
+        "bandwidths congelados — anexa Cllr CV out-of-fold ao metadata, "
+        "propagado pra ValidationMetrics.\n\n"
+        "KDE tende a mostrar gap CV − in-sample mais alto que LogReg "
+        "(calibrador de alta capacidade overfita mais). Cllr CV mede "
+        "generalização DENTRO do domínio de calibração — NÃO é a "
+        "performance em validação externa.",
+    "cv_split_mode":
+        "Estratégia de partição dos folds (só aplica quando k_folds > 0).\n\n"
+        "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
+        "identidade podem aparecer em treino e held-out → otimista.\n\n"
+        "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
+        "Forense-defensável, mais pessimista, recomendado em laudos.",
 }
 
 
@@ -658,6 +692,8 @@ _BIGAUSS_CONFIG_LABELS = {
     "gx_kde_bandwidth_imp":       "Bandwidth G(x) impostores (0=auto)",
     "gx_clamp_to_training_range": "Clampar G(x) ao range do treino",
     "gx_grid_points":             "Pontos do grid G(x)",
+    "k_folds":                    "🧪 Cllr CV diagnóstico — k-folds (0 = desativado)",
+    "cv_split_mode":              "🧪 Modo de partição do CV diagnóstico",
 }
 
 _BIGAUSS_CONFIG_TOOLTIPS = {
@@ -724,6 +760,23 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
     "gx_grid_points":
         "Quantidade de pontos do grid usado pra cachear G(x). 2000 é suficiente. "
         "Só aplica se gx_method=KDE_SMOOTHED.",
+    "k_folds":
+        "K-fold CV diagnóstico do calibrador BiGauss completo (opt-in). "
+        "DIFERENTE do sigma_cv_folds — aquele é CV interno só pra estimar "
+        "σ². Este re-roda o pipeline inteiro (initial calibrator + σ² + "
+        "G(x) + F⁻¹) em k-folds.\n\n"
+        "0 (padrão) → desativado, comportamento idêntico ao anterior.\n"
+        "5 → roda 5 folds estratificados após o fit principal usando todos "
+        "os hiperparâmetros congelados — anexa Cllr CV out-of-fold ao "
+        "metadata, propagado pra ValidationMetrics.\n\n"
+        "Cllr CV mede generalização DENTRO do domínio de calibração — "
+        "NÃO é a performance em validação externa.",
+    "cv_split_mode":
+        "Estratégia de partição dos folds (só aplica quando k_folds > 0).\n\n"
+        "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
+        "identidade podem aparecer em treino e held-out → otimista.\n\n"
+        "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
+        "Forense-defensável, mais pessimista, recomendado em laudos.",
 }
 
 

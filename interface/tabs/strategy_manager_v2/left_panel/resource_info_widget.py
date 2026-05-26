@@ -1381,6 +1381,21 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                     f"N_gen={n_gen:,} | N_imp={n_imp:,}".replace(",", ".")
                 )
 
+        # Telemetria CV (in-sample + out-of-fold) — comum aos 3 calibradores.
+        # Anexada pelo CALIBRATION_MODEL_TRAINING executor em trained_model.metadata.
+        cv_md = getattr(payload, "metadata", {}) or {}
+        cllr_train = cv_md.get("calibrator_cllr_train")
+        cllr_cv = cv_md.get("calibrator_cllr_cv")
+        if cllr_train is not None:
+            extras.append(f"Cllr_train={cllr_train:.4f}")
+        if cllr_cv is not None:
+            mode_str = cv_md.get("cv_split_mode", "?")
+            k_eff = cv_md.get("cv_folds_effective", "?")
+            extras.append(f"Cllr_CV={cllr_cv:.4f} ({mode_str}, k={k_eff})")
+            gap = cv_md.get("calibrator_cv_gap")
+            if gap is not None:
+                extras.append(f"cv_gap={gap:+.4f}")
+
         self.lbl_calib_extra.setText(" | ".join(extras) if extras else "—")
 
     def _clear_calibration_model(self) -> None:

@@ -205,6 +205,7 @@ class ValidationResultsView(QtWidgets.QWidget):
             "EER", "Threshold EER", "AUC",
             "Falso+", "Falso−",
             "Cllr", "Cllr_min", "cal_loss",
+            "Cllr CV", "CV gap", "Transfer gap",
             "Cllr_affine", "slope",
             "n_gen", "n_imp",
         ]
@@ -216,6 +217,9 @@ class ValidationResultsView(QtWidgets.QWidget):
             "slope": "Inclinação a do affine fit. < 1 = over-confident; > 1 = under-confident",
             "Threshold EER": "Valor de log-LR no ponto de igual erro",
             "cal_loss": "Cllr − Cllr_min: perda por má calibração",
+            "Cllr CV": "Cllr CV out-of-fold no DOMÍNIO de calibração. Não confundir com Cllr de validação externa.",
+            "CV gap": "In-domain overfit: Cllr_CV − Cllr_train. > 0 = calibrador overfitou no próprio treino.",
+            "Transfer gap": "Transfer loss / domain shift: Cllr − Cllr_CV. > 0 = validação externa pior que domínio de calib.",
         }
         table = QtWidgets.QTableWidget(len(self._loaded), len(headers))
         table.setHorizontalHeaderLabels(headers)
@@ -250,6 +254,12 @@ class ValidationResultsView(QtWidgets.QWidget):
             arrow = "≈" if 0.95 <= v <= 1.05 else ("↑" if v > 1 else "↓")
             return f"{v:.3f} {arrow}"
 
+        def _fmt_signed(v) -> str:
+            if v is None:
+                return "n/a"
+            sign = "+" if v >= 0 else ""
+            return f"{sign}{v:.4f}"
+
         for row, (item, result) in enumerate(self._loaded):
             m = result.metrics
             n_gen = getattr(result, "n_genuines", 0)
@@ -265,6 +275,12 @@ class ValidationResultsView(QtWidgets.QWidget):
 
             # Tier 1+3 forense — campos podem ser None em pickles antigos
             # (pré-v2 do ValidationMetrics) → "n/a".
+            # cv_gap e transfer_gap são properties; pickles muito antigos
+            # podem não ter os atributos calibrator_cllr_*, então tudo
+            # com getattr default None.
+            cllr_cv_val = getattr(m, "calibrator_cllr_cv", None)
+            cv_gap_val = getattr(m, "calibrator_cv_gap", None)
+            transfer_gap_val = getattr(m, "calibrator_to_validation_gap", None)
             cells = [
                 item.strategy_name,
                 item.resource_name,
@@ -277,6 +293,9 @@ class ValidationResultsView(QtWidgets.QWidget):
                 _fmt_f(m.cllr),
                 _fmt_f(m.cllr_min),
                 _fmt_f(cal_loss),
+                _fmt_f(cllr_cv_val),
+                _fmt_signed(cv_gap_val),
+                _fmt_signed(transfer_gap_val),
                 _fmt_f(getattr(m, "cllr_affine", None)),
                 _fmt_slope(getattr(m, "calibration_slope", None)),
                 f"{n_gen:,}".replace(",", "."),

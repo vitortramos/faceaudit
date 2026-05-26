@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, Dict
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -27,7 +28,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
     - persistir e restaurar seu estado
     """
 
-    MODEL_VERSION = 1
+    MODEL_VERSION = 2
 
     def __init__(
         self,
@@ -48,6 +49,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         # casework. None quando standardização não foi usada.
         self._feature_mean: np.ndarray | None = None
         self._feature_std: np.ndarray | None = None
+
+        # Bucket de telemetria leve. Preenchido pelo executor com
+        # calibrator_cllr_train / _cv / cv_gap / cv_split_mode etc.
+        self.metadata: Dict[str, Any] = {}
 
         self.logreg = self._build_estimator(self.config.C)
 
@@ -280,6 +285,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             # Standardização (None quando não foi usada).
             "feature_mean": self._feature_mean,
             "feature_std": self._feature_std,
+            # Telemetria de CV / Cllr in-sample (vazio se executor não setou).
+            "metadata": dict(self.metadata) if self.metadata else {},
         }
 
         path_obj = Path(path)
@@ -313,6 +320,33 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         fs = payload.get("feature_std")
         self._feature_mean = np.asarray(fm, dtype=np.float64) if fm is not None else None
         self._feature_std = np.asarray(fs, dtype=np.float64) if fs is not None else None
+        md = payload.get("metadata") or {}
+        self.metadata = dict(md) if isinstance(md, dict) else {}
+
+    # =========================================================================
+    # FACTORY DE FOLD (CV diagnóstico)
+    # =========================================================================
+
+    def _make_frozen_factory(self) -> Callable[[], "LogisticRegressionCalibrationModel"]:
+        """Factory pra k-fold CV diagnóstico: clona o config com hyperparams
+        congelados (C=best_C_, sem GridSearch) e devolve callable que cria
+        instâncias novas. Standardização (μ/σ) é re-aprendida por fold
+        dentro do fit — sem data leak entre folds."""
+        self._ensure_fitted()
+        frozen_config = copy.deepcopy(self.config)
+        frozen_config.use_gridsearch = False
+        frozen_config.C = float(self.best_C_) if self.best_C_ is not None else float(self.config.C)
+        frozen_config.k_folds = 0  # impede recursão se algum caller olhar
+
+        base_name = self._name
+
+        def _make() -> "LogisticRegressionCalibrationModel":
+            return LogisticRegressionCalibrationModel(
+                config=copy.deepcopy(frozen_config),
+                name=f"{base_name} [CV-fold]",
+            )
+
+        return _make
 
     # =========================================================================
     # AUXILIARES

@@ -122,6 +122,11 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 .replace(",", ".")
             )
 
+            # Lê telemetria CV do calibrador propagada via SCORE_CALIBRATION.
+            # Valores são opcionais — None quando calibrador foi treinado sem
+            # CV (k_folds=0). Service só transporta pro ValidationMetrics.
+            ds_md = score_dataset.metadata if isinstance(score_dataset.metadata, dict) else {}
+
             service = ValidationMathService()
             result = service.calculate_metrics(
                 strategy_id=str(strategy_id),
@@ -131,6 +136,12 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 impostor_scores=imp_log_lrs,
                 genuine_raw_scores=gen_raw_scores,
                 impostor_raw_scores=imp_raw_scores,
+                calibrator_cllr_train=ds_md.get("calibrator_cllr_train"),
+                calibrator_cllr_train_gen=ds_md.get("calibrator_cllr_train_gen"),
+                calibrator_cllr_train_imp=ds_md.get("calibrator_cllr_train_imp"),
+                calibrator_cllr_cv=ds_md.get("calibrator_cllr_cv"),
+                calibrator_cllr_cv_gen=ds_md.get("calibrator_cllr_cv_gen"),
+                calibrator_cllr_cv_imp=ds_md.get("calibrator_cllr_cv_imp"),
             )
 
             output_resource_id = instruction.output_validation_result_resource_id

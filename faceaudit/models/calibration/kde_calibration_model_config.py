@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Type, TypeVar
 
+from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
 
@@ -88,6 +89,40 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
         metadata={"help": "Kernel do sklearn.neighbors.KernelDensity."}
     )
 
+    # ── Cross-validation diagnóstico (opt-in) ────────────────────────────
+    k_folds: int = field(
+        default=0,
+        metadata={"help": (
+            "<html><b>🧪 K-fold CV diagnóstico (opt-in)</b> — pra estimar "
+            "Cllr CV out-of-fold no <b>domínio de calibração</b>.<br/><br/>"
+            "<code>0</code> (padrão) — desativado, comportamento atual idêntico.<br/>"
+            "<code>5</code> — recomendado quando ligado. Roda 5 folds "
+            "estratificados após o fit principal usando os bandwidths do "
+            "production model (congelados). Anexa <code>calibrator_cllr_cv</code> "
+            "ao metadata, propagado pra ValidationMetrics.<br/><br/>"
+            "<b>Atenção</b>: o Cllr CV mede generalização DENTRO do domínio "
+            "de calibração, NÃO performance em validação externa. Pra KDE, "
+            "o gap CV − in-sample tende a ser maior (calibrador de alta "
+            "capacidade overfita mais que LogReg)."
+            "</html>"
+        )}
+    )
+
+    cv_split_mode: CalibratorCVSplitMode = field(
+        default=CalibratorCVSplitMode.STRATIFIED_PAIR,
+        metadata={"help": (
+            "<html><b>Estratégia de partição dos folds</b> em k-fold CV "
+            "(só aplicável quando <code>k_folds &gt; 0</code>).<br/><br/>"
+            "<b>STRATIFIED_PAIR</b> (padrão) — sklearn.StratifiedKFold. "
+            "Preserva proporção gen/imp. Pares da mesma identidade podem "
+            "aparecer em ambos os folds → otimista.<br/><br/>"
+            "<b>STRATIFIED_GROUP</b> — sklearn.StratifiedGroupKFold por "
+            "<code>probe_identity</code>. Nenhuma identidade de probe usada "
+            "no treino do fold aparece no held-out. <b>Forense-defensável</b>, "
+            "mais pessimista. Recomendado em laudos.</html>"
+        )}
+    )
+
     def __post_init__(self) -> None:
         if self.bandwidth_genuine <= 0:
             raise ValueError("bandwidth_genuine deve ser maior que zero.")
@@ -116,6 +151,14 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
         if not self.kernel:
             raise ValueError("kernel não pode ser vazio.")
 
+        # k_folds = 0 desativa CV diagnóstico; >=2 ativa; 1 inválido.
+        if self.k_folds < 0:
+            raise ValueError("k_folds não pode ser negativo.")
+        if self.k_folds == 1:
+            raise ValueError("k_folds deve ser 0 (desativado) ou >= 2.")
+        if not isinstance(self.cv_split_mode, CalibratorCVSplitMode):
+            self.cv_split_mode = CalibratorCVSplitMode.from_str(self.cv_split_mode)
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         """
@@ -130,4 +173,8 @@ class KDECalibrationModelConfig(JSONSerializableMixin):
 
         legacy_fields = {"fisher_eps"}
         cleaned = {k: v for k, v in data.items() if k not in legacy_fields}
+        if "cv_split_mode" in cleaned:
+            cleaned["cv_split_mode"] = CalibratorCVSplitMode.from_str(
+                cleaned["cv_split_mode"]
+            )
         return cls(**cleaned)

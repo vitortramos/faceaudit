@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Type, TypeVar
 
+from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
 
@@ -454,6 +455,42 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         },
     )
 
+    # ── Cross-validation diagnóstico do calibrador completo (opt-in) ────
+    # DISTINTO de sigma_cv_folds: este aqui mede Cllr CV do BiGauss INTEIRO
+    # (incluindo G(x) + F⁻¹ + sigma já alvo). O sigma_cv_folds acima é CV
+    # interna pra estimar σ² antes de construir G(x).
+    k_folds: int = field(
+        default=0,
+        metadata={"help": (
+            "<html><b>🧪 K-fold CV diagnóstico do calibrador BiGauss completo</b> "
+            "(opt-in, DISTINTO de <code>sigma_cv_folds</code>).<br/><br/>"
+            "<code>0</code> (padrão) — desativado.<br/>"
+            "<code>5</code> — recomendado. Roda 5 folds estratificados após "
+            "o fit principal, refitando todo o pipeline BiGauss (G(x) + F⁻¹) "
+            "com hiperparâmetros congelados (<code>gx_kde_bandwidth_*</code>, "
+            "<code>sigma_shrinkage_factor</code>, etc.). Anexa "
+            "<code>calibrator_cllr_cv</code> ao metadata.<br/><br/>"
+            "<b>Diferença vs sigma_cv_folds</b>: aquele é CV interna do "
+            "calibrador inicial (LogReg/KDE) só pra estimar σ². Este aqui "
+            "mede generalização do BiGauss completo.<br/><br/>"
+            "<b>Atenção</b>: Cllr CV mede generalização DENTRO do domínio "
+            "de calibração, NÃO performance em validação externa."
+            "</html>"
+        )}
+    )
+
+    cv_split_mode: CalibratorCVSplitMode = field(
+        default=CalibratorCVSplitMode.STRATIFIED_PAIR,
+        metadata={"help": (
+            "<html><b>Estratégia de partição dos folds</b> em k-fold CV do "
+            "calibrador completo (só aplicável quando <code>k_folds &gt; 0</code>).<br/><br/>"
+            "<b>STRATIFIED_PAIR</b> (padrão) — sklearn.StratifiedKFold.<br/>"
+            "<b>STRATIFIED_GROUP</b> — sklearn.StratifiedGroupKFold por "
+            "<code>probe_identity</code>. <b>Forense-defensável</b>, "
+            "recomendado em laudos.</html>"
+        )}
+    )
+
     # ── Direção dos scores (defensivo) ──────────────────────────────────────
     score_direction: BiGaussScoreDirection = field(
         default=BiGaussScoreDirection.AUTO,
@@ -487,6 +524,8 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
             self.sigma_estimation_mode = BiGaussSigmaEstimationMode.from_str(self.sigma_estimation_mode)
         if not isinstance(self.score_direction, BiGaussScoreDirection):
             self.score_direction = BiGaussScoreDirection.from_str(self.score_direction)
+        if not isinstance(self.cv_split_mode, CalibratorCVSplitMode):
+            self.cv_split_mode = CalibratorCVSplitMode.from_str(self.cv_split_mode)
 
         if not (0.0 < self.sigma_shrinkage_factor <= 1.0):
             raise ValueError("sigma_shrinkage_factor deve estar em (0, 1].")
@@ -515,6 +554,12 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         if self.sigma_cv_folds < 2:
             raise ValueError("sigma_cv_folds deve ser pelo menos 2.")
 
+        # k_folds diagnóstico (DISTINTO de sigma_cv_folds)
+        if self.k_folds < 0:
+            raise ValueError("k_folds não pode ser negativo.")
+        if self.k_folds == 1:
+            raise ValueError("k_folds deve ser 0 (desativado) ou >= 2.")
+
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
         if not data:
@@ -541,6 +586,10 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         if "score_direction" in payload:
             payload["score_direction"] = BiGaussScoreDirection.from_str(
                 payload["score_direction"]
+            )
+        if "cv_split_mode" in payload:
+            payload["cv_split_mode"] = CalibratorCVSplitMode.from_str(
+                payload["cv_split_mode"]
             )
         return cls(**payload)
 
