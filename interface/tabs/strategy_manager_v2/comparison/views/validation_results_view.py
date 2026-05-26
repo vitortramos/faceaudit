@@ -195,12 +195,33 @@ class ValidationResultsView(QtWidgets.QWidget):
         )
         wrap_layout.addWidget(title)
 
+        # Ordem das colunas: agrupada por relevância forense.
+        # Tier 1 (discriminação): EER, AUC, Falso+, Falso−
+        # Tier 1 (calibração): Cllr, Cllr_min, cal_loss
+        # Tier 3 (affine): Cllr_affine, slope
+        # Contagens: n_gen, n_imp
         headers = [
-            "", "Estratégia", "Resultado", "Dim. sim.", "EER", "Threshold EER",
-            "AUC", "Cllr", "Cllr_min", "cal_loss", "n_gen", "n_imp",
+            "", "Estratégia", "Resultado", "Dim. sim.",
+            "EER", "Threshold EER", "AUC",
+            "Falso+", "Falso−",
+            "Cllr", "Cllr_min", "cal_loss",
+            "Cllr_affine", "slope",
+            "n_gen", "n_imp",
         ]
+        # Tooltips por coluna pra deixar o significado claro sem inflar o header
+        header_tooltips = {
+            "Falso+": "P(log-LR > 0 | Hd) — impostores incorretamente com LR positivo",
+            "Falso−": "P(log-LR < 0 | Hp) — genuínos incorretamente com LR negativo",
+            "Cllr_affine": "Cllr após recalibração linear ótima (slope·LR + intercept)",
+            "slope": "Inclinação a do affine fit. < 1 = over-confident; > 1 = under-confident",
+            "Threshold EER": "Valor de log-LR no ponto de igual erro",
+            "cal_loss": "Cllr − Cllr_min: perda por má calibração",
+        }
         table = QtWidgets.QTableWidget(len(self._loaded), len(headers))
         table.setHorizontalHeaderLabels(headers)
+        for col, h in enumerate(headers):
+            if h in header_tooltips:
+                table.horizontalHeaderItem(col).setToolTip(header_tooltips[h])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
@@ -217,6 +238,18 @@ class ValidationResultsView(QtWidgets.QWidget):
             " border-bottom: 1px solid #c0c8d0; }"
         )
 
+        def _fmt_pct(v) -> str:
+            return f"{v*100:.2f}%" if v is not None else "n/a"
+
+        def _fmt_f(v, decimals=4) -> str:
+            return f"{v:.{decimals}f}" if v is not None else "n/a"
+
+        def _fmt_slope(v) -> str:
+            if v is None:
+                return "n/a"
+            arrow = "≈" if 0.95 <= v <= 1.05 else ("↑" if v > 1 else "↓")
+            return f"{v:.3f} {arrow}"
+
         for row, (item, result) in enumerate(self._loaded):
             m = result.metrics
             n_gen = getattr(result, "n_genuines", 0)
@@ -230,16 +263,22 @@ class ValidationResultsView(QtWidgets.QWidget):
             color_cell.setToolTip(f"Cor desta linha nos plots: {color_hex}")
             table.setItem(row, 0, color_cell)
 
+            # Tier 1+3 forense — campos podem ser None em pickles antigos
+            # (pré-v2 do ValidationMetrics) → "n/a".
             cells = [
                 item.strategy_name,
                 item.resource_name,
                 str(dim) if dim is not None else "n/a",
-                f"{m.eer*100:.2f}%",
-                f"{m.eer_threshold:.4f}",
-                f"{m.auc:.4f}" if m.auc is not None else "n/a",
-                f"{m.cllr:.4f}",
-                f"{m.cllr_min:.4f}",
-                f"{cal_loss:.4f}",
+                _fmt_pct(m.eer),
+                _fmt_f(m.eer_threshold),
+                _fmt_f(m.auc) if m.auc is not None else "n/a",
+                _fmt_pct(getattr(m, "wrong_sign_imp_rate", None)),
+                _fmt_pct(getattr(m, "wrong_sign_gen_rate", None)),
+                _fmt_f(m.cllr),
+                _fmt_f(m.cllr_min),
+                _fmt_f(cal_loss),
+                _fmt_f(getattr(m, "cllr_affine", None)),
+                _fmt_slope(getattr(m, "calibration_slope", None)),
                 f"{n_gen:,}".replace(",", "."),
                 f"{n_imp:,}".replace(",", "."),
             ]
@@ -256,13 +295,20 @@ class ValidationResultsView(QtWidgets.QWidget):
         table.setColumnWidth(0, 32)
         table.resizeColumnsToContents()
         table.setColumnWidth(0, 32)
+        # Horizontal scrollbar quando colunas excedem largura disponível
+        # (15 colunas → tabela larga; em projeto multi-strategy é normal).
+        table.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
 
         # Altura natural compacta: header + linhas + folga, cap em 160px.
         row_h = table.verticalHeader().defaultSectionSize()
         header_h = table.horizontalHeader().sizeHint().height()
         natural_h = header_h + row_h * len(self._loaded) + 6
-        table.setMaximumHeight(min(natural_h, 160))
-        table.setMinimumHeight(min(natural_h, 160))
+        # Adiciona 16px pra dar espaço pra horizontal scrollbar se aparecer
+        natural_h += 16
+        table.setMaximumHeight(min(natural_h, 180))
+        table.setMinimumHeight(min(natural_h, 180))
         wrap_layout.addWidget(table)
 
         return wrapper
@@ -543,6 +589,8 @@ class ValidationResultsView(QtWidgets.QWidget):
     def _draw_ece_overlay(self, figure: Figure) -> None:
         ax = figure.add_subplot(111)
         any_drawn = False
+        ref_x = None  # x do primeiro item válido — usado pra plotar a ref.
+        max_y = 1.05  # ECE_null pico = 1 bit; default cap em 1.05.
         for idx, (item, result) in enumerate(self._loaded):
             pd = result.plot_data
             x = np.asarray(pd.ece_prior_log_odds, dtype=np.float64)
@@ -550,6 +598,8 @@ class ValidationResultsView(QtWidgets.QWidget):
             y_min = np.asarray(pd.ece_min_values, dtype=np.float64)
             if x.size == 0 or y_real.size == 0:
                 continue
+            if ref_x is None:
+                ref_x = x
             color = _PALETTE[idx % len(_PALETTE)]
             ax.plot(
                 x, y_real, color=color, linewidth=1.5,
@@ -558,6 +608,11 @@ class ValidationResultsView(QtWidgets.QWidget):
             if y_min.size == y_real.size:
                 ax.plot(x, y_min, color=color, linewidth=1.2,
                         linestyle="--", alpha=0.85)
+            # Se algum modelo exceder 1.0 (pior que sistema neutro em
+            # alguma região), expande ylim adaptativamente.
+            ymax_local = float(np.nanmax(y_real))
+            if ymax_local * 1.05 > max_y:
+                max_y = ymax_local * 1.05
             any_drawn = True
 
         if not any_drawn:
@@ -565,10 +620,26 @@ class ValidationResultsView(QtWidgets.QWidget):
                     transform=ax.transAxes, color="#888")
             return
 
+        # Curva de referência (sistema neutro LR=1): entropia do prior =
+        # -P·log2(P) - (1-P)·log2(1-P), onde P = sigmoid(x · ln10).
+        # Pico em prior log10-odds=0 → P=0.5 → ECE_null=1 bit.
+        # Convenção forense (Brümmer & van Leeuwen 2006). Modelos só são
+        # informativos quando ECE_modelo fica abaixo dela.
+        p = 1.0 / (1.0 + np.exp(-ref_x * np.log(10.0)))
+        p_safe = np.clip(p, 1e-12, 1.0 - 1e-12)
+        y_null = (-p_safe * np.log(p_safe)
+                  - (1.0 - p_safe) * np.log(1.0 - p_safe)) / np.log(2.0)
+        ax.plot(
+            ref_x, y_null, color="#888", linewidth=1.2, linestyle=":",
+            label="Sistema neutro (LR=1)", zorder=1,
+        )
+
         ax.axvline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
         ax.set_xlabel("Prior log₁₀-odds (P(Hp)/P(Hd))", fontsize=9)
         ax.set_ylabel("Cross-entropy (bits)", fontsize=9)
-        ax.set_ylim(bottom=0)
+        # Y vai até 1.05 (entropia máxima do prior = 1.0) ou além, se algum
+        # modelo for pior que neutro em algum prior.
+        ax.set_ylim(0, max_y)
         ax.tick_params(labelsize=8)
         ax.grid(True, linestyle="--", alpha=0.4)
         ax.legend(

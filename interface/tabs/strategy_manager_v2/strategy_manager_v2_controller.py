@@ -2000,8 +2000,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
         old_name: str,
         new_name: str,
     ) -> None:
-        """Move as subpastas físicas da estratégia (models/, scores/,
-        results/, graphics/) do padrão `<old_name>_<sid>` pro
+        """Move as subpastas físicas da estratégia (datasets/, models/,
+        scores/, results/, graphics/) do padrão `<old_name>_<sid>` pro
         `<new_name>_<sid>` e reescreve os `artifact_ref.path` em todos
         os resources da definição.
 
@@ -2009,7 +2009,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
         (resultado: state misto que vira limpeza órfã via re-execução).
         artifact_refs são atualizados antes do `save_definition()` do
         caller, então JSON e disco ficam consistentes mesmo se uma das
-        pastas estava ausente (algumas estratégias só usam parte das 4).
+        pastas estava ausente (algumas estratégias só usam parte das 5).
         """
         import shutil
         from faceaudit.enums.project_folder import ProjectFolder
@@ -2023,7 +2023,13 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         project_root = self._project.storage.project_root
         # Pastas hierárquicas onde a estratégia tem subpasta própria.
+        # DATASETS entrou após o refactor primary/derived: derivados
+        # (PIPELINE_APPLICATION, DATASET_SPLIT outputs, etc.) vivem em
+        # `datasets/<strategy_folder>/`. Sem incluir aqui, o rename move
+        # 4 das 5 pastas e os refs do JSON ficam órfãos apontando pro
+        # nome novo enquanto os arquivos físicos permanecem com nome velho.
         target_parents = (
+            ProjectFolder.DATASETS,
             ProjectFolder.MODELS,
             ProjectFolder.SCORES,
             ProjectFolder.RESULTS,
