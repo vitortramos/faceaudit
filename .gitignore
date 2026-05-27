@@ -90,3 +90,7 @@ codigo_antigo.txt
 # Documento companion gerado junto com os .puml de arquitetura C4
 # (regenerável a partir das próprias fontes .puml).
 faceaudit_strategy_engine_c4_packages.md
+
+# Script de teste local pra CV diagnóstico do calibrador (depende do
+# `Projeto 1 - PLDA/` que já está ignorado via `Projeto*/`).
+test_cv_comparativo.py

@@ -201,20 +201,23 @@ class ValidationResultsView(QtWidgets.QWidget):
         # Tier 3 (affine): Cllr_affine, slope
         # Contagens: n_gen, n_imp
         headers = [
-            "", "Estratégia", "Resultado", "Dim. sim.",
+            "", "Estratégia", "Resultado", "Embedding", "Dim. sim.",
             "EER", "Threshold EER", "AUC",
             "Falso+", "Falso−",
             "Cllr", "Cllr_min", "cal_loss",
             "Cllr CV", "CV gap", "Transfer gap",
-            "Cllr_affine", "slope",
+            "Cllr_affine", "slope", "intercept",
             "n_gen", "n_imp",
         ]
         # Tooltips por coluna pra deixar o significado claro sem inflar o header
         header_tooltips = {
+            "Embedding": "Coluna de embedding usada pela estratégia (ex: embedding_v2, embedding_v4) — define o backbone facial.",
+            "Dim. sim.": "Dimensão de entrada do modelo de similaridade (após pipeline de transformação).",
             "Falso+": "P(log-LR > 0 | Hd) — impostores incorretamente com LR positivo",
             "Falso−": "P(log-LR < 0 | Hp) — genuínos incorretamente com LR negativo",
             "Cllr_affine": "Cllr após recalibração linear ótima (slope·LR + intercept)",
-            "slope": "Inclinação a do affine fit. < 1 = over-confident; > 1 = under-confident",
+            "slope": "Inclinação a do affine fit (a·LR + b). < 1 = over-confident; > 1 = under-confident",
+            "intercept": "Offset b do affine fit (a·LR + b). ≠ 0 = viés sistemático na escala dos LRs.",
             "Threshold EER": "Valor de log-LR no ponto de igual erro",
             "cal_loss": "Cllr − Cllr_min: perda por má calibração",
             "Cllr CV": "Cllr CV out-of-fold no DOMÍNIO de calibração. Não confundir com Cllr de validação externa.",
@@ -260,6 +263,11 @@ class ValidationResultsView(QtWidgets.QWidget):
             sign = "+" if v >= 0 else ""
             return f"{sign}{v:.4f}"
 
+        def _fmt_intercept(v) -> str:
+            if v is None:
+                return "n/a"
+            return f"{v:+.4f}"
+
         for row, (item, result) in enumerate(self._loaded):
             m = result.metrics
             n_gen = getattr(result, "n_genuines", 0)
@@ -281,9 +289,11 @@ class ValidationResultsView(QtWidgets.QWidget):
             cllr_cv_val = getattr(m, "calibrator_cllr_cv", None)
             cv_gap_val = getattr(m, "calibrator_cv_gap", None)
             transfer_gap_val = getattr(m, "calibrator_to_validation_gap", None)
+            embedding_col = self._resolve_embedding_column(item.strategy_id)
             cells = [
                 item.strategy_name,
                 item.resource_name,
+                embedding_col or "n/a",
                 str(dim) if dim is not None else "n/a",
                 _fmt_pct(m.eer),
                 _fmt_f(m.eer_threshold),
@@ -298,13 +308,16 @@ class ValidationResultsView(QtWidgets.QWidget):
                 _fmt_signed(transfer_gap_val),
                 _fmt_f(getattr(m, "cllr_affine", None)),
                 _fmt_slope(getattr(m, "calibration_slope", None)),
+                _fmt_intercept(getattr(m, "calibration_intercept", None)),
                 f"{n_gen:,}".replace(",", "."),
                 f"{n_imp:,}".replace(",", "."),
             ]
             for offset, text in enumerate(cells):
                 col = offset + 1
                 cell = QtWidgets.QTableWidgetItem(text)
-                if col >= 4:
+                # Cols 1-4 (Estratégia/Resultado/Embedding/Dim. sim.) ficam à
+                # esquerda; numéricas (EER em diante) alinham à direita.
+                if col >= 5:
                     cell.setTextAlignment(
                         QtCore.Qt.AlignmentFlag.AlignRight
                         | QtCore.Qt.AlignmentFlag.AlignVCenter
@@ -679,6 +692,19 @@ class ValidationResultsView(QtWidgets.QWidget):
                 return pickle.load(f)
         except Exception:
             return None
+
+    def _resolve_embedding_column(self, strategy_id: str) -> Optional[str]:
+        """Lê o `embedding_column` da definition da estratégia. Identifica
+        qual backbone facial foi usado (ex: embedding_v2, embedding_v4).
+        Retorna None se a definition não está disponível ou não tem o campo."""
+        defn = next(
+            (d for d in self._definitions if d.strategy_id == strategy_id),
+            None,
+        )
+        if defn is None:
+            return None
+        col = getattr(defn, "embedding_column", None)
+        return str(col) if col else None
 
     def _resolve_similarity_input_dim(self, strategy_id: str) -> Optional[int]:
         if self._project_root is None:
