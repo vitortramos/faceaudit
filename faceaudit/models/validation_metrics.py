@@ -67,7 +67,11 @@ class ValidationMetrics:
     # ── Tier 5: tail/outliers ────────────────────────────────────────────
     loss_gen_q95: Optional[float] = None         # quantil 95% de log2(1+e^(-llr_gen))
     loss_imp_q95: Optional[float] = None         # quantil 95% de log2(1+e^(+llr_imp))
-    top_1pct_loss_share: Optional[float] = None  # fração do Cllr vinda dos 1% piores samples
+    max_loss_gen: Optional[float] = None         # pior caso por genuíno (bits)
+    max_loss_imp: Optional[float] = None         # pior caso por impostor (bits)
+    top_1pct_loss_share: Optional[float] = None  # fração do Cllr vinda dos 1% piores
+    top_5pct_loss_share: Optional[float] = None  # fração do Cllr vinda dos 5% piores
+    n_top_1pct: Optional[int] = None             # contagem absoluta no top 1%
 
     # ── Tier 1 (cont.): diagnóstico do calibrador (CV in-domain) ─────────
     # Cllr in-sample e CV out-of-fold no DOMÍNIO de calibração. Anexados

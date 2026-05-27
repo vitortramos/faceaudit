@@ -508,21 +508,21 @@ def build_metrics_table_rows(
     add("EER", fmt_pct(_get("eer")),
         "Equal Error Rate — taxa onde FPR=FNR. Mede discriminação bruta independente de calibração.")
     add("EER threshold (log-LR)", fmt_thr(_get("eer_threshold")),
-        "Valor de log-LR no ponto de igual erro. Threshold ótimo se aceitar igual taxa de falso+/falso−.")
+        "Valor de log-LR no ponto de igual erro. Útil para diagnóstico de discriminação, mas NÃO é o limiar decisório ótimo em uso forense — esse depende de custos e priors.")
     add("AUC (ROC)", fmt_f(_get("auc"), 6),
         "Área sob a curva ROC. 1.0 = discriminação perfeita; 0.5 = aleatório.")
     add("Falso+ (LR>0 | Hd)", fmt_pct(_get("wrong_sign_imp_rate")),
-        "Fração de impostores com log-LR positivo — sistema diz 'genuíno' pra par de pessoas diferentes.")
+        "Fração de impostores com log-LR positivo — evidência favorece Hp apesar de Hd ser verdadeiro.")
     add("Falso− (LR<0 | Hp)", fmt_pct(_get("wrong_sign_gen_rate")),
-        "Fração de genuínos com log-LR negativo — sistema diz 'impostor' pra par da mesma pessoa.")
+        "Fração de genuínos com log-LR negativo — evidência favorece Hd apesar de Hp ser verdadeiro.")
 
-    # ── Calibração: principal ───────────────────────────────────────────
+    # ── Calibração: custo informacional (principal) ─────────────────────
     cllr = _get("cllr")
     cllr_min = _get("cllr_min")
     cal_loss = _get("cal_loss")
     if cal_loss is None and cllr is not None and cllr_min is not None:
         cal_loss = max(0.0, float(cllr) - float(cllr_min))
-    section("CALIBRAÇÃO — PRINCIPAL")
+    section("CALIBRAÇÃO — CUSTO INFORMACIONAL")
     add("Cllr", fmt_f(cllr),
         "Cost of Log-LR em bits. Mede o custo informacional médio das decisões. Menor é melhor.")
     add("Cllr_min (PAVA)", fmt_f(cllr_min),
@@ -534,35 +534,43 @@ def build_metrics_table_rows(
             "Sim ✅" if cal_loss < 0.1 else "Não ⚠",
             "Heurística forense: cal_loss < 0.1 bits = calibração aceitável pra laudo.")
 
-    # ── Per-hypothesis (Tier 2) ─────────────────────────────────────────
-    cllr_gen = _get("cllr_gen")
-    cllr_imp = _get("cllr_imp")
-    cllr_min_gen = _get("cllr_min_gen")
-    cllr_min_imp = _get("cllr_min_imp")
-    if cllr_gen is not None and cllr_imp is not None:
+    # ── Decomposição por hipótese (Tier 2) ──────────────────────────────
+    # Os campos `cllr_gen`/`cllr_imp` no DTO são médias por hipótese SEM o
+    # fator 0.5 — convenção do `compute_cllr`. Na tabela mostramos como
+    # CONTRIBUIÇÕES REAIS (dividindo por 2), que somam ao Cllr total.
+    cllr_gen_raw = _get("cllr_gen")
+    cllr_imp_raw = _get("cllr_imp")
+    cllr_min_gen_raw = _get("cllr_min_gen")
+    cllr_min_imp_raw = _get("cllr_min_imp")
+    if cllr_gen_raw is not None and cllr_imp_raw is not None:
+        # Contribuições reais (somam ao Cllr).
+        cllr_gen_c = float(cllr_gen_raw) / 2.0
+        cllr_imp_c = float(cllr_imp_raw) / 2.0
+        cllr_min_gen_c = float(cllr_min_gen_raw) / 2.0 if cllr_min_gen_raw is not None else None
+        cllr_min_imp_c = float(cllr_min_imp_raw) / 2.0 if cllr_min_imp_raw is not None else None
         cal_loss_gen = (
-            max(0.0, float(cllr_gen) - float(cllr_min_gen))
-            if cllr_min_gen is not None else None
+            max(0.0, cllr_gen_c - cllr_min_gen_c)
+            if cllr_min_gen_c is not None else None
         )
         cal_loss_imp = (
-            max(0.0, float(cllr_imp) - float(cllr_min_imp))
-            if cllr_min_imp is not None else None
+            max(0.0, cllr_imp_c - cllr_min_imp_c)
+            if cllr_min_imp_c is not None else None
         )
-        section("CALIBRAÇÃO — POR HIPÓTESE")
-        add("Cllr_gen (contrib. genuínos)", fmt_f(cllr_gen),
-            "Penaliza falsos negativos. Alto = LRs de genuínos puxados pro lado negativo (erro custoso).")
-        add("Cllr_imp (contrib. impostores)", fmt_f(cllr_imp),
-            "Penaliza falsos positivos. Alto = LRs de impostores puxados pro lado positivo (incriminação injusta).")
-        add("Cllr_min_gen", fmt_f(cllr_min_gen),
-            "Cllr_gen após calibração PAVA. Teto teórico do termo dos genuínos.")
-        add("Cllr_min_imp", fmt_f(cllr_min_imp),
-            "Cllr_imp após calibração PAVA. Teto teórico do termo dos impostores.")
+        section("CALIBRAÇÃO — DECOMPOSIÇÃO POR HIPÓTESE")
+        add("Cllr_gen (contribuição)", fmt_f(cllr_gen_c),
+            "Contribuição dos genuínos ao Cllr total. Mostrada com fator 0.5 aplicado — soma com Cllr_imp = Cllr. Alto = LRs de genuínos puxados pro lado negativo (erro custoso).")
+        add("Cllr_imp (contribuição)", fmt_f(cllr_imp_c),
+            "Contribuição dos impostores ao Cllr total. Mostrada com fator 0.5 aplicado — soma com Cllr_gen = Cllr. Alto = LRs de impostores puxados pro lado positivo (incriminação injusta).")
+        add("Cllr_min_gen (contribuição)", fmt_f(cllr_min_gen_c),
+            "Contribuição dos genuínos no Cllr_min (PAVA). Teto teórico do termo.")
+        add("Cllr_min_imp (contribuição)", fmt_f(cllr_min_imp_c),
+            "Contribuição dos impostores no Cllr_min (PAVA). Teto teórico do termo.")
         add("cal_loss_gen", fmt_f(cal_loss_gen),
-            "Perda de calibração nos genuínos. Alto = sistema subestima evidência a favor da acusação.")
+            "Perda de calibração nos genuínos (contribuição). Alto = sistema subestima evidência a favor da acusação.")
         add("cal_loss_imp", fmt_f(cal_loss_imp),
-            "Perda nos impostores. Alto = sistema produz LRs altos pra pares diferentes (risco de incriminação).")
+            "Perda de calibração nos impostores (contribuição). Alto = sistema produz LRs altos pra pares diferentes (risco de incriminação).")
 
-    # ── Análise affine Brümmer (Tier 3) ─────────────────────────────────
+    # ── Recalibração afim (Brümmer + Van Calster/Steyerberg) ────────────
     cllr_affine = _get("cllr_affine")
     slope = _get("calibration_slope")
     intercept = _get("calibration_intercept")
@@ -575,81 +583,101 @@ def build_metrics_table_rows(
             max(0.0, float(cllr_affine) - float(cllr_min))
             if cllr_min is not None else None
         )
-        section("CALIBRAÇÃO — ANÁLISE AFFINE (Brümmer)")
+        section("CALIBRAÇÃO — RECALIBRAÇÃO AFIM")
         add("Cllr_affine", fmt_f(cllr_affine),
-            "Cllr após recalibração linear ótima (slope · LR + intercept). Brümmer-Doddington.")
+            "Cllr após recalibração afim ótima dos log-LRs: logLR' = a·logLR + b. Diagnóstico inspirado na calibração logística de log-LRs (Brümmer) e na análise de calibration slope/intercept (Van Calster/Steyerberg).")
         if slope is not None:
             if slope < 0.95:
-                diag = " — over-confident: LRs precisam encolher pra calibrar."
+                diag = " — over-confident: log-LRs precisam encolher pra calibrar."
             elif slope > 1.05:
-                diag = " — under-confident: LRs precisam crescer pra calibrar."
+                diag = " — under-confident: log-LRs precisam crescer pra calibrar."
             else:
-                diag = " — afim quase ideal (~bem calibrado affinely)."
-            add("Calibration slope (a em a·x+b)", f"{slope:.4f}",
-                f"Inclinação da reta correta. < 1 = LRs muito extremos; > 1 = LRs muito tímidos.{diag}")
+                diag = " — afim quase ideal (alvo: a=1)."
+            add("Calibration slope (a em a·logLR + b)", f"{slope:.4f}",
+                f"Inclinação da reta correta. Alvo a=1. < 1 = log-LRs muito extremos; > 1 = log-LRs muito tímidos.{diag}")
         else:
-            add("Calibration slope (a em a·x+b)", "—",
-                "Inclinação da reta correta. < 1 = LRs muito extremos; > 1 = LRs muito tímidos.")
+            add("Calibration slope (a em a·logLR + b)", "—",
+                "Inclinação da reta correta. Alvo a=1. < 1 = log-LRs muito extremos; > 1 = log-LRs muito tímidos.")
         add("Calibration intercept (b)",
             f"{intercept:+.4f}" if intercept is not None else "—",
-            "Offset da correção linear. ≠ 0 = viés sistemático na escala dos LRs.")
+            "Offset da correção afim. Alvo b=0. ≠ 0 = viés sistemático na escala dos log-LRs.")
         add("affine_cal_loss (recuperável)", fmt_f(affine_cal_loss),
-            "Perda que sumiria SÓ com rescaling linear (slope+intercept). Alto = recalibrar é fácil.")
+            "Perda que sumiria SÓ com recalibração afim (slope+intercept). Alto = recalibrar é fácil.")
         add("nonlinear_cal_loss (residual)", fmt_f(nonlinear_cal_loss),
-            "Perda que sobra após affine. Alto = distorção estrutural, só PAVA/isotônica resolve.")
+            "Perda que sobra após afim. Alto = distorção estrutural, só PAVA/isotônica resolve.")
 
-    # ── ECE numérico (Tier 4) ───────────────────────────────────────────
+    # ── Curva de Cross-Entropy Empírica por prior (antiga "ECE numérico") ─
     ece_area = _get("ece_calibration_loss_area")
     if ece_area is not None:
-        section("CALIBRAÇÃO — ECE NUMÉRICO")
-        add("Perda total ECE (área)", f"{ece_area:.4f} bits·dec",
-            "Área sombreada do plot ECE: integral da diferença entre ECE_real e ECE_min ao longo dos priors.")
-        add("Gap máx ECE", fmt_f(_get("ece_max_gap")),
-            "Pior diferença pontual entre ECE_real e ECE_min. Em bits — quantos bits de informação são perdidos no pior cenário.")
+        section("CURVA DE CROSS-ENTROPY EMPÍRICA")
+        add("Perda total (área)", f"{ece_area:.4f} bits·dec",
+            "Área sombreada do plot: integral da diferença entre cross-entropy real e mínima (PAVA) ao longo dos priors log10-odds.")
+        add("Gap máximo", fmt_f(_get("ece_max_gap")),
+            "Pior diferença pontual entre cross-entropy real e mínima. Em bits — quantos bits de informação são perdidos no pior cenário.")
         argmax_prior = _get("ece_argmax_prior_log_odds")
         add("Prior log₁₀-odds do gap máx",
             "—" if argmax_prior is None else f"{float(argmax_prior):+.3f}",
             "Em qual cenário forense (log10 da prior odds) o sistema é menos calibrado. >0 = priors a favor da acusação.")
 
-    # ── Calibrador — CV diagnóstico (in-domain) ─────────────────────────
+    # ── Calibrador — Validação cruzada no domínio de calibração ─────────
     # Mostrado apenas quando CALIBRATION_MODEL_TRAINING rodou com k_folds>0.
     # Cllr CV mede generalização DENTRO do domínio de calibração, NÃO mede
     # performance em validação externa — gaps decompõem efeitos diferentes.
     cllr_cv = _get("calibrator_cllr_cv")
     if cllr_cv is not None:
         cllr_train = _get("calibrator_cllr_train")
-        section("CALIBRADOR — CV DIAGNÓSTICO (treino do calibrador)")
+        section("CALIBRADOR — VALIDAÇÃO CRUZADA NO DOMÍNIO DE CALIBRAÇÃO")
         add("Cllr in-sample (treino calib)", fmt_f(cllr_train),
             "Cllr do calibrador medido nos mesmos dados usados pra treiná-lo. Otimista — calibrador pode overfittar.")
         add("Cllr CV out-of-fold (treino calib)", fmt_f(cllr_cv),
-            "Cllr não-viesado no DOMÍNIO de calibração via k-fold. NÃO mede performance em validação externa.")
+            "Cllr estimado out-of-fold no domínio de calibração via k-fold. Não mede performance em validação externa.")
         if cllr_train is not None:
             gap_in = float(cllr_cv) - float(cllr_train)
             sign = "+" if gap_in >= 0 else ""
-            add("Gap CV − in-sample (in-domain overfit)", f"{sign}{gap_in:.4f}",
+            add("Gap CV − in-sample (overfit in-domain)", f"{sign}{gap_in:.4f}",
                 "Quanto o calibrador overfita no próprio treino. > 0 = overfit; ≈ 0 = generaliza bem dentro do domínio.")
         if cllr is not None:
             gap_out = float(cllr) - float(cllr_cv)
             sign = "+" if gap_out >= 0 else ""
             add("Gap validação − CV (perda de transferência)", f"{sign}{gap_out:.4f}",
-                "Diferença entre desempenho out-of-fold (CV) no treino do calibrador e desempenho na validação externa. > 0 sugere perda de transferência — pode ser domain shift, diferença de qualidade/pose/protocolo, ou ruído estatístico. NÃO prova isoladamente a causa.")
-        cv_gen = _get("calibrator_cllr_cv_gen")
-        cv_imp = _get("calibrator_cllr_cv_imp")
-        if cv_gen is not None and cv_imp is not None:
-            add("Cllr CV gen", fmt_f(cv_gen),
-                "Contribuição dos genuínos no CV. Compara com cllr_train_gen pra ver onde o overfit aparece.")
-            add("Cllr CV imp", fmt_f(cv_imp),
-                "Contribuição dos impostores no CV.")
+                "Perda de transferência entre treino do calibrador e validação externa. Valores positivos sugerem diferença de domínio/protocolo/dificuldade entre os conjuntos. NÃO prova isoladamente a causa.")
+        cv_gen_raw = _get("calibrator_cllr_cv_gen")
+        cv_imp_raw = _get("calibrator_cllr_cv_imp")
+        if cv_gen_raw is not None and cv_imp_raw is not None:
+            # Mesma convenção da decomposição principal: contribuições somam ao Cllr CV.
+            add("Cllr CV gen (contribuição)", fmt_f(float(cv_gen_raw) / 2.0),
+                "Contribuição dos genuínos no Cllr CV (fator 0.5 aplicado).")
+            add("Cllr CV imp (contribuição)", fmt_f(float(cv_imp_raw) / 2.0),
+                "Contribuição dos impostores no Cllr CV (fator 0.5 aplicado).")
 
-    # ── Tail / outliers (Tier 5) ────────────────────────────────────────
+    # ── Cauda / outliers ────────────────────────────────────────────────
     if _get("loss_gen_q95") is not None:
-        section("CAUDA / OUTLIERS (diagnóstico)")
+        section("CAUDA / OUTLIERS")
         add("Loss q95 genuínos", fmt_f(_get("loss_gen_q95")),
             "Percentil 95 do custo por amostra genuína. Indica magnitude do pior 5% dos genuínos.")
         add("Loss q95 impostores", fmt_f(_get("loss_imp_q95")),
             "Percentil 95 do custo por amostra impostora. Indica magnitude do pior 5% dos impostores.")
-        add("Top 1% loss share", fmt_pct(_get("top_1pct_loss_share")),
-            "Fração do Cllr total vinda dos 1% piores casos. > 50% = outliers dominam, considere robustez.")
+        max_gen = _get("max_loss_gen")
+        max_imp = _get("max_loss_imp")
+        if max_gen is not None:
+            add("Loss máx genuínos", fmt_f(max_gen),
+                "Pior caso individual no lado genuíno. Em bits. Útil pra identificar samples patológicos.")
+        if max_imp is not None:
+            add("Loss máx impostores", fmt_f(max_imp),
+                "Pior caso individual no lado impostor. Em bits.")
+        # Alerta visual quando outliers dominam o Cllr.
+        top_1pct = _get("top_1pct_loss_share")
+        top_5pct = _get("top_5pct_loss_share")
+        n_top_1 = _get("n_top_1pct")
+        if top_1pct is not None:
+            warn = " ⚠️ Cllr dominado por cauda" if float(top_1pct) > 0.5 else ""
+            n_str = f" (N={int(n_top_1)})" if n_top_1 is not None else ""
+            add(f"Top 1% loss share{warn}",
+                f"{float(top_1pct)*100:.2f}%{n_str}",
+                "Fração do Cllr total vinda dos 1% piores casos. > 50% = outliers dominam — robustez nas caudas é o ponto crítico, não a média.")
+        if top_5pct is not None:
+            add("Top 5% loss share", fmt_pct(top_5pct),
+                "Fração do Cllr total vinda dos 5% piores casos. Útil pra contextualizar o top 1%.")
 
     # ── Contagens ───────────────────────────────────────────────────────
     n_gen = payload.get("n_genuines")
@@ -735,7 +763,11 @@ def write_validation_metrics_sidecar(
             # Tier 5: tail / outliers
             "loss_gen_q95": _get("loss_gen_q95"),
             "loss_imp_q95": _get("loss_imp_q95"),
+            "max_loss_gen": _get("max_loss_gen"),
+            "max_loss_imp": _get("max_loss_imp"),
             "top_1pct_loss_share": _get("top_1pct_loss_share"),
+            "top_5pct_loss_share": _get("top_5pct_loss_share"),
+            "n_top_1pct": _get("n_top_1pct"),
             # Calibrador — CV diagnóstico (in-domain)
             "calibrator_cllr_train": _get("calibrator_cllr_train"),
             "calibrator_cllr_train_gen": _get("calibrator_cllr_train_gen"),

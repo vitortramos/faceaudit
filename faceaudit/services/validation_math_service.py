@@ -86,9 +86,7 @@ class ValidationMathService:
         )
 
         # 8. Tail / outliers (Tier 5)
-        loss_gen_q95, loss_imp_q95, top_1pct_share = self._compute_tail_metrics(
-            gen_arr, imp_arr,
-        )
+        tail = self._compute_tail_metrics(gen_arr, imp_arr)
 
         # Montagem do DTO de Métricas Escalares
         metrics = ValidationMetrics(
@@ -109,9 +107,13 @@ class ValidationMathService:
             ece_calibration_loss_area=ece_loss_area,
             ece_max_gap=ece_max_gap,
             ece_argmax_prior_log_odds=ece_argmax_prior,
-            loss_gen_q95=loss_gen_q95,
-            loss_imp_q95=loss_imp_q95,
-            top_1pct_loss_share=top_1pct_share,
+            loss_gen_q95=tail["loss_gen_q95"],
+            loss_imp_q95=tail["loss_imp_q95"],
+            max_loss_gen=tail["max_loss_gen"],
+            max_loss_imp=tail["max_loss_imp"],
+            top_1pct_loss_share=tail["top_1pct_loss_share"],
+            top_5pct_loss_share=tail["top_5pct_loss_share"],
+            n_top_1pct=tail["n_top_1pct"],
             # Telemetria CV do calibrador — transporte do metadata
             # do CALIBRATED_SCORES, sem cálculo aqui.
             calibrator_cllr_train=calibrator_cllr_train,
@@ -302,24 +304,29 @@ class ValidationMathService:
         self,
         gen_scores: np.ndarray,
         imp_scores: np.ndarray,
-    ) -> Tuple[float, float, float]:
+    ) -> dict:
         """
         Métricas de cauda / concentração de loss.
 
-        - loss_*_q95: percentil 95 da perda por amostra. Mostra worst-case
-          em cada classe sem ser dominado por 1 outlier extremo.
-        - top_1pct_loss_share: fração do Cllr total (com pesos 0.5/N por
-          classe) contribuída pelo top 1% das amostras com maior loss
-          ponderada. Identifica leverage de outliers.
+        Retorna dict com:
+        - loss_*_q95: percentil 95 da perda por amostra.
+        - max_loss_gen / max_loss_imp: worst case por classe (em bits). Importante
+          quando 1 sample extremo domina o Cllr.
+        - top_1pct_loss_share / top_5pct_loss_share: fração do Cllr total
+          contribuída pelos top N% das amostras ponderadas.
+        - n_top_1pct: contagem absoluta de samples no top 1% (interpretável
+          mesmo sem total).
         """
         loss_gen = np.logaddexp(0, -gen_scores) / _LN2  # per-sample, em bits
         loss_imp = np.logaddexp(0, imp_scores) / _LN2
 
         loss_gen_q95 = float(np.percentile(loss_gen, 95))
         loss_imp_q95 = float(np.percentile(loss_imp, 95))
+        max_loss_gen = float(loss_gen.max()) if loss_gen.size else 0.0
+        max_loss_imp = float(loss_imp.max()) if loss_imp.size else 0.0
 
         # Cllr = 0.5/N_gen · sum(loss_gen) + 0.5/N_imp · sum(loss_imp).
-        # Pra calcular share dos top 1%, ponderamos cada sample pela sua
+        # Pra calcular share dos top N%, ponderamos cada sample pela sua
         # contribuição efetiva ao Cllr.
         w_gen = 0.5 / max(len(gen_scores), 1)
         w_imp = 0.5 / max(len(imp_scores), 1)
@@ -327,14 +334,27 @@ class ValidationMathService:
         contrib_imp = loss_imp * w_imp
         all_contrib = np.concatenate([contrib_gen, contrib_imp])
         total = float(all_contrib.sum())
-        if total <= 0.0:
-            top_1pct_share = 0.0
-        else:
-            n_top = max(1, len(all_contrib) // 100)
-            top_sum = float(np.sort(all_contrib)[-n_top:].sum())
-            top_1pct_share = top_sum / total
+        sorted_desc = np.sort(all_contrib)[::-1]  # decrescente
 
-        return loss_gen_q95, loss_imp_q95, top_1pct_share
+        def _top_share(pct: float) -> float:
+            if total <= 0.0:
+                return 0.0
+            n_top = max(1, int(len(sorted_desc) * pct))
+            return float(sorted_desc[:n_top].sum() / total)
+
+        top_1pct_share = _top_share(0.01)
+        top_5pct_share = _top_share(0.05)
+        n_top_1pct = max(1, len(all_contrib) // 100) if total > 0 else 0
+
+        return {
+            "loss_gen_q95": loss_gen_q95,
+            "loss_imp_q95": loss_imp_q95,
+            "max_loss_gen": max_loss_gen,
+            "max_loss_imp": max_loss_imp,
+            "top_1pct_loss_share": top_1pct_share,
+            "top_5pct_loss_share": top_5pct_share,
+            "n_top_1pct": int(n_top_1pct),
+        }
 
     # =========================================================================
     # ECE PLOT VECTORS
