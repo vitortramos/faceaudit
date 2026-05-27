@@ -14,6 +14,72 @@ except ImportError:
     ForensicFace = None
 
 
+def _patch_onnxruntime_for_coreml_static_shapes() -> None:
+    """Injeta `RequireStaticInputShapes=1` no CoreMLExecutionProvider.
+
+    Resolve crash recorrente quando o CoreMLExecutionProvider tenta
+    processar o detector `det_10g` da forensicface:
+
+        CoreML static output shape ({1,1,1,800,1}) and inferred shape
+        ({3200,1}) have different ranks
+
+    Causa: o CoreML pré-computa shapes estaticamente no load time, mas
+    operadores pós-NMS do detector emitem tensores cujo número de
+    elementos varia com a quantidade de candidatas que sobreviveram ao
+    threshold. Quando o runtime emite shape diferente do pré-computado,
+    crasha — bug conhecido do CoreMLExecutionProvider em versões
+    recentes do onnxruntime (visto em 1.25.x).
+
+    Workaround: setar `RequireStaticInputShapes=1` instrui o CoreML a
+    SÓ capturar subgrafos cujas shapes são totalmente determinadas em
+    compile time. Nodes dinâmicos caem no CPU subgraph automaticamente
+    dentro da mesma sessão — overhead mínimo. O encoder
+    `sepaelv2`/`sepaelv4`/etc. tem shape totalmente fixo
+    (1×3×112×112 → 1×512) e continua 100% no Neural Engine.
+
+    A função monkey-patcheia `onnxruntime.InferenceSession.__init__`
+    pra injetar a opção em todas as sessions criadas DEPOIS desta
+    chamada. Idempotente (marker em atributo de classe). Só faz sentido
+    chamar quando o usuário pediu aceleração (`use_gpu=True`); em CPU
+    puro o CoreMLExecutionProvider sequer é usado.
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+
+    _patched_marker = "_faceaudit_coreml_static_patched"
+    if getattr(ort.InferenceSession, _patched_marker, False):
+        return  # idempotente
+
+    _original_init = ort.InferenceSession.__init__
+
+    def _inject_coreml_opts(providers):
+        if not providers:
+            return providers
+        out = []
+        for p in providers:
+            name = p if isinstance(p, str) else (p[0] if isinstance(p, tuple) else None)
+            if name == "CoreMLExecutionProvider":
+                base_opts = p[1] if isinstance(p, tuple) and len(p) > 1 else {}
+                merged = {**base_opts, "RequireStaticInputShapes": "1"}
+                out.append(("CoreMLExecutionProvider", merged))
+            else:
+                out.append(p)
+        return out
+
+    def _patched_init(self, *args, **kwargs):
+        # `providers` pode vir como kwarg ou como 2º arg posicional.
+        if "providers" in kwargs:
+            kwargs["providers"] = _inject_coreml_opts(kwargs["providers"])
+        elif len(args) >= 2:
+            args = (args[0], _inject_coreml_opts(args[1]), *args[2:])
+        return _original_init(self, *args, **kwargs)
+
+    ort.InferenceSession.__init__ = _patched_init
+    setattr(ort.InferenceSession, _patched_marker, True)
+
+
 # Conjunto canônico de chaves do FFInfo a serem mergeadas quando um run
 # do encoder retorna novos valores. Sem incluir TODOS os slots de embedding
 # do enum, modelos novos (v3/v5/v6) entregavam embeddings que sumiam no
@@ -128,6 +194,16 @@ class FFService:
                 f"Instale baixando do repositório do ForensicFace ou "
                 f"escolha outro modelo nas Configurações."
             )
+
+        # CoreML + detector ArcFace: workaround pro crash de shape
+        # inference em `det_10g`. Sem isso, qualquer pipeline que rode
+        # `process_face`/`process_dataset` em GPU no macOS quebra com
+        # "CoreML static output shape ... different ranks" assim que o
+        # detector encontra uma quantidade de candidatas diferente do
+        # pré-computado. Patch é monkey no `InferenceSession.__init__`,
+        # idempotente, aplicado uma única vez por processo.
+        if use_gpu:
+            _patch_onnxruntime_for_coreml_static_shapes()
 
         # Carrega uma ForensicFace independente por modelo.
         # Cada engine fica com `models=[<um>]`, então só esse encoder roda
