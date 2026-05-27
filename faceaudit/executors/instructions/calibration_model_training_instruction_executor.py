@@ -538,7 +538,20 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             "calibrator_cv_gap": cllr_cv - float(cllr_train),
             "cv_folds_effective": int(cv_result["cv_folds_effective"]),
             "cv_split_mode": str(cv_result["cv_split_mode"]),
+            # FROZEN = hyperparams (best_C_/bandwidths/sigma) congelados do
+            # production model. NÃO é nested CV — seleção foi feita sobre o
+            # dataset completo de calibração antes do CV. Pode ser levemente
+            # otimista em relação à seleção de hiperparâmetros, mas evita
+            # custo computacional de re-rodar GridSearch por fold.
             "cv_hyperparameter_mode": "FROZEN",
+            "cv_hyperparameter_selection_scope": "FULL_CALIBRATION_SET",
+            # Contagens pra auditoria (ajuste 7 da revisão).
+            "cv_n_gen_total": cv_result.get("cv_n_gen_total"),
+            "cv_n_imp_total": cv_result.get("cv_n_imp_total"),
+            "cv_fold_train_gen_min": cv_result.get("cv_fold_train_gen_min"),
+            "cv_fold_train_imp_min": cv_result.get("cv_fold_train_imp_min"),
+            "cv_groups_total": cv_result.get("cv_groups_total"),
+            "cv_groups_min_test": cv_result.get("cv_groups_min_test"),
         })
 
     def _extract_groups_for_cv(self, input_payload) -> Optional[np.ndarray]:

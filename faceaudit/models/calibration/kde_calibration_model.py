@@ -43,7 +43,7 @@ class KDECalibrationModel(CalibrationModelProtocol):
     exatamente a mesma normalização.
     """
 
-    MODEL_VERSION = 2
+    MODEL_VERSION = 3  # v3: + bw_gen_/bw_imp_ atributos diretos (CV factory)
 
     def __init__(
         self,
@@ -57,6 +57,13 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self.kde_genuine: Optional[KernelDensity] = None
         self.kde_impostor: Optional[KernelDensity] = None
         self.lr_interpolator: Optional[interp1d] = None
+
+        # Bandwidths finais pós-fit (após GridSearch quando aplicável).
+        # Atributos diretos pra `_make_frozen_factory` e auditoria — também
+        # ficam em self.metadata como bw_genuine_z/bw_impostor_z mas o
+        # atributo direto evita ler do dict.
+        self.bw_gen_: Optional[float] = None
+        self.bw_imp_: Optional[float] = None
 
         # Parâmetros da z-score normalization aprendidos em fit().
         # Aplicados a TODOS os scores antes do KDE (treino + inferência).
@@ -180,6 +187,11 @@ class KDECalibrationModel(CalibrationModelProtocol):
             bandwidth=bw_imp,
         ).fit(impostor_scores_z.reshape(-1, 1))
 
+        # Persiste bandwidths finais como atributos diretos pra
+        # `_make_frozen_factory` e auditoria.
+        self.bw_gen_ = float(bw_gen)
+        self.bw_imp_ = float(bw_imp)
+
         self._regenerate_interpolator()
 
         self.metadata = {
@@ -283,6 +295,9 @@ class KDECalibrationModel(CalibrationModelProtocol):
             "score_std": self._score_std,
             "raw_min": self._raw_min,
             "raw_max": self._raw_max,
+            # Bandwidths finais pós-fit (atributos diretos).
+            "bw_gen_": self.bw_gen_,
+            "bw_imp_": self.bw_imp_,
         }
 
         path_obj = Path(path)
@@ -318,6 +333,13 @@ class KDECalibrationModel(CalibrationModelProtocol):
         self._raw_min = payload.get("raw_min")
         self._raw_max = payload.get("raw_max")
 
+        # Bandwidths finais (pickles pré-v3 caem no fallback do
+        # _make_frozen_factory que lê do metadata).
+        bw_g = payload.get("bw_gen_")
+        bw_i = payload.get("bw_imp_")
+        self.bw_gen_ = float(bw_g) if bw_g is not None else None
+        self.bw_imp_ = float(bw_i) if bw_i is not None else None
+
         if self._is_fitted:
             self._regenerate_interpolator()
 
@@ -332,8 +354,16 @@ class KDECalibrationModel(CalibrationModelProtocol):
         que aprende novamente sua z-score normalization no fold (sem
         leak de μ/σ do production model)."""
         self._ensure_fitted()
-        bw_gen = float(self.metadata.get("bw_genuine_z", self.config.bandwidth_genuine))
-        bw_imp = float(self.metadata.get("bw_impostor_z", self.config.bandwidth_impostor))
+        # Atributos diretos preferidos; fallback no metadata pra pickles
+        # legados (pré-bw_gen_/bw_imp_).
+        bw_gen = (
+            float(self.bw_gen_) if self.bw_gen_ is not None
+            else float(self.metadata.get("bw_genuine_z", self.config.bandwidth_genuine))
+        )
+        bw_imp = (
+            float(self.bw_imp_) if self.bw_imp_ is not None
+            else float(self.metadata.get("bw_impostor_z", self.config.bandwidth_impostor))
+        )
 
         frozen_config = copy.deepcopy(self.config)
         frozen_config.use_gridsearch = False

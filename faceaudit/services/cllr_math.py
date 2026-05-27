@@ -40,7 +40,17 @@ def compute_cllr(
         llr_imp: log-LRs dos pares impostores (Hd).
 
     Returns:
-        (cllr, cllr_gen, cllr_imp) em bits. cllr = 0.5·(cllr_gen + cllr_imp).
+        (cllr, cllr_gen, cllr_imp) em bits, onde:
+
+            cllr_gen = mean over gen de log₂(1 + e^(-llr))   # SEM fator 0.5
+            cllr_imp = mean over imp de log₂(1 + e^(+llr))   # SEM fator 0.5
+            cllr     = 0.5 · (cllr_gen + cllr_imp)
+
+        ATENÇÃO à convenção: cllr_gen e cllr_imp são as MÉDIAS por hipótese
+        sem o fator 0.5 — portanto NÃO somam ao cllr total. Isso é
+        deliberado pra que cada termo possa ser interpretado isoladamente
+        como "Cllr_se_tivessemos_só_genuinos" / "_só_impostores".
+
         Cada termo é uma média de softplus, sempre ≥ 0.
         Arrays vazios contribuem 0.0 (evita NaN); chamador é responsável
         por validar tamanhos antes se quiser flagrar isso.

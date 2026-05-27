@@ -631,8 +631,8 @@ def build_metrics_table_rows(
         if cllr is not None:
             gap_out = float(cllr) - float(cllr_cv)
             sign = "+" if gap_out >= 0 else ""
-            add("Gap validação − CV (transfer loss)", f"{sign}{gap_out:.4f}",
-                "Domain shift entre treino do calibrador e validação externa. > 0 = validação é pior (típico CFP → BFW).")
+            add("Gap validação − CV (perda de transferência)", f"{sign}{gap_out:.4f}",
+                "Diferença entre desempenho out-of-fold (CV) no treino do calibrador e desempenho na validação externa. > 0 sugere perda de transferência — pode ser domain shift, diferença de qualidade/pose/protocolo, ou ruído estatístico. NÃO prova isoladamente a causa.")
         cv_gen = _get("calibrator_cllr_cv_gen")
         cv_imp = _get("calibrator_cllr_cv_imp")
         if cv_gen is not None and cv_imp is not None:

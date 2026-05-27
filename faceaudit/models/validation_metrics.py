@@ -142,10 +142,19 @@ class ValidationMetrics:
 
     @property
     def calibrator_to_validation_gap(self) -> Optional[float]:
-        """Transfer loss calibração → validação. > 0 = validação externa
-        é pior que o domínio de treino do calibrador (domain shift). NÃO
-        é overfit do calibrador — calibrador pode ter cv_gap≈0 e ainda
-        assim grande gap aqui."""
+        """Perda de transferência: Cllr validação externa − Cllr CV no
+        domínio de calibração.
+
+        > 0 = validação externa pior que o desempenho out-of-fold no
+        treino do calibrador. Pode REFLETIR domain shift, mas também:
+        validação mais difícil (qualidade/pose/demografia diferente),
+        protocolo de pares diferente, número efetivo de identidades
+        menor, ou simplesmente ruído estatístico.
+
+        NÃO é overfit do calibrador (esse é `calibrator_cv_gap`) — um
+        calibrador pode ter cv_gap≈0 e ainda assim grande gap aqui.
+        Mas este número isolado NÃO prova causa específica; serve como
+        sinal de investigação ('algo é diferente entre os dois conjuntos')."""
         if self.calibrator_cllr_cv is None:
             return None
         return self.cllr - self.calibrator_cllr_cv

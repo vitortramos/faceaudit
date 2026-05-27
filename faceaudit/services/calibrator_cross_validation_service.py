@@ -147,17 +147,60 @@ def compute_calibrator_cllr_cv(
     )
 
     held_out_llrs = np.empty(labels_arr.shape[0], dtype=np.float64)
+    # Acumuladores pra contagens diagnósticas (ajuste 7 da revisão metodológica).
+    fold_train_gen = []
+    fold_train_imp = []
+    fold_test_gen = []
+    fold_test_imp = []
+    fold_train_groups = []
+    fold_test_groups = []
     for fold_idx, (train_idx, test_idx) in enumerate(split_iter, start=1):
         train_scores = scores_arr[train_idx]
         train_labels = labels_arr[train_idx]
         test_scores = scores_arr[test_idx]
+        test_labels = labels_arr[test_idx]
 
         n_tr_gen = int((train_labels == 1).sum())
         n_tr_imp = int((train_labels == 0).sum())
+        n_te_gen = int((test_labels == 1).sum())
+        n_te_imp = int((test_labels == 0).sum())
+        fold_train_gen.append(n_tr_gen)
+        fold_train_imp.append(n_tr_imp)
+        fold_test_gen.append(n_te_gen)
+        fold_test_imp.append(n_te_imp)
+
+        # Contagens de grupos por fold (só significativo em STRATIFIED_GROUP).
+        if split_mode == CalibratorCVSplitMode.STRATIFIED_GROUP and groups is not None:
+            fold_train_groups.append(int(len(set(groups_arr[train_idx].tolist()))))
+            fold_test_groups.append(int(len(set(groups_arr[test_idx].tolist()))))
+
+        # Ajuste 8: safety check — fold com uma classe só não pode treinar
+        # calibrador. Pode acontecer em STRATIFIED_GROUP quando todos os
+        # genuínos (ou impostores) caem num único grupo. Aborta CV com
+        # warning explícito em vez de assumir resultado degenerado.
+        if n_tr_gen < 1 or n_tr_imp < 1:
+            logger_callback(
+                f"[{model_name}] ⚠ Fold {fold_idx} train com classe ausente "
+                f"(n_gen={n_tr_gen}, n_imp={n_tr_imp}) — skip CV. "
+                "Causa típica: STRATIFIED_GROUP com grupos muito desbalanceados."
+            )
+            return None
+        if n_te_gen < 1 or n_te_imp < 1:
+            logger_callback(
+                f"[{model_name}] ⚠ Fold {fold_idx} test com classe ausente "
+                f"(n_gen={n_te_gen}, n_imp={n_te_imp}) — skip CV. "
+                "Cllr held-out exige ambas as classes no test set."
+            )
+            return None
+
         logger_callback(
             f"[{model_name}]   • Fold {fold_idx}/{k_effective}: "
             f"train n_gen={n_tr_gen}, n_imp={n_tr_imp}; "
-            f"test n={test_scores.shape[0]}"
+            f"test n_gen={n_te_gen}, n_imp={n_te_imp}"
+            + (
+                f"; groups train={fold_train_groups[-1]}, test={fold_test_groups[-1]}"
+                if fold_train_groups else ""
+            )
         )
 
         # Calibrador FRESH a cada fold — `factory()` retorna instância nova
@@ -184,10 +227,22 @@ def compute_calibrator_cllr_cv(
         f"{cllr_cv:.6f}  (gen={cllr_cv_gen:.6f}, imp={cllr_cv_imp:.6f})"
     )
 
-    return {
+    # Contagens agregadas pra auditoria. Em STRATIFIED_GROUP, cv_groups_total
+    # é o nº total de identidades de probe únicas no dataset; cv_groups_min_test
+    # é o menor número de identidades únicas no fold de test (sinaliza folds
+    # desbalanceados pra revisão manual).
+    result = {
         "cllr_cv": cllr_cv,
         "cllr_cv_gen": cllr_cv_gen,
         "cllr_cv_imp": cllr_cv_imp,
         "cv_folds_effective": int(k_effective),
         "cv_split_mode": split_label,
+        "cv_n_gen_total": int(cv_gen.size),
+        "cv_n_imp_total": int(cv_imp.size),
+        "cv_fold_train_gen_min": int(min(fold_train_gen)) if fold_train_gen else None,
+        "cv_fold_train_imp_min": int(min(fold_train_imp)) if fold_train_imp else None,
     }
+    if fold_train_groups:
+        result["cv_groups_total"] = int(len(set(groups_arr.tolist())))
+        result["cv_groups_min_test"] = int(min(fold_test_groups))
+    return result

@@ -589,7 +589,8 @@ _LOGREG_CONFIG_TOOLTIPS = {
         "em validação e casework.\n\n"
         "Default: desativado (preserva comportamento legado).",
     "k_folds":
-        "K-fold CV diagnóstico do calibrador (opt-in).\n\n"
+        "K-fold CV DIAGNÓSTICO do calibrador (opt-in). NÃO altera o "
+        "calibrador final — apenas calcula Cllr out-of-fold pra auditoria.\n\n"
         "0 (padrão) → desativado, comportamento idêntico ao anterior.\n"
         "5 → roda 5 folds estratificados após o fit principal usando "
         "C congelado (best_C_) — anexa Cllr CV out-of-fold ao metadata, "
@@ -601,7 +602,10 @@ _LOGREG_CONFIG_TOOLTIPS = {
         "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
         "identidade podem aparecer em treino e held-out → otimista.\n\n"
         "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
-        "Forense-defensável, mais pessimista, recomendado em laudos.",
+        "Forense-defensável, mais pessimista, recomendado em laudos.\n"
+        "LIMITAÇÃO: agrupa só por probe_identity — a identidade da REFERÊNCIA "
+        "pode ainda vazar entre treino e held-out. Adequado quando o protocolo "
+        "trata probe como questionada e reference como padrão.",
 }
 
 
@@ -656,7 +660,8 @@ _KDE_CONFIG_TOOLTIPS = {
     "kernel":
         "Kernel do sklearn.neighbors.KernelDensity. Padrão 'gaussian'.",
     "k_folds":
-        "K-fold CV diagnóstico do calibrador (opt-in).\n\n"
+        "K-fold CV DIAGNÓSTICO do calibrador (opt-in). NÃO altera o "
+        "calibrador final — apenas calcula Cllr out-of-fold pra auditoria.\n\n"
         "0 (padrão) → desativado, comportamento idêntico ao anterior.\n"
         "5 → roda 5 folds estratificados após o fit principal usando os "
         "bandwidths congelados — anexa Cllr CV out-of-fold ao metadata, "
@@ -670,7 +675,9 @@ _KDE_CONFIG_TOOLTIPS = {
         "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
         "identidade podem aparecer em treino e held-out → otimista.\n\n"
         "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
-        "Forense-defensável, mais pessimista, recomendado em laudos.",
+        "Forense-defensável, mais pessimista, recomendado em laudos.\n"
+        "LIMITAÇÃO: agrupa só por probe_identity — a identidade da REFERÊNCIA "
+        "pode ainda vazar entre treino e held-out.",
 }
 
 
@@ -761,7 +768,9 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
         "Quantidade de pontos do grid usado pra cachear G(x). 2000 é suficiente. "
         "Só aplica se gx_method=KDE_SMOOTHED.",
     "k_folds":
-        "K-fold CV diagnóstico do calibrador BiGauss completo (opt-in). "
+        "K-fold CV DIAGNÓSTICO do calibrador BiGauss completo (opt-in). "
+        "NÃO altera o calibrador final — apenas calcula Cllr out-of-fold "
+        "pra auditoria.\n\n"
         "DIFERENTE do sigma_cv_folds — aquele é CV interno só pra estimar "
         "σ². Este re-roda o pipeline inteiro (initial calibrator + σ² + "
         "G(x) + F⁻¹) em k-folds.\n\n"
@@ -776,7 +785,9 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
         "STRATIFIED_PAIR (padrão): sklearn.StratifiedKFold. Pares da mesma "
         "identidade podem aparecer em treino e held-out → otimista.\n\n"
         "STRATIFIED_GROUP: sklearn.StratifiedGroupKFold por probe identity. "
-        "Forense-defensável, mais pessimista, recomendado em laudos.",
+        "Forense-defensável, mais pessimista, recomendado em laudos.\n"
+        "LIMITAÇÃO: agrupa só por probe_identity — a identidade da REFERÊNCIA "
+        "pode ainda vazar entre treino e held-out.",
 }
 
 

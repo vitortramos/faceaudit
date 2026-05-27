@@ -27,8 +27,15 @@ class CalibratorCVSplitMode(Enum):
         "STRATIFIED_GROUP",
         "Estratificado por grupo (identidade do probe)",
         "sklearn.StratifiedGroupKFold por probe_identity — nenhuma "
-        "identidade de probe usada no treino do fold aparece no held-out. "
-        "Forense-defensável. Mais pessimista, mais honesto.",
+        "identidade de PROBE usada no treino do fold aparece no held-out. "
+        "Forense-defensável. Mais pessimista, mais honesto.\n\n"
+        "LIMITAÇÃO: agrupa só por probe_identity. A identidade da "
+        "REFERÊNCIA pode ainda vazar entre treino e held-out — ex: par "
+        "test (probe=A, ref=B) + par train (probe=C, ref=B) compartilha "
+        "B no lado da referência. Adequado quando o protocolo trata probe "
+        "como questionada (lateral) e reference como padrão (frontal). "
+        "Pra exclusão IDENTITY-DISJOINT completa, seria necessário split "
+        "que considere ambos os lados — não implementado nesta versão.",
     )
 
     def __new__(cls, value: str, label: str, description: str) -> "CalibratorCVSplitMode":

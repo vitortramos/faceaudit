@@ -219,7 +219,7 @@ class ValidationResultsView(QtWidgets.QWidget):
             "cal_loss": "Cllr − Cllr_min: perda por má calibração",
             "Cllr CV": "Cllr CV out-of-fold no DOMÍNIO de calibração. Não confundir com Cllr de validação externa.",
             "CV gap": "In-domain overfit: Cllr_CV − Cllr_train. > 0 = calibrador overfitou no próprio treino.",
-            "Transfer gap": "Transfer loss / domain shift: Cllr − Cllr_CV. > 0 = validação externa pior que domínio de calib.",
+            "Transfer gap": "Perda de transferência: Cllr − Cllr_CV. > 0 sugere validação externa pior que domínio de calib — pode ser domain shift, diferença de protocolo/qualidade, ou ruído. NÃO prova causa isolada.",
         }
         table = QtWidgets.QTableWidget(len(self._loaded), len(headers))
         table.setHorizontalHeaderLabels(headers)
