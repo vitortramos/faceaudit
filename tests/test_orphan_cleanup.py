@@ -65,6 +65,11 @@ def _make_stub_controller(project_root: Path, definition: LRStrategyDefinition):
     stub._current_definition = definition
     stub._execution_context = None
     stub._save_current_definition = lambda: None
+    # Cleanup órfão agora pode ser invocado num projeto multi-estratégia
+    # e chamar `_save_definition(definition)` com a definition específica
+    # que foi limpa (não necessariamente a `_current_definition`). Stub
+    # noop pra não exigir o save real no teste.
+    stub._save_definition = lambda defn: None
 
     stub._delete_persisted_resource_files = (
         StrategyManagerV2Controller._delete_persisted_resource_files.__get__(stub)
@@ -104,23 +109,36 @@ def test_t1_renamed_output_orphan_is_cleaned_up():
     """T1: output renomeado A→B — arquivo A é apagado e resource sai do definition."""
     with tempfile.TemporaryDirectory() as tmp:
         project_root = Path(tmp)
-        scores_old_file = _make_artifact_file(project_root, "scores/scores_old.parquet")
-        scores_new_file = _make_artifact_file(project_root, "scores/scores_new.parquet")
+        # Paths refletem o layout atual <project>/scores/<strategy_folder>/raw/<file>.
+        # O strategy_id ("strat-1") aparecer no path é o que a heurística
+        # de contaminação (commit 999729e) usa pra distinguir "órfão genuíno"
+        # de "contaminação de outra strategy".
+        scores_old_file = _make_artifact_file(
+            project_root, "scores/strat-1/raw/scores_old.parquet"
+        )
+        scores_new_file = _make_artifact_file(
+            project_root, "scores/strat-1/raw/scores_new.parquet"
+        )
         assert scores_old_file.exists() and scores_new_file.exists()
 
         definition = LRStrategyDefinition(strategy_id="strat-1", name="Test")
         definition.preparation_instructions.append(
             _StubInstruction(declared_output_ids=["scores_new"])
         )
-        definition.resources.append(_make_resource("scores_old", "scores/scores_old.parquet"))
-        definition.resources.append(_make_resource("scores_new", "scores/scores_new.parquet"))
+        definition.resources.append(
+            _make_resource("scores_old", "scores/strat-1/raw/scores_old.parquet")
+        )
+        definition.resources.append(
+            _make_resource("scores_new", "scores/strat-1/raw/scores_new.parquet")
+        )
 
         stub = _make_stub_controller(project_root, definition)
         stub._cleanup_orphan_persisted_resources()
 
         assert not scores_old_file.exists(), "Arquivo scores_old.parquet deveria ter sido apagado"
-        assert not (project_root / "scores" / "scores_old_stats.json").exists(), \
-            "Sidecar _stats.json do órfão deveria ter sido apagado"
+        assert not (
+            project_root / "scores" / "strat-1" / "raw" / "scores_old_stats.json"
+        ).exists(), "Sidecar _stats.json do órfão deveria ter sido apagado"
         assert scores_new_file.exists(), "Arquivo scores_new.parquet (declarado) deve permanecer"
         assert definition.get_resource_by_id("scores_old") is None, \
             "Resource scores_old deveria sair do definition.resources"
@@ -133,13 +151,17 @@ def test_t2_removed_instruction_outputs_are_cleaned_up():
     """T2: instrução removida — todos os outputs viram órfãos e são limpos."""
     with tempfile.TemporaryDirectory() as tmp:
         project_root = Path(tmp)
-        out1 = _make_artifact_file(project_root, "scores/out1.parquet")
-        out2 = _make_artifact_file(project_root, "scores/out2.parquet")
+        out1 = _make_artifact_file(project_root, "scores/strat-2/raw/out1.parquet")
+        out2 = _make_artifact_file(project_root, "scores/strat-2/raw/out2.parquet")
 
         # Estratégia sem nenhuma instrução, mas com 2 resources persistidos.
         definition = LRStrategyDefinition(strategy_id="strat-2", name="Test")
-        definition.resources.append(_make_resource("out1", "scores/out1.parquet"))
-        definition.resources.append(_make_resource("out2", "scores/out2.parquet"))
+        definition.resources.append(
+            _make_resource("out1", "scores/strat-2/raw/out1.parquet")
+        )
+        definition.resources.append(
+            _make_resource("out2", "scores/strat-2/raw/out2.parquet")
+        )
 
         stub = _make_stub_controller(project_root, definition)
         stub._cleanup_orphan_persisted_resources()
