@@ -14,55 +14,76 @@ except ImportError:
     ForensicFace = None
 
 
-def _patch_onnxruntime_for_coreml_static_shapes() -> None:
-    """Injeta opções de robustez no CoreMLExecutionProvider.
+_PATCHED_MARKER = "_faceaudit_coreml_static_patched"
+_RECOGNITION_BATCH_SIZE_ATTR = "_faceaudit_recognition_batch_size"
+_SYMBOLIC_BATCH_DIM_NAMES: Tuple[str, ...] = ("batch_size", "batch")
 
-    Resolve crash recorrente quando o CoreMLExecutionProvider tenta
-    processar tanto o detector `det_10g` quanto encoders ViT como o
-    `adaface_vit_webface4m` do sepaelv4:
 
-        CoreML static output shape ({1,1,1,800,1}) and inferred shape
-        ({3200,1}) have different ranks
+def _patch_onnxruntime_for_coreml_static_shapes(batch_size: int = 1) -> None:
+    """Configura o CoreMLExecutionProvider em três camadas:
 
-    Causa (detector): o CoreML pré-computa shapes estaticamente no load
-    time, mas operadores pós-NMS do detector emitem tensores cujo número
-    de elementos varia com a quantidade de candidatas que sobreviveram ao
-    threshold.
+    1. `RequireStaticInputShapes=1` em **toda** sessão criada — resolve
+       crash recorrente do detector `det_10g`:
 
-    Causa (encoder ViT do sepaelv4): mesmo com input fixo
-    (1×3×112×112), ops internas de reshape/transpose dos blocos
-    attention têm rank inferido divergente entre o compile-time do
-    CoreML e o que o ONNX Runtime infere — o partitioner do CoreML
-    captura um subgrafo cujo rank de output não bate com o esperado.
+           CoreML static output shape ({1,1,1,800,1}) and inferred shape
+           ({3200,1}) have different ranks
 
-    Workaround em duas camadas:
+       Causa: o CoreML pré-computa shapes estaticamente no load time,
+       mas operadores pós-NMS do detector emitem tensores cujo número
+       de elementos varia com a quantidade de candidatas que
+       sobreviveram ao threshold.
 
-    1. `ModelFormat=MLProgram` — usa o backend MLProgram em vez do
-       NeuralNetwork (default). MLProgram é o formato canônico do CoreML
-       moderno; tem cobertura mais ampla de ops e shape inference mais
-       robusta. Resolve o crash no encoder ViT do sepaelv4 e também é
-       compatível com o caminho ResNet do sepaelv2/v3 (encoder
-       1×3×112×112 → 1×512) — não há regressão conhecida.
+    2. `ModelFormat=MLProgram` em **toda** sessão CoreML — usa o backend
+       MLProgram (Core ML 5+) em vez do NeuralNetwork (default).
+       Motivações:
+       - **Runtime error -1 do NeuralNetwork**: com a FreeDimensionOverride
+         (camada 3) aplicada aos encoders ViT (sepaelv4/v6), o
+         NeuralNetwork backend compila e particiona bem (~87% cobertura)
+         mas falha **em execução** com "Unable to compute the prediction
+         using a neural network model ... (error code -1)". Algum op do
+         ViT triggera erro genérico de execução no ANE pelo NN backend.
+         MLProgram tem implementação separada e roda sem esse problema.
+       - **Precisão**: NN backend faz cast implícito FP32→FP16 em
+         hardware; MLProgram preserva FP32 (ref:
+         https://ym2132.github.io/ONNX_MLProgram_NN_exploration).
+         Relevante pra defensibilidade forense — embeddings biométricos
+         não devem variar entre máquinas por causa de precisão silenciosa.
+       Custos: requer macOS 12+ (Core ML 5+), o que é amplamente atendido.
 
-    2. `RequireStaticInputShapes=1` — instrui o CoreML a SÓ capturar
-       subgrafos cujas shapes são totalmente determinadas em compile
-       time. Nodes dinâmicos caem no CPU subgraph automaticamente
-       dentro da mesma sessão. Mantém o conserto original do `det_10g`.
+    3. `SessionOptions.add_free_dimension_override_by_name("batch_size", N)`
+       (e `"batch"`) **só para sessões que carregam modelos em
+       `recognition/`** — fixa a batch dim simbólica do ONNX em
+       `batch_size = N` no compile time da sessão. Sem isso, ONNX
+       exports recentes (sepaelv4 ViT, sepaelv6 KPRPE) com
+       `dynamic_axes={'input': {0: 'batch_size'}}` produzem cobertura
+       CoreML pífia (3/1694 nodes no v6 sem override): o partitioner
+       não consegue resolver shapes intermediárias com batch dim
+       simbólica e despeja quase tudo na CPU. Com a override, a sessão
+       é compilada como se batch fosse literal `N`, CoreML consegue
+       fixar todas as shapes (esperado ~87% de cobertura).
 
-    A função monkey-patcheia `onnxruntime.InferenceSession.__init__`
-    pra injetar as opções em todas as sessions criadas DEPOIS desta
-    chamada. Idempotente (marker em atributo de classe). Só faz sentido
-    chamar quando o usuário pediu aceleração (`use_gpu=True`); em CPU
-    puro o CoreMLExecutionProvider sequer é usado.
+       **Restrição:** sessões com override só aceitam exatamente `N`
+       amostras por chamada. O caller deve fazer padding do batch
+       parcial final pra `N` (ver `_run_engine_batch`). Sessões de
+       detection/attributes/quality NÃO recebem a override — continuam
+       aceitando qualquer batch (incluindo batch=1 no path per-face
+       legado).
+
+    Aplicação: monkey-patch idempotente em `ort.InferenceSession.__init__`.
+    O batch_size pode ser atualizado entre chamadas; sessões criadas
+    DEPOIS de cada chamada veem o novo valor.
     """
     try:
         import onnxruntime as ort
     except ImportError:
         return
 
-    _patched_marker = "_faceaudit_coreml_static_patched"
-    if getattr(ort.InferenceSession, _patched_marker, False):
-        return  # idempotente
+    # Atualiza o batch_size para sessões criadas a partir de agora.
+    # Sessões já criadas mantêm o valor que vigorava no momento delas.
+    setattr(ort.InferenceSession, _RECOGNITION_BATCH_SIZE_ATTR, max(1, int(batch_size)))
+
+    if getattr(ort.InferenceSession, _PATCHED_MARKER, False):
+        return  # __init__ já wrappado — não re-wrappa
 
     _original_init = ort.InferenceSession.__init__
 
@@ -76,24 +97,83 @@ def _patch_onnxruntime_for_coreml_static_shapes() -> None:
                 base_opts = p[1] if isinstance(p, tuple) and len(p) > 1 else {}
                 merged = {
                     **base_opts,
-                    "ModelFormat": "MLProgram",
                     "RequireStaticInputShapes": "1",
+                    # ModelFormat=MLProgram: backend mais novo (Core ML 5+).
+                    # No NeuralNetwork backend, encoders ViT (sepaelv4/v6)
+                    # com a FreeDimensionOverride aplicada falham em
+                    # runtime com "Unable to compute the prediction
+                    # using a neural network model ... (error code -1)"
+                    # — algum op do ViT crasha em execução no ANE no
+                    # NN backend, mesmo passando o partitioning.
+                    # MLProgram tem implementação separada (mais
+                    # recente) e roda. Bônus: MLProgram preserva FP32;
+                    # NN backend faz cast implícito pra FP16 (ref:
+                    # https://ym2132.github.io/ONNX_MLProgram_NN_exploration)
+                    # — importante pra reprodutibilidade forense.
+                    "ModelFormat": "MLProgram",
                 }
                 out.append(("CoreMLExecutionProvider", merged))
             else:
                 out.append(p)
         return out
 
+    def _is_recognition_model_path(path) -> bool:
+        """True quando o path aponta pra um encoder dentro de
+        `recognition/`. Filtra detector/attributes/quality, que continuam
+        sem override (per-face compat)."""
+        if path is None:
+            return False
+        try:
+            if isinstance(path, (bytes, bytearray)):
+                return False  # path como bytes = modelo inline, não rotula
+            path_str = str(path)
+        except Exception:
+            return False
+        return "/recognition/" in path_str or "\\recognition\\" in path_str
+
+    def _override_session_options_for_recognition(path, sess_options):
+        """Injeta `add_free_dimension_override_by_name` quando o path é
+        recognition. Tenta nomes simbólicos comuns (`batch_size`,
+        `batch`) — se o modelo não usa algum, a API retorna sem erro."""
+        if not _is_recognition_model_path(path):
+            return sess_options
+        bs = int(getattr(ort.InferenceSession, _RECOGNITION_BATCH_SIZE_ATTR, 1))
+        if bs < 1:
+            return sess_options
+        if sess_options is None:
+            sess_options = ort.SessionOptions()
+        for name in _SYMBOLIC_BATCH_DIM_NAMES:
+            try:
+                sess_options.add_free_dimension_override_by_name(name, bs)
+            except Exception:
+                # API ausente (ORT muito antigo) ou nome não presente
+                # no modelo — segue silenciosamente.
+                pass
+        return sess_options
+
     def _patched_init(self, *args, **kwargs):
+        # Camada 1: provider options (RequireStaticInputShapes=1).
         # `providers` pode vir como kwarg ou como 2º arg posicional.
         if "providers" in kwargs:
             kwargs["providers"] = _inject_coreml_opts(kwargs["providers"])
         elif len(args) >= 2:
             args = (args[0], _inject_coreml_opts(args[1]), *args[2:])
+
+        # Camada 2: sess_options com FreeDimensionOverride pra recognition.
+        # `path_or_bytes` é args[0] ou kwargs['path_or_bytes'];
+        # `sess_options` é tipicamente kwarg em forensicface (verificado).
+        path = args[0] if args else kwargs.get("path_or_bytes")
+        sess_options = kwargs.get("sess_options")
+        new_sess_options = _override_session_options_for_recognition(
+            path, sess_options,
+        )
+        if new_sess_options is not sess_options:
+            kwargs["sess_options"] = new_sess_options
+
         return _original_init(self, *args, **kwargs)
 
     ort.InferenceSession.__init__ = _patched_init
-    setattr(ort.InferenceSession, _patched_marker, True)
+    setattr(ort.InferenceSession, _PATCHED_MARKER, True)
 
 
 # Conjunto canônico de chaves do FFInfo a serem mergeadas quando um run
@@ -211,15 +291,24 @@ class FFService:
                 f"escolha outro modelo nas Configurações."
             )
 
-        # CoreML + detector ArcFace: workaround pro crash de shape
-        # inference em `det_10g`. Sem isso, qualquer pipeline que rode
-        # `process_face`/`process_dataset` em GPU no macOS quebra com
-        # "CoreML static output shape ... different ranks" assim que o
-        # detector encontra uma quantidade de candidatas diferente do
-        # pré-computado. Patch é monkey no `InferenceSession.__init__`,
-        # idempotente, aplicado uma única vez por processo.
+        # CoreML setup em duas camadas (ver docstring de
+        # `_patch_onnxruntime_for_coreml_static_shapes`):
+        # - `RequireStaticInputShapes=1` em toda sessão: conserto do
+        #   crash do det_10g (shape rank mismatch pós-NMS).
+        # - `FreeDimensionOverride('batch_size', N)` só em sessões
+        #   `recognition/`: re-estatiza a batch dim simbólica do ONNX
+        #   (sepaelv4/v6 exportados com `dynamic_axes`) pra CoreML
+        #   conseguir capturar matmul/attention do ViT e rotear pro
+        #   Neural Engine. Sessões com override só aceitam batch
+        #   exato = N; `_run_engine_batch` faz padding do batch parcial
+        #   final pra cobrir esse requisito.
+        # Patch é monkey-patch no `InferenceSession.__init__`,
+        # idempotente, mas o `batch_size` é atualizado a cada chamada
+        # (sessões criadas DEPOIS veem o novo valor).
         if use_gpu:
-            _patch_onnxruntime_for_coreml_static_shapes()
+            _patch_onnxruntime_for_coreml_static_shapes(
+                batch_size=self._batch_size,
+            )
 
         # Carrega uma ForensicFace independente por modelo.
         # Cada engine fica com `models=[<um>]`, então só esse encoder roda
@@ -728,7 +817,53 @@ class FFService:
         fiqa_scores shape `(N,)` ou None quando `extended=False`. Ambos
         viram None na tupla quando a inferência falha (erro reportado
         via `error_callback`).
+
+        Padding pra batch parcial: quando `use_gpu=True`, as sessões de
+        recognition são carregadas com `FreeDimensionOverride('batch_size',
+        self._batch_size)` (ver `_patch_onnxruntime_for_coreml_static_shapes`)
+        — necessário pra ANE conseguir capturar o ViT. Sessões com override
+        SÓ aceitam batch exato. Se o caller mandar N < batch_size (caso
+        típico: último flush do dataset), preenchemos com zeros até
+        batch_size, rodamos a inferência e descartamos as posições
+        excedentes nos arrays de retorno.
         """
+        n_real = int(bgr_aligned_faces.shape[0])
+        pad_count = 0
+        if self._use_gpu and n_real > 0 and n_real < self._batch_size:
+            pad_count = self._batch_size - n_real
+            pad_faces = np.zeros(
+                (pad_count, *bgr_aligned_faces.shape[1:]),
+                dtype=bgr_aligned_faces.dtype,
+            )
+            bgr_aligned_faces = np.concatenate(
+                [bgr_aligned_faces, pad_faces], axis=0,
+            )
+            if aligned_keypoints_batch is not None:
+                pad_kps = np.zeros(
+                    (pad_count, *aligned_keypoints_batch.shape[1:]),
+                    dtype=aligned_keypoints_batch.dtype,
+                )
+                aligned_keypoints_batch = np.concatenate(
+                    [aligned_keypoints_batch, pad_kps], axis=0,
+                )
+
+        def _truncate_padding(embeddings, fiqa_scores):
+            """Descarta linhas correspondentes ao padding nos arrays de
+            retorno. No-op quando `pad_count == 0`."""
+            if pad_count == 0:
+                return embeddings, fiqa_scores
+            if embeddings is not None and hasattr(embeddings, "__getitem__"):
+                try:
+                    embeddings = embeddings[:n_real]
+                except Exception:
+                    pass
+            if fiqa_scores is not None and hasattr(fiqa_scores, "__getitem__"):
+                try:
+                    fiqa_scores = fiqa_scores[:n_real]
+                except Exception:
+                    pass
+            return embeddings, fiqa_scores
+
         try:
             # Captura `warnings.warn(...)` emitidos pela lib durante o batch
             # — o helper de OOM avisa quando acontece auto-recovery (halving).
@@ -749,7 +884,7 @@ class FFService:
                         (error_callback or print)(f"⚠ [forensicface] {w.message}")
                     if isinstance(embeddings, list) and len(embeddings) == 1:
                         embeddings = embeddings[0]
-                    return embeddings, fiqa_scores
+                    return _truncate_padding(embeddings, fiqa_scores)
 
             # Legado v0.6.x: método privado no próprio engine
             if hasattr(engine, "_try_compute_embeddings_batch"):
@@ -765,7 +900,7 @@ class FFService:
                     (error_callback or print)(f"⚠ [forensicface] {w.message}")
                 if isinstance(embeddings, list) and len(embeddings) == 1:
                     embeddings = embeddings[0]
-                return embeddings, fiqa_scores
+                return _truncate_padding(embeddings, fiqa_scores)
 
             # Fallback lib 0.5.x: roda direto via rec_inference_sessions.
             batched = bgr_aligned_faces.astype(np.float32)
@@ -796,7 +931,7 @@ class FFService:
                             f"[FFService.batch] inferência FIQA falhou: {e}"
                         )
 
-            return embeddings, fiqa_scores
+            return _truncate_padding(embeddings, fiqa_scores)
 
         except Exception as e:
             msg = (
