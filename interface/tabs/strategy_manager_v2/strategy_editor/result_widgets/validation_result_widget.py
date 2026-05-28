@@ -195,6 +195,12 @@ class ValidationResultWidget(QtWidgets.QWidget):
         self._add_lazy_tab("Curva de Calibração",
                            self._draw_calibration_curve,
                            self._calibration_curve_help() if self._show_help else "")
+        self._add_lazy_tab("Diagnóstico Afim",
+                           self._draw_affine_diagnostic,
+                           self._affine_diagnostic_help() if self._show_help else "")
+        self._add_lazy_tab("Quantis por Classe",
+                           self._draw_quantile_log_lr,
+                           self._quantile_log_lr_help() if self._show_help else "")
         self._add_metrics_tab()
 
     def _add_metrics_tab(self) -> None:
@@ -497,6 +503,14 @@ class ValidationResultWidget(QtWidgets.QWidget):
         from faceaudit.models.validation_result_plot import draw_calibration_curve
         draw_calibration_curve(figure, self._result)
 
+    def _draw_affine_diagnostic(self, figure: Figure) -> None:
+        from faceaudit.models.validation_result_plot import draw_affine_diagnostic
+        draw_affine_diagnostic(figure, self._result)
+
+    def _draw_quantile_log_lr(self, figure: Figure) -> None:
+        from faceaudit.models.validation_result_plot import draw_quantile_log_lr
+        draw_quantile_log_lr(figure, self._result)
+
     # ── Help text ─────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -657,4 +671,76 @@ class ValidationResultWidget(QtWidgets.QWidget):
             "raw_score diferentes exigem cautela.<br>"
             "• <b>Para mais de 20 mil pares por classe</b>, scatter usa "
             "amostragem aleatória de 20k — a forma agregada é preservada."
+        )
+
+    @staticmethod
+    def _affine_diagnostic_help() -> str:
+        return (
+            "<b>O que mostra:</b> o diagnóstico da recalibração afim "
+            "Brümmer-Doddington reescalado para o plano log-LR × log-LR. "
+            "Eixo X = log-LR atual produzido pelo calibrador; eixo Y = "
+            "log-LR após a correção afim ótima. "
+            "<span style='color:#888;'><b>Linha cinza tracejada</b></span> = "
+            "identidade y=x (calibrador afinemente ótimo). "
+            "<span style='color:#E8A020;'><b>Reta laranja</b></span> = "
+            "pós-afim y=slope·logLR + intercept. Rugs na borda inferior "
+            "indicam onde estão os log-LRs observados por classe."
+            "<br><br>"
+            "<b>Como interpretar:</b><br>"
+            "• <b>Reta laranja sobre y=x</b> → slope≈1 e intercept≈0; "
+            "calibrador já está afinemente ótimo, recalibração afim não "
+            "ganharia nada.<br>"
+            "• <b>Slope &lt; 1</b> (reta mais flat que y=x) → o calibrador "
+            "está <i>over-confident</i>; a afim comprime os log-LRs em "
+            "direção a 0 pra deixá-los honestos.<br>"
+            "• <b>Slope &gt; 1</b> (reta mais íngreme que y=x) → "
+            "<i>under-confident</i>; a afim expande os log-LRs porque a "
+            "evidência observada é mais extrema do que os valores "
+            "atuais.<br>"
+            "• <b>Intercept ≠ 0</b> (reta deslocada verticalmente) → viés "
+            "sistemático: o sistema favorece uma das hipóteses por "
+            "default.<br>"
+            "• <b>Distância vertical</b> entre as duas retas em cada x = "
+            "magnitude da correção afim naquele log-LR.<br>"
+            "• <b>✅ Comparação inter-estratégia</b>: ao contrário da "
+            "Curva de Calibração (cuja escala X depende do raw_score), "
+            "este plot tem eixo X em log-LR (unidade comum a todos os "
+            "calibradores). Pode sobrepor diretamente várias estratégias "
+            "na janela de Comparação."
+        )
+
+    @staticmethod
+    def _quantile_log_lr_help() -> str:
+        return (
+            "<b>O que mostra:</b> os percentis P1, P5, P10, P25, P50, P75, "
+            "P90, P95 e P99 do log-LR calibrado, separados por classe. "
+            "<span style='color:#2e7d32;'><b>Série verde</b></span> = "
+            "percentis dos genuínos. "
+            "<span style='color:#c62828;'><b>Série vermelha</b></span> = "
+            "percentis dos impostores. Cada ponto é o valor de log-LR no "
+            "respectivo percentil <i>dentro da classe</i> (não do "
+            "conjunto combinado)."
+            "<br><br>"
+            "<b>Como interpretar:</b><br>"
+            "• <b>P95/P99 dos impostores (vermelho à direita)</b> = "
+            "impostores mais perigosos — pares de pessoas diferentes "
+            "para os quais o sistema gerou os maiores log-LRs. Valores "
+            "próximos de 0 ou positivos = potenciais falsos+ no laudo.<br>"
+            "• <b>P1/P5 dos genuínos (verde à esquerda)</b> = genuínos "
+            "mais difíceis — pares de mesma pessoa com menor log-LR. "
+            "Valores próximos de 0 ou negativos = potenciais falsos− "
+            "no laudo.<br>"
+            "• <b>Distância vertical</b> entre as duas séries em cada "
+            "percentil = gap discriminativo da estratégia naquele ponto "
+            "de operação. P50 mostra o gap médio; P95/P99 vs P1/P5 "
+            "mostram o gap nas caudas (onde o Cllr sofre mais).<br>"
+            "• <b>Intersecção das séries</b> (verde abaixo do vermelho "
+            "em algum P) é sinal grave: parte dos genuínos tem log-LR "
+            "menor que parte dos impostores naquele percentil — quebra "
+            "da ordenação esperada.<br>"
+            "• <b>✅ Comparação inter-estratégia</b>: percentil é "
+            "invariante a transformações monotônicas do raw_score, e "
+            "log-LR é unidade comum. Pode sobrepor várias estratégias "
+            "na janela de Comparação e ler diretamente qual delas "
+            "lida melhor com as caudas difíceis."
         )

@@ -104,10 +104,13 @@ class ValidationResultsView(QtWidgets.QWidget):
         # Linha 1: tabela
         content_layout.addWidget(self._build_metrics_table())
 
-        # Linha 2: 3 plots overlay via FlowLayout
+        # Linha 2: 5 plots overlay via FlowLayout
         content_layout.addWidget(
             self._build_flow_section(
-                title="Plots por estratégia (DET, Tippett, ECE)",
+                title=(
+                    "Plots por estratégia (DET, Tippett, ECE, "
+                    "Diagnóstico Afim, Quantis)"
+                ),
                 cells=[
                     self._build_plot_cell("Curva DET", self._draw_det_overlay),
                     self._build_plot_cell(
@@ -115,6 +118,14 @@ class ValidationResultsView(QtWidgets.QWidget):
                     ),
                     self._build_plot_cell(
                         "Empirical Cross-Entropy (ECE)", self._draw_ece_overlay
+                    ),
+                    self._build_plot_cell(
+                        "Diagnóstico Afim (log-LR)",
+                        self._draw_affine_diag_overlay,
+                    ),
+                    self._build_plot_cell(
+                        "Quantis por Classe",
+                        self._draw_quantile_overlay,
                     ),
                 ],
             )
@@ -501,7 +512,7 @@ class ValidationResultsView(QtWidgets.QWidget):
 
         `png_key` é uma das chaves canônicas de
         `validation_result_plot.PLOT_KEYS` (`lr_distribution`, `tippett`,
-        `det`, `ece`, `curve`).
+        `det`, `ece`, `curve`, `affine_diag`, `quantile_log_lr`).
         """
         if (
             self._project_root is None
@@ -678,6 +689,133 @@ class ValidationResultsView(QtWidgets.QWidget):
             loc="upper center", bbox_to_anchor=(0.5, -0.18),
             ncol=1, fontsize=8, frameon=True,
             title="Cheia: ECE modelo  •  Tracejada: ECE mínimo (PAVA)",
+            title_fontsize=8,
+        )
+
+    def _draw_affine_diag_overlay(self, figure: Figure) -> None:
+        """Diagnóstico Afim overlay: y=x identidade + reta pós-afim por estratégia.
+
+        Eixo X = log-LR atual (escala comum entre estratégias). Cada
+        estratégia contribui uma reta y=slope·x + intercept colorida pela
+        paleta. Identidade y=x cinza tracejada como referência única.
+        """
+        ax = figure.add_subplot(111)
+        # Range global = min/max dos log-LRs observados em todas as estratégias.
+        all_lrs = []
+        any_drawn = False
+        for _, result in self._loaded:
+            pd = result.plot_data
+            gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+            imp = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+            if gen.size:
+                all_lrs.append(gen)
+            if imp.size:
+                all_lrs.append(imp)
+        if not all_lrs:
+            ax.text(0.5, 0.5, "(sem dados de log-LR)", ha="center", va="center",
+                    transform=ax.transAxes, color="#888")
+            return
+        combined = np.concatenate(all_lrs)
+        x_min = float(combined.min())
+        x_max = float(combined.max())
+        pad = 0.05 * (x_max - x_min) if x_max > x_min else 1.0
+        x_grid = np.linspace(x_min - pad, x_max + pad, 200)
+
+        # Identidade y=x — referência única (sem cor da paleta).
+        ax.plot(
+            x_grid, x_grid,
+            color="#888", linewidth=1.2, linestyle="--", alpha=0.85,
+            label="y = x  (afim ótimo)",
+        )
+
+        for idx, (item, result) in enumerate(self._loaded):
+            m = getattr(result, "metrics", None)
+            slope = getattr(m, "calibration_slope", None) if m else None
+            intercept = getattr(m, "calibration_intercept", None) if m else None
+            if slope is None or intercept is None:
+                continue
+            color = _PALETTE[idx % len(_PALETTE)]
+            sign = "+" if intercept >= 0 else "−"
+            label = (
+                f"{self._legend_label(item, result)}: "
+                f"{slope:.3f}·x {sign} {abs(intercept):.3f}"
+            )
+            ax.plot(
+                x_grid, slope * x_grid + intercept,
+                color=color, linewidth=1.6, alpha=0.9, label=label,
+            )
+            any_drawn = True
+
+        if not any_drawn:
+            ax.text(0.5, 0.5, "(sem slope/intercept nas estratégias)",
+                    ha="center", va="center",
+                    transform=ax.transAxes, color="#888")
+            return
+
+        ax.axhline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
+        ax.axvline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
+        ax.set_xlabel("log-LR atual", fontsize=9)
+        ax.set_ylabel("log-LR pós-afim", fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, -0.18),
+            ncol=1, fontsize=8, frameon=True,
+        )
+
+    def _draw_quantile_overlay(self, figure: Figure) -> None:
+        """Quantis por Classe overlay: P1..P99 do log-LR per-classe por estratégia.
+
+        Duas séries por estratégia (cheia=genuínos, tracejada=impostores)
+        coloridas pela paleta. Eixo X discreto em percentis fixos —
+        comum entre estratégias por construção.
+        """
+        ax = figure.add_subplot(111)
+        percentiles = np.array(
+            [1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64,
+        )
+        any_drawn = False
+        for idx, (item, result) in enumerate(self._loaded):
+            pd = result.plot_data
+            gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+            imp = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+            if gen.size == 0 and imp.size == 0:
+                continue
+            color = _PALETTE[idx % len(_PALETTE)]
+            label = self._legend_label(item, result)
+            if gen.size > 0:
+                gen_q = np.percentile(gen, percentiles)
+                ax.plot(
+                    percentiles, gen_q,
+                    color=color, marker="o", markersize=5,
+                    linewidth=1.4, alpha=0.9, label=label,
+                )
+            if imp.size > 0:
+                imp_q = np.percentile(imp, percentiles)
+                ax.plot(
+                    percentiles, imp_q,
+                    color=color, marker="s", markersize=5,
+                    linewidth=1.4, linestyle="--", alpha=0.9,
+                )
+            any_drawn = True
+
+        if not any_drawn:
+            ax.text(0.5, 0.5, "(sem dados de log-LR)", ha="center", va="center",
+                    transform=ax.transAxes, color="#888")
+            return
+
+        ax.axhline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
+        ax.set_xticks(percentiles)
+        ax.set_xticklabels([f"P{int(p)}" for p in percentiles])
+        ax.set_xlim(0, 100)
+        ax.set_xlabel("Percentil por classe", fontsize=9)
+        ax.set_ylabel("log-LR calibrado", fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, -0.18),
+            ncol=1, fontsize=8, frameon=True,
+            title="Cheia: Genuínos  •  Tracejada: Impostores",
             title_fontsize=8,
         )
 

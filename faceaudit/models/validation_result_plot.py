@@ -24,7 +24,10 @@ from faceaudit.enums.project_folder import ProjectFolder
 
 
 # Chaves canônicas usadas no dict de paths e na ordem das abas (UI).
-PLOT_KEYS = ("lr_distribution", "tippett", "det", "ece", "curve")
+PLOT_KEYS = (
+    "lr_distribution", "tippett", "det", "ece", "curve",
+    "affine_diag", "quantile_log_lr",
+)
 
 # Sufixo de cada plot no nome do arquivo PNG.
 _PLOT_SUFFIX = {
@@ -33,6 +36,8 @@ _PLOT_SUFFIX = {
     "det":             "_det",
     "ece":             "_ece",
     "curve":           "_calibration_curve",
+    "affine_diag":     "_affine_diagnostic",
+    "quantile_log_lr": "_quantile_log_lr",
 }
 
 # Título legível pra cada aba (UI inline + dialog).
@@ -42,6 +47,8 @@ PLOT_TAB_TITLE = {
     "det":             "Curva DET",
     "ece":             "Calibração (ECE)",
     "curve":           "Curva de Calibração",
+    "affine_diag":     "Diagnóstico Afim",
+    "quantile_log_lr": "Quantis por Classe",
 }
 
 
@@ -545,12 +552,215 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         figure.tight_layout()
 
 
+def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
+    """Diagnóstico Afim em escala log-LR — plano log-LR atual × log-LR pós-afim.
+
+    Reescala o problema da curva de calibração para o eixo log-LR (em
+    bits/nats), que é comum entre estratégias. Sob esse eixo:
+      - Identidade y=x = calibrador afinemente ótimo (slope=1, intercept=0).
+      - Reta pós-afim y=slope·x + intercept = correção ótima Brümmer.
+      - Distância vertical entre as duas é a correção que falta.
+
+    Camadas:
+      - Identidade y=x (cinza tracejada);
+      - Pós-afim y=slope·x + intercept (laranja sólida);
+      - axhline y=0 + axvline x=0 (cinza pontilhadas — neutralidade);
+      - Rug ticks dos log-LRs observados na borda inferior (gen=verde,
+        imp=vermelho) — contextualiza onde há massa de dados.
+
+    Diferente da Curva de Calibração, este plot é robusto à escala do
+    raw_score subjacente — pode ser sobreposto entre estratégias na
+    janela de Comparação.
+    """
+    figure.clear()
+    ax = figure.add_subplot(111)
+
+    pd = result.plot_data
+    gen_lr = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+    imp_lr = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+
+    m = getattr(result, "metrics", None)
+    slope = getattr(m, "calibration_slope", None) if m else None
+    intercept = getattr(m, "calibration_intercept", None) if m else None
+    cllr_aff = getattr(m, "cllr_affine", None) if m else None
+
+    if (gen_lr.size == 0 and imp_lr.size == 0) or slope is None or intercept is None:
+        ax.text(
+            0.5, 0.5,
+            "(diagnóstico afim indisponível — slope/intercept ou\n"
+            "log-LRs não presentes no pickle)",
+            ha="center", va="center", transform=ax.transAxes,
+            color="#888", fontsize=10,
+        )
+        return
+
+    # Range do eixo X = log-LR atual observado.
+    all_lr = np.concatenate([gen_lr, imp_lr])
+    x_min = float(all_lr.min())
+    x_max = float(all_lr.max())
+    pad = 0.05 * (x_max - x_min) if x_max > x_min else 1.0
+    x_grid = np.linspace(x_min - pad, x_max + pad, 200)
+
+    # Identidade y=x.
+    ax.plot(
+        x_grid, x_grid,
+        color="#888", linewidth=1.2, linestyle="--", alpha=0.85,
+        label="y = x  (calibrador afim ótimo)",
+    )
+    # Reta pós-afim.
+    sign = "+" if intercept >= 0 else "−"
+    ax.plot(
+        x_grid, slope * x_grid + intercept,
+        color="#E8A020", linewidth=2.0, alpha=0.95,
+        label=f"Pós-afim: {slope:.3f}·logLR {sign} {abs(intercept):.3f}",
+    )
+    # Eixos de neutralidade.
+    ax.axhline(0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.5)
+    ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.5)
+
+    # Determine y range pós-plot (precisamos do ylim final antes do rug)
+    ax.relim()
+    ax.autoscale_view()
+    ymin, ymax = ax.get_ylim()
+    rug_h = (ymax - ymin) * 0.025
+    if imp_lr.size > 0:
+        # Rug subamostrado (cap 2000 por classe) — mesmas convenções do
+        # rug da Curva de Calibração.
+        rng = np.random.default_rng(0)
+        imp_rug = imp_lr if imp_lr.size <= 2000 else imp_lr[
+            rng.choice(imp_lr.size, size=2000, replace=False)
+        ]
+        ax.vlines(
+            imp_rug, ymin, ymin + rug_h,
+            color="#c62828", alpha=0.5, linewidth=0.8,
+        )
+    if gen_lr.size > 0:
+        rng = np.random.default_rng(1)
+        gen_rug = gen_lr if gen_lr.size <= 2000 else gen_lr[
+            rng.choice(gen_lr.size, size=2000, replace=False)
+        ]
+        ax.vlines(
+            gen_rug, ymin, ymin + rug_h,
+            color="#2e7d32", alpha=0.5, linewidth=0.8,
+        )
+    ax.set_ylim(ymin - rug_h * 0.4, ymax)
+
+    # Diagnóstico textual no subtítulo.
+    if slope < 0.95:
+        diag = "over-confident (afim comprime)"
+    elif slope > 1.05:
+        diag = "under-confident (afim expande)"
+    else:
+        diag = "bem calibrado (afim ≈ identidade)"
+    subtitle_parts = [f"slope={slope:.3f} ({diag})", f"intercept={intercept:+.3f}"]
+    if cllr_aff is not None:
+        subtitle_parts.append(f"Cllr_affine={cllr_aff:.4f}")
+    title = "Diagnóstico Afim em Escala log-LR\n" + "  ·  ".join(subtitle_parts)
+    ax.set_title(title, fontsize=10)
+
+    ax.set_xlabel("log-LR atual")
+    ax.set_ylabel("log-LR pós-afim")
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+    figure.tight_layout()
+
+
+def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
+    """Quantis por Classe — percentis do log-LR per-classe.
+
+    Eixo X: percentis fixos P1, P5, P10, P25, P50, P75, P90, P95, P99
+    em escala linear (1..99). Eixo Y: log-LR calibrado nos respectivos
+    percentis, separado por classe.
+
+    Como o calibrador é monotônico (raw_score → log-LR), os percentis
+    do raw_score por classe coincidem com os percentis do log-LR por
+    classe. Trabalha-se direto com `genuine_log_lrs` / `impostor_log_lrs`.
+
+    Leituras forenses:
+      - **P95/P99 dos impostores** = impostores mais perigosos, parecidos
+        com genuínos. log-LR aqui próximo de 0 ou positivo é sinal de
+        falsos+ potenciais.
+      - **P1/P5 dos genuínos** = genuínos mais difíceis. log-LR aqui
+        próximo de 0 ou negativo é sinal de falsos− potenciais.
+      - Distância vertical entre as duas séries em cada percentil mostra
+        o gap discriminativo da estratégia naquele ponto de operação.
+
+    Escala de X (percentil) é comum entre estratégias — permite overlay
+    direto na Comparação independente da unidade de raw_score.
+    """
+    figure.clear()
+    ax = figure.add_subplot(111)
+
+    pd = result.plot_data
+    gen_lr = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+    imp_lr = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+
+    if gen_lr.size == 0 and imp_lr.size == 0:
+        ax.text(
+            0.5, 0.5,
+            "(quantis indisponíveis — log-LRs não presentes no pickle)",
+            ha="center", va="center", transform=ax.transAxes,
+            color="#888", fontsize=10,
+        )
+        return
+
+    percentiles = np.array([1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64)
+
+    if gen_lr.size > 0:
+        gen_q = np.percentile(gen_lr, percentiles)
+        ax.plot(
+            percentiles, gen_q,
+            color="#2e7d32", marker="o", markersize=6,
+            linewidth=1.8, alpha=0.95,
+            label=f"Genuínos (n={gen_lr.size:,})".replace(",", "."),
+        )
+    if imp_lr.size > 0:
+        imp_q = np.percentile(imp_lr, percentiles)
+        ax.plot(
+            percentiles, imp_q,
+            color="#c62828", marker="s", markersize=6,
+            linewidth=1.8, alpha=0.95,
+            label=f"Impostores (n={imp_lr.size:,})".replace(",", "."),
+        )
+
+    ax.axhline(
+        0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
+        label="log-LR = 0  (LR=1)",
+    )
+
+    ax.set_xticks(percentiles)
+    ax.set_xticklabels([f"P{int(p)}" for p in percentiles])
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Percentil por classe")
+    ax.set_ylabel("log-LR calibrado")
+
+    m = getattr(result, "metrics", None)
+    cllr_val = getattr(m, "cllr", None) if m else None
+    cllr_min_val = getattr(m, "cllr_min", None) if m else None
+    subtitle_parts = []
+    if cllr_val is not None:
+        subtitle_parts.append(f"Cllr={cllr_val:.4f}")
+    if cllr_min_val is not None:
+        subtitle_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+    if subtitle_parts:
+        title = "Quantis por Classe\n" + "  ·  ".join(subtitle_parts)
+    else:
+        title = "Quantis por Classe"
+    ax.set_title(title, fontsize=10)
+
+    ax.grid(True, linestyle="--", alpha=0.4)
+    ax.legend(loc="best", fontsize=8.5, framealpha=0.85)
+    figure.tight_layout()
+
+
 _DRAW_FN = {
     "lr_distribution": draw_lr_distribution,
     "tippett":         draw_tippett,
     "det":             draw_det_curve,
     "ece":             draw_ece,
     "curve":           draw_calibration_curve,
+    "affine_diag":     draw_affine_diagnostic,
+    "quantile_log_lr": draw_quantile_log_lr,
 }
 
 
