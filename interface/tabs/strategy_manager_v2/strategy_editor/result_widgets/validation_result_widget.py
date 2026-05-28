@@ -236,14 +236,19 @@ class ValidationResultWidget(QtWidgets.QWidget):
         table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
-        # Word wrap OFF + ellipsis + altura fixa: rows compactas, descrição
-        # completa fica no tooltip on-hover.
-        table.setWordWrap(False)
-        table.setTextElideMode(QtCore.Qt.TextElideMode.ElideRight)
-        table.verticalHeader().setMinimumSectionSize(18)
+        # Word wrap ON + sem elipsis + altura auto pelo conteúdo: as
+        # descrições da coluna 2 são longas (várias frases, ~200-400
+        # chars cada) — desligar wrap forçava ellipsis e quebrava a
+        # leitura. Tooltip on-hover continua disponível pra cópia.
+        table.setWordWrap(True)
+        table.setTextElideMode(QtCore.Qt.TextElideMode.ElideNone)
+        table.verticalHeader().setMinimumSectionSize(20)
         table.verticalHeader().setDefaultSectionSize(20)
+        # ResizeToContents: cada row cresce conforme texto wrappado na
+        # largura atual da coluna 2 (Stretch). Re-chamado em
+        # _refresh_metrics_table após popular pra reagir ao texto novo.
         table.verticalHeader().setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.Fixed
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
         )
         # Min modesto pra não forçar QTabWidget alto demais quando outras
         # abas são gráficos curtos. Vertical scrollbar do QTableWidget
@@ -335,7 +340,11 @@ class ValidationResultWidget(QtWidgets.QWidget):
             table.setItem(r, 0, label_item)
             table.setItem(r, 1, value_item)
             table.setItem(r, 2, desc_item)
-        # NÃO chama resizeRowsToContents — defaultSectionSize fixa altura.
+        # ResizeToContents no vertical header (configurado em
+        # _add_metrics_tab) auto-ajusta cada row à altura do texto
+        # wrappado. Chamada explícita garante recompute imediato pra
+        # textos longos da coluna Descrição.
+        table.resizeRowsToContents()
         # Cols 0/1 sized inicialmente to contents; user pode arrastar depois.
         table.resizeColumnToContents(0)
         table.resizeColumnToContents(1)
