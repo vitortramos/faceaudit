@@ -601,11 +601,13 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
     pad = 0.05 * (x_max - x_min) if x_max > x_min else 1.0
     x_grid = np.linspace(x_min - pad, x_max + pad, 200)
 
-    # Identidade y=x.
+    # Identidade y=x: referência de "nenhuma correção afim necessária".
+    # NÃO é o calibrador afim ótimo — quem é ótimo é a reta laranja
+    # (slope, intercept dados pelo Brümmer-Doddington).
     ax.plot(
         x_grid, x_grid,
         color="#888", linewidth=1.2, linestyle="--", alpha=0.85,
-        label="y = x  (calibrador afim ótimo)",
+        label="y = x  (sem recalibração afim)",
     )
     # Reta pós-afim.
     sign = "+" if intercept >= 0 else "−"
@@ -705,7 +707,13 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
         return
 
     percentiles = np.array([1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64)
+    # Percentis críticos da região de overlap forense:
+    # - P1/P5 dos genuínos = genuínos mais difíceis (potenciais falsos−).
+    # - P95/P99 dos impostores = impostores mais perigosos (potenciais falsos+).
+    gen_critical_mask = np.isin(percentiles, [1.0, 5.0])
+    imp_critical_mask = np.isin(percentiles, [95.0, 99.0])
 
+    gen_q = imp_q = None
     if gen_lr.size > 0:
         gen_q = np.percentile(gen_lr, percentiles)
         ax.plot(
@@ -714,6 +722,13 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
             linewidth=1.8, alpha=0.95,
             label=f"Genuínos (n={gen_lr.size:,})".replace(",", "."),
         )
+        # Halo nos pontos críticos: anel verde-escuro vazado.
+        if gen_critical_mask.any():
+            ax.scatter(
+                percentiles[gen_critical_mask], gen_q[gen_critical_mask],
+                s=160, facecolors="none", edgecolors="#1b5e20",
+                linewidths=2.2, zorder=5, label="_nolegend_",
+            )
     if imp_lr.size > 0:
         imp_q = np.percentile(imp_lr, percentiles)
         ax.plot(
@@ -722,6 +737,13 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
             linewidth=1.8, alpha=0.95,
             label=f"Impostores (n={imp_lr.size:,})".replace(",", "."),
         )
+        # Halo nos pontos críticos: anel vermelho-escuro vazado.
+        if imp_critical_mask.any():
+            ax.scatter(
+                percentiles[imp_critical_mask], imp_q[imp_critical_mask],
+                s=160, facecolors="none", edgecolors="#8b0000",
+                linewidths=2.2, zorder=5, label="_nolegend_",
+            )
 
     ax.axhline(
         0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
@@ -742,6 +764,18 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
         subtitle_parts.append(f"Cllr={cllr_val:.4f}")
     if cllr_min_val is not None:
         subtitle_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+    # Tail gaps assimétricos — pontos mais informativos da região de overlap:
+    # - hard-tail gap = Gen P5 − Imp P95
+    # - extreme-tail gap = Gen P1 − Imp P99
+    # Positivo = boa separação; ≈0 ou negativo = overlap relevante naquela
+    # região (genuíno cai abaixo do impostor da mesma "extremidade").
+    if gen_q is not None and imp_q is not None:
+        idx_p1, idx_p5 = 0, 1  # percentiles[0]=1, [1]=5
+        idx_p95, idx_p99 = 7, 8  # percentiles[7]=95, [8]=99
+        hard_tail_gap = float(gen_q[idx_p5] - imp_q[idx_p95])
+        extreme_tail_gap = float(gen_q[idx_p1] - imp_q[idx_p99])
+        subtitle_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
+        subtitle_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
     if subtitle_parts:
         title = "Quantis por Classe\n" + "  ·  ".join(subtitle_parts)
     else:

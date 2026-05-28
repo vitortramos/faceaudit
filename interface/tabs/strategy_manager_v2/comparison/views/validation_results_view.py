@@ -721,11 +721,12 @@ class ValidationResultsView(QtWidgets.QWidget):
         pad = 0.05 * (x_max - x_min) if x_max > x_min else 1.0
         x_grid = np.linspace(x_min - pad, x_max + pad, 200)
 
-        # Identidade y=x — referência única (sem cor da paleta).
+        # Identidade y=x — referência única (sem cor da paleta). NÃO é
+        # o calibrador afim ótimo — é o estado de "nenhuma correção afim".
         ax.plot(
             x_grid, x_grid,
             color="#888", linewidth=1.2, linestyle="--", alpha=0.85,
-            label="y = x  (afim ótimo)",
+            label="y = x  (sem recalibração afim)",
         )
 
         for idx, (item, result) in enumerate(self._loaded):
