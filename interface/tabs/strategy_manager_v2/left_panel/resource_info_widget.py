@@ -1325,13 +1325,20 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         )
 
         # Clipping de log-LR (KDE e BiGauss expõem min/max no config; LogReg não tem).
+        # BiGauss tem toggle enable_clipping (default False); KDE sempre clipa.
         if (is_kde or is_bigauss) and cfg is not None:
-            min_lr = getattr(cfg, "min_log_lr", None)
-            max_lr = getattr(cfg, "max_log_lr", None)
-            if min_lr is not None and max_lr is not None:
-                self.lbl_calib_clipping.setText(f"[{min_lr:g}, {max_lr:g}]")
+            bigauss_clip_off = (
+                is_bigauss and not getattr(cfg, "enable_clipping", True)
+            )
+            if bigauss_clip_off:
+                self.lbl_calib_clipping.setText("desligado")
             else:
-                self.lbl_calib_clipping.setText("—")
+                min_lr = getattr(cfg, "min_log_lr", None)
+                max_lr = getattr(cfg, "max_log_lr", None)
+                if min_lr is not None and max_lr is not None:
+                    self.lbl_calib_clipping.setText(f"[{min_lr:g}, {max_lr:g}]")
+                else:
+                    self.lbl_calib_clipping.setText("—")
         else:
             self.lbl_calib_clipping.setText("n/a")
 

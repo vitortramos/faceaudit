@@ -247,14 +247,61 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         },
     )
 
+    enable_clipping: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "<html><b>Aplica clipping no log-LR calibrado</b> a "
+                "<code>[min_log_lr, max_log_lr]</code>. Quando desligado "
+                "(padrão), o calibrador não trunca a saída — log-LRs "
+                "extremos (gerados por scores fora da faixa do treino ou "
+                "por caudas da bi-gaussiana) ficam intactos. <br/><br/>"
+                "Ligar pode ser útil em laudos onde se quer reportar log-LR "
+                "com magnitude limitada (ex: ±20), mas via de regra "
+                "<b>introduz perda de informação</b> e satura métricas como "
+                "<i>cllr_min</i>. Mantenha desligado a menos que haja um "
+                "motivo específico.<br/><br/>"
+                "<b>⚠️ Importante:</b> este toggle controla <b>apenas</b> o "
+                "clip final <code>np.clip(log_lr, min_log_lr, max_log_lr)</code>. "
+                "Mesmo desligado, o BiGauss tem dois clamps internos que "
+                "produzem floors/ceilings naturais e <b>não são afetados "
+                "por este flag</b>:<br/>"
+                "<ul>"
+                "<li><code>gx_clamp_to_training_range</code> (configurável, "
+                "default <b>True</b>): scores brutos fora do range visto no "
+                "treino mapeiam pra <code>G(x_min)</code> ou "
+                "<code>G(x_max)</code>. Todos esses pontos caem no mesmo "
+                "percentil e produzem o <b>mesmo</b> log-LR de saída — "
+                "aparece como um patamar visual nas caudas da curva de "
+                "calibração.</li>"
+                "<li>Clamp de probabilidade <code>u ∈ [ε, 1−ε]</code> "
+                "(hardcoded, ε ≈ 1e-12): evita <code>F⁻¹(0) = −∞</code> e "
+                "<code>F⁻¹(1) = +∞</code>. Define o piso/teto <i>matemático</i> "
+                "do que o BiGauss consegue emitir — depende de σ alvo.</li>"
+                "</ul>"
+                "Pra eliminar o patamar visual nas caudas, é preciso "
+                "desligar também <code>gx_clamp_to_training_range</code> "
+                "(disponível quando <code>gx_method=KDE_SMOOTHED</code>) — "
+                "mas isso permite extrapolação confiante em regiões não "
+                "treinadas, o que <b>não é recomendado</b> em forense.</html>"
+            )
+        },
+    )
+
     min_log_lr: float = field(
         default=-20.0,
-        metadata={"help": "Limite inferior do log-LR calibrado (clipping)."}
+        metadata={"help": (
+            "Limite inferior do log-LR calibrado. Só aplica se "
+            "<code>enable_clipping=True</code>."
+        )}
     )
 
     max_log_lr: float = field(
         default=20.0,
-        metadata={"help": "Limite superior do log-LR calibrado (clipping)."}
+        metadata={"help": (
+            "Limite superior do log-LR calibrado. Só aplica se "
+            "<code>enable_clipping=True</code>."
+        )}
     )
 
     interpolation_points: int = field(
@@ -529,7 +576,8 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
 
         if not (0.0 < self.sigma_shrinkage_factor <= 1.0):
             raise ValueError("sigma_shrinkage_factor deve estar em (0, 1].")
-        if self.min_log_lr >= self.max_log_lr:
+        # min/max só são restritivos quando o clipping está ligado.
+        if self.enable_clipping and self.min_log_lr >= self.max_log_lr:
             raise ValueError("min_log_lr deve ser menor que max_log_lr.")
         if self.interpolation_points < 100:
             raise ValueError("interpolation_points deve ser pelo menos 100.")
@@ -603,6 +651,7 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
         "inversion_method",
         "gx_method",
         "sigma_estimation_mode",
+        "enable_clipping",
     )
 
     def get_hidden_fields(self):
@@ -675,5 +724,9 @@ class BiGaussianizedCalibrationModelConfig(JSONSerializableMixin):
                 "gx_clamp_to_training_range",
                 "gx_grid_points",
             }
+
+        # Clipping toggle: min/max só aparecem quando ligado.
+        if not self.enable_clipping:
+            hidden |= {"min_log_lr", "max_log_lr"}
 
         return hidden

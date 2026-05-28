@@ -220,8 +220,15 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
             "cllr_predicted_from_sigma": (
                 float(cllr_predicted) if cllr_predicted is not None else None
             ),
-            "min_log_lr": float(self.config.min_log_lr),
-            "max_log_lr": float(self.config.max_log_lr),
+            "clipping_enabled": bool(self.config.enable_clipping),
+            "min_log_lr": (
+                float(self.config.min_log_lr)
+                if self.config.enable_clipping else None
+            ),
+            "max_log_lr": (
+                float(self.config.max_log_lr)
+                if self.config.enable_clipping else None
+            ),
         }
         logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
 
@@ -260,7 +267,9 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         else:
             log_lr = self._mixture_inv_brent(u, self._sigma_target)
 
-        return np.clip(log_lr, self.config.min_log_lr, self.config.max_log_lr)
+        if self.config.enable_clipping:
+            return np.clip(log_lr, self.config.min_log_lr, self.config.max_log_lr)
+        return log_lr
 
     # =========================================================================
     # DIAGNÓSTICO
@@ -306,22 +315,33 @@ class BiGaussianizedCalibrationModel(CalibrationModelProtocol):
         below = int((score_for_range < self._x_min).sum())
         above = int((score_for_range > self._x_max).sum())
 
-        clip_lo = float(self.config.min_log_lr)
-        clip_hi = float(self.config.max_log_lr)
-        eps_clip = 1e-9
-        at_min = int((log_lr <= clip_lo + eps_clip).sum())
-        at_max = int((log_lr >= clip_hi - eps_clip).sum())
+        # Saturação em min/max só faz sentido quando clipping está ligado.
+        clipping_on = bool(self.config.enable_clipping)
+        if clipping_on:
+            clip_lo = float(self.config.min_log_lr)
+            clip_hi = float(self.config.max_log_lr)
+            eps_clip = 1e-9
+            at_min = int((log_lr <= clip_lo + eps_clip).sum())
+            at_max = int((log_lr >= clip_hi - eps_clip).sum())
+            training_log_lr_range = (clip_lo, clip_hi)
+            pct_at_min = 100.0 * at_min / n
+            pct_at_max = 100.0 * at_max / n
+        else:
+            at_min = at_max = 0
+            training_log_lr_range = None
+            pct_at_min = pct_at_max = None
 
         return {
             "n_scores": n,
             "score_min_seen": min_seen,
             "score_max_seen": max_seen,
             "training_score_range": (float(self._x_min), float(self._x_max)),
-            "training_log_lr_range": (clip_lo, clip_hi),
+            "training_log_lr_range": training_log_lr_range,
+            "clipping_enabled": clipping_on,
             "pct_below_training_range": 100.0 * below / n,
             "pct_above_training_range": 100.0 * above / n,
-            "pct_at_min_log_lr": 100.0 * at_min / n,
-            "pct_at_max_log_lr": 100.0 * at_max / n,
+            "pct_at_min_log_lr": pct_at_min,
+            "pct_at_max_log_lr": pct_at_max,
             "n_below_training_range": below,
             "n_above_training_range": above,
             "n_at_min_log_lr": at_min,

@@ -686,6 +686,7 @@ _BIGAUSS_CONFIG_LABELS = {
     "initial_calibrator":      "Calibrador inicial",
     "inversion_method":        "Método de inversão da CDF",
     "sigma_shrinkage_factor":  "Fator de encolhimento (σ)",
+    "enable_clipping":         "Habilitar Clipping",
     "min_log_lr":              "log-LR mínimo (clipping)",
     "max_log_lr":              "log-LR máximo (clipping)",
     "interpolation_points":    "Pontos da interpolação (INTERP1D)",
@@ -726,10 +727,30 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
         "§3.5 do paper. 1.0 = sem encolhimento; 0.9 = 90% do σ calculado, "
         "puxa LRs grandes pra perto de 1. Útil quando há pouco treino e "
         "preocupa-se com extrapolação.",
+    "enable_clipping":
+        "Aplica clipping no log-LR calibrado a [min_log_lr, max_log_lr]. "
+        "Padrão: desligado — o calibrador não trunca a saída. Ligar pode "
+        "ser útil em laudos onde se quer reportar log-LR com magnitude "
+        "limitada, mas introduz perda de informação e satura métricas "
+        "como cllr_min.\n\n"
+        "⚠ IMPORTANTE: este toggle controla APENAS o clip final do log-LR. "
+        "Mesmo desligado, o BiGauss tem dois clamps internos que produzem "
+        "floors/ceilings naturais e NÃO são afetados:\n"
+        "• gx_clamp_to_training_range (default True): scores fora do range "
+        "do treino mapeiam pra G(x_min)/G(x_max) → todos caem no mesmo "
+        "log-LR → aparece como patamar nas caudas da curva.\n"
+        "• Clamp de probabilidade u ∈ [ε, 1−ε] (hardcoded): evita F⁻¹ "
+        "infinito nas bordas. Define o piso/teto matemático que o BiGauss "
+        "consegue emitir (depende de σ alvo).\n\n"
+        "Pra eliminar o patamar visual, é preciso desligar também "
+        "gx_clamp_to_training_range (disponível quando gx_method=KDE_SMOOTHED), "
+        "mas isso permite extrapolação confiante — não recomendado em forense.",
     "min_log_lr":
-        "Limite inferior do log-LR calibrado (clipping de saída).",
+        "Limite inferior do log-LR calibrado (clipping de saída). "
+        "Só aplica se enable_clipping=True.",
     "max_log_lr":
-        "Limite superior do log-LR calibrado (clipping de saída).",
+        "Limite superior do log-LR calibrado (clipping de saída). "
+        "Só aplica se enable_clipping=True.",
     "interpolation_points":
         "Quantidade de pontos do grid usado pra construir G(x) (CDF empírica) "
         "e F⁻¹ (inversa da mistura). Só aplica se inversion_method=INTERP1D.",
