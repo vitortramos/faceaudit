@@ -161,6 +161,22 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 if key in calibrator_md and calibrator_md[key] is not None:
                     ds_metadata[key] = calibrator_md[key]
 
+            # Propaga marcador de vetorização + matriz (N, D) + labels dos
+            # sistemas-fonte. Sem isso, STRATEGY_EVALUATION downstream perde
+            # a info de que o calibrador é multi-D e infere D=1, colapsando
+            # o heatmap log-LR num plot raw×log-LR enganoso (raw_score é só
+            # a 1ª componente do vetor).
+            if score_dataset.is_score_vector:
+                ds_metadata["is_score_vector"] = True
+                sv_matrix = score_dataset.metadata.get(
+                    SimilarityScoreDataset.SCORE_VECTOR_MATRIX_KEY
+                )
+                if sv_matrix is not None:
+                    ds_metadata[SimilarityScoreDataset.SCORE_VECTOR_MATRIX_KEY] = sv_matrix
+                sources = score_dataset.metadata.get("score_vector_source_resources")
+                if sources is not None:
+                    ds_metadata["score_vector_source_resources"] = sources
+
             calibrated_dataset = SimilarityScoreDataset(
                 name=output_name,
                 description=(
