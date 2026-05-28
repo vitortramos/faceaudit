@@ -689,6 +689,16 @@ class ValidationResultWidget(QtWidgets.QWidget):
             "raw_score diferentes exigem cautela.<br>"
             "• <b>Para mais de 20 mil pares por classe</b>, scatter usa "
             "amostragem aleatória de 20k — a forma agregada é preservada."
+            "<br><br>"
+            "<b>Calibrador multidimensional (D ≥ 2):</b> quando o input "
+            "vem de <i>SCORE_VECTORIZATION</i> combinando 2+ sistemas, o "
+            "plano raw × log-LR perde sentido (raw_score é apenas a "
+            "1ª componente). Pra <b>D=2</b> o plot vira heatmap log-LR "
+            "no plano (x₀, x₁) com scatter gen/imp + contornos de "
+            "decisão — mostra a superfície real do calibrador 2D. Pra "
+            "<b>D ≥ 3</b> a aba mostra placeholder e o analista deve "
+            "consultar o <i>Diagnóstico Afim em Escala log-LR</i> (que "
+            "opera em escala calibrada, agnóstico a D)."
         )
 
     @staticmethod

@@ -31,6 +31,9 @@ class ValidationMathService:
                           impostor_scores: List[float],
                           genuine_raw_scores: List[float] = None,
                           impostor_raw_scores: List[float] = None,
+                          genuine_score_vectors: Optional[np.ndarray] = None,
+                          impostor_score_vectors: Optional[np.ndarray] = None,
+                          score_vector_axis_labels: Optional[List[str]] = None,
                           calibrator_cllr_train: float = None,
                           calibrator_cllr_train_gen: float = None,
                           calibrator_cllr_train_imp: float = None,
@@ -95,13 +98,40 @@ class ValidationMathService:
             if impostor_raw_scores is not None else np.array([])
         )
 
-        # 7b. Grid pré-computado da curva de calibração + recalibração afim
-        # Operates no plano raw_score → log-LR. slope/intercept vêm do passo
-        # 7 e operam sobre o log-LR atual (não sobre o raw_score).
-        cal_curve = self._compute_calibration_curve_grid(
-            gen_raw_arr, imp_raw_arr, gen_arr, imp_arr,
-            calib_slope, calib_intercept,
+        # 7b. Grid pré-computado da curva de calibração.
+        # D = 1 (input escalar): plano raw_score → log-LR, mesma lógica
+        #   tradicional (calibrador 1D LogReg/KDE/BiGauss em UM score).
+        # D = 2 (SCORE_VECTORIZATION com 2 sistemas): superfície log-LR
+        #   no plano (x₀, x₁) — heatmap + scatter + contornos.
+        # D ≥ 3: visualização suprimida (raw_score → log-LR é enganoso;
+        #   placeholder textual aponta pro Diagnóstico Afim).
+        # slope/intercept (do passo 7) operam sobre o log-LR atual,
+        # qualquer que seja D.
+        cal_dim = self._infer_cal_curve_dim(
+            genuine_score_vectors, impostor_score_vectors,
         )
+        if cal_dim == 2:
+            cal_curve = self._compute_calibration_curve_2d_grid(
+                genuine_score_vectors, impostor_score_vectors,
+                gen_arr, imp_arr,
+            )
+            cal_curve["cal_curve_dim"] = 2
+            cal_curve["cal_curve_axis_labels"] = list(
+                score_vector_axis_labels or ["x₀", "x₁"]
+            )[:2]
+        elif cal_dim >= 3:
+            cal_curve = self._empty_calibration_curve_grid()
+            cal_curve["cal_curve_dim"] = cal_dim
+            cal_curve["cal_curve_axis_labels"] = list(
+                score_vector_axis_labels or []
+            )
+        else:
+            cal_curve = self._compute_calibration_curve_grid(
+                gen_raw_arr, imp_raw_arr, gen_arr, imp_arr,
+                calib_slope, calib_intercept,
+            )
+            cal_curve["cal_curve_dim"] = 1
+            cal_curve["cal_curve_axis_labels"] = []
 
         # 8. Tail / outliers (Tier 5)
         tail = self._compute_tail_metrics(gen_arr, imp_arr)
@@ -281,6 +311,147 @@ class ValidationMathService:
     # =========================================================================
     # CALIBRATION CURVE GRID (pós-afim Brümmer + Δ no plano raw × logLR)
     # =========================================================================
+
+    @staticmethod
+    def _infer_cal_curve_dim(
+        gen_vectors: Optional[np.ndarray],
+        imp_vectors: Optional[np.ndarray],
+    ) -> int:
+        """Inferre dimensionalidade do calibrador a partir dos vetores
+        de score por classe. None ou shape (N,) → 1. (N,D) → D.
+
+        Quando uma classe tem D=K e a outra D≠K, considera 1 (fallback
+        defensivo — não devemos cair em 2D heatmap com classes
+        inconsistentes).
+        """
+        def _d(arr):
+            if arr is None:
+                return None
+            a = np.asarray(arr)
+            if a.ndim == 1 or a.size == 0:
+                return 1
+            return int(a.shape[1])
+        dg = _d(gen_vectors)
+        di = _d(imp_vectors)
+        if dg is None and di is None:
+            return 1
+        if dg is None:
+            return di
+        if di is None:
+            return dg
+        if dg != di:
+            return 1
+        return dg
+
+    @staticmethod
+    def _empty_calibration_curve_grid() -> dict:
+        """Placeholder pra todos os campos cal_curve_* quando o plot 1D
+        não se aplica (D ≥ 3 ou sem dados). O draw cai em texto
+        explicativo."""
+        return {
+            "cal_curve_grid_x": np.array([]),
+            "cal_curve_llr_y": np.array([]),
+            "cal_curve_affine_y": np.array([]),
+            "cal_curve_affine_delta_y": np.array([]),
+            "cal_curve_zero_raw_score": None,
+            "cal_curve_rug_gen_x": np.array([]),
+            "cal_curve_rug_imp_x": np.array([]),
+            "cal_curve_2d_grid_x0": np.array([]),
+            "cal_curve_2d_grid_x1": np.array([]),
+            "cal_curve_2d_grid_log_lr": np.array([]),
+            "cal_curve_2d_gen_x0": np.array([]),
+            "cal_curve_2d_gen_x1": np.array([]),
+            "cal_curve_2d_imp_x0": np.array([]),
+            "cal_curve_2d_imp_x1": np.array([]),
+        }
+
+    def _compute_calibration_curve_2d_grid(
+        self,
+        gen_vectors: np.ndarray,
+        imp_vectors: np.ndarray,
+        gen_log_lr: np.ndarray,
+        imp_log_lr: np.ndarray,
+        *,
+        n_grid: int = 100,
+        scatter_cap: int = 5000,
+    ) -> dict:
+        """Pré-computa heatmap de log-LR no plano (x₀, x₁) pra calibrador
+        2D (típico: SCORE_VECTORIZATION combinando 2 sistemas).
+
+        Estratégia: interpola observados (x₀, x₁) → log_lr via
+        `scipy.interpolate.LinearNDInterpolator` (triangulação Delaunay
+        + interpolação linear dentro do casco convexo). Pontos fora do
+        casco viram NaN — matplotlib renderiza como pasta clara, sinaliza
+        ausência de dados naquela região.
+
+        Pra LogReg 2D a interpolação é exata (relação log_lr = w₀x₀ +
+        w₁x₁ + b é linear). Pra KDE/BiGauss em 2D a aproximação é
+        razoável (superfície suave).
+
+        Returns:
+            dict com `cal_curve_2d_grid_x0` (M,), `_grid_x1` (M,),
+            `_grid_log_lr` (M,M) onde M = n_grid, e scatter subsampled
+            por classe (`_gen_x0`, `_gen_x1`, `_imp_x0`, `_imp_x1`).
+            Também preenche os campos 1D com arrays vazios pra manter
+            o splat-into-ValidationPlotData consistente.
+        """
+        from scipy.interpolate import LinearNDInterpolator
+
+        out = self._empty_calibration_curve_grid()
+
+        gen_vectors = np.asarray(gen_vectors, dtype=np.float64)
+        imp_vectors = np.asarray(imp_vectors, dtype=np.float64)
+        if gen_vectors.ndim != 2 or imp_vectors.ndim != 2:
+            return out
+        if gen_vectors.shape[1] != 2 or imp_vectors.shape[1] != 2:
+            return out
+        if gen_vectors.shape[0] != gen_log_lr.shape[0]:
+            return out
+        if imp_vectors.shape[0] != imp_log_lr.shape[0]:
+            return out
+
+        all_x = np.vstack([gen_vectors, imp_vectors])
+        all_y = np.concatenate([gen_log_lr, imp_log_lr])
+
+        # Bounds do grid: span observado com padding 5%.
+        x0_lo, x0_hi = float(all_x[:, 0].min()), float(all_x[:, 0].max())
+        x1_lo, x1_hi = float(all_x[:, 1].min()), float(all_x[:, 1].max())
+        x0_pad = (x0_hi - x0_lo) * 0.05 if x0_hi > x0_lo else 1.0
+        x1_pad = (x1_hi - x1_lo) * 0.05 if x1_hi > x1_lo else 1.0
+
+        x0_grid = np.linspace(x0_lo - x0_pad, x0_hi + x0_pad, n_grid)
+        x1_grid = np.linspace(x1_lo - x1_pad, x1_hi + x1_pad, n_grid)
+
+        try:
+            interp = LinearNDInterpolator(all_x, all_y, fill_value=np.nan)
+            xx, yy = np.meshgrid(x0_grid, x1_grid)
+            grid_log_lr = interp(xx, yy)
+        except Exception:
+            # Defensivo: pontos colineares quebram Delaunay → cai em
+            # 1D fallback (grid vazio sinaliza pro draw).
+            return out
+
+        # Subsample do scatter (estratificado por classe).
+        rng = np.random.default_rng(0)
+
+        def _sample_pair(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+            n = vec.shape[0]
+            if n <= scatter_cap:
+                return vec[:, 0], vec[:, 1]
+            idx = rng.choice(n, size=scatter_cap, replace=False)
+            return vec[idx, 0], vec[idx, 1]
+
+        gen_x0_s, gen_x1_s = _sample_pair(gen_vectors)
+        imp_x0_s, imp_x1_s = _sample_pair(imp_vectors)
+
+        out["cal_curve_2d_grid_x0"] = x0_grid
+        out["cal_curve_2d_grid_x1"] = x1_grid
+        out["cal_curve_2d_grid_log_lr"] = grid_log_lr
+        out["cal_curve_2d_gen_x0"] = gen_x0_s
+        out["cal_curve_2d_gen_x1"] = gen_x1_s
+        out["cal_curve_2d_imp_x0"] = imp_x0_s
+        out["cal_curve_2d_imp_x1"] = imp_x1_s
+        return out
 
     def _compute_calibration_curve_grid(
         self,

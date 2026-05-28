@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 import numpy as np
 
 @dataclass
@@ -51,3 +51,34 @@ class ValidationPlotData:
     # Rug plot subsampled (cap ~2000 por classe) — apenas raw_scores.
     cal_curve_rug_gen_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_rug_imp_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+
+    # --- Curva de Calibração: dimensionalidade + visualização 2D ---
+    # `cal_curve_dim` indica quantos sistemas alimentam o calibrador:
+    #   1 → calibrador 1D, plot 2-panel raw×logLR (atual).
+    #   2 → calibrador 2D (typ. SCORE_VECTORIZATION com 2 sistemas);
+    #       plot vira heatmap log-LR no plano (x₀, x₁) com scatter +
+    #       contornos de decisão.
+    #   3+ → suprime visualização raw→logLR (1D collapse é enganoso);
+    #       plot mostra placeholder textual apontando pro Diagnóstico
+    #       Afim em Escala log-LR (que opera em qualquer D).
+    # Default 1 mantém retrocompat com pickles antigos.
+    cal_curve_dim: int = field(default=1, repr=False)
+    # Labels dos eixos pra D ≥ 2 — vem de `score_vector_source_resources`
+    # do dataset CALIBRATED_SCORES (nomes dos modelos de similaridade).
+    # Empty pra D=1.
+    cal_curve_axis_labels: List[str] = field(default_factory=list, repr=False)
+
+    # --- Curva de Calibração 2D: heatmap log-LR no plano (x₀, x₁) ---
+    # Grid regular pré-computado via interpolação 2D
+    # (LinearNDInterpolator) dos observados (x₀, x₁, log_lr). Pontos
+    # fora do casco convexo viram NaN — matplotlib renderiza como
+    # masked area. Empty quando D != 2 ou pickle pré-2D.
+    cal_curve_2d_grid_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_grid_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_grid_log_lr: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    # Scatter subsampled (cap ~5000 por classe) pra overlay sobre o
+    # heatmap. Mantém densidade visual sem matar render.
+    cal_curve_2d_gen_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_gen_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_imp_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_imp_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)

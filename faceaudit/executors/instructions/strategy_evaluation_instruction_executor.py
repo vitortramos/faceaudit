@@ -71,10 +71,18 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
             # datasets de milhões de pares. Raw_scores ficam alinhados aos
             # log_lrs (mesmos índices i) — viabilizam a Curva de Calibração
             # (5ª aba do ValidationResultWidget).
+            #
+            # `gen_idx` / `imp_idx` rastreiam as posições originais dos
+            # itens em `score_dataset.items` — usados depois pra extrair
+            # os score_vectors correspondentes do
+            # `metadata["score_vector_matrix"]` (D-dim, quando o input
+            # veio de SCORE_VECTORIZATION).
             gen_log_lrs: List[float] = []
             imp_log_lrs: List[float] = []
             gen_raw_scores: List[float] = []
             imp_raw_scores: List[float] = []
+            gen_idx: List[int] = []
+            imp_idx: List[int] = []
             n_skipped = 0
             items = score_dataset.items
             n = len(items)
@@ -92,9 +100,11 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                     if sample.label == 1:
                         gen_log_lrs.append(float(v))
                         gen_raw_scores.append(raw)
+                        gen_idx.append(j)
                     else:
                         imp_log_lrs.append(float(v))
                         imp_raw_scores.append(raw)
+                        imp_idx.append(j)
                 # Micro-pausa: cede GIL à main thread.
                 time.sleep(0)
 
@@ -127,6 +137,35 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
             # CV (k_folds=0). Service só transporta pro ValidationMetrics.
             ds_md = score_dataset.metadata if isinstance(score_dataset.metadata, dict) else {}
 
+            # Score vectors D-dim (se input veio de SCORE_VECTORIZATION).
+            # Permite render da Curva de Calibração 2D (heatmap log-LR
+            # no plano dos sistemas combinados) ou supressão pra D ≥ 3.
+            # `metadata["score_vector_matrix"]` é (N, D) alinhada com
+            # `items[i]`; recortamos pelas idx gen/imp coletadas acima.
+            gen_score_vectors = None
+            imp_score_vectors = None
+            axis_labels: List[str] = []
+            score_vector_matrix = ds_md.get("score_vector_matrix")
+            if score_vector_matrix is not None:
+                try:
+                    import numpy as _np
+                    svm = _np.asarray(score_vector_matrix, dtype=_np.float64)
+                    if svm.ndim == 2 and svm.shape[0] == n:
+                        gen_score_vectors = svm[gen_idx, :]
+                        imp_score_vectors = svm[imp_idx, :]
+                        # Labels dos eixos vêm dos source resources (nomes
+                        # dos modelos de similaridade que produziram cada
+                        # coluna). Quando ausente cai em "x₀", "x₁", ...
+                        sources = ds_md.get("score_vector_source_resources")
+                        if isinstance(sources, (list, tuple)) and len(sources) == svm.shape[1]:
+                            axis_labels = [str(s) for s in sources]
+                except Exception as exc:
+                    self._log(
+                        context,
+                        f"[{instruction.name}] ⚠️ Falha ao extrair "
+                        f"score_vector_matrix pra plot 2D: {exc}",
+                    )
+
             service = ValidationMathService()
             result = service.calculate_metrics(
                 strategy_id=str(strategy_id),
@@ -136,6 +175,9 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 impostor_scores=imp_log_lrs,
                 genuine_raw_scores=gen_raw_scores,
                 impostor_raw_scores=imp_raw_scores,
+                genuine_score_vectors=gen_score_vectors,
+                impostor_score_vectors=imp_score_vectors,
+                score_vector_axis_labels=axis_labels,
                 calibrator_cllr_train=ds_md.get("calibrator_cllr_train"),
                 calibrator_cllr_train_gen=ds_md.get("calibrator_cllr_train_gen"),
                 calibrator_cllr_train_imp=ds_md.get("calibrator_cllr_train_imp"),

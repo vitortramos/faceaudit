@@ -15,9 +15,10 @@ gera os 4 PNGs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 
 from faceaudit.enums.project_folder import ProjectFolder
@@ -333,30 +334,33 @@ def draw_ece(figure: Figure, result: Any) -> None:
 
 
 def draw_calibration_curve(figure: Figure, result: Any) -> None:
-    """Curva de Calibração v2: scatter raw × log-LR + curva pós-afim
-    Brümmer + Δ residual.
+    """Curva de Calibração v3: branching por dimensionalidade.
 
-    Layout 2-panel quando o pickle traz o grid pré-computado em
-    `plot_data.cal_curve_*` (versão nova do executor). Fallback pra
-    layout single-panel (visual legado) quando o grid está vazio
-    (pickles antigos).
+    A dimensionalidade é lida de `plot_data.cal_curve_dim`:
+      - **D = 1** (calibrador 1D LogReg/KDE/BiGauss em UM score):
+        layout 2-panel raw × log-LR + curva pós-afim Brümmer + Δ
+        residual (versão v2 original — comportamento abaixo).
+      - **D = 2** (SCORE_VECTORIZATION com 2 sistemas combinados):
+        heatmap log-LR no plano (x₀, x₁) + scatter gen/imp + contornos
+        de decisão (0, ±2, ±5, ±10). Mostra a superfície real do
+        calibrador 2D.
+      - **D ≥ 3**: placeholder textual (1D collapse seria enganoso);
+        aponta pro Diagnóstico Afim em Escala log-LR (agnóstico a D).
 
-    **Plot top:**
-      - scatter (gen=verde, imp=vermelho) — pontos observados;
-      - linha sólida azul = calibrador atual f(x) interpolado no grid;
-      - linha tracejada laranja = pós-afim Brümmer-Doddington:
-        `slope·f(x) + intercept`. Só vira reta no plano raw×logLR
-        quando f é linear (LogReg). Pra KDE/BiGauss é curva;
-      - axhline log-LR=0 (LR=1, neutralidade forense);
-      - axvline em raw_score onde a pós-afim cruza log-LR=0;
-      - rug ticks de gen/imp na borda inferior — contextualiza onde
-        há massa de dados.
-
-    **Plot bottom:**
-      - Δ log-LR após recalibração afim = `(slope−1)·f(x) + intercept`;
-      - axhline em 0 (ponto onde a afim não muda o log-LR).
+    Pickles antigos (cal_curve_dim default = 1) caem no branch D=1
+    naturalmente.
     """
     pd = result.plot_data
+    dim = int(getattr(pd, "cal_curve_dim", 1) or 1)
+
+    if dim == 2:
+        _draw_calibration_curve_2d(figure, result)
+        return
+    if dim >= 3:
+        _draw_calibration_curve_placeholder(figure, dim)
+        return
+
+    # D = 1: layout 2-panel raw × log-LR + pós-afim Brümmer + Δ.
     gen_raw = np.asarray(getattr(pd, "genuine_raw_scores", []), dtype=np.float64)
     imp_raw = np.asarray(getattr(pd, "impostor_raw_scores", []), dtype=np.float64)
     gen_lr = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
@@ -561,6 +565,184 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
     else:
         # Single-panel: constrained não está ligado, tight_layout dá ajuste.
         figure.tight_layout()
+
+
+def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
+    """Curva de Calibração 2D: heatmap log-LR no plano (x₀, x₁) + scatter
+    gen/imp + contornos de decisão.
+
+    Layout single-panel:
+      - **Background heatmap** (`pcolormesh`): superfície log-LR
+        interpolada no grid (x₀, x₁). Colormap divergente RdBu_r
+        centrado em 0 (azul = impostor side, vermelho = genuíno side,
+        branco ≈ neutralidade). Regiões fora do casco convexo das
+        observações ficam mascaradas (cinza claro).
+      - **Scatter overlay**: genuínos (verde) + impostores (vermelho)
+        subsampled (cap 5k por classe) com alpha baixo.
+      - **Contornos**: linhas em log-LR = 0 (fronteira de decisão, traço
+        sólido), ±2, ±5, ±10 (tracejados, intensidade decrescente).
+        Pra LogReg 2D log_lr = w₀x₀+w₁x₁+b → contornos são RETAS
+        paralelas.
+
+    Métricas no título: slope/intercept/Cllr_affine/Cllr_min — operam
+    sobre o log-LR escalar pós-calibrador (válidos qualquer que seja D).
+    """
+    pd = result.plot_data
+    x0_grid = np.asarray(getattr(pd, "cal_curve_2d_grid_x0", []), dtype=np.float64)
+    x1_grid = np.asarray(getattr(pd, "cal_curve_2d_grid_x1", []), dtype=np.float64)
+    log_lr_grid = np.asarray(
+        getattr(pd, "cal_curve_2d_grid_log_lr", []), dtype=np.float64,
+    )
+
+    figure.clear()
+    figure.set_layout_engine("constrained")
+    ax = figure.add_subplot(111)
+
+    if x0_grid.size < 2 or x1_grid.size < 2 or log_lr_grid.size == 0:
+        ax.text(
+            0.5, 0.5,
+            "(curva 2D indisponível — pickle pré-2D,\n"
+            "re-execute STRATEGY_EVALUATION)",
+            ha="center", va="center", transform=ax.transAxes,
+            color="#888", fontsize=10,
+        )
+        return
+
+    # Labels dos eixos: source resources se disponíveis, senão x₀/x₁.
+    axis_labels = list(getattr(pd, "cal_curve_axis_labels", []) or [])
+    label_x = axis_labels[0] if len(axis_labels) >= 1 else "x₀"
+    label_y = axis_labels[1] if len(axis_labels) >= 2 else "x₁"
+
+    # Heatmap centrado em 0. Vmax simétrico pra divergir corretamente.
+    finite_mask = np.isfinite(log_lr_grid)
+    if finite_mask.any():
+        vabs = float(np.nanmax(np.abs(log_lr_grid[finite_mask])))
+    else:
+        vabs = 1.0
+    vabs = max(vabs, 1e-6)
+
+    # pcolormesh com edges (n+1 vs n) — usamos `shading="auto"` que
+    # aceita centers e desloca pra edges internamente.
+    masked = np.ma.masked_invalid(log_lr_grid)
+    cmap = plt.get_cmap("RdBu_r").copy()
+    cmap.set_bad(color="#eeeeee", alpha=0.6)
+    mesh = ax.pcolormesh(
+        x0_grid, x1_grid, masked,
+        cmap=cmap, vmin=-vabs, vmax=vabs, shading="auto",
+        alpha=0.85,
+    )
+    cbar = figure.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85)
+    cbar.set_label("log-LR calibrado", fontsize=9)
+
+    # Contornos de decisão (preto pro 0, cinza degradê pros demais).
+    contour_levels = [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0]
+    levels_in_range = [
+        L for L in contour_levels if -vabs <= L <= vabs
+    ]
+    if levels_in_range:
+        try:
+            cs = ax.contour(
+                x0_grid, x1_grid, masked,
+                levels=levels_in_range,
+                colors=[
+                    "#222" if L == 0.0 else "#444"
+                    for L in levels_in_range
+                ],
+                linewidths=[
+                    1.6 if L == 0.0 else 0.9
+                    for L in levels_in_range
+                ],
+                linestyles=[
+                    "solid" if L == 0.0 else "dashed"
+                    for L in levels_in_range
+                ],
+                alpha=0.85,
+            )
+            ax.clabel(cs, inline=True, fontsize=7, fmt="%g")
+        except Exception:
+            pass  # contornos faltando não bloqueiam o heatmap
+
+    # Scatter overlay (subsampled).
+    gen_x0 = np.asarray(getattr(pd, "cal_curve_2d_gen_x0", []), dtype=np.float64)
+    gen_x1 = np.asarray(getattr(pd, "cal_curve_2d_gen_x1", []), dtype=np.float64)
+    imp_x0 = np.asarray(getattr(pd, "cal_curve_2d_imp_x0", []), dtype=np.float64)
+    imp_x1 = np.asarray(getattr(pd, "cal_curve_2d_imp_x1", []), dtype=np.float64)
+    n_gen = int(getattr(result, "n_genuines", 0) or gen_x0.size)
+    n_imp = int(getattr(result, "n_impostors", 0) or imp_x0.size)
+    if imp_x0.size > 0:
+        ax.scatter(
+            imp_x0, imp_x1, s=4, c="#c62828", alpha=0.25,
+            edgecolors="none",
+            label=f"Impostores (N={n_imp:,})".replace(",", "."),
+        )
+    if gen_x0.size > 0:
+        ax.scatter(
+            gen_x0, gen_x1, s=4, c="#2e7d32", alpha=0.35,
+            edgecolors="none",
+            label=f"Genuínos (N={n_gen:,})".replace(",", "."),
+        )
+
+    # Título multilinha com métricas escalares (slope/intercept ainda
+    # se aplicam ao log-LR pós-calibrador qualquer que seja D).
+    m = getattr(result, "metrics", None)
+    slope = getattr(m, "calibration_slope", None) if m else None
+    intercept = getattr(m, "calibration_intercept", None) if m else None
+    cllr_aff = getattr(m, "cllr_affine", None) if m else None
+    cllr_val = getattr(m, "cllr", None) if m else None
+    cllr_min_val = getattr(m, "cllr_min", None) if m else None
+
+    title_lines = [
+        f"Curva de Calibração 2D  ({n_imp:,} impostores · {n_gen:,} genuínos)"
+        .replace(",", "."),
+    ]
+    line2_parts: List[str] = []
+    if cllr_val is not None:
+        line2_parts.append(f"Cllr={cllr_val:.4f}")
+    if cllr_aff is not None:
+        line2_parts.append(f"Cllr_affine={cllr_aff:.4f}")
+    if cllr_min_val is not None:
+        line2_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+    if line2_parts:
+        title_lines.append("  ·  ".join(line2_parts))
+    line3_parts: List[str] = []
+    if slope is not None:
+        if slope < 0.95:
+            slope_diag = "over-confident"
+        elif slope > 1.05:
+            slope_diag = "under-confident"
+        else:
+            slope_diag = "bem calibrado"
+        line3_parts.append(f"slope={slope:.3f} ({slope_diag})")
+    if intercept is not None:
+        line3_parts.append(f"intercept={intercept:+.3f}")
+    if line3_parts:
+        title_lines.append("  ·  ".join(line3_parts))
+    ax.set_title("\n".join(title_lines), fontsize=10)
+
+    ax.set_xlabel(label_x, fontsize=9)
+    ax.set_ylabel(label_y, fontsize=9)
+    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+    ax.tick_params(labelsize=8)
+
+
+def _draw_calibration_curve_placeholder(figure: Figure, dim: int) -> None:
+    """Placeholder textual quando D ≥ 3 — a representação raw → log-LR
+    seria enganosa (1D collapse de input D-dim). Aponta pro Diagnóstico
+    Afim em Escala log-LR que opera em escala calibrada e é agnóstico
+    a D."""
+    figure.clear()
+    ax = figure.add_subplot(111)
+    ax.text(
+        0.5, 0.5,
+        f"Calibrador {dim}-dimensional\n\n"
+        "A representação raw → log-LR não se aplica a D ≥ 3\n"
+        "(colapso 1D seria enganoso).\n\n"
+        "Consulte a aba 'Diagnóstico Afim em Escala log-LR'\n"
+        "pra análise da calibração em escala log-LR.",
+        ha="center", va="center", transform=ax.transAxes,
+        color="#555", fontsize=10, linespacing=1.4,
+    )
+    ax.set_axis_off()
 
 
 def _compute_pava_mapping(
