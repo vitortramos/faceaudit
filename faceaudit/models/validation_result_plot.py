@@ -441,10 +441,13 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
     else:
         slope_diag = "bem calibrado"
 
-    # Título 2-linhas: (1) identidade do gráfico + contagens, (2) métricas
-    # escalares (Cllr/Cllr_affine/Cllr_min/slope+diag). Move informação
-    # numérica do quadro da legenda pro topo do plot — legenda fica só
-    # com handles visuais.
+    # Título multilinha:
+    # (1) identidade do gráfico + contagens;
+    # (2) decomposição de Cllr (Cllr / Cllr_affine / Cllr_min);
+    # (3) parâmetros do afim (slope+diag, intercept).
+    # Quebrado pra evitar overflow horizontal no painel inline (figure
+    # redimensionada pra ~400-500 px). Move informação numérica do
+    # quadro da legenda pro topo — legenda fica só com handles visuais.
     if has_grid and ax_top is not None:
         n_imp_total = int(summary.get("n_imp_total", 0))
         n_gen_total = int(summary.get("n_gen_total", 0))
@@ -452,22 +455,24 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
             f"Curva de Calibração  "
             f"({n_imp_total:,} impostores · {n_gen_total:,} genuínos)"
         ).replace(",", ".")
-        subtitle_parts: list[str] = []
+        line2_parts: list[str] = []
         if cllr_val is not None:
-            subtitle_parts.append(f"Cllr={cllr_val:.4f}")
+            line2_parts.append(f"Cllr={cllr_val:.4f}")
         if cllr_aff is not None:
-            subtitle_parts.append(f"Cllr_affine={cllr_aff:.4f}")
+            line2_parts.append(f"Cllr_affine={cllr_aff:.4f}")
         if cllr_min_val is not None:
-            subtitle_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+            line2_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+        line3_parts: list[str] = []
         if slope is not None and slope_diag is not None:
-            subtitle_parts.append(f"slope={slope:.3f} ({slope_diag})")
+            line3_parts.append(f"slope={slope:.3f} ({slope_diag})")
         if intercept is not None:
-            subtitle_parts.append(f"intercept={intercept:+.3f}")
-        if subtitle_parts:
-            full_title = f"{title_line1}\n{'  ·  '.join(subtitle_parts)}"
-        else:
-            full_title = title_line1
-        ax_top.set_title(full_title, fontsize=10)
+            line3_parts.append(f"intercept={intercept:+.3f}")
+        title_lines = [title_line1]
+        if line2_parts:
+            title_lines.append("  ·  ".join(line2_parts))
+        if line3_parts:
+            title_lines.append("  ·  ".join(line3_parts))
+        ax_top.set_title("\n".join(title_lines), fontsize=10)
 
     # ── Camadas adicionais no top axes (só com grid) ─────────────────────
     if has_grid and ax_top is not None:
@@ -552,27 +557,77 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         figure.tight_layout()
 
 
-def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
-    """Diagnóstico Afim em escala log-LR — plano log-LR atual × log-LR pós-afim.
+def _compute_pava_mapping(
+    gen_lr: np.ndarray, imp_lr: np.ndarray, x_grid: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Calcula o mapeamento PAVA (isotônico) avaliado num grid de x's.
 
-    Reescala o problema da curva de calibração para o eixo log-LR (em
-    bits/nats), que é comum entre estratégias. Sob esse eixo:
-      - Identidade y=x = calibrador afinemente ótimo (slope=1, intercept=0).
-      - Reta pós-afim y=slope·x + intercept = correção ótima Brümmer.
-      - Distância vertical entre as duas é a correção que falta.
+    PAVA = Pool Adjacent Violators — regressão isotônica que produz o
+    mapeamento monotônico ótimo. Equivale ao calibrador que atinge
+    `Cllr_min` (limite teórico de calibração monotônica).
+
+    Sequência:
+      1. Fit isotônico em (gen+imp scores, labels);
+      2. Avalia no `x_grid` via interpolação (out_of_bounds='clip');
+      3. Converte probabilidade → log-LR (com correção de prior_log_odds
+         pra remover o efeito do prior empírico do dataset).
+
+    Retorna None quando não há ambas as classes (PAVA precisa de gen E
+    imp). Mantém a convenção do `ValidationMathService._get_calibrated_llrs`.
+    """
+    if gen_lr.size == 0 or imp_lr.size == 0:
+        return None
+    try:
+        from sklearn.isotonic import IsotonicRegression
+    except ImportError:
+        return None
+    scores = np.concatenate([gen_lr, imp_lr])
+    labels = np.concatenate([
+        np.ones(gen_lr.size, dtype=np.float64),
+        np.zeros(imp_lr.size, dtype=np.float64),
+    ])
+    ir = IsotonicRegression(out_of_bounds="clip")
+    ir.fit(scores, labels)
+    p = ir.transform(x_grid)
+    eps = 1e-14
+    p = np.clip(p, eps, 1.0 - eps)
+    prior_log_odds = float(np.log(gen_lr.size / imp_lr.size))
+    return np.log(p / (1.0 - p)) - prior_log_odds
+
+
+def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
+    """Diagnóstico Afim em escala log-LR — decomposição completa de Cllr.
+
+    Reescala a calibração para o eixo log-LR (unidade comum entre
+    estratégias) e mostra a decomposição:
+      ``Cllr  ≥  Cllr_affine  ≥  Cllr_min``
+       │              │              │
+       │              │              └ PAVA (verde-azulado): limite
+       │              │                teórico monotônico.
+       │              └ Pós-afim (laranja): melhor correção linear.
+       └ Atual: status quo, equivalente a y=x neste plano.
 
     Camadas:
-      - Identidade y=x (cinza tracejada);
-      - Pós-afim y=slope·x + intercept (laranja sólida);
+      - Identidade y=x (cinza tracejada) — sem recalibração afim;
+      - Pós-afim y=slope·x + intercept (laranja sólida) — Brümmer ótimo;
+      - PAVA monotônico (verde-azulado, step) — Cllr_min reachable;
       - axhline y=0 + axvline x=0 (cinza pontilhadas — neutralidade);
-      - Rug ticks dos log-LRs observados na borda inferior (gen=verde,
-        imp=vermelho) — contextualiza onde há massa de dados.
+      - Rug ticks dos log-LRs observados na borda inferior.
 
-    Diferente da Curva de Calibração, este plot é robusto à escala do
-    raw_score subjacente — pode ser sobreposto entre estratégias na
-    janela de Comparação.
+    Leituras:
+      - **Gap y=x → afim** (vertical) = `Cllr − Cllr_affine` (recuperável
+        por slope+intercept).
+      - **Gap afim → PAVA** (vertical) = `Cllr_affine − Cllr_min`
+        (recuperável APENAS por mapeamento não-linear monotônico —
+        afim não consegue).
+      - **PAVA colada na afim** → calibrador é essencialmente linear.
+      - **PAVA curva nas caudas** afastando-se da afim → não-linearidade
+        irrecuperável pela afim (típico de over-confidence nas caudas).
     """
     figure.clear()
+    # Constrained layout reserva espaço corretamente pra título multilinha;
+    # tight_layout não acomoda bem subtítulos com 5+ métricas.
+    figure.set_layout_engine("constrained")
     ax = figure.add_subplot(111)
 
     pd = result.plot_data
@@ -583,6 +638,7 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
     slope = getattr(m, "calibration_slope", None) if m else None
     intercept = getattr(m, "calibration_intercept", None) if m else None
     cllr_aff = getattr(m, "cllr_affine", None) if m else None
+    cllr_min_val = getattr(m, "cllr_min", None) if m else None
 
     if (gen_lr.size == 0 and imp_lr.size == 0) or slope is None or intercept is None:
         ax.text(
@@ -616,6 +672,15 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
         color="#E8A020", linewidth=2.0, alpha=0.95,
         label=f"Pós-afim: {slope:.3f}·logLR {sign} {abs(intercept):.3f}",
     )
+    # PAVA monotônico — limite teórico (Cllr_min reachable).
+    pava_grid = _compute_pava_mapping(gen_lr, imp_lr, x_grid)
+    if pava_grid is not None:
+        ax.plot(
+            x_grid, pava_grid,
+            color="#1f7a8c", linewidth=1.6, alpha=0.9,
+            drawstyle="steps-mid",
+            label="PAVA monotônico (Cllr_min)",
+        )
     # Eixos de neutralidade.
     ax.axhline(0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.5)
     ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.5)
@@ -647,24 +712,37 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
         )
     ax.set_ylim(ymin - rug_h * 0.4, ymax)
 
-    # Diagnóstico textual no subtítulo.
+    # Diagnóstico textual no subtítulo + decomposição numérica de Cllr.
+    # Quebrado em 2 linhas: linha 2 = parâmetros do afim, linha 3 =
+    # decomposição numérica de Cllr. Painel inline da UI redimensiona
+    # a figure pra ~400-500 px de largura — single-line subtitle estoura.
     if slope < 0.95:
         diag = "over-confident (afim comprime)"
     elif slope > 1.05:
         diag = "under-confident (afim expande)"
     else:
         diag = "bem calibrado (afim ≈ identidade)"
-    subtitle_parts = [f"slope={slope:.3f} ({diag})", f"intercept={intercept:+.3f}"]
+    line2_parts = [f"slope={slope:.3f} ({diag})", f"intercept={intercept:+.3f}"]
+    line3_parts = []
     if cllr_aff is not None:
-        subtitle_parts.append(f"Cllr_affine={cllr_aff:.4f}")
-    title = "Diagnóstico Afim em Escala log-LR\n" + "  ·  ".join(subtitle_parts)
-    ax.set_title(title, fontsize=10)
+        line3_parts.append(f"Cllr_affine={cllr_aff:.4f}")
+    if cllr_min_val is not None:
+        line3_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+    # Perda não-linear (gap afim → PAVA): a parte do nonlinear_cal_loss
+    # que o afim não recupera.
+    if cllr_aff is not None and cllr_min_val is not None:
+        nl_loss = max(0.0, float(cllr_aff) - float(cllr_min_val))
+        line3_parts.append(f"nonlinear_loss={nl_loss:.4f}")
+    title_lines = ["Diagnóstico Afim em Escala log-LR",
+                   "  ·  ".join(line2_parts)]
+    if line3_parts:
+        title_lines.append("  ·  ".join(line3_parts))
+    ax.set_title("\n".join(title_lines), fontsize=10)
 
     ax.set_xlabel("log-LR atual")
-    ax.set_ylabel("log-LR pós-afim")
+    ax.set_ylabel("log-LR pós-correção")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
-    figure.tight_layout()
 
 
 def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
@@ -691,6 +769,7 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     direto na Comparação independente da unidade de raw_score.
     """
     figure.clear()
+    figure.set_layout_engine("constrained")
     ax = figure.add_subplot(111)
 
     pd = result.plot_data
@@ -759,32 +838,33 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     m = getattr(result, "metrics", None)
     cllr_val = getattr(m, "cllr", None) if m else None
     cllr_min_val = getattr(m, "cllr_min", None) if m else None
-    subtitle_parts = []
+    line2_parts = []
     if cllr_val is not None:
-        subtitle_parts.append(f"Cllr={cllr_val:.4f}")
+        line2_parts.append(f"Cllr={cllr_val:.4f}")
     if cllr_min_val is not None:
-        subtitle_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+        line2_parts.append(f"Cllr_min={cllr_min_val:.4f}")
     # Tail gaps assimétricos — pontos mais informativos da região de overlap:
     # - hard-tail gap = Gen P5 − Imp P95
     # - extreme-tail gap = Gen P1 − Imp P99
     # Positivo = boa separação; ≈0 ou negativo = overlap relevante naquela
     # região (genuíno cai abaixo do impostor da mesma "extremidade").
+    line3_parts = []
     if gen_q is not None and imp_q is not None:
         idx_p1, idx_p5 = 0, 1  # percentiles[0]=1, [1]=5
         idx_p95, idx_p99 = 7, 8  # percentiles[7]=95, [8]=99
         hard_tail_gap = float(gen_q[idx_p5] - imp_q[idx_p95])
         extreme_tail_gap = float(gen_q[idx_p1] - imp_q[idx_p99])
-        subtitle_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
-        subtitle_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
-    if subtitle_parts:
-        title = "Quantis por Classe\n" + "  ·  ".join(subtitle_parts)
-    else:
-        title = "Quantis por Classe"
-    ax.set_title(title, fontsize=10)
+        line3_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
+        line3_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
+    title_lines = ["Quantis por Classe"]
+    if line2_parts:
+        title_lines.append("  ·  ".join(line2_parts))
+    if line3_parts:
+        title_lines.append("  ·  ".join(line3_parts))
+    ax.set_title("\n".join(title_lines), fontsize=10)
 
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="best", fontsize=8.5, framealpha=0.85)
-    figure.tight_layout()
 
 
 _DRAW_FN = {
