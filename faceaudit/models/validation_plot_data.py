@@ -1,20 +1,21 @@
 from dataclasses import dataclass, field
+from typing import Optional
 import numpy as np
 
 @dataclass
 class ValidationPlotData:
     """
-    Estruturas de dados pré-computadas contendo as coordenadas prontas para 
+    Estruturas de dados pré-computadas contendo as coordenadas prontas para
     injeção no motor gráfico (Matplotlib/PyQtGraph), evitando recálculo na View.
     """
     # --- Para Tippett Plot e Histogramas ---
     genuine_log_lrs: np.ndarray = field(repr=False)
     impostor_log_lrs: np.ndarray = field(repr=False)
-    
+
     # --- Para Curva DET (Detection Error Tradeoff) ---
     fpr_array: np.ndarray = field(repr=False) # False Positive Rates (eixo X)
     fnr_array: np.ndarray = field(repr=False) # False Negative Rates (eixo Y)
-    
+
     # --- Para Gráfico de Calibração (ECE - Opcional) ---
     ece_prior_log_odds: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     ece_values: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
@@ -28,3 +29,25 @@ class ValidationPlotData:
     # nesse caso o draw cai em placeholder gracioso.
     genuine_raw_scores: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     impostor_raw_scores: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+
+    # --- Para Curva de Calibração v2 (pós-afim Brümmer + resíduo) ---
+    # Grid pré-computado de f(x) (calibrador atual) e da recalibração
+    # afim Brümmer-Doddington: slope·logLR + intercept. O slope/intercept
+    # operam sobre o log-LR atual, não sobre o raw_score; por isso a
+    # "pós-afim" plotada no plano raw×logLR só é reta quando f(x) é
+    # linear (caso LogReg). Para KDE/BiGauss, é curva.
+    #
+    # Empty quando o pickle foi gerado por versão anterior do executor
+    # (sem grid pré-computado); o draw faz fallback pra single-panel.
+    cal_curve_grid_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_llr_y: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_affine_y: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_affine_delta_y: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    # Raw_score onde a curva pós-afim cruza log-LR=0 (LR=1, neutralidade
+    # forense). None quando: (a) não houve cruzamento na faixa observada,
+    # ou (b) grid não foi computado (compat). UI plota linha vertical
+    # tracejada nesse x quando presente.
+    cal_curve_zero_raw_score: Optional[float] = field(default=None, repr=False)
+    # Rug plot subsampled (cap ~2000 por classe) — apenas raw_scores.
+    cal_curve_rug_gen_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_rug_imp_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)

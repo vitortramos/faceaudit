@@ -115,10 +115,23 @@ def draw_calibration_curve_from_summary(
     summary: dict,
     *,
     show_title: bool = True,
+    ax=None,
+    show_counts: bool = True,
 ) -> None:
-    """Desenha scatter raw_score × log-LR a partir do summary."""
-    figure.clear()
-    ax = figure.add_subplot(111)
+    """Desenha scatter raw_score × log-LR a partir do summary.
+
+    Quando `ax` é None (default), comportamento legacy: limpa a figure e
+    cria um único subplot 111. Quando `ax` é fornecido, plota nele sem
+    tocar na figure — usado pelo `draw_calibration_curve` (validação)
+    pra compor um layout 2-panel com o resíduo abaixo.
+
+    Quando `show_counts=False`, as labels da legenda omitem o `(n=...)`
+    — usado pelo modo 2-panel da validação, que move as contagens pro
+    título do plot pra deixar a legenda mais enxuta.
+    """
+    if ax is None:
+        figure.clear()
+        ax = figure.add_subplot(111)
 
     n_gen = int(summary.get("n_gen", 0))
     n_imp = int(summary.get("n_imp", 0))
@@ -135,6 +148,8 @@ def draw_calibration_curve_from_summary(
         return
 
     def _legend_label(class_label: str, n: int, n_total: int) -> str:
+        if not show_counts:
+            return class_label
         if n < n_total:
             return (
                 f"{class_label}  (n={n_total:,}, "

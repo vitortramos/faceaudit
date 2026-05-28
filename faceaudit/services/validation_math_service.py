@@ -1,5 +1,5 @@
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from sklearn.metrics import roc_curve, auc
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
@@ -85,6 +85,24 @@ class ValidationMathService:
             gen_arr, imp_arr,
         )
 
+        # Raw scores opcionais (necessários pro grid de curva de calibração)
+        gen_raw_arr = (
+            np.asarray(genuine_raw_scores, dtype=np.float64)
+            if genuine_raw_scores is not None else np.array([])
+        )
+        imp_raw_arr = (
+            np.asarray(impostor_raw_scores, dtype=np.float64)
+            if impostor_raw_scores is not None else np.array([])
+        )
+
+        # 7b. Grid pré-computado da curva de calibração + recalibração afim
+        # Operates no plano raw_score → log-LR. slope/intercept vêm do passo
+        # 7 e operam sobre o log-LR atual (não sobre o raw_score).
+        cal_curve = self._compute_calibration_curve_grid(
+            gen_raw_arr, imp_raw_arr, gen_arr, imp_arr,
+            calib_slope, calib_intercept,
+        )
+
         # 8. Tail / outliers (Tier 5)
         tail = self._compute_tail_metrics(gen_arr, imp_arr)
 
@@ -124,16 +142,6 @@ class ValidationMathService:
             calibrator_cllr_cv_imp=calibrator_cllr_cv_imp,
         )
 
-        # Raw scores opcionais
-        gen_raw_arr = (
-            np.asarray(genuine_raw_scores, dtype=np.float64)
-            if genuine_raw_scores is not None else np.array([])
-        )
-        imp_raw_arr = (
-            np.asarray(impostor_raw_scores, dtype=np.float64)
-            if impostor_raw_scores is not None else np.array([])
-        )
-
         plot_data = ValidationPlotData(
             genuine_log_lrs=gen_arr,
             impostor_log_lrs=imp_arr,
@@ -144,6 +152,7 @@ class ValidationMathService:
             ece_min_values=ece_min_y,
             genuine_raw_scores=gen_raw_arr,
             impostor_raw_scores=imp_raw_arr,
+            **cal_curve,
         )
 
         return StrategyValidationResult(
@@ -268,6 +277,124 @@ class ValidationMathService:
             # Fallback neutro — não bloqueia o cálculo das outras métricas.
             cllr_original, _, _ = self._calculate_cllr_detailed(gen_scores, imp_scores)
             return cllr_original, 1.0, 0.0
+
+    # =========================================================================
+    # CALIBRATION CURVE GRID (pós-afim Brümmer + Δ no plano raw × logLR)
+    # =========================================================================
+
+    def _compute_calibration_curve_grid(
+        self,
+        gen_raw: np.ndarray,
+        imp_raw: np.ndarray,
+        gen_log_lr: np.ndarray,
+        imp_log_lr: np.ndarray,
+        slope: float,
+        intercept: float,
+        *,
+        n_grid: int = 200,
+        rug_cap: int = 2000,
+    ) -> dict:
+        """Pré-computa grid uniforme do calibrador f(x) e da recalibração afim.
+
+        O calibrador é tratado como função monotônica de raw_score em log-LR.
+        Sem acesso direto ao calibrador treinado aqui, aproximamos f via
+        interpolação linear dos pontos observados (sorted by raw). A
+        recalibração afim Brümmer-Doddington opera sobre o log-LR já
+        calibrado:
+
+            affine(x) = slope · f(x) + intercept
+            delta(x)  = affine(x) − f(x) = (slope−1)·f(x) + intercept
+
+        Em ambos os casos `x` é raw_score; a "pós-afim" só é uma reta no
+        plano raw×logLR quando f é linear (caso LogReg). Pra KDE/BiGauss,
+        é curva.
+
+        Zero-crossing (raw_score onde affine cruza log-LR=0) é achado por
+        busca da primeira mudança de sinal — robusto a slope negativo
+        (caso patológico) e a affine não estritamente monotônica.
+
+        Retorna dict pronto pra splat em ValidationPlotData. Quando raw
+        não está disponível (pickle pre-curva), todos os campos ficam
+        vazios.
+        """
+        out = {
+            "cal_curve_grid_x": np.array([]),
+            "cal_curve_llr_y": np.array([]),
+            "cal_curve_affine_y": np.array([]),
+            "cal_curve_affine_delta_y": np.array([]),
+            "cal_curve_zero_raw_score": None,
+            "cal_curve_rug_gen_x": np.array([]),
+            "cal_curve_rug_imp_x": np.array([]),
+        }
+
+        # Sem raw_scores não há grid a computar (pickle pre-curva).
+        if gen_raw.size == 0 and imp_raw.size == 0:
+            return out
+
+        # Junta tudo e ordena por raw_score — observed (x, y) pairs.
+        all_raw = np.concatenate([gen_raw, imp_raw])
+        all_lr = np.concatenate([gen_log_lr, imp_log_lr])
+
+        if all_raw.size < 2:
+            return out
+
+        order = np.argsort(all_raw)
+        sorted_raw = all_raw[order]
+        sorted_lr = all_lr[order]
+
+        # Remove duplicates em raw (np.interp tolera, mas pode produzir
+        # platôs estranhos quando o calibrador é descontínuo).
+        unique_raw, unique_idx = np.unique(sorted_raw, return_index=True)
+        unique_lr = sorted_lr[unique_idx]
+
+        if unique_raw.size < 2:
+            return out
+
+        grid_x = np.linspace(unique_raw[0], unique_raw[-1], n_grid)
+        llr_y = np.interp(grid_x, unique_raw, unique_lr)
+        affine_y = slope * llr_y + intercept
+        delta_y = affine_y - llr_y  # = (slope-1)·llr_y + intercept
+
+        zero_raw = self._find_zero_crossing(grid_x, affine_y)
+
+        rng = np.random.default_rng(0)
+
+        def _maybe_sample(arr: np.ndarray) -> np.ndarray:
+            if arr.size <= rug_cap:
+                return arr
+            idx = rng.choice(arr.size, size=rug_cap, replace=False)
+            return arr[idx]
+
+        out["cal_curve_grid_x"] = grid_x
+        out["cal_curve_llr_y"] = llr_y
+        out["cal_curve_affine_y"] = affine_y
+        out["cal_curve_affine_delta_y"] = delta_y
+        out["cal_curve_zero_raw_score"] = zero_raw
+        out["cal_curve_rug_gen_x"] = _maybe_sample(gen_raw)
+        out["cal_curve_rug_imp_x"] = _maybe_sample(imp_raw)
+        return out
+
+    @staticmethod
+    def _find_zero_crossing(
+        grid_x: np.ndarray, affine_y: np.ndarray,
+    ) -> Optional[float]:
+        """Acha o primeiro x onde affine_y cruza zero, via mudança de sinal.
+
+        Mais robusto que np.interp (que exige xp monotônico). Retorna
+        None quando não há cruzamento na faixa observada.
+        """
+        if affine_y.size < 2:
+            return None
+        signs = np.sign(affine_y)
+        changes = np.where(np.diff(signs) != 0)[0]
+        if changes.size == 0:
+            return None
+        i = int(changes[0])
+        y0, y1 = float(affine_y[i]), float(affine_y[i + 1])
+        x0, x1 = float(grid_x[i]), float(grid_x[i + 1])
+        if y1 == y0:
+            return x0
+        return x0 - y0 * (x1 - x0) / (y1 - y0)
 
     # =========================================================================
     # ECE NUMERICAL METRICS

@@ -320,17 +320,29 @@ def draw_ece(figure: Figure, result: Any) -> None:
 
 
 def draw_calibration_curve(figure: Figure, result: Any) -> None:
-    """Curva de Calibração: scatter raw_score × log-LR colorido por classe.
+    """Curva de Calibração v2: scatter raw × log-LR + curva pós-afim
+    Brümmer + Δ residual.
 
-    Reusa a infraestrutura do `calibration_curve_plot` (mesmo helper já
-    usado pra renderizar a aba do SCORE_CALIBRATION). Requer que o
-    `result.plot_data` tenha `genuine_raw_scores` e `impostor_raw_scores`
-    populados — campos opcionais adicionados em conjunto com a 5ª aba.
-    Pickles antigos (sem esses campos) caem em placeholder gracioso.
+    Layout 2-panel quando o pickle traz o grid pré-computado em
+    `plot_data.cal_curve_*` (versão nova do executor). Fallback pra
+    layout single-panel (visual legado) quando o grid está vazio
+    (pickles antigos).
+
+    **Plot top:**
+      - scatter (gen=verde, imp=vermelho) — pontos observados;
+      - linha sólida azul = calibrador atual f(x) interpolado no grid;
+      - linha tracejada laranja = pós-afim Brümmer-Doddington:
+        `slope·f(x) + intercept`. Só vira reta no plano raw×logLR
+        quando f é linear (LogReg). Pra KDE/BiGauss é curva;
+      - axhline log-LR=0 (LR=1, neutralidade forense);
+      - axvline em raw_score onde a pós-afim cruza log-LR=0;
+      - rug ticks de gen/imp na borda inferior — contextualiza onde
+        há massa de dados.
+
+    **Plot bottom:**
+      - Δ log-LR após recalibração afim = `(slope−1)·f(x) + intercept`;
+      - axhline em 0 (ponto onde a afim não muda o log-LR).
     """
-    figure.clear()
-    ax = figure.add_subplot(111)
-
     pd = result.plot_data
     gen_raw = np.asarray(getattr(pd, "genuine_raw_scores", []), dtype=np.float64)
     imp_raw = np.asarray(getattr(pd, "impostor_raw_scores", []), dtype=np.float64)
@@ -338,6 +350,8 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
     imp_lr = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
 
     if gen_raw.size == 0 and imp_raw.size == 0:
+        figure.clear()
+        ax = figure.add_subplot(111)
         ax.text(
             0.5, 0.5,
             "(curva indisponível — pickle pré-curva,\n"
@@ -347,14 +361,10 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         )
         return
 
-    # Reusa o renderer canônico de calibration_curve_plot pra manter
-    # visual idéntico ao da aba do SCORE_CALIBRATION. Constrói o summary
-    # no formato esperado (idêntico ao output de
-    # `compute_calibration_curve_summary` para uma lista de samples).
-    from faceaudit.models.similarity.calibration_curve_plot import (
-        draw_calibration_curve_from_summary,
-    )
+    grid_x = np.asarray(getattr(pd, "cal_curve_grid_x", []), dtype=np.float64)
+    has_grid = grid_x.size >= 2
 
+    # Subsample do scatter (estratificado por classe).
     rng = np.random.default_rng(0)
     MAX_PER_CLASS = 20_000
 
@@ -381,29 +391,158 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         "imp_x": imp_x_s, "imp_y": imp_y_s,
         "case_x": [], "case_y": [],
     }
-    draw_calibration_curve_from_summary(figure, summary, show_title=True)
 
-    # Anotação: parâmetros do affine fit (slope/intercept = correção ótima)
+    from faceaudit.models.similarity.calibration_curve_plot import (
+        draw_calibration_curve_from_summary,
+    )
+
+    if has_grid:
+        figure.clear()
+        # Constrained layout reserva espaço pra ylabel/xlabel/legenda em
+        # ambos os subplots — compatível com gridspec (tight_layout não é).
+        figure.set_layout_engine("constrained")
+        gs = figure.add_gridspec(2, 1, height_ratios=[3, 1])
+        ax_top = figure.add_subplot(gs[0])
+        ax_bot = figure.add_subplot(gs[1], sharex=ax_top)
+        # Scatter no ax_top. Contagens N_imp/N_gen vão pro título (ajuste
+        # após buscar as métricas, mais abaixo), então `show_counts=False`
+        # deixa as labels da legenda mais enxutas.
+        draw_calibration_curve_from_summary(
+            figure, summary, show_title=False, ax=ax_top, show_counts=False,
+        )
+    else:
+        # Single-panel legado: helper limpa figure e cria seu próprio subplot.
+        draw_calibration_curve_from_summary(figure, summary, show_title=True)
+        ax_top = figure.axes[0] if figure.axes else None
+        ax_bot = None
+
     m = getattr(result, "metrics", None)
     slope = getattr(m, "calibration_slope", None) if m else None
     intercept = getattr(m, "calibration_intercept", None) if m else None
     cllr_aff = getattr(m, "cllr_affine", None) if m else None
-    if slope is not None and intercept is not None:
-        ax = figure.axes[0] if figure.axes else None
-        if ax is not None:
-            if slope < 0.95:
-                slope_diag = " (over-confident)"
-            elif slope > 1.05:
-                slope_diag = " (under-confident)"
-            else:
-                slope_diag = " (~bem calibrado)"
-            lines = [
-                f"slope={slope:.3f}{slope_diag}",
-                f"intercept={intercept:+.3f}",
-            ]
-            if cllr_aff is not None:
-                lines.append(f"Cllr_affine={cllr_aff:.4f}")
-            _add_annotation(ax, "\n".join(lines), loc="upper left")
+    cllr_val = getattr(m, "cllr", None) if m else None
+    cllr_min_val = getattr(m, "cllr_min", None) if m else None
+
+    # Diagnóstico do slope — usado tanto no subtítulo do gráfico quanto
+    # (até a versão anterior) na label da pós-afim.
+    if slope is None:
+        slope_diag = None
+    elif slope < 0.95:
+        slope_diag = "over-confident"
+    elif slope > 1.05:
+        slope_diag = "under-confident"
+    else:
+        slope_diag = "bem calibrado"
+
+    # Título 2-linhas: (1) identidade do gráfico + contagens, (2) métricas
+    # escalares (Cllr/Cllr_affine/Cllr_min/slope+diag). Move informação
+    # numérica do quadro da legenda pro topo do plot — legenda fica só
+    # com handles visuais.
+    if has_grid and ax_top is not None:
+        n_imp_total = int(summary.get("n_imp_total", 0))
+        n_gen_total = int(summary.get("n_gen_total", 0))
+        title_line1 = (
+            f"Curva de Calibração  "
+            f"({n_imp_total:,} impostores · {n_gen_total:,} genuínos)"
+        ).replace(",", ".")
+        subtitle_parts: list[str] = []
+        if cllr_val is not None:
+            subtitle_parts.append(f"Cllr={cllr_val:.4f}")
+        if cllr_aff is not None:
+            subtitle_parts.append(f"Cllr_affine={cllr_aff:.4f}")
+        if cllr_min_val is not None:
+            subtitle_parts.append(f"Cllr_min={cllr_min_val:.4f}")
+        if slope is not None and slope_diag is not None:
+            subtitle_parts.append(f"slope={slope:.3f} ({slope_diag})")
+        if intercept is not None:
+            subtitle_parts.append(f"intercept={intercept:+.3f}")
+        if subtitle_parts:
+            full_title = f"{title_line1}\n{'  ·  '.join(subtitle_parts)}"
+        else:
+            full_title = title_line1
+        ax_top.set_title(full_title, fontsize=10)
+
+    # ── Camadas adicionais no top axes (só com grid) ─────────────────────
+    if has_grid and ax_top is not None:
+        llr_y = np.asarray(pd.cal_curve_llr_y, dtype=np.float64)
+        affine_y = np.asarray(pd.cal_curve_affine_y, dtype=np.float64)
+        zero_raw = getattr(pd, "cal_curve_zero_raw_score", None)
+        rug_gen = np.asarray(getattr(pd, "cal_curve_rug_gen_x", []), dtype=np.float64)
+        rug_imp = np.asarray(getattr(pd, "cal_curve_rug_imp_x", []), dtype=np.float64)
+
+        # Curva f(x) — calibrador atual.
+        ax_top.plot(
+            grid_x, llr_y,
+            color="#1a4f8a", linewidth=2.0, alpha=0.95,
+            label="Calibrador atual f(x)",
+        )
+        # Curva pós-afim Brümmer-Doddington. Apenas a fórmula vai na
+        # label — diagnóstico (over-/under-confident) e Cllr_affine
+        # estão no subtítulo do gráfico, fora da legenda.
+        if slope is not None and intercept is not None:
+            sign = "+" if intercept >= 0 else "−"
+            ax_top.plot(
+                grid_x, affine_y,
+                color="#E8A020", linewidth=2.0, linestyle="--", alpha=0.95,
+                label=(
+                    f"Pós-afim: {slope:.3f}·logLR {sign} {abs(intercept):.3f}"
+                ),
+            )
+        # Zero-crossing da pós-afim no eixo raw_score. Label entra na
+        # legenda como entrada com o tracinho amarelo característico.
+        if zero_raw is not None:
+            ax_top.axvline(
+                float(zero_raw),
+                color="#E8A020", linestyle=":", linewidth=1.2, alpha=0.7,
+                label=(
+                    f"x₀={float(zero_raw):+.3f} "
+                    f"(pós-afim → logLR=0)"
+                ),
+            )
+
+        # Rug ticks (gen=verde, imp=vermelho) na borda inferior — pega
+        # ylim DEPOIS das linhas (que podem ter expandido a faixa).
+        ymin, ymax = ax_top.get_ylim()
+        rug_h = (ymax - ymin) * 0.025
+        if rug_imp.size > 0:
+            ax_top.vlines(
+                rug_imp, ymin, ymin + rug_h,
+                color="#c62828", alpha=0.5, linewidth=0.8,
+            )
+        if rug_gen.size > 0:
+            ax_top.vlines(
+                rug_gen, ymin, ymin + rug_h,
+                color="#2e7d32", alpha=0.5, linewidth=0.8,
+            )
+        ax_top.set_ylim(ymin - rug_h * 0.4, ymax)
+
+        # Legenda única no upper-left consolidando tudo: scatters (sem
+        # contagens — vão no título), referência logLR=0, curva f(x),
+        # pós-afim (com slope/intercept/diag/Cllr_affine na label) e
+        # x₀ via axvline. Substitui a antiga caixa de anotação textual.
+        ax_top.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
+
+        # No 2-panel, top compartilha eixo x com bottom — esconde xticks/label.
+        ax_top.set_xlabel("")
+        ax_top.tick_params(labelbottom=False)
+
+    # ── Bottom axes: Δ log-LR (resíduo) ─────────────────────────────────
+    if has_grid and ax_bot is not None:
+        delta_y = np.asarray(pd.cal_curve_affine_delta_y, dtype=np.float64)
+        ax_bot.plot(
+            grid_x, delta_y,
+            color="#E8A020", linewidth=1.5, alpha=0.95,
+        )
+        ax_bot.axhline(
+            0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
+        )
+        ax_bot.set_xlabel("Escore Bruto")
+        ax_bot.set_ylabel("Δ log-LR", fontsize=9)
+        ax_bot.grid(True, linestyle="--", alpha=0.4)
+        ax_bot.tick_params(labelsize=8)
+    else:
+        # Single-panel: constrained não está ligado, tight_layout dá ajuste.
+        figure.tight_layout()
 
 
 _DRAW_FN = {

@@ -372,13 +372,12 @@ class ValidationResultWidget(QtWidgets.QWidget):
         page_layout.addWidget(canvas, 1)
 
         if help_html:
-            help_container = QtWidgets.QScrollArea()
-            help_container.setWidgetResizable(True)
-            help_container.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-            help_container.setMaximumHeight(180)
-            help_container.setHorizontalScrollBarPolicy(
-                QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-            )
+            # Help inline ao invés de QScrollArea: o QLabel com wordWrap
+            # tem altura natural que cabe todo o texto na largura disponível,
+            # sem barra de rolagem. Stretch=0 (canvas tem stretch=1), então
+            # ao maximizar o dialog é o canvas que cresce. Em janelas muito
+            # pequenas o canvas comprime; o help mantém o texto inteiro
+            # visível — comportamento desejado segundo feedback do usuário.
             help_inner = QtWidgets.QFrame(parent=self)
             help_inner.setStyleSheet(
                 "QFrame { background: #f4f6fa; border-left: 3px solid #2E5090;"
@@ -386,15 +385,14 @@ class ValidationResultWidget(QtWidgets.QWidget):
             )
             inner_layout = QtWidgets.QVBoxLayout(help_inner)
             inner_layout.setContentsMargins(10, 6, 10, 6)
-            help_lbl = QtWidgets.QLabel(help_html)
+            help_lbl = QtWidgets.QLabel(help_html, parent=help_inner)
             help_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
             help_lbl.setWordWrap(True)
             help_lbl.setStyleSheet(
                 "background: transparent; color: #1a2942; font-size: 11px;"
             )
             inner_layout.addWidget(help_lbl)
-            help_container.setWidget(help_inner)
-            page_layout.addWidget(help_container)
+            page_layout.addWidget(help_inner)
 
         idx = self.tabs.addTab(page, title)
         self._tab_state[idx] = {
@@ -607,27 +605,56 @@ class ValidationResultWidget(QtWidgets.QWidget):
     @staticmethod
     def _calibration_curve_help() -> str:
         return (
-            "<b>O que mostra:</b> a função de calibração — para cada par da "
-            "validação, plota o <i>raw_score</i> que entrou no calibrador "
-            "(eixo X) contra o <i>log-LR calibrado</i> que saiu (eixo Y), "
-            "colorido por classe (verde = genuínos, vermelho = impostores). "
-            "Linha pontilhada em log-LR=0 marca o crossover LR=1."
+            "<b>O que mostra:</b> a função de calibração no plano "
+            "<i>raw_score</i> (eixo X) × <i>log-LR calibrado</i> (eixo Y). "
+            "O painel superior tem três camadas: scatter dos pares observados "
+            "(verde = genuínos, vermelho = impostores), <span "
+            "style='color:#1a4f8a;'><b>curva azul sólida</b></span> = "
+            "calibrador atual <i>f(x)</i> interpolado, e "
+            "<span style='color:#E8A020;'><b>curva laranja tracejada</b></span> "
+            "= recalibração afim Brümmer-Doddington: "
+            "<i>slope·logLR + intercept</i>. Rugs na borda inferior mostram "
+            "onde há massa de raw_scores por classe. O painel inferior "
+            "mostra Δ log-LR = (pós-afim − atual) — quanto a afim empurraria "
+            "cada região da curva."
             "<br><br>"
             "<b>Como interpretar:</b><br>"
-            "• <b>Forma da curva</b>: linear pura = LogReg sigmoidal; "
-            "monotônica com inflexão na overlap = BiGauss; com degraus = "
-            "calibrador KDE com poucas amostras de treino.<br>"
-            "• <b>Crossover</b>: o ponto onde a curva cruza log-LR=0 "
-            "indica o limiar de raw_score que separa Hp de Hd. Útil pra "
-            "checar se a calibração movimentou o limite pra um lugar "
-            "razoável.<br>"
-            "• <b>Saturação</b> (curva achatada nos extremos): calibrador "
-            "comprime LRs grandes/pequenos pra perto de zero — pode ser "
-            "desejado (regularização forense) ou indicar problema "
-            "(input não-Gaussian que LogReg não modela bem).<br>"
-            "• <b>Não-monotonicidade</b>: nunca deveria acontecer. Se "
-            "aparecer, é bug no calibrador.<br>"
-            "• <b>Para mais de 20 mil pares por classe</b>, é mostrada uma "
-            "amostra aleatória de 20k — a forma agregada é preservada "
-            "(mesmo padrão das outras visualizações da curva)."
+            "• <b>Forma da curva azul</b>: linear pura = LogReg "
+            "(decision_function); monotônica com inflexão = BiGauss; com "
+            "degraus = KDE com bandwidth ruim.<br>"
+            "• <b>Curva laranja vs azul</b>: se coincidem, slope≈1 e "
+            "intercept≈0 — calibrador já está afinemente ótimo. Se a "
+            "laranja é mais inclinada, a afim <i>expandiria</i> os "
+            "log-LRs (slope>1, sistema atualmente under-confident); se "
+            "menos inclinada, <i>encolheria</i> (slope&lt;1, "
+            "over-confident). Deslocamento vertical entre elas = "
+            "intercept (viés sistemático).<br>"
+            "• <b>Importante</b>: o slope/intercept operam sobre o "
+            "<i>log-LR</i> atual, não sobre o raw_score. Por isso a "
+            "curva laranja só é uma reta no plano raw×logLR quando f(x) "
+            "já é linear (caso LogReg). Pra KDE/BiGauss, é uma curva "
+            "transformada.<br>"
+            "• <b>Linha vertical tracejada</b>: raw_score onde a curva "
+            "pós-afim cruza log-LR=0 — limiar onde a evidência após "
+            "recalibração afim seria neutra (LR=1). Marca onde a "
+            "fronteira de decisão estaria se aplicasse a afim ótima.<br>"
+            "• <b>Painel inferior (Δ log-LR)</b>: zero em toda faixa → "
+            "calibrador já é afinemente ótimo (Cllr ≈ Cllr_affine). "
+            "Crescimento/decrescimento monotônico → problema principal "
+            "é de slope. Constante deslocado de zero → problema "
+            "principal é de intercept. <b>Curvatura</b> ou mudanças de "
+            "sinal → há não-linearidade residual irrecuperável pela "
+            "afim (responsável pelo <i>nonlinear_cal_loss</i> = "
+            "Cllr_affine − Cllr_min, visível só no PAVA da aba ECE).<br>"
+            "• <b>Rugs na borda</b>: contexto de onde estão os dados. "
+            "Uma região com curva muito torta mas sem massa de scores "
+            "ali é menos relevante que torção numa região densa.<br>"
+            "• <b>⚠️ Escala intra-estratégia</b>: o slope absoluto "
+            "depende da escala do raw_score subjacente (Cosine, PLDA, "
+            "PLDA+pipeline têm escalas diferentes). Útil como "
+            "diagnóstico <i>dentro</i> de uma estratégia; comparações "
+            "diretas de slope <i>entre</i> estratégias com escalas de "
+            "raw_score diferentes exigem cautela.<br>"
+            "• <b>Para mais de 20 mil pares por classe</b>, scatter usa "
+            "amostragem aleatória de 20k — a forma agregada é preservada."
         )
