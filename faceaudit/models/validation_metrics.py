@@ -91,24 +91,43 @@ class ValidationMetrics:
 
     @property
     def cal_loss(self) -> float:
-        """Perda de Calibração total: cllr − cllr_min. Garantida ≥ 0."""
+        """Gap em relação à PAVA in-sample: cllr − cllr_min. Garantida ≥ 0.
+
+        ATENÇÃO INTERPRETATIVA (Morrison 2021): a PAVA por trás de
+        `cllr_min` é treinada E testada no próprio conjunto avaliado,
+        portanto otimista por construção. Este valor é um diagnóstico
+        in-sample útil em desenvolvimento e comparação inter-estratégias,
+        mas NÃO deve ser interpretado isoladamente como grau operacional
+        de calibração nem apresentado como métrica definitiva em laudo.
+        A defensibilidade forense depende sobretudo do modelo de
+        calibração escolhido e da representatividade dos dados de
+        calibração.
+        """
         return max(0.0, self.cllr - self.cllr_min)
 
     @property
     def is_well_calibrated(self) -> bool:
-        """Heurística forense: cal_loss < 0.1 bits → calibração aceitável."""
+        """DEPRECATED — não usar em laudo. Heurística cal_loss<0.1 que
+        Morrison (2021) critica diretamente: cal_loss é gap PAVA
+        in-sample, não medida operacional de calibração. Mantido só
+        pra retrocompat caso código externo dependa.
+        """
         return self.cal_loss < 0.1
 
     @property
     def cal_loss_gen(self) -> Optional[float]:
-        """Perda de calibração nos genuínos. None se Tier 2 não foi calculado."""
+        """Gap PAVA in-sample no termo dos genuínos. None se Tier 2 não
+        foi calculado. Diagnóstico — mesma ressalva de `cal_loss`.
+        """
         if self.cllr_gen is None or self.cllr_min_gen is None:
             return None
         return max(0.0, self.cllr_gen - self.cllr_min_gen)
 
     @property
     def cal_loss_imp(self) -> Optional[float]:
-        """Perda de calibração nos impostores. None se Tier 2 não foi calculado."""
+        """Gap PAVA in-sample no termo dos impostores. None se Tier 2 não
+        foi calculado. Diagnóstico — mesma ressalva de `cal_loss`.
+        """
         if self.cllr_imp is None or self.cllr_min_imp is None:
             return None
         return max(0.0, self.cllr_imp - self.cllr_min_imp)

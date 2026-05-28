@@ -247,8 +247,8 @@ def draw_det_curve(figure: Figure, result: Any) -> None:
 
 
 def draw_ece(figure: Figure, result: Any) -> None:
-    """Empirical Cross-Entropy: curva real + curva mínima PAVA + curva de
-    referência (sistema neutro LR=1) + cal_loss.
+    """Empirical Cross-Entropy: curva real + curva mínima PAVA in-sample +
+    curva de referência (sistema neutro LR=1) + área de gap diagnóstico.
 
     A curva de referência é a **entropia do prior** — ECE de um sistema que
     sempre reporta LR=1 (não decide). Convenção forense estabelecida
@@ -256,6 +256,12 @@ def draw_ece(figure: Figure, result: Any) -> None:
     informativo quando ECE_model < ECE_null. Se ECE_model ultrapassa
     ECE_null em algum prior, o sistema é literalmente pior que não decidir
     ali.
+
+    A curva PAVA mínima e a área âmbar entre ela e o modelo são
+    diagnóstico in-sample (Morrison 2021): PAVA é ajustada no próprio
+    conjunto avaliado, portanto otimista. Útil pra desenvolvimento;
+    não deve ser apresentada como "perda de calibração operacional"
+    em laudo.
 
     Computada on-the-fly de `ece_prior_log_odds` (não precisa regravar
     pickles antigos).
@@ -283,14 +289,14 @@ def draw_ece(figure: Figure, result: Any) -> None:
     if y_min.size == y_real.size:
         ax.fill_between(x, y_min, y_real, where=(y_real >= y_min),
                         color="#E8A020", alpha=0.18,
-                        label="Perda de calibração")
+                        label="Gap PAVA in-sample (diagnóstico)")
 
     # Plot ordering: null (atrás, cinza) → min (verde tracejado) → real (azul).
     ax.plot(x, y_null, color="#888", linewidth=1.2, linestyle=":",
             label="Sistema neutro (LR=1) — referência")
     if y_min.size:
         ax.plot(x, y_min, color="#2e7d32", linewidth=1.6, linestyle="--",
-                label="ECE mínimo (PAVA)")
+                label="ECE mínimo (PAVA in-sample)")
     ax.plot(x, y_real, color="#1a4f8a", linewidth=1.8,
             label="ECE (modelo)")
 
@@ -563,8 +569,11 @@ def _compute_pava_mapping(
     """Calcula o mapeamento PAVA (isotônico) avaliado num grid de x's.
 
     PAVA = Pool Adjacent Violators — regressão isotônica que produz o
-    mapeamento monotônico ótimo. Equivale ao calibrador que atinge
-    `Cllr_min` (limite teórico de calibração monotônica).
+    mapeamento monotônico ótimo NO CONJUNTO ONDE FOI AJUSTADA. Equivale
+    ao calibrador que atinge `Cllr_min`. ATENÇÃO: PAVA é treinada e
+    testada no próprio conjunto avaliado, portanto é um <i>oracle
+    in-sample</i> — não um limite operacional para dados novos
+    (Morrison 2021).
 
     Sequência:
       1. Fit isotônico em (gen+imp scores, labels);
@@ -602,27 +611,37 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
     estratégias) e mostra a decomposição:
       ``Cllr  ≥  Cllr_affine  ≥  Cllr_min``
        │              │              │
-       │              │              └ PAVA (verde-azulado): limite
-       │              │                teórico monotônico.
-       │              └ Pós-afim (laranja): melhor correção linear.
+       │              │              └ PAVA (verde-azulado): oracle
+       │              │                in-sample, NÃO operacional.
+       │              └ Pós-afim (laranja): melhor correção linear no
+       │                conjunto avaliado.
        └ Atual: status quo, equivalente a y=x neste plano.
+
+    ATENÇÃO INTERPRETATIVA (Morrison 2021): tanto a reta pós-afim
+    quanto a curva PAVA são ajustadas no PRÓPRIO conjunto avaliado.
+    Os gaps verticais entre as três camadas são úteis pra desenvolvimento
+    e diagnóstico, mas NÃO devem ser interpretados como ganho operacional
+    garantido pra dados novos — em particular a PAVA é otimista por
+    construção (treina e testa no mesmo conjunto).
 
     Camadas:
       - Identidade y=x (cinza tracejada) — sem recalibração afim;
-      - Pós-afim y=slope·x + intercept (laranja sólida) — Brümmer ótimo;
-      - PAVA monotônico (verde-azulado, step) — Cllr_min reachable;
+      - Pós-afim y=slope·x + intercept (laranja sólida) — Brümmer ótimo
+        IN-SAMPLE;
+      - PAVA monotônico (verde-azulado, step) — oracle in-sample;
       - axhline y=0 + axvline x=0 (cinza pontilhadas — neutralidade);
       - Rug ticks dos log-LRs observados na borda inferior.
 
-    Leituras:
-      - **Gap y=x → afim** (vertical) = `Cllr − Cllr_affine` (recuperável
-        por slope+intercept).
-      - **Gap afim → PAVA** (vertical) = `Cllr_affine − Cllr_min`
-        (recuperável APENAS por mapeamento não-linear monotônico —
-        afim não consegue).
+    Leituras (diagnóstico, não operacional):
+      - **Gap y=x → afim** (vertical) = `Cllr − Cllr_affine` =
+        `affine_cal_loss` in-sample (recuperável post-hoc por
+        slope+intercept no conjunto avaliado).
+      - **Gap afim → PAVA** (vertical) = `Cllr_affine − Cllr_min` =
+        `pava_residual_gap` (quanto a PAVA in-sample ainda reduz em
+        cima da afim — NÃO é ganho operacional garantido).
       - **PAVA colada na afim** → calibrador é essencialmente linear.
       - **PAVA curva nas caudas** afastando-se da afim → não-linearidade
-        irrecuperável pela afim (típico de over-confidence nas caudas).
+        no fit isotônico do próprio conjunto (atenção a overfit da PAVA).
     """
     figure.clear()
     # Constrained layout reserva espaço corretamente pra título multilinha;
@@ -672,14 +691,17 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
         color="#E8A020", linewidth=2.0, alpha=0.95,
         label=f"Pós-afim: {slope:.3f}·logLR {sign} {abs(intercept):.3f}",
     )
-    # PAVA monotônico — limite teórico (Cllr_min reachable).
+    # PAVA monotônico — oracle in-sample, NÃO limite operacional. PAVA
+    # treina e testa no próprio conjunto avaliado, então é otimista por
+    # construção (Morrison 2021). Mantém como diagnóstico, não como
+    # "calibração ótima" possível para dados novos.
     pava_grid = _compute_pava_mapping(gen_lr, imp_lr, x_grid)
     if pava_grid is not None:
         ax.plot(
             x_grid, pava_grid,
             color="#1f7a8c", linewidth=1.6, alpha=0.9,
             drawstyle="steps-mid",
-            label="PAVA monotônico (Cllr_min)",
+            label="PAVA (oracle in-sample; não operacional)",
         )
     # Eixos de neutralidade.
     ax.axhline(0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.5)
@@ -728,11 +750,13 @@ def draw_affine_diagnostic(figure: Figure, result: Any) -> None:
         line3_parts.append(f"Cllr_affine={cllr_aff:.4f}")
     if cllr_min_val is not None:
         line3_parts.append(f"Cllr_min={cllr_min_val:.4f}")
-    # Perda não-linear (gap afim → PAVA): a parte do nonlinear_cal_loss
-    # que o afim não recupera.
+    # Gap entre Cllr após afim e Cllr_min (PAVA in-sample). Renomeado
+    # de "nonlinear_loss" para "pava_residual_gap" para deixar claro que
+    # NÃO é um ganho operacional garantido — é o que a PAVA in-sample
+    # ainda reduz em cima do afim (Morrison 2021).
     if cllr_aff is not None and cllr_min_val is not None:
         nl_loss = max(0.0, float(cllr_aff) - float(cllr_min_val))
-        line3_parts.append(f"nonlinear_loss={nl_loss:.4f}")
+        line3_parts.append(f"pava_residual_gap={nl_loss:.4f}")
     title_lines = ["Diagnóstico Afim em Escala log-LR",
                    "  ·  ".join(line2_parts)]
     if line3_parts:
@@ -770,13 +794,13 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     """
     figure.clear()
     figure.set_layout_engine("constrained")
-    ax = figure.add_subplot(111)
 
     pd = result.plot_data
     gen_lr = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
     imp_lr = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
 
     if gen_lr.size == 0 and imp_lr.size == 0:
+        ax = figure.add_subplot(111)
         ax.text(
             0.5, 0.5,
             "(quantis indisponíveis — log-LRs não presentes no pickle)",
@@ -785,6 +809,17 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
         )
         return
 
+    # Layout 2-panel quando há ambas as classes (loss attribution exige as
+    # duas). Single-panel se só uma classe presente (edge case raro).
+    has_both = gen_lr.size > 0 and imp_lr.size > 0
+    if has_both:
+        gs = figure.add_gridspec(2, 1, height_ratios=[3, 1])
+        ax_top = figure.add_subplot(gs[0])
+        ax_bot = figure.add_subplot(gs[1], sharex=ax_top)
+    else:
+        ax_top = figure.add_subplot(111)
+        ax_bot = None
+
     percentiles = np.array([1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64)
     # Percentis críticos da região de overlap forense:
     # - P1/P5 dos genuínos = genuínos mais difíceis (potenciais falsos−).
@@ -792,49 +827,97 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     gen_critical_mask = np.isin(percentiles, [1.0, 5.0])
     imp_critical_mask = np.isin(percentiles, [95.0, 99.0])
 
+    # Cor de alerta quando o quantil crítico está do lado errado de log-LR=0
+    # (genuíno com logLR<0 ou impostor com logLR>0 — inversão grave).
+    _WRONG_SIDE = "#ff5722"
+    _GEN_HALO = "#1b5e20"
+    _IMP_HALO = "#8b0000"
+
+    def _annotate_critical(ax, p_arr, q_arr, base_color, wrong_predicate, above):
+        """Plota halo + texto numérico em cada ponto crítico. Marca em
+        laranja quando wrong_predicate(v) é True (lado errado)."""
+        for p, v in zip(p_arr, q_arr):
+            wrong = bool(wrong_predicate(v))
+            edge = _WRONG_SIDE if wrong else base_color
+            txt_color = _WRONG_SIDE if wrong else base_color
+            ax.scatter(
+                [p], [v],
+                s=160, facecolors="none", edgecolors=edge,
+                linewidths=2.4, zorder=5,
+            )
+            prefix = "⚠ " if wrong else ""
+            ax.annotate(
+                f"{prefix}{v:+.2f}",
+                (p, v), xytext=(0, 14 if above else -16),
+                textcoords="offset points",
+                ha="center", va=("bottom" if above else "top"),
+                fontsize=8, fontweight="bold", color=txt_color,
+                zorder=6,
+            )
+
     gen_q = imp_q = None
+    n_wrong_gen = n_wrong_imp = 0
     if gen_lr.size > 0:
         gen_q = np.percentile(gen_lr, percentiles)
-        ax.plot(
+        ax_top.plot(
             percentiles, gen_q,
             color="#2e7d32", marker="o", markersize=6,
             linewidth=1.8, alpha=0.95,
             label=f"Genuínos (n={gen_lr.size:,})".replace(",", "."),
         )
-        # Halo nos pontos críticos: anel verde-escuro vazado.
         if gen_critical_mask.any():
-            ax.scatter(
-                percentiles[gen_critical_mask], gen_q[gen_critical_mask],
-                s=160, facecolors="none", edgecolors="#1b5e20",
-                linewidths=2.2, zorder=5, label="_nolegend_",
+            crit_p = percentiles[gen_critical_mask]
+            crit_v = gen_q[gen_critical_mask]
+            # Wrong-side pra genuínos: logLR < 0 (gen "parece" impostor).
+            _annotate_critical(
+                ax_top, crit_p, crit_v, _GEN_HALO,
+                wrong_predicate=lambda v: v < 0.0, above=True,
             )
+            n_wrong_gen = int(np.sum(crit_v < 0.0))
     if imp_lr.size > 0:
         imp_q = np.percentile(imp_lr, percentiles)
-        ax.plot(
+        ax_top.plot(
             percentiles, imp_q,
             color="#c62828", marker="s", markersize=6,
             linewidth=1.8, alpha=0.95,
             label=f"Impostores (n={imp_lr.size:,})".replace(",", "."),
         )
-        # Halo nos pontos críticos: anel vermelho-escuro vazado.
         if imp_critical_mask.any():
-            ax.scatter(
-                percentiles[imp_critical_mask], imp_q[imp_critical_mask],
-                s=160, facecolors="none", edgecolors="#8b0000",
-                linewidths=2.2, zorder=5, label="_nolegend_",
+            crit_p = percentiles[imp_critical_mask]
+            crit_v = imp_q[imp_critical_mask]
+            # Wrong-side pra impostores: logLR > 0 (imp "parece" genuíno).
+            _annotate_critical(
+                ax_top, crit_p, crit_v, _IMP_HALO,
+                wrong_predicate=lambda v: v > 0.0, above=False,
             )
+            n_wrong_imp = int(np.sum(crit_v > 0.0))
 
-    ax.axhline(
+    ax_top.axhline(
         0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
         label="log-LR = 0  (LR=1)",
     )
 
-    ax.set_xticks(percentiles)
-    ax.set_xticklabels([f"P{int(p)}" for p in percentiles])
-    ax.set_xlim(0, 100)
-    ax.set_xlabel("Percentil por classe")
-    ax.set_ylabel("log-LR calibrado")
+    ax_top.set_xticks(percentiles)
+    # Ticks críticos (P1/P5 gen, P95/P99 imp) ganham negrito + cor da
+    # classe correspondente. Reforça visualmente os percentis mais
+    # relevantes para a região de overlap forense.
+    _GEN_CRITICAL_PCTS = {1.0, 5.0}
+    _IMP_CRITICAL_PCTS = {95.0, 99.0}
+    _tick_labels = []
+    for p in percentiles:
+        _tick_labels.append(f"P{int(p)}")
+    ax_top.set_xticklabels(_tick_labels)
+    for tick_label, p in zip(ax_top.get_xticklabels(), percentiles):
+        if p in _GEN_CRITICAL_PCTS:
+            tick_label.set_fontweight("bold")
+            tick_label.set_color("#1b5e20")
+        elif p in _IMP_CRITICAL_PCTS:
+            tick_label.set_fontweight("bold")
+            tick_label.set_color("#8b0000")
+    ax_top.set_xlim(0, 100)
+    ax_top.set_ylabel("log-LR calibrado")
 
+    # Title 3-line + flag wrong-side se houver inversões nos pontos críticos.
     m = getattr(result, "metrics", None)
     cllr_val = getattr(m, "cllr", None) if m else None
     cllr_min_val = getattr(m, "cllr_min", None) if m else None
@@ -844,27 +927,100 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     if cllr_min_val is not None:
         line2_parts.append(f"Cllr_min={cllr_min_val:.4f}")
     # Tail gaps assimétricos — pontos mais informativos da região de overlap:
-    # - hard-tail gap = Gen P5 − Imp P95
-    # - extreme-tail gap = Gen P1 − Imp P99
-    # Positivo = boa separação; ≈0 ou negativo = overlap relevante naquela
-    # região (genuíno cai abaixo do impostor da mesma "extremidade").
+    # hard-tail (P5g − P95i) e extreme (P1g − P99i). Positivo = boa
+    # separação; ≈0 ou negativo = overlap relevante.
     line3_parts = []
     if gen_q is not None and imp_q is not None:
-        idx_p1, idx_p5 = 0, 1  # percentiles[0]=1, [1]=5
-        idx_p95, idx_p99 = 7, 8  # percentiles[7]=95, [8]=99
+        idx_p1, idx_p5 = 0, 1
+        idx_p95, idx_p99 = 7, 8
         hard_tail_gap = float(gen_q[idx_p5] - imp_q[idx_p95])
         extreme_tail_gap = float(gen_q[idx_p1] - imp_q[idx_p99])
         line3_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
         line3_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
-    title_lines = ["Quantis por Classe"]
+    title_main = "Quantis por Classe"
+    if n_wrong_gen or n_wrong_imp:
+        title_main += "  ⚠ inversão"
+    title_lines = [title_main]
     if line2_parts:
         title_lines.append("  ·  ".join(line2_parts))
     if line3_parts:
         title_lines.append("  ·  ".join(line3_parts))
-    ax.set_title("\n".join(title_lines), fontsize=10)
+    ax_top.set_title("\n".join(title_lines), fontsize=10)
 
-    ax.grid(True, linestyle="--", alpha=0.4)
-    ax.legend(loc="best", fontsize=8.5, framealpha=0.85)
+    ax_top.grid(True, linestyle="--", alpha=0.4)
+    ax_top.legend(loc="best", fontsize=8.5, framealpha=0.85)
+
+    # Ênfase visual nos percentis críticos: faixa vertical translúcida
+    # nas regiões P0–P5 (gen difícil) e P95–P100 (imp perigoso).
+    # Alpha=0.10 (não 0.06) — visível sem competir com as curvas.
+    ax_top.axvspan(0, 5, color="#2e7d32", alpha=0.10, zorder=0)
+    ax_top.axvspan(95, 100, color="#c62828", alpha=0.10, zorder=0)
+
+    if ax_bot is not None:
+        ax_bot.axvspan(0, 5, color="#2e7d32", alpha=0.10, zorder=0)
+        ax_bot.axvspan(95, 100, color="#c62828", alpha=0.10, zorder=0)
+        # Sub-painel: contribuição MÉDIA ao Cllr por bin de quantil.
+        # Para cada bin centrado num percentil, calcula a média sobre as
+        # amostras com rank percentile dentro daquele bin do termo de Cllr
+        # da classe:
+        #   gen: log2(1 + e^(-LR))   (cauda esquerda dos gen é cara)
+        #   imp: log2(1 + e^(+LR))   (cauda direita dos imp é cara)
+        # Bin edges = midpoints entre percentis consecutivos + bordas 0/100.
+        # Convenção Brümmer (bits, via div. por ln 2). Conecta o plot
+        # diretamente à definição do Cllr — Jensen garante que o pontual
+        # subestimaria a contribuição.
+        _LN2 = float(np.log(2.0))
+        midpoints = (percentiles[:-1] + percentiles[1:]) / 2.0
+        bin_edges = np.concatenate([[0.0], midpoints, [100.0]])  # 10 edges
+
+        def _binned_mean_loss(lr_arr: np.ndarray, sign: float) -> np.ndarray:
+            n = lr_arr.size
+            terms = np.logaddexp(0.0, sign * lr_arr) / _LN2
+            order = np.argsort(lr_arr)
+            sorted_terms = terms[order]
+            ranks = (np.arange(n) + 0.5) / n * 100.0  # 1 rank por sample
+            bin_idx = np.digitize(ranks, bin_edges) - 1
+            bin_idx = np.clip(bin_idx, 0, percentiles.size - 1)
+            sums = np.bincount(
+                bin_idx, weights=sorted_terms, minlength=percentiles.size,
+            )
+            counts = np.bincount(bin_idx, minlength=percentiles.size)
+            return np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
+
+        gen_loss = _binned_mean_loss(gen_lr, sign=-1.0)
+        imp_loss = _binned_mean_loss(imp_lr, sign=+1.0)
+        ax_bot.plot(
+            percentiles, gen_loss,
+            color="#2e7d32", marker="o", markersize=5,
+            linewidth=1.5, alpha=0.95,
+            label="Contribuição cllr_gen por bin",
+        )
+        ax_bot.plot(
+            percentiles, imp_loss,
+            color="#c62828", marker="s", markersize=5,
+            linewidth=1.5, alpha=0.95,
+            label="Contribuição cllr_imp por bin",
+        )
+        ax_bot.axhline(0.0, color="#bbb", linestyle=":", linewidth=0.8)
+        # Top compartilha eixo X com bottom — esconde xticks/label do top
+        # (mantém o sharex que já está). Mesma ênfase visual nos críticos.
+        ax_top.set_xlabel("")
+        ax_top.tick_params(labelbottom=False)
+        ax_bot.set_xlabel("Percentil por classe")
+        ax_bot.set_ylabel("Contribuição\nao Cllr (bits)", fontsize=9)
+        ax_bot.grid(True, linestyle="--", alpha=0.4)
+        ax_bot.tick_params(labelsize=8)
+        # Tick labels críticos em negrito + cor da classe (no bottom também).
+        for tick_label, p in zip(ax_bot.get_xticklabels(), percentiles):
+            if p in _GEN_CRITICAL_PCTS:
+                tick_label.set_fontweight("bold")
+                tick_label.set_color("#1b5e20")
+            elif p in _IMP_CRITICAL_PCTS:
+                tick_label.set_fontweight("bold")
+                tick_label.set_color("#8b0000")
+        ax_bot.legend(loc="best", fontsize=8, framealpha=0.85)
+    else:
+        ax_top.set_xlabel("Percentil por classe")
 
 
 _DRAW_FN = {
@@ -988,14 +1144,18 @@ def build_metrics_table_rows(
     section("CALIBRAÇÃO — CUSTO INFORMACIONAL")
     add("Cllr", fmt_f(cllr),
         "Cost of Log-LR em bits. Mede o custo informacional médio das decisões. Menor é melhor.")
-    add("Cllr_min (PAVA)", fmt_f(cllr_min),
-        "Cllr ótimo após calibração isotônica (PAVA). Teto teórico — depende só da discriminação.")
+    add("Cllr_min (PAVA in-sample)", fmt_f(cllr_min),
+        "Cllr após recalibração monotônica PAVA ajustada no PRÓPRIO conjunto "
+        "avaliado. Referência diagnóstica in-sample (Morrison 2021), não "
+        "medida operacional de calibração — PAVA é treinada e testada no "
+        "mesmo conjunto.")
     add("cal_loss = Cllr − Cllr_min", fmt_f(cal_loss),
-        "Perda de calibração: custo extra por LRs mal escalados. Alto = recalibrar.")
-    if cal_loss is not None:
-        add("Bem calibrado? (cal_loss < 0.1)",
-            "Sim ✅" if cal_loss < 0.1 else "Não ⚠",
-            "Heurística forense: cal_loss < 0.1 bits = calibração aceitável pra laudo.")
+        "Gap em relação à PAVA in-sample. Útil em desenvolvimento e "
+        "comparação inter-estratégias; NÃO deve ser interpretado "
+        "isoladamente como grau operacional de calibração (Morrison 2021). "
+        "A defensibilidade forense da calibração depende sobretudo do "
+        "modelo escolhido e da representatividade dos dados de "
+        "calibração, não desse número.")
 
     # ── Decomposição por hipótese (Tier 2) ──────────────────────────────
     # Os campos `cllr_gen`/`cllr_imp` no DTO são médias por hipótese SEM o
@@ -1025,13 +1185,13 @@ def build_metrics_table_rows(
         add("Cllr_imp (contribuição)", fmt_f(cllr_imp_c),
             "Contribuição dos impostores ao Cllr total. Mostrada com fator 0.5 aplicado — soma com Cllr_gen = Cllr. Alto = LRs de impostores puxados pro lado positivo (incriminação injusta).")
         add("Cllr_min_gen (contribuição)", fmt_f(cllr_min_gen_c),
-            "Contribuição dos genuínos no Cllr_min (PAVA). Teto teórico do termo.")
+            "Contribuição dos genuínos no Cllr_min (PAVA in-sample). Referência diagnóstica do termo, não teto teórico real (Morrison 2021).")
         add("Cllr_min_imp (contribuição)", fmt_f(cllr_min_imp_c),
-            "Contribuição dos impostores no Cllr_min (PAVA). Teto teórico do termo.")
+            "Contribuição dos impostores no Cllr_min (PAVA in-sample). Referência diagnóstica do termo.")
         add("cal_loss_gen", fmt_f(cal_loss_gen),
-            "Perda de calibração nos genuínos (contribuição). Alto = sistema subestima evidência a favor da acusação.")
+            "Gap PAVA in-sample no termo dos genuínos. Diagnóstico — alto pode indicar que o sistema subestima evidência a favor da acusação.")
         add("cal_loss_imp", fmt_f(cal_loss_imp),
-            "Perda de calibração nos impostores (contribuição). Alto = sistema produz LRs altos pra pares diferentes (risco de incriminação).")
+            "Gap PAVA in-sample no termo dos impostores. Diagnóstico — alto pode indicar que o sistema produz LRs altos pra pares diferentes (risco de incriminação).")
 
     # ── Recalibração afim (Brümmer + Van Calster/Steyerberg) ────────────
     cllr_affine = _get("cllr_affine")
@@ -1065,18 +1225,26 @@ def build_metrics_table_rows(
             f"{intercept:+.4f}" if intercept is not None else "—",
             "Offset da correção afim. Alvo b=0. ≠ 0 = viés sistemático na escala dos log-LRs.")
         add("affine_cal_loss (recuperável)", fmt_f(affine_cal_loss),
-            "Perda que sumiria SÓ com recalibração afim (slope+intercept). Alto = recalibrar é fácil.")
-        add("nonlinear_cal_loss (residual)", fmt_f(nonlinear_cal_loss),
-            "Perda que sobra após afim. Alto = distorção estrutural, só PAVA/isotônica resolve.")
+            "Cllr − Cllr_affine. Gap post-hoc que a recalibração afim "
+            "(slope+intercept) ajustada na própria validação cobriria. "
+            "Diagnóstico — para uso operacional, slope/intercept devem "
+            "ser aprendidos em dados de calibração separados (Van Calster, "
+            "Morrison 2021).")
+        add("pava_residual_gap (afim → PAVA)", fmt_f(nonlinear_cal_loss),
+            "Cllr_affine − Cllr_min. Diferença entre Cllr após recalibração "
+            "afim e Cllr_min (PAVA in-sample). Indica quanto uma "
+            "recalibração monotônica ajustada no PRÓPRIO conjunto avaliado "
+            "ainda reduziria — diagnóstico, NÃO ganho operacional "
+            "garantido para dados novos (Morrison 2021).")
 
     # ── Curva de Cross-Entropy Empírica por prior (antiga "ECE numérico") ─
     ece_area = _get("ece_calibration_loss_area")
     if ece_area is not None:
         section("CURVA DE CROSS-ENTROPY EMPÍRICA")
         add("Perda total (área)", f"{ece_area:.4f} bits·dec",
-            "Área sombreada do plot: integral da diferença entre cross-entropy real e mínima (PAVA) ao longo dos priors log10-odds.")
+            "Área sombreada do plot: integral da diferença entre cross-entropy real e mínima (PAVA in-sample) ao longo dos priors log10-odds. Diagnóstico — a curva PAVA é otimista por ser ajustada na própria validação (Morrison 2021).")
         add("Gap máximo", fmt_f(_get("ece_max_gap")),
-            "Pior diferença pontual entre cross-entropy real e mínima. Em bits — quantos bits de informação são perdidos no pior cenário.")
+            "Pior diferença pontual entre cross-entropy real e mínima (PAVA in-sample). Em bits — diagnóstico de quanto a recalibração isotônica do próprio conjunto reduziria no pior cenário, não ganho operacional garantido.")
         argmax_prior = _get("ece_argmax_prior_log_odds")
         add("Prior log₁₀-odds do gap máx",
             "—" if argmax_prior is None else f"{float(argmax_prior):+.3f}",
@@ -1093,7 +1261,7 @@ def build_metrics_table_rows(
         add("Cllr in-sample (treino calib)", fmt_f(cllr_train),
             "Cllr do calibrador medido nos mesmos dados usados pra treiná-lo. Otimista — calibrador pode overfittar.")
         add("Cllr CV out-of-fold (treino calib)", fmt_f(cllr_cv),
-            "Cllr estimado out-of-fold no domínio de calibração via k-fold. Não mede performance em validação externa.")
+            "Cllr out-of-fold no domínio de calibração via k-fold. Reduz o otimismo do in-sample mas NÃO mede transferência para validação externa nem aproveitamento do calibrador em casework (Morrison 2021).")
         if cllr_train is not None:
             gap_in = float(cllr_cv) - float(cllr_train)
             sign = "+" if gap_in >= 0 else ""
@@ -1103,7 +1271,13 @@ def build_metrics_table_rows(
             gap_out = float(cllr) - float(cllr_cv)
             sign = "+" if gap_out >= 0 else ""
             add("Gap validação − CV (perda de transferência)", f"{sign}{gap_out:.4f}",
-                "Perda de transferência entre treino do calibrador e validação externa. Valores positivos sugerem diferença de domínio/protocolo/dificuldade entre os conjuntos. NÃO prova isoladamente a causa.")
+                "Perda de transferência calibração → validação externa. Pode "
+                "refletir diferença de domínio, protocolo, qualidade, "
+                "população ou dificuldade dos pares. NÃO prova isoladamente "
+                "a causa, mas é o sinal mais relevante: Morrison (2021) "
+                "argumenta que a defensibilidade forense da calibração "
+                "depende sobretudo de quão representativos os dados de "
+                "calibração são do cenário do caso.")
         cv_gen_raw = _get("calibrator_cllr_cv_gen")
         cv_imp_raw = _get("calibrator_cllr_cv_imp")
         if cv_gen_raw is not None and cv_imp_raw is not None:

@@ -55,6 +55,26 @@ from ..flow_layout import (
 )
 
 
+# Percentis críticos da região de overlap forense — usados em ênfase visual.
+_GEN_CRITICAL_PCTS = (1.0, 5.0)
+_IMP_CRITICAL_PCTS = (95.0, 99.0)
+
+
+def _bold_critical_ticks(ax, percentiles: np.ndarray) -> None:
+    """Põe em negrito + cor da classe os xticklabels dos percentis críticos.
+
+    Verde-escuro para P1/P5 (genuínos difíceis), vermelho-escuro para
+    P95/P99 (impostores perigosos). Mesma convenção usada nos halos.
+    """
+    for tick_label, p in zip(ax.get_xticklabels(), percentiles):
+        if p in _GEN_CRITICAL_PCTS:
+            tick_label.set_fontweight("bold")
+            tick_label.set_color("#1b5e20")
+        elif p in _IMP_CRITICAL_PCTS:
+            tick_label.set_fontweight("bold")
+            tick_label.set_color("#8b0000")
+
+
 class ValidationResultsView(QtWidgets.QWidget):
     def __init__(
         self,
@@ -104,12 +124,12 @@ class ValidationResultsView(QtWidgets.QWidget):
         # Linha 1: tabela
         content_layout.addWidget(self._build_metrics_table())
 
-        # Linha 2: 5 plots overlay via FlowLayout
+        # Linha 2: 6 plots overlay via FlowLayout
         content_layout.addWidget(
             self._build_flow_section(
                 title=(
                     "Plots por estratégia (DET, Tippett, ECE, "
-                    "Diagnóstico Afim, Quantis)"
+                    "Diagnóstico Afim, Quantis, Contribuição ao Cllr)"
                 ),
                 cells=[
                     self._build_plot_cell("Curva DET", self._draw_det_overlay),
@@ -126,6 +146,10 @@ class ValidationResultsView(QtWidgets.QWidget):
                     self._build_plot_cell(
                         "Quantis por Classe",
                         self._draw_quantile_overlay,
+                    ),
+                    self._build_plot_cell(
+                        "Contribuição ao Cllr por Quantil",
+                        self._draw_quantile_loss_overlay,
                     ),
                 ],
             )
@@ -770,12 +794,27 @@ class ValidationResultsView(QtWidgets.QWidget):
         Duas séries por estratégia (cheia=genuínos, tracejada=impostores)
         coloridas pela paleta. Eixo X discreto em percentis fixos —
         comum entre estratégias por construção.
+
+        Marcadores X laranja nos pontos críticos cross-zero (gen P1/P5
+        abaixo de 0, ou imp P95/P99 acima de 0) sinalizam inversão da
+        ordenação esperada em alguma estratégia.
+
+        Tail gaps (hard-tail, extreme) anexados na legenda de cada
+        estratégia pra leitura inter-estratégias sem clutter.
+
+        Faixas verticais translúcidas marcam as zonas críticas: P0–P5
+        (gen difícil, verde) e P95–P100 (imp perigosa, vermelha).
         """
         ax = figure.add_subplot(111)
         percentiles = np.array(
             [1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64,
         )
+        # Shading sutil nas regiões críticas (independente de estratégia).
+        ax.axvspan(0, 5, color="#2e7d32", alpha=0.10, zorder=0)
+        ax.axvspan(95, 100, color="#c62828", alpha=0.10, zorder=0)
+
         any_drawn = False
+        wrong_side_points: list[tuple[float, float]] = []
         for idx, (item, result) in enumerate(self._loaded):
             pd = result.plot_data
             gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
@@ -783,21 +822,45 @@ class ValidationResultsView(QtWidgets.QWidget):
             if gen.size == 0 and imp.size == 0:
                 continue
             color = _PALETTE[idx % len(_PALETTE)]
+            # Label CURTO no overlay (sem tail gaps) — em smoke tests com 5+
+            # estratégias, adicionar (hard=+X, extreme=+X) por estratégia
+            # estoura o legend verticalmente e comprime os axes a < 50% da
+            # altura disponível. Tail gaps continuam visíveis no plot
+            # individual de cada estratégia (subtítulo). Para leitura
+            # comparativa direta, ver a tabela de métricas acima.
             label = self._legend_label(item, result)
             if gen.size > 0:
                 gen_q = np.percentile(gen, percentiles)
+            else:
+                gen_q = None
+            if imp.size > 0:
+                imp_q = np.percentile(imp, percentiles)
+            else:
+                imp_q = None
+            if gen_q is not None:
                 ax.plot(
                     percentiles, gen_q,
                     color=color, marker="o", markersize=5,
                     linewidth=1.4, alpha=0.9, label=label,
                 )
-            if imp.size > 0:
-                imp_q = np.percentile(imp, percentiles)
+                # Wrong-side: gen com logLR < 0 nos pontos críticos (P1, P5).
+                for crit_idx in (0, 1):
+                    if gen_q[crit_idx] < 0.0:
+                        wrong_side_points.append(
+                            (float(percentiles[crit_idx]), float(gen_q[crit_idx]))
+                        )
+            if imp_q is not None:
                 ax.plot(
                     percentiles, imp_q,
                     color=color, marker="s", markersize=5,
                     linewidth=1.4, linestyle="--", alpha=0.9,
                 )
+                # Wrong-side: imp com logLR > 0 nos pontos críticos (P95, P99).
+                for crit_idx in (7, 8):
+                    if imp_q[crit_idx] > 0.0:
+                        wrong_side_points.append(
+                            (float(percentiles[crit_idx]), float(imp_q[crit_idx]))
+                        )
             any_drawn = True
 
         if not any_drawn:
@@ -805,10 +868,22 @@ class ValidationResultsView(QtWidgets.QWidget):
                     transform=ax.transAxes, color="#888")
             return
 
+        # Marca pontos cross-zero com X laranja por cima — sinal visual
+        # global de inversão sem precisar ler valor numérico por estratégia.
+        if wrong_side_points:
+            wx, wy = zip(*wrong_side_points)
+            ax.scatter(
+                wx, wy,
+                s=110, marker="x", linewidths=2.5,
+                color="#ff5722", zorder=10, label="⚠ inversão (cross-zero)",
+            )
+
         ax.axhline(0.0, color="#444", linestyle=":", linewidth=0.8, alpha=0.5)
         ax.set_xticks(percentiles)
         ax.set_xticklabels([f"P{int(p)}" for p in percentiles])
         ax.set_xlim(0, 100)
+        # Ticks críticos em negrito + cor da classe (P1/P5 verde, P95/P99 vermelho).
+        _bold_critical_ticks(ax, percentiles)
         ax.set_xlabel("Percentil por classe", fontsize=9)
         ax.set_ylabel("log-LR calibrado", fontsize=9)
         ax.tick_params(labelsize=8)
@@ -817,6 +892,90 @@ class ValidationResultsView(QtWidgets.QWidget):
             loc="upper center", bbox_to_anchor=(0.5, -0.18),
             ncol=1, fontsize=8, frameon=True,
             title="Cheia: Genuínos  •  Tracejada: Impostores",
+            title_fontsize=8,
+        )
+
+    def _draw_quantile_loss_overlay(self, figure: Figure) -> None:
+        """Loss por Quantil overlay: contribuição média ao Cllr por bin.
+
+        Para cada estratégia, duas séries coloridas pela paleta:
+          - cheia (marker ○) = média de log₂(1 + e^(−logLR)) nas amostras
+            gen do bin (custo cllr_gen por bin).
+          - tracejada (marker □) = média de log₂(1 + e^(+logLR)) nas
+            amostras imp do bin (custo cllr_imp por bin).
+        Bin edges = midpoints entre percentis consecutivos + bordas 0/100.
+
+        Responde "onde nasce o custo informacional de cada estratégia",
+        complementar ao Quantis por Classe (que mostra "onde estão os
+        pontos"). Spike numa cauda = parcela do Cllr concentrada nessa
+        região.
+        """
+        ax = figure.add_subplot(111)
+        percentiles = np.array(
+            [1, 5, 10, 25, 50, 75, 90, 95, 99], dtype=np.float64,
+        )
+        midpoints = (percentiles[:-1] + percentiles[1:]) / 2.0
+        bin_edges = np.concatenate([[0.0], midpoints, [100.0]])
+        _LN2 = float(np.log(2.0))
+
+        ax.axvspan(0, 5, color="#2e7d32", alpha=0.10, zorder=0)
+        ax.axvspan(95, 100, color="#c62828", alpha=0.10, zorder=0)
+
+        def _binned_mean_loss(lr_arr: np.ndarray, sign: float) -> np.ndarray:
+            n = lr_arr.size
+            terms = np.logaddexp(0.0, sign * lr_arr) / _LN2
+            order = np.argsort(lr_arr)
+            sorted_terms = terms[order]
+            ranks = (np.arange(n) + 0.5) / n * 100.0
+            bin_idx = np.digitize(ranks, bin_edges) - 1
+            bin_idx = np.clip(bin_idx, 0, percentiles.size - 1)
+            sums = np.bincount(
+                bin_idx, weights=sorted_terms, minlength=percentiles.size,
+            )
+            counts = np.bincount(bin_idx, minlength=percentiles.size)
+            return np.where(counts > 0, sums / np.maximum(counts, 1), 0.0)
+
+        any_drawn = False
+        for idx, (item, result) in enumerate(self._loaded):
+            pd = result.plot_data
+            gen = np.asarray(pd.genuine_log_lrs, dtype=np.float64)
+            imp = np.asarray(pd.impostor_log_lrs, dtype=np.float64)
+            if gen.size == 0 or imp.size == 0:
+                continue
+            color = _PALETTE[idx % len(_PALETTE)]
+            label = self._legend_label(item, result)
+            gen_loss = _binned_mean_loss(gen, sign=-1.0)
+            imp_loss = _binned_mean_loss(imp, sign=+1.0)
+            ax.plot(
+                percentiles, gen_loss,
+                color=color, marker="o", markersize=5,
+                linewidth=1.4, alpha=0.9, label=label,
+            )
+            ax.plot(
+                percentiles, imp_loss,
+                color=color, marker="s", markersize=5,
+                linewidth=1.4, linestyle="--", alpha=0.9,
+            )
+            any_drawn = True
+
+        if not any_drawn:
+            ax.text(0.5, 0.5, "(sem dados de log-LR)", ha="center", va="center",
+                    transform=ax.transAxes, color="#888")
+            return
+
+        ax.axhline(0.0, color="#bbb", linestyle=":", linewidth=0.8)
+        ax.set_xticks(percentiles)
+        ax.set_xticklabels([f"P{int(p)}" for p in percentiles])
+        ax.set_xlim(0, 100)
+        _bold_critical_ticks(ax, percentiles)
+        ax.set_xlabel("Percentil por classe", fontsize=9)
+        ax.set_ylabel("Contribuição ao Cllr no bin (bits)", fontsize=9)
+        ax.tick_params(labelsize=8)
+        ax.grid(True, linestyle="--", alpha=0.4)
+        ax.legend(
+            loc="upper center", bbox_to_anchor=(0.5, -0.18),
+            ncol=1, fontsize=8, frameon=True,
+            title="Cheia: contribuição gen  •  Tracejada: contribuição imp",
             title_fontsize=8,
         )
 
