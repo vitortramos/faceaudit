@@ -15,30 +15,42 @@ except ImportError:
 
 
 def _patch_onnxruntime_for_coreml_static_shapes() -> None:
-    """Injeta `RequireStaticInputShapes=1` no CoreMLExecutionProvider.
+    """Injeta opções de robustez no CoreMLExecutionProvider.
 
     Resolve crash recorrente quando o CoreMLExecutionProvider tenta
-    processar o detector `det_10g` da forensicface:
+    processar tanto o detector `det_10g` quanto encoders ViT como o
+    `adaface_vit_webface4m` do sepaelv4:
 
         CoreML static output shape ({1,1,1,800,1}) and inferred shape
         ({3200,1}) have different ranks
 
-    Causa: o CoreML pré-computa shapes estaticamente no load time, mas
-    operadores pós-NMS do detector emitem tensores cujo número de
-    elementos varia com a quantidade de candidatas que sobreviveram ao
-    threshold. Quando o runtime emite shape diferente do pré-computado,
-    crasha — bug conhecido do CoreMLExecutionProvider em versões
-    recentes do onnxruntime (visto em 1.25.x).
+    Causa (detector): o CoreML pré-computa shapes estaticamente no load
+    time, mas operadores pós-NMS do detector emitem tensores cujo número
+    de elementos varia com a quantidade de candidatas que sobreviveram ao
+    threshold.
 
-    Workaround: setar `RequireStaticInputShapes=1` instrui o CoreML a
-    SÓ capturar subgrafos cujas shapes são totalmente determinadas em
-    compile time. Nodes dinâmicos caem no CPU subgraph automaticamente
-    dentro da mesma sessão — overhead mínimo. O encoder
-    `sepaelv2`/`sepaelv4`/etc. tem shape totalmente fixo
-    (1×3×112×112 → 1×512) e continua 100% no Neural Engine.
+    Causa (encoder ViT do sepaelv4): mesmo com input fixo
+    (1×3×112×112), ops internas de reshape/transpose dos blocos
+    attention têm rank inferido divergente entre o compile-time do
+    CoreML e o que o ONNX Runtime infere — o partitioner do CoreML
+    captura um subgrafo cujo rank de output não bate com o esperado.
+
+    Workaround em duas camadas:
+
+    1. `ModelFormat=MLProgram` — usa o backend MLProgram em vez do
+       NeuralNetwork (default). MLProgram é o formato canônico do CoreML
+       moderno; tem cobertura mais ampla de ops e shape inference mais
+       robusta. Resolve o crash no encoder ViT do sepaelv4 e também é
+       compatível com o caminho ResNet do sepaelv2/v3 (encoder
+       1×3×112×112 → 1×512) — não há regressão conhecida.
+
+    2. `RequireStaticInputShapes=1` — instrui o CoreML a SÓ capturar
+       subgrafos cujas shapes são totalmente determinadas em compile
+       time. Nodes dinâmicos caem no CPU subgraph automaticamente
+       dentro da mesma sessão. Mantém o conserto original do `det_10g`.
 
     A função monkey-patcheia `onnxruntime.InferenceSession.__init__`
-    pra injetar a opção em todas as sessions criadas DEPOIS desta
+    pra injetar as opções em todas as sessions criadas DEPOIS desta
     chamada. Idempotente (marker em atributo de classe). Só faz sentido
     chamar quando o usuário pediu aceleração (`use_gpu=True`); em CPU
     puro o CoreMLExecutionProvider sequer é usado.
@@ -62,7 +74,11 @@ def _patch_onnxruntime_for_coreml_static_shapes() -> None:
             name = p if isinstance(p, str) else (p[0] if isinstance(p, tuple) else None)
             if name == "CoreMLExecutionProvider":
                 base_opts = p[1] if isinstance(p, tuple) and len(p) > 1 else {}
-                merged = {**base_opts, "RequireStaticInputShapes": "1"}
+                merged = {
+                    **base_opts,
+                    "ModelFormat": "MLProgram",
+                    "RequireStaticInputShapes": "1",
+                }
                 out.append(("CoreMLExecutionProvider", merged))
             else:
                 out.append(p)
@@ -974,16 +990,23 @@ class FFService:
         )
 
         # 1. Extração biométrica (até 95% do progresso)
-        # Três caminhos por prioridade:
+        # Quatro caminhos por prioridade:
         # - `is_aligned=True`: faces em 112×112 no disco (Image Pipeline
         #   COPY_ALIGNED). Lê crops do disco, batch inference. ⚡
-        # - **Cache hit**: faces com `ff_info.aligned_face` populado de
-        #   execução anterior (caso enrichment: usuário adicionou
-        #   sepaelv4 num dataset que já tem sepaelv2). Pula detect+align
-        #   (já cacheado), batch da extração. ⚡
-        # - Foto original sem cache: detect+align+extract por-face.
-        #   Batch real exigiria acessar internas do ForensicFace; ROI
-        #   menor.
+        # - **Cache hit em memória**: faces com `ff_info.aligned_face`
+        #   populado dentro da mesma sessão de processo. Pula detect+align,
+        #   batch da extração. ⚡ Raro pós-reload de parquet — o
+        #   `FFInfo.to_dict(exclude_heavy=True)` dropa `aligned_face`.
+        # - **Enrichment (ff_info populado, sem cache de aligned_face)**:
+        #   caso típico do usuário adicionar sepaelv4 num dataset persistido
+        #   que já tem sepaelv2 — bbox/keypoints/gender/age/pose já existem
+        #   mas `aligned_face` foi descartado na serialização. Alinha
+        #   per-face (barato), extrai embedding em batch. ⚡ Speedup
+        #   significativo no encoder ViT.
+        # - Foto original sem nenhuma extração prévia: detect+align+
+        #   extract per-face via `process_image` — preserva contrato de
+        #   metadata completo (gender/age/pose/det_score) que
+        #   `detect_and_align` sozinho não traz.
         is_aligned = bool(getattr(dataset, "is_aligned", False))
         all_have_cached_aligned = (
             total_faces > 0
@@ -992,6 +1015,10 @@ class FFService:
                 and getattr(f.ff_info, "aligned_face", None) is not None
                 for f in dataset
             )
+        )
+        all_have_prior_ffinfo = (
+            total_faces > 0
+            and all(f.ff_info is not None for f in dataset)
         )
 
         if is_aligned:
@@ -1008,6 +1035,15 @@ class FFService:
                 f"batch via cache (batch_size={self._batch_size})."
             )
             self._process_dataset_cached_aligned_batched(
+                dataset, total_faces, model, models, progress_callback,
+            )
+        elif all_have_prior_ffinfo:
+            print(
+                f"[FFService] Enrichment detectado (ff_info populado, "
+                f"aligned_face não cacheado) - align per-face + batch "
+                f"extract (batch_size={self._batch_size})."
+            )
+            self._process_dataset_align_then_batch(
                 dataset, total_faces, model, models, progress_callback,
             )
         else:
@@ -1143,6 +1179,158 @@ class FFService:
                 progress_callback(
                     f"Extraindo embedding ({processed}/{total_faces}) "
                     f"[cache+batch={self._batch_size}]...", pct,
+                )
+
+        flush()
+
+    def _process_dataset_align_then_batch(
+        self,
+        dataset: "FaceDataset",
+        total_faces: int,
+        model: Optional[str],
+        models: Optional[List[str]],
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> None:
+        """Caminho enrichment: alinha per-face, extrai embedding em batch.
+
+        Caso de uso: usuário roda enrich com modelo adicional num dataset
+        que já tem `ff_info` populado (bbox/keypoints/gender/age/pose
+        vindos de run anterior), MAS `aligned_face` não está cacheado em
+        memória — `FFInfo.to_dict(exclude_heavy=True)` dropa `aligned_face`
+        na serialização parquet, então abrir um dataset salvo zera o cache
+        e `_process_dataset_cached_aligned_batched` não dispara.
+
+        Pipeline: lê imagem do disco → `engine.detect_and_align` per-face
+        (parte barata — só detector + crop afim) → acumula crop alinhado
+        em buffer → a cada `batch_size`, chama
+        `extract_embeddings_from_aligned_faces_batch` (parte cara — encoder
+        ViT em batch). Speedup esperado pro v4 (ViT) vs per-face: ~5–10×.
+
+        Limitação: `detect_and_align` retorna só `aligned_face` +
+        `aligned_keypoints` — NÃO retorna gender/age/yaw/pitch/roll/
+        det_score (esses só vêm do `process_image` completo). Por isso o
+        gate no caller exige `all_have_prior_ffinfo=True` (caso
+        enrichment): assume que esses campos já estão populados do run
+        anterior. Pra primeira extração crua, o caller cai no per-face
+        fallback que usa `process_image` (preserva contrato de metadata
+        completo).
+
+        MERGE: novo embedding + fiqa_score (se vier) sobrescrevem só os
+        slots correspondentes; demais campos do `FFInfo` existente são
+        preservados (idêntico ao `_process_dataset_cached_aligned_batched`).
+        """
+        target_models: List[str]
+        if models:
+            target_models = list(models)
+        elif model is not None:
+            target_models = [model]
+        else:
+            target_models = [self._default_model]
+
+        # Engine pro detect+align: primeira da lista alvo. det_10g é o
+        # mesmo entre engines (detector compartilhado quando layout shared,
+        # ou idêntico nas pastas legadas) — escolha não afeta resultado.
+        _, align_engine = self._resolve_engine(target_models[0])
+
+        # Modelos KPRPE (sepaelv6) consomem aligned_keypoints como segundo
+        # input ONNX. Detecta isso antes do loop pra decidir se buffer
+        # de keypoints é populado.
+        needs_keypoints = any(
+            (SepaelModel.from_ff_name(m) or SepaelModel.default()).requires_keypoints
+            for m in target_models
+        )
+
+        buffer_crops: List[np.ndarray] = []
+        buffer_faces: List[FaceInfo] = []
+        buffer_kps: List[np.ndarray] = []  # só populado se needs_keypoints
+
+        # Adapter de erro: mesma motivação dos outros helpers em batch —
+        # falhas internas viram linhas no LogProgressDialog em vez de
+        # print() silencioso pro terminal.
+        def _err_cb(msg: str) -> None:
+            if progress_callback:
+                progress_callback(f"⚠ {msg}", 0)
+            else:
+                print(msg)
+
+        def flush() -> None:
+            if not buffer_crops:
+                return
+            arr = np.stack(buffer_crops, axis=0)
+            kps_arr = (
+                np.stack(buffer_kps, axis=0)
+                if needs_keypoints and buffer_kps else None
+            )
+            try:
+                ff_infos = self.extract_embeddings_from_aligned_faces_batch(
+                    arr,
+                    models=target_models,
+                    aligned_keypoints_batch=kps_arr,
+                    error_callback=_err_cb,
+                )
+            except Exception as e:
+                _err_cb(
+                    f"[FFService] Falha no batch de tamanho {len(arr)}: {e}"
+                )
+                ff_infos = [None] * len(buffer_faces)
+            for face, new_ff in zip(buffer_faces, ff_infos):
+                if new_ff is None:
+                    continue
+                existing = face.ff_info  # gate do caller garante non-None
+                # MERGE só de fiqa_score + slots de embedding. NÃO mexe em
+                # bbox/keypoints/gender/age/pose — esses estão preservados
+                # do run anterior; detect_and_align nem os retornaria.
+                for key in ("fiqa_score", *_FFINFO_EMBEDDING_SLOTS):
+                    val = getattr(new_ff, key, None)
+                    if val is not None:
+                        setattr(existing, key, val)
+            buffer_crops.clear()
+            buffer_faces.clear()
+            buffer_kps.clear()
+
+        processed = 0
+        for face in tqdm(
+            dataset, desc=f"Processando {dataset.name} (align+batch)",
+            unit="face",
+        ):
+            processed += 1
+            image_path = str(dataset.resolve_image_path(face))
+            img_array = self._safe_read_image(image_path)
+            if img_array is None:
+                continue
+            try:
+                item = align_engine.detect_and_align(
+                    img_array, single_face=True,
+                )
+            except Exception as e:
+                _err_cb(f"detect_and_align falhou pra {image_path}: {e}")
+                continue
+            if not item:
+                continue
+            rgb_aligned = item.get("aligned_face")
+            if rgb_aligned is None or rgb_aligned.shape != (112, 112, 3):
+                continue
+            # RGB → BGR pro batch helper (consistente com
+            # `extract_embeddings_from_aligned_face`).
+            bgr_aligned = rgb_aligned[..., ::-1].copy()
+            if needs_keypoints:
+                aligned_kps = item.get("aligned_keypoints")
+                if aligned_kps is None:
+                    # KPRPE precisa de keypoints; sem eles o encoder
+                    # rejeita o input. Skip pra manter os buffers em sync.
+                    continue
+                buffer_kps.append(aligned_kps)
+            buffer_crops.append(bgr_aligned)
+            buffer_faces.append(face)
+
+            if len(buffer_crops) >= self._batch_size:
+                flush()
+
+            if progress_callback:
+                pct = int((processed / total_faces) * 95)
+                progress_callback(
+                    f"Extraindo embedding ({processed}/{total_faces}) "
+                    f"[align+batch={self._batch_size}]...", pct,
                 )
 
         flush()
