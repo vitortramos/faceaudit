@@ -61,6 +61,9 @@ from faceaudit.executors.instructions.knn_typicality_model_training_instruction_
 from faceaudit.executors.instructions.typicality_pair_scoring_instruction_executor import (
     TypicalityPairScoringInstructionExecutor,
 )
+from faceaudit.executors.instructions.score_interaction_feature_instruction_executor import (
+    ScoreInteractionFeatureInstructionExecutor,
+)
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
@@ -185,6 +188,11 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.TYPICALITY_PAIR_SCORING,
             TypicalityPairScoringInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.SCORE_INTERACTION_FEATURE,
+            ScoreInteractionFeatureInstructionExecutor(),
         )
 
         return registry

@@ -38,13 +38,20 @@ from faceaudit.services.knn_typicality_model import KNNTypicalityModel
 class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
     """
     Aplica modelo(s) KNNTypicalityModel treinado(s) às faces dos datasets
-    de entrada e produz um SimilarityScoreDataset onde cada `raw_score` é
-    a combinação simétrica das tipicidades individuais (probe e reference).
+    de entrada e produz um SimilarityScoreDataset onde cada `raw_score`
+    é a combinação das tipicidades individuais (probe e reference).
 
-    Dois modos:
+    Combinadores simétricos (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) preservam
+    `LR(A,B) = LR(B,A)`. Combinadores unilaterais (REFERENCE_ONLY,
+    PROBE_ONLY) quebram simetria propositalmente e alimentam o
+    `SCORE_INTERACTION_FEATURE` downstream — emitem WARNING em
+    self-comparação (papéis probe/reference são convencionais nesse
+    caso).
 
-    1. Modelo único (típico/simétrico): mesma população dos dois lados do
-       par. `model_probe` é aplicado em ambos os datasets.
+    Dois modos de modelo:
+
+    1. Modelo único (mesma população dos dois lados): `model_probe`
+       é aplicado em ambos os datasets.
 
     2. Dois modelos (cross-população): `model_probe` aplicado no probe,
        `model_reference` aplicado no reference. Usado quando probe e
@@ -366,6 +373,22 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
         raise ValueError(f"score_type não suportado: {score_type}")
 
+    @staticmethod
+    def _combine_typicalities(
+        combiner: TypicalityCombiner,
+        t_probe: float,
+        t_reference: float,
+    ) -> float:
+        """Despacha simétricos para `combiner.combine()` e unilaterais
+        para leitura direta do papel correspondente.
+        `REFERENCE_ONLY` → tipicidade do REFERENCE; `PROBE_ONLY` → do PROBE.
+        """
+        if combiner is TypicalityCombiner.REFERENCE_ONLY:
+            return float(t_reference)
+        if combiner is TypicalityCombiner.PROBE_ONLY:
+            return float(t_probe)
+        return float(combiner.combine(t_probe, t_reference))
+
     def _enumerate_self(
         self,
         dataset: EmbeddingDataset,
@@ -404,6 +427,15 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             return out
 
         combiner = instruction.combiner
+        if not combiner.is_symmetric:
+            self._log(
+                context,
+                f"⚠ Combinador unilateral '{combiner.value}' em "
+                "self-comparação: papéis probe/reference são "
+                "convencionais (triangular superior i<j). Considere "
+                "REFERENCE_ONLY/PROBE_ONLY apenas em cross-comparação.",
+            )
+
         progress_every = max(1, n_pairs // 20)
         emitted = 0
 
@@ -413,7 +445,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             for j in range(i + 1, n):
                 reference_item = dataset[j]
                 t_j = float(face_scores[j])
-                raw_score = combiner.combine(t_i, t_j)
+                raw_score = self._combine_typicalities(combiner, t_i, t_j)
 
                 # same_person é inferido por __post_init__ a partir das
                 # identidades; modo casework é forçado abaixo após o loop.
@@ -492,7 +524,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
             t_i = float(probe_scores[i])
             for j, reference_item in enumerate(reference_dataset):
                 t_j = float(ref_scores[j])
-                raw_score = combiner.combine(t_i, t_j)
+                raw_score = self._combine_typicalities(combiner, t_i, t_j)
 
                 # same_person é inferido por __post_init__ a partir das
                 # identidades; modo casework é forçado abaixo após o loop.
