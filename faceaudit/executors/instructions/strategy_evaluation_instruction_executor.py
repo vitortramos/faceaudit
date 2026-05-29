@@ -166,6 +166,11 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                         f"score_vector_matrix pra plot 2D: {exc}",
                     )
 
+            # Coeficientes da LogReg propagados pelo SCORE_CALIBRATION —
+            # permitem superfície analítica + equação no plot 2D.
+            calibrator_coef_raw = ds_md.get("calibrator_coef_raw")
+            calibrator_intercept_raw = ds_md.get("calibrator_intercept_raw")
+
             service = ValidationMathService()
             result = service.calculate_metrics(
                 strategy_id=str(strategy_id),
@@ -178,6 +183,8 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 genuine_score_vectors=gen_score_vectors,
                 impostor_score_vectors=imp_score_vectors,
                 score_vector_axis_labels=axis_labels,
+                calibrator_coef_raw=calibrator_coef_raw,
+                calibrator_intercept_raw=calibrator_intercept_raw,
                 calibrator_cllr_train=ds_md.get("calibrator_cllr_train"),
                 calibrator_cllr_train_gen=ds_md.get("calibrator_cllr_train_gen"),
                 calibrator_cllr_train_imp=ds_md.get("calibrator_cllr_train_imp"),

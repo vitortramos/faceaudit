@@ -569,20 +569,30 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
 
 def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     """Curva de Calibração 2D: heatmap log-LR no plano (x₀, x₁) + scatter
-    gen/imp + contornos de decisão.
+    gen/imp + contornos de decisão labelados + envelope de suporte KDE
+    + equação do calibrador.
 
-    Layout single-panel:
-      - **Background heatmap** (`pcolormesh`): superfície log-LR
-        interpolada no grid (x₀, x₁). Colormap divergente RdBu_r
-        centrado em 0 (azul = impostor side, vermelho = genuíno side,
-        branco ≈ neutralidade). Regiões fora do casco convexo das
-        observações ficam mascaradas (cinza claro).
-      - **Scatter overlay**: genuínos (verde) + impostores (vermelho)
-        subsampled (cap 5k por classe) com alpha baixo.
-      - **Contornos**: linhas em log-LR = 0 (fronteira de decisão, traço
-        sólido), ±2, ±5, ±10 (tracejados, intensidade decrescente).
-        Pra LogReg 2D log_lr = w₀x₀+w₁x₁+b → contornos são RETAS
-        paralelas.
+    Camadas (do fundo pro topo):
+      1. **Heatmap log-LR** (`pcolormesh`): superfície analítica
+         (LogReg 2D — intercept + β·x avaliado no grid) ou fallback de
+         interpolação Delaunay (KDE/BiGauss 2D). Colormap RdBu_r
+         centrado em 0 (azul = impostor side, vermelho = genuíno side).
+      2. **Envelope de suporte** (KDE 2D): 2 contornos finos cinza-
+         escuro encerrando 95% (sólido) e 99% (tracejado) da massa
+         observada. Fora do envelope 99% a superfície é extrapolação
+         do modelo.
+      3. **Contornos log-LR labelados** em níveis [-10, -5, -2, 0, +2,
+         +5, +10] — fronteira logLR=0 destacada (preta, espessa,
+         sólida); demais em cinza tracejado. Labels inline (`clabel`)
+         pra leitura imediata da força de evidência (Champod-Evett).
+      4. **Scatter** subsampled: genuínos (verde, cap 5k, α=0.35) +
+         impostores (vermelho, cap 2k, α=0.15) — visual leve, mas
+         outlier extremo continua visível.
+
+    Anotações:
+      - Caixa equação no canto superior direito (LogReg 2D):
+        `logLR = β₀ + β₁·x₀ + β₂·x₁` + βstd raw/std side-by-side.
+      - Footer fixo: "Regiões fora do envelope são extrapolação."
 
     Métricas no título: slope/intercept/Cllr_affine/Cllr_min — operam
     sobre o log-LR escalar pós-calibrador (válidos qualquer que seja D).
@@ -621,8 +631,6 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
         vabs = 1.0
     vabs = max(vabs, 1e-6)
 
-    # pcolormesh com edges (n+1 vs n) — usamos `shading="auto"` que
-    # aceita centers e desloca pra edges internamente.
     masked = np.ma.masked_invalid(log_lr_grid)
     cmap = plt.get_cmap("RdBu_r").copy()
     cmap.set_bad(color="#eeeeee", alpha=0.6)
@@ -634,35 +642,71 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     cbar = figure.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85)
     cbar.set_label("log-LR calibrado", fontsize=9)
 
-    # Contornos de decisão (preto pro 0, cinza degradê pros demais).
+    # ─── Camada 2: envelope de suporte KDE ──────────────────────────────
+    density_grid = np.asarray(
+        getattr(pd, "cal_curve_2d_density_grid", []), dtype=np.float64,
+    )
+    envelope_levels = np.asarray(
+        getattr(pd, "cal_curve_2d_envelope_levels", []), dtype=np.float64,
+    )
+    if (
+        density_grid.size > 0
+        and density_grid.shape == log_lr_grid.shape
+        and envelope_levels.size >= 2
+    ):
+        try:
+            # Níveis em ordem crescente exigida pelo contour.
+            lvl_99, lvl_95 = float(envelope_levels.min()), float(envelope_levels.max())
+            cs_env = ax.contour(
+                x0_grid, x1_grid, density_grid,
+                levels=[lvl_99, lvl_95],
+                colors=["#333333", "#1a1a1a"],
+                linestyles=["dashed", "solid"],
+                linewidths=[0.9, 1.2],
+                alpha=0.55,
+            )
+            # Label só no envelope outer (95%) — inner fica anônimo.
+            try:
+                fmt = {lvl_95: "envelope 95%", lvl_99: "99%"}
+                ax.clabel(cs_env, inline=True, fontsize=7, fmt=fmt)
+            except Exception:
+                pass
+        except Exception:
+            pass  # KDE corrompido não bloqueia o resto
+
+    # ─── Camada 3: contornos log-LR labelados ───────────────────────────
     contour_levels = [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0]
-    levels_in_range = [
-        L for L in contour_levels if -vabs <= L <= vabs
-    ]
+    levels_in_range = [L for L in contour_levels if -vabs <= L <= vabs]
     if levels_in_range:
         try:
             cs = ax.contour(
                 x0_grid, x1_grid, masked,
                 levels=levels_in_range,
                 colors=[
-                    "#222" if L == 0.0 else "#444"
+                    "#000000" if L == 0.0 else "#555555"
                     for L in levels_in_range
                 ],
                 linewidths=[
-                    1.6 if L == 0.0 else 0.9
+                    2.0 if L == 0.0 else 1.0
                     for L in levels_in_range
                 ],
                 linestyles=[
                     "solid" if L == 0.0 else "dashed"
                     for L in levels_in_range
                 ],
-                alpha=0.85,
+                alpha=0.9,
             )
-            ax.clabel(cs, inline=True, fontsize=7, fmt="%g")
+            # Labels inline — formato com sinal pros não-zero.
+            def _fmt(L: float) -> str:
+                if L == 0.0:
+                    return "logLR=0"
+                return f"{L:+.0f}"
+            fmt_dict = {L: _fmt(L) for L in levels_in_range}
+            ax.clabel(cs, inline=True, fontsize=8, fmt=fmt_dict)
         except Exception:
             pass  # contornos faltando não bloqueiam o heatmap
 
-    # Scatter overlay (subsampled).
+    # ─── Camada 4: scatter overlay (caps diferenciados) ─────────────────
     gen_x0 = np.asarray(getattr(pd, "cal_curve_2d_gen_x0", []), dtype=np.float64)
     gen_x1 = np.asarray(getattr(pd, "cal_curve_2d_gen_x1", []), dtype=np.float64)
     imp_x0 = np.asarray(getattr(pd, "cal_curve_2d_imp_x0", []), dtype=np.float64)
@@ -671,7 +715,7 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     n_imp = int(getattr(result, "n_impostors", 0) or imp_x0.size)
     if imp_x0.size > 0:
         ax.scatter(
-            imp_x0, imp_x1, s=4, c="#c62828", alpha=0.25,
+            imp_x0, imp_x1, s=4, c="#c62828", alpha=0.15,
             edgecolors="none",
             label=f"Impostores (N={n_imp:,})".replace(",", "."),
         )
@@ -682,11 +726,10 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
             label=f"Genuínos (N={n_gen:,})".replace(",", "."),
         )
 
-    # Título multilinha com métricas escalares (slope/intercept ainda
-    # se aplicam ao log-LR pós-calibrador qualquer que seja D).
+    # Título multilinha com métricas escalares.
     m = getattr(result, "metrics", None)
     slope = getattr(m, "calibration_slope", None) if m else None
-    intercept = getattr(m, "calibration_intercept", None) if m else None
+    intercept_aff = getattr(m, "calibration_intercept", None) if m else None
     cllr_aff = getattr(m, "cllr_affine", None) if m else None
     cllr_val = getattr(m, "cllr", None) if m else None
     cllr_min_val = getattr(m, "cllr_min", None) if m else None
@@ -713,8 +756,8 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
         else:
             slope_diag = "bem calibrado"
         line3_parts.append(f"slope={slope:.3f} ({slope_diag})")
-    if intercept is not None:
-        line3_parts.append(f"intercept={intercept:+.3f}")
+    if intercept_aff is not None:
+        line3_parts.append(f"intercept={intercept_aff:+.3f}")
     if line3_parts:
         title_lines.append("  ·  ".join(line3_parts))
     ax.set_title("\n".join(title_lines), fontsize=10)
@@ -723,6 +766,68 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     ax.set_ylabel(label_y, fontsize=9)
     ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
     ax.tick_params(labelsize=8)
+
+    # ─── Caixa equação do calibrador (LogReg 2D) ────────────────────────
+    coef_raw = np.asarray(getattr(pd, "cal_curve_2d_coef_raw", []), dtype=np.float64)
+    coef_std = np.asarray(getattr(pd, "cal_curve_2d_coef_std", []), dtype=np.float64)
+    intercept_eq = getattr(pd, "cal_curve_2d_intercept", None)
+    feature_names = list(getattr(pd, "cal_curve_2d_feature_names", []) or [])
+    if (
+        coef_raw.size == 2
+        and intercept_eq is not None
+        and len(feature_names) == 2
+    ):
+        f0 = _short_label(feature_names[0], maxlen=18)
+        f1 = _short_label(feature_names[1], maxlen=18)
+        eq_line = (
+            f"logLR = {intercept_eq:+.3f} "
+            f"{coef_raw[0]:+.3f}·{f0} {coef_raw[1]:+.3f}·{f1}"
+        )
+        text_parts = [eq_line]
+        if coef_std.size == 2:
+            text_parts.append(
+                f"βstd:  {f0}={coef_std[0]:+.3f}  ·  {f1}={coef_std[1]:+.3f}"
+            )
+            # Diagnóstico "qual domina?" via razão de |β_std|.
+            a, b = abs(float(coef_std[0])), abs(float(coef_std[1]))
+            if a > 0 and b > 0:
+                if a > 1.5 * b:
+                    text_parts.append(f"({f0} domina)")
+                elif b > 1.5 * a:
+                    text_parts.append(f"({f1} domina)")
+                else:
+                    text_parts.append("(contribuição equivalente)")
+        ax.text(
+            0.99, 0.99,
+            "\n".join(text_parts),
+            transform=ax.transAxes,
+            ha="right", va="top",
+            fontsize=8,
+            family="monospace",
+            bbox=dict(
+                boxstyle="round,pad=0.4",
+                facecolor="white",
+                edgecolor="#999",
+                alpha=0.88,
+            ),
+        )
+
+    # ─── Footer fixo de extrapolação ────────────────────────────────────
+    figure.text(
+        0.5, 0.005,
+        "Regiões fora do envelope (linhas cinza) são extrapolação do calibrador — "
+        "interpretar log-LR ali com cautela.",
+        ha="center", va="bottom",
+        fontsize=7.5, color="#555", style="italic",
+    )
+
+
+def _short_label(label: str, maxlen: int = 18) -> str:
+    """Trunca labels longos pra caber na caixa de equação sem quebrar."""
+    s = str(label or "")
+    if len(s) <= maxlen:
+        return s
+    return s[: maxlen - 1] + "…"
 
 
 def _draw_calibration_curve_placeholder(figure: Figure, dim: int) -> None:

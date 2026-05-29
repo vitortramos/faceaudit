@@ -177,6 +177,47 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 if sources is not None:
                     ds_metadata["score_vector_source_resources"] = sources
 
+            # Propaga coeficientes do calibrador (LogReg apenas) pra
+            # STRATEGY_EVALUATION downstream conseguir:
+            # (a) calcular a superfície log-LR ANALITICAMENTE no plano 2D
+            #     em vez de interpolar dos observados (caso degenerado:
+            #     fronteira retorna reta perfeita pra LogReg);
+            # (b) exibir a equação β₀ + β₁·x₀ + β₂·x₁ no rodapé do plot;
+            # (c) mostrar coefs padronizados (resposta direta a "qual
+            #     feature domina?").
+            # Pra calibradores não-LogReg (KDE/BiGauss) os campos ficam
+            # ausentes; math service cai em fallback de interpolação.
+            sk_logreg = getattr(calibrator, "logreg", None)
+            sk_coef_attr = getattr(sk_logreg, "coef_", None) if sk_logreg is not None else None
+            sk_intercept_attr = getattr(sk_logreg, "intercept_", None) if sk_logreg is not None else None
+            if sk_coef_attr is not None and sk_intercept_attr is not None:
+                try:
+                    import numpy as _np
+                    sk_coef = _np.asarray(sk_coef_attr, dtype=_np.float64).ravel()
+                    sk_intercept = float(_np.asarray(sk_intercept_attr, dtype=_np.float64).ravel()[0])
+                    fm = getattr(calibrator, "_feature_mean", None)
+                    fs = getattr(calibrator, "_feature_std", None)
+                    if fm is not None and fs is not None:
+                        # Standardização interna ativa: sklearn coef está
+                        # na escala Z. Converte pra escala bruta do input.
+                        fm_arr = _np.asarray(fm, dtype=_np.float64).ravel()
+                        fs_arr = _np.asarray(fs, dtype=_np.float64).ravel()
+                        coef_raw = (sk_coef / fs_arr)
+                        intercept_raw = float(sk_intercept - _np.sum(sk_coef * fm_arr / fs_arr))
+                    else:
+                        # Sem standardização: sklearn coef JÁ está em escala bruta.
+                        coef_raw = sk_coef
+                        intercept_raw = sk_intercept
+                    ds_metadata["calibrator_coef_raw"] = coef_raw.tolist()
+                    ds_metadata["calibrator_intercept_raw"] = intercept_raw
+                except Exception as exc:
+                    self._log(
+                        context,
+                        f"[{instruction.name}] ⚠️ Falha ao propagar coefs do "
+                        f"calibrador ({type(exc).__name__}: {exc}); plot 2D vai "
+                        f"cair em interpolação."
+                    )
+
             calibrated_dataset = SimilarityScoreDataset(
                 name=output_name,
                 description=(

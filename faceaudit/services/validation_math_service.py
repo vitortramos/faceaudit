@@ -34,6 +34,8 @@ class ValidationMathService:
                           genuine_score_vectors: Optional[np.ndarray] = None,
                           impostor_score_vectors: Optional[np.ndarray] = None,
                           score_vector_axis_labels: Optional[List[str]] = None,
+                          calibrator_coef_raw: Optional[List[float]] = None,
+                          calibrator_intercept_raw: Optional[float] = None,
                           calibrator_cllr_train: float = None,
                           calibrator_cllr_train_gen: float = None,
                           calibrator_cllr_train_imp: float = None,
@@ -114,11 +116,16 @@ class ValidationMathService:
             cal_curve = self._compute_calibration_curve_2d_grid(
                 genuine_score_vectors, impostor_score_vectors,
                 gen_arr, imp_arr,
+                calibrator_coef_raw=calibrator_coef_raw,
+                calibrator_intercept_raw=calibrator_intercept_raw,
             )
             cal_curve["cal_curve_dim"] = 2
             cal_curve["cal_curve_axis_labels"] = list(
                 score_vector_axis_labels or ["x₀", "x₁"]
             )[:2]
+            cal_curve["cal_curve_2d_feature_names"] = list(
+                cal_curve["cal_curve_axis_labels"]
+            )
         elif cal_dim >= 3:
             cal_curve = self._empty_calibration_curve_grid()
             cal_curve["cal_curve_dim"] = cal_dim
@@ -363,6 +370,12 @@ class ValidationMathService:
             "cal_curve_2d_gen_x1": np.array([]),
             "cal_curve_2d_imp_x0": np.array([]),
             "cal_curve_2d_imp_x1": np.array([]),
+            "cal_curve_2d_coef_raw": np.array([]),
+            "cal_curve_2d_coef_std": np.array([]),
+            "cal_curve_2d_intercept": None,
+            "cal_curve_2d_feature_names": [],
+            "cal_curve_2d_density_grid": np.array([]),
+            "cal_curve_2d_envelope_levels": np.array([]),
         }
 
     def _compute_calibration_curve_2d_grid(
@@ -372,30 +385,48 @@ class ValidationMathService:
         gen_log_lr: np.ndarray,
         imp_log_lr: np.ndarray,
         *,
+        calibrator_coef_raw: Optional[List[float]] = None,
+        calibrator_intercept_raw: Optional[float] = None,
         n_grid: int = 100,
-        scatter_cap: int = 5000,
+        scatter_cap_gen: int = 5000,
+        scatter_cap_imp: int = 2000,
+        kde_fit_cap: int = 10000,
     ) -> dict:
         """Pré-computa heatmap de log-LR no plano (x₀, x₁) pra calibrador
-        2D (típico: SCORE_VECTORIZATION combinando 2 sistemas).
+        2D (típico: SCORE_VECTORIZATION combinando 2 sistemas) + envelope
+        de suporte dos dados + coefs raw/std do calibrador.
 
-        Estratégia: interpola observados (x₀, x₁) → log_lr via
-        `scipy.interpolate.LinearNDInterpolator` (triangulação Delaunay
-        + interpolação linear dentro do casco convexo). Pontos fora do
-        casco viram NaN — matplotlib renderiza como pasta clara, sinaliza
-        ausência de dados naquela região.
+        Superfície log-LR:
+          - Se `calibrator_coef_raw` + `calibrator_intercept_raw` dados
+            (caso LogReg 2D): avaliação ANALÍTICA do grid via
+            `intercept + β·x` — fronteira logLR=0 vira reta perfeita.
+          - Senão (KDE/BiGauss 2D): fallback de interpolação Delaunay
+            via `LinearNDInterpolator` dos observados (x₀, x₁, log_lr).
+            Pontos fora do casco convexo viram NaN, masked no plot.
 
-        Pra LogReg 2D a interpolação é exata (relação log_lr = w₀x₀ +
-        w₁x₁ + b é linear). Pra KDE/BiGauss em 2D a aproximação é
-        razoável (superfície suave).
+        Envelope de suporte (sempre computado):
+          - `gaussian_kde` em (gen ∪ imp), subamostrado pra `kde_fit_cap`
+            pontos (Scott's rule pra bandwidth).
+          - Densidade avaliada no mesmo grid 100×100. Normalizada pelo max
+            pra colorbar log-LR não interferir.
+          - `envelope_levels` = (p5, p1) da densidade nos pontos observados
+            — contornos nesses níveis encerram 95% e 99% da massa observada
+            respectivamente. Outer (95%) é envelope "principal", inner
+            (99%) é envelope "permissivo".
+
+        Coefs padronizados:
+          - β_std[i] = β_raw[i] · σ(x_i_observado). Mudança esperada no
+            log-LR por 1 desvio-padrão da feature. Resposta direta a
+            "qual sistema domina?". None quando β_raw não disponível.
+
+        Scatter cap diferenciado: 5000 genuínos (geralmente classe menor),
+        2000 impostores (saturariam visualmente acima disso).
 
         Returns:
-            dict com `cal_curve_2d_grid_x0` (M,), `_grid_x1` (M,),
-            `_grid_log_lr` (M,M) onde M = n_grid, e scatter subsampled
-            por classe (`_gen_x0`, `_gen_x1`, `_imp_x0`, `_imp_x1`).
-            Também preenche os campos 1D com arrays vazios pra manter
-            o splat-into-ValidationPlotData consistente.
+            dict completo com chaves de `_empty_calibration_curve_grid`.
         """
         from scipy.interpolate import LinearNDInterpolator
+        from scipy.stats import gaussian_kde
 
         out = self._empty_calibration_curve_grid()
 
@@ -411,7 +442,6 @@ class ValidationMathService:
             return out
 
         all_x = np.vstack([gen_vectors, imp_vectors])
-        all_y = np.concatenate([gen_log_lr, imp_log_lr])
 
         # Bounds do grid: span observado com padding 5%.
         x0_lo, x0_hi = float(all_x[:, 0].min()), float(all_x[:, 0].max())
@@ -421,28 +451,91 @@ class ValidationMathService:
 
         x0_grid = np.linspace(x0_lo - x0_pad, x0_hi + x0_pad, n_grid)
         x1_grid = np.linspace(x1_lo - x1_pad, x1_hi + x1_pad, n_grid)
+        xx, yy = np.meshgrid(x0_grid, x1_grid)
 
+        # ─── Superfície log-LR: ANALÍTICA se coefs dados, senão interp ────
+        coef_raw_arr = np.array([])
+        intercept_val: Optional[float] = None
+        used_analytical = False
+        if calibrator_coef_raw is not None and calibrator_intercept_raw is not None:
+            try:
+                coef_arr = np.asarray(calibrator_coef_raw, dtype=np.float64).ravel()
+                if coef_arr.shape[0] == 2:
+                    intercept_val = float(calibrator_intercept_raw)
+                    grid_log_lr = intercept_val + coef_arr[0] * xx + coef_arr[1] * yy
+                    coef_raw_arr = coef_arr
+                    used_analytical = True
+            except Exception:
+                # Cai no fallback de interpolação.
+                pass
+
+        if not used_analytical:
+            all_y = np.concatenate([gen_log_lr, imp_log_lr])
+            try:
+                interp = LinearNDInterpolator(all_x, all_y, fill_value=np.nan)
+                grid_log_lr = interp(xx, yy)
+            except Exception:
+                # Defensivo: pontos colineares quebram Delaunay → cai em
+                # 1D fallback (grid vazio sinaliza pro draw).
+                return out
+
+        # Coefs padronizados: β_std[i] = β_raw[i] · σ(x_i observado).
+        # Sempre computamos σ — usado pra normalizar mesmo quando coef_raw
+        # não disponível (fica em [] e a equação no plot não aparece).
+        feature_sigma = np.array([
+            float(np.std(all_x[:, 0], ddof=1)),
+            float(np.std(all_x[:, 1], ddof=1)),
+        ])
+        coef_std_arr = np.array([])
+        if coef_raw_arr.size == 2 and np.all(feature_sigma > 0):
+            coef_std_arr = coef_raw_arr * feature_sigma
+
+        # ─── Density envelope via KDE 2D ─────────────────────────────────
+        density_grid = np.array([])
+        envelope_levels = np.array([])
         try:
-            interp = LinearNDInterpolator(all_x, all_y, fill_value=np.nan)
-            xx, yy = np.meshgrid(x0_grid, x1_grid)
-            grid_log_lr = interp(xx, yy)
+            n_total = all_x.shape[0]
+            rng_kde = np.random.default_rng(42)
+            if n_total > kde_fit_cap:
+                idx_kde = rng_kde.choice(n_total, size=kde_fit_cap, replace=False)
+                kde_points = all_x[idx_kde].T  # shape (2, N) para gaussian_kde
+            else:
+                kde_points = all_x.T
+            kde = gaussian_kde(kde_points)  # Scott's rule auto
+            # Avalia no grid 100×100. ~10k pontos × bandwidth — segundos
+            # no pior caso.
+            grid_pts = np.vstack([xx.ravel(), yy.ravel()])
+            density_flat = kde(grid_pts)
+            density_grid = density_flat.reshape(xx.shape)
+            # Normaliza pelo max pra contour ficar agnóstico à magnitude
+            # absoluta da densidade.
+            d_max = float(density_grid.max())
+            if d_max > 0:
+                density_grid = density_grid / d_max
+            # Envelopes mass-based: percentil de densidade nos pontos
+            # observados, onde "5%" significa "5% dos pontos têm densidade
+            # menor que isto" → contorno nesse nível encerra 95% da massa.
+            dens_at_obs = kde(kde_points) / (d_max if d_max > 0 else 1.0)
+            level_95 = float(np.percentile(dens_at_obs, 5))
+            level_99 = float(np.percentile(dens_at_obs, 1))
+            envelope_levels = np.array([level_95, level_99])
         except Exception:
-            # Defensivo: pontos colineares quebram Delaunay → cai em
-            # 1D fallback (grid vazio sinaliza pro draw).
-            return out
+            # KDE pode falhar com poucos pontos ou covariância singular.
+            # Plot cai sem envelope (anotação textual ainda explica).
+            pass
 
-        # Subsample do scatter (estratificado por classe).
+        # ─── Scatter subsampled (caps diferenciados) ─────────────────────
         rng = np.random.default_rng(0)
 
-        def _sample_pair(vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        def _sample(vec: np.ndarray, cap: int) -> Tuple[np.ndarray, np.ndarray]:
             n = vec.shape[0]
-            if n <= scatter_cap:
+            if n <= cap:
                 return vec[:, 0], vec[:, 1]
-            idx = rng.choice(n, size=scatter_cap, replace=False)
+            idx = rng.choice(n, size=cap, replace=False)
             return vec[idx, 0], vec[idx, 1]
 
-        gen_x0_s, gen_x1_s = _sample_pair(gen_vectors)
-        imp_x0_s, imp_x1_s = _sample_pair(imp_vectors)
+        gen_x0_s, gen_x1_s = _sample(gen_vectors, scatter_cap_gen)
+        imp_x0_s, imp_x1_s = _sample(imp_vectors, scatter_cap_imp)
 
         out["cal_curve_2d_grid_x0"] = x0_grid
         out["cal_curve_2d_grid_x1"] = x1_grid
@@ -451,6 +544,11 @@ class ValidationMathService:
         out["cal_curve_2d_gen_x1"] = gen_x1_s
         out["cal_curve_2d_imp_x0"] = imp_x0_s
         out["cal_curve_2d_imp_x1"] = imp_x1_s
+        out["cal_curve_2d_coef_raw"] = coef_raw_arr
+        out["cal_curve_2d_coef_std"] = coef_std_arr
+        out["cal_curve_2d_intercept"] = intercept_val
+        out["cal_curve_2d_density_grid"] = density_grid
+        out["cal_curve_2d_envelope_levels"] = envelope_levels
         return out
 
     def _compute_calibration_curve_grid(

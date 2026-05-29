@@ -76,9 +76,45 @@ class ValidationPlotData:
     cal_curve_2d_grid_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_grid_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_grid_log_lr: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
-    # Scatter subsampled (cap ~5000 por classe) pra overlay sobre o
-    # heatmap. Mantém densidade visual sem matar render.
+    # Scatter subsampled (cap configurável) pra overlay sobre o heatmap.
+    # Mantém densidade visual sem matar render. Cap atual: 2000 impostores,
+    # genuínos todos (ou cap 5000) — escolhido pra não saturar a nuvem
+    # visualmente quando há > 80k impostores.
     cal_curve_2d_gen_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_gen_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_imp_x0: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_imp_x1: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+
+    # --- Curva de Calibração 2D: equação do calibrador (LogReg) ---
+    # Coeficientes propagados via CALIBRATED_SCORES.metadata —
+    # populados só quando o calibrador é LogReg (tem `.logreg.coef_` /
+    # `.logreg.intercept_`). Pra KDE/BiGauss 2D ficam vazios e o plot
+    # cai em fallback de interpolação.
+    #
+    # `cal_curve_2d_coef_raw` (shape D=2): coeficientes em escala BRUTA
+    #   do input — logLR = intercept_raw + β_raw[0]·x₀ + β_raw[1]·x₁.
+    #   Permite gerar a superfície analítica direto no math service +
+    #   exibir a equação no rodapé do plot.
+    # `cal_curve_2d_coef_std` (shape D=2): coeficientes padronizados
+    #   (mudança no log-LR por 1 desvio-padrão da feature). Resposta
+    #   direta a "qual sistema domina?". Calculado em runtime do math
+    #   service via β_raw[i] · σ(observed_x_i).
+    # `cal_curve_2d_intercept`: β₀ em escala bruta.
+    # `cal_curve_2d_feature_names`: rótulos pra equação (mesmos
+    #   `axis_labels`, redundante mas explicita o pareamento com coefs).
+    cal_curve_2d_coef_raw: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_coef_std: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_intercept: Optional[float] = field(default=None, repr=False)
+    cal_curve_2d_feature_names: List[str] = field(default_factory=list, repr=False)
+
+    # --- Curva de Calibração 2D: envelope de suporte dos dados (KDE) ---
+    # Densidade KDE 2D Gaussiana avaliada no mesmo grid 100×100 do
+    # heatmap log-LR. `cal_curve_2d_density_grid` é normalizada (max=1)
+    # pra facilitar contour overlay sem mexer em colorbar.
+    # `cal_curve_2d_envelope_levels` traz 2 thresholds — o primeiro
+    # encerra 95% da massa observada (envelope outer), o segundo 99%
+    # (envelope inner). Fora do envelope 99% o plot deve ser tratado
+    # como extrapolação do calibrador. Empty quando D != 2 ou pickle
+    # pré-envelope (defaults preservam retrocompat).
+    cal_curve_2d_density_grid: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_envelope_levels: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
