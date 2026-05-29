@@ -6,6 +6,7 @@ from typing import Optional, Type, TypeVar
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.enums.covariance_shrinkage_mode import CovarianceShrinkageMode
+from faceaudit.enums.cross_condition_within_mode import CrossConditionWithinMode
 from faceaudit.enums.plda_mode import PLDAMode
 from faceaudit.enums.plda_variant import PLDAVariant
 
@@ -153,6 +154,30 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
         )}
     )
 
+    cross_condition_within_mode: CrossConditionWithinMode = field(
+        default=CrossConditionWithinMode.BALANCED_IDENTITY,
+        metadata={"help": (
+            "<html><b>Modo de centragem dos resíduos no PLDA cross-condition.</b><br/><br/>"
+            "Tem efeito <b>apenas</b> quando o treino usa um segundo dataset "
+            "(<code>secondary_dataset_resource_id</code>). Ignorado em modo "
+            "single-dataset.<br/><br/>"
+            "<b>BALANCED_IDENTITY (recomendado, default)</b> — resíduos centrados na "
+            "média balanceada da identidade <code>μ_c = (μ_c^A + μ_c^B)/2</code>. "
+            "O W absorve o deslocamento per-identidade entre as condições "
+            "(<code>μ_c^A − μ_c^B</code>) — mais conservador forensicamente, "
+            "evita LR superconfiante quando há interação identidade×condição "
+            "residual após CORAL/Whitening.<br/><br/>"
+            "<b>PER_CONDITION</b> — resíduos centrados na média da própria condição "
+            "<code>r = x − μ_c^cond</code>. Remove o deslocamento per-identidade "
+            "do W — assume que CORAL/Whitening já eliminou o shift cross-condição. "
+            "Mais limpo se essa premissa se sustentar, mas arrisca subestimar "
+            "variabilidade cross-condição.<br/><br/>"
+            "<i>Recomendação:</i> use BALANCED_IDENTITY como default por "
+            "defensibilidade pericial; compare empiricamente os dois no projeto "
+            "real para confirmar a escolha.</html>"
+        )}
+    )
+
     random_seed: int = field(
         default=42,
         metadata={"help": "Semente aleatória para reprodutibilidade, quando aplicável."}
@@ -218,7 +243,12 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
             Set[str] com nomes de campos a esconder.
         """
         if self.uses_simple_variant:
-            return {"regularization", "shrinkage_mode", "shrinkage_intensity"}
+            # `cross_condition_within_mode` só faz sentido em variantes two-cov
+            # (SIMPLE não suporta secondary_dataset).
+            return {
+                "regularization", "shrinkage_mode", "shrinkage_intensity",
+                "cross_condition_within_mode",
+            }
 
         if self.uses_two_covariance_variant:
             return {
@@ -273,6 +303,16 @@ class PLDASimilarityModelConfig(JSONSerializableMixin):
         if "shrinkage_mode" in processed_data and processed_data["shrinkage_mode"]:
             processed_data["shrinkage_mode"] = CovarianceShrinkageMode.from_str(
                 processed_data["shrinkage_mode"]
+            )
+
+        if (
+            "cross_condition_within_mode" in processed_data
+            and processed_data["cross_condition_within_mode"]
+        ):
+            processed_data["cross_condition_within_mode"] = (
+                CrossConditionWithinMode.from_str(
+                    processed_data["cross_condition_within_mode"]
+                )
             )
 
         return cls(**processed_data)

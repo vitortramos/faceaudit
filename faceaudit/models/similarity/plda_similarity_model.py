@@ -108,15 +108,25 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         self,
         dataset: EmbeddingDataset,
         logger_callback: Callable[[str], None] = print,
+        secondary_dataset: Optional[EmbeddingDataset] = None,
     ) -> None:
         """
         Treina o modelo PLDA a partir de um EmbeddingDataset, ramificando
         para o backend correspondente à variante configurada.
 
-        Regras (válidas para ambas as variantes):
+        Regras (válidas para todas as variantes single-dataset):
         - embeddings devem estar presentes
         - identity=None é removido
         - apenas IDs com >= 2 embeddings entram no treino
+
+        Modo **cross-condition** (quando `secondary_dataset` é fornecido):
+        - exige uma variante TWO_COVARIANCE ou SHRINKAGE_TWO_COVARIANCE
+          (SIMPLE com secondary → ValueError);
+        - mantém singletons em ambos os datasets (entram em B/μ via μ_c
+          balanceada; não contribuem direta nem indiretamente como linha
+          em W_cond);
+        - usa `config.cross_condition_within_mode` para escolher entre
+          PER_CONDITION e BALANCED_IDENTITY (default).
         """
         if dataset is None:
             raise ValueError("dataset não pode ser nulo.")
@@ -124,6 +134,52 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         if len(dataset) == 0:
             raise ValueError("Dataset vazio. Não é possível treinar PLDA.")
 
+        # ---------------------------------------------------------------
+        # Modo cross-condition: secondary_dataset fornecido.
+        # ---------------------------------------------------------------
+        if secondary_dataset is not None:
+            if not self.config.uses_any_two_covariance_variant:
+                raise ValueError(
+                    "secondary_dataset (modo cross-condition) requer variante "
+                    "TWO_COVARIANCE ou SHRINKAGE_TWO_COVARIANCE. Variante "
+                    f"atual: {self.config.plda_variant.value}."
+                )
+
+            if len(secondary_dataset) == 0:
+                raise ValueError(
+                    "secondary_dataset vazio. Não é possível treinar PLDA "
+                    "cross-condition."
+                )
+
+            # Preserva singletons — só dropa identity=None.
+            X_a, y_a = self._extract_training_arrays(
+                dataset, drop_singletons=False
+            )
+            X_b, y_b = self._extract_training_arrays(
+                secondary_dataset, drop_singletons=False
+            )
+
+            if X_a.shape[1] != X_b.shape[1]:
+                raise ValueError(
+                    f"Dimensões de embedding incompatíveis entre datasets: "
+                    f"primário D={X_a.shape[1]} vs secundário D={X_b.shape[1]}."
+                )
+
+            self._fit_cross_condition(
+                X_a=X_a, y_a=y_a,
+                X_b=X_b, y_b=y_b,
+                logger_callback=logger_callback,
+            )
+
+            self.trained_dim = int(X_a.shape[1])
+            self.trained_rank = self.trained_dim
+            self._is_fitted = True
+            logger_callback(f"[{self.name}] ✅ Treinamento cross-condition concluído.")
+            return
+
+        # ---------------------------------------------------------------
+        # Modo single-dataset (caminho clássico).
+        # ---------------------------------------------------------------
         # Pré-processamento comum: extrai X/y filtrando identity=None e
         # IDs com < 2 amostras.
         X_train, y_train = self._extract_training_arrays(dataset)
@@ -160,11 +216,23 @@ class PLDASimilarityModel(SimilarityModelProtocol):
         logger_callback(f"[{self.name}] ✅ Treinamento concluído.")
 
     def _extract_training_arrays(
-        self, dataset: EmbeddingDataset
+        self,
+        dataset: EmbeddingDataset,
+        drop_singletons: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Filtragem comum: remove identity=None e identidades singleton.
-        Retorna (X_train, y_train) prontos para os backends.
+        Filtragem para arrays de treino. Sempre remove `identity=None`.
+
+        Args:
+            dataset: o EmbeddingDataset a extrair.
+            drop_singletons: quando True (default — caminho single-dataset),
+                identidades com apenas 1 amostra são descartadas porque
+                `fit_two_covariance` clássico exige variância intra-classe.
+                Quando False (caminho cross-condition), singletons são
+                preservados — eles entram em B/μ via μ_c balanceada no
+                serviço cross-condition.
+
+        Retorna (X, y) prontos pra alimentar o backend correspondente.
         """
         X_all = dataset.matrix.astype(np.float64)
         y_all = np.array([item.identity for item in dataset.items], dtype=object)
@@ -178,6 +246,9 @@ class PLDASimilarityModel(SimilarityModelProtocol):
 
         if X.shape[0] < 2:
             raise ValueError("Dados insuficientes após remover identity=None.")
+
+        if not drop_singletons:
+            return X, y
 
         unique_ids, counts = np.unique(y, return_counts=True)
         valid_ids = set(unique_ids[counts > 1])
@@ -306,6 +377,85 @@ class PLDASimilarityModel(SimilarityModelProtocol):
 
         self._two_cov_kernels = _compute_scoring_kernels(self.two_cov_state)
         self.trained_rank = D
+
+    def _fit_cross_condition(
+        self,
+        X_a: np.ndarray,
+        y_a: np.ndarray,
+        X_b: np.ndarray,
+        y_b: np.ndarray,
+        logger_callback: Callable[[str], None],
+    ) -> None:
+        """Backend cross-condition (Brümmer 2010 com peso igual por condição)."""
+        # Imports preguiçosos — vide nota no topo do arquivo.
+        from faceaudit.services.cross_condition_two_covariance_plda_service import (
+            fit_cross_condition_two_covariance,
+        )
+        from faceaudit.services.two_covariance_plda_service import (
+            _compute_scoring_kernels,
+        )
+
+        within_mode = self.config.cross_condition_within_mode
+        mode = self.config.shrinkage_mode if self.config.uses_shrinkage_two_covariance_variant else None
+        intensity_log = (
+            f" | intensity={self.config.shrinkage_intensity:g}"
+            if mode is not None and mode.value == "MANUAL" else ""
+        )
+        shrinkage_log = (
+            f" | shrinkage={mode.value}{intensity_log}"
+            if mode is not None else ""
+        )
+
+        logger_callback(
+            f"[{self.name}] 🧠 Treinando PLDA TWO_COVARIANCE cross-condition "
+            f"(within_mode={within_mode.value}{shrinkage_log} | "
+            f"regularization={self.config.regularization} | "
+            f"seed={self.config.random_seed})..."
+        )
+
+        D = int(X_a.shape[1])
+        logger_callback(
+            f"[{self.name}] 📊 Treino cross-condition: "
+            f"N_A={X_a.shape[0]} | N_B={X_b.shape[0]} | D={D}"
+        )
+
+        # Variante SHRINKAGE_TWO_COVARIANCE usa o shrinkage configurado;
+        # TWO_COVARIANCE puro passa NONE.
+        if self.config.uses_shrinkage_two_covariance_variant:
+            shrinkage_mode = self.config.shrinkage_mode
+            shrinkage_intensity = self.config.shrinkage_intensity
+        else:
+            from faceaudit.enums.covariance_shrinkage_mode import (
+                CovarianceShrinkageMode,
+            )
+            shrinkage_mode = CovarianceShrinkageMode.NONE
+            shrinkage_intensity = 0.0
+
+        self.two_cov_state = fit_cross_condition_two_covariance(
+            X_a=X_a, y_a=y_a,
+            X_b=X_b, y_b=y_b,
+            within_mode=within_mode,
+            shrinkage_mode=shrinkage_mode,
+            shrinkage_intensity=shrinkage_intensity,
+            regularization=self.config.regularization,
+            logger=logger_callback,
+        )
+
+        alpha_w = self.two_cov_state.shrinkage_alpha_w
+        if alpha_w is not None:
+            logger_callback(
+                f"[{self.name}] 🎯 α_w cross-condition aplicado: {alpha_w:.4f}"
+            )
+
+        logger_callback(
+            f"[{self.name}] 📐 cross-condition stats: "
+            f"n_ids_A={self.two_cov_state.n_ids_condition_a}, "
+            f"n_ids_B={self.two_cov_state.n_ids_condition_b}, "
+            f"n_common={self.two_cov_state.n_common_identities}, "
+            f"n_classes_union={self.two_cov_state.n_classes}"
+        )
+
+        self._two_cov_kernels = _compute_scoring_kernels(self.two_cov_state)
 
     # =========================================================================
     # SCORING
@@ -457,6 +607,13 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 "shrinkage_target": getattr(self.two_cov_state, "shrinkage_target", None),
                 "shrinkage_alpha_w": getattr(self.two_cov_state, "shrinkage_alpha_w", None),
                 "shrinkage_alpha_b": getattr(self.two_cov_state, "shrinkage_alpha_b", None),
+                "cross_condition": getattr(self.two_cov_state, "cross_condition", False),
+                "n_ids_condition_a": getattr(self.two_cov_state, "n_ids_condition_a", None),
+                "n_ids_condition_b": getattr(self.two_cov_state, "n_ids_condition_b", None),
+                "n_common_identities": getattr(self.two_cov_state, "n_common_identities", None),
+                "cross_condition_within_mode": getattr(
+                    self.two_cov_state, "cross_condition_within_mode", None
+                ),
             }
 
         payload = {
@@ -521,6 +678,13 @@ class PLDASimilarityModel(SimilarityModelProtocol):
                 shrinkage_target=two_cov_dict.get("shrinkage_target"),
                 shrinkage_alpha_w=two_cov_dict.get("shrinkage_alpha_w"),
                 shrinkage_alpha_b=two_cov_dict.get("shrinkage_alpha_b"),
+                cross_condition=bool(two_cov_dict.get("cross_condition", False)),
+                n_ids_condition_a=two_cov_dict.get("n_ids_condition_a"),
+                n_ids_condition_b=two_cov_dict.get("n_ids_condition_b"),
+                n_common_identities=two_cov_dict.get("n_common_identities"),
+                cross_condition_within_mode=two_cov_dict.get(
+                    "cross_condition_within_mode"
+                ),
             )
             # Recomputa kernels — não persistidos para evitar bloat e desync
             # quando regularização muda.

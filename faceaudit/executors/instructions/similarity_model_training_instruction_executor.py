@@ -69,11 +69,32 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                 dataset_resource = context.get_resource(instruction.input_dataset_resource_id)
                 dataset = dataset_resource.payload
 
+                # Modo cross-condition: segundo dataset opcional.
+                secondary_dataset = None
+                secondary_id = instruction.secondary_dataset_resource_id
+                if secondary_id:
+                    secondary_resource = context.get_resource(secondary_id)
+                    secondary_dataset = secondary_resource.payload
+                    # Provenance warning — DATASETS_EMBEDDING_COMPAT garante
+                    # dim/coluna iguais mas não que os datasets vieram do
+                    # mesmo pipeline. Hash de pipeline é trabalho futuro.
+                    self._log(
+                        context,
+                        "⚠ PLDA cross-condition: assume que '"
+                        f"{instruction.input_dataset_resource_id}' e "
+                        f"'{secondary_id}' foram produzidos pela MESMA cadeia de "
+                        "transformação (mesmo pipeline DUAL). Espaços vetoriais "
+                        "incompatíveis (CORAL/Whitening fitados separadamente) "
+                        "produzirão resultados sem sentido sem disparar erro "
+                        "automático — verifique manualmente."
+                    )
+
                 # Config embutida no DTO da instrução (não mais via recurso externo).
                 trained_model = self._train_plda_similarity_model(
                     dataset=dataset,
                     config_payload=instruction.similarity_model_config,
                     context=context,
+                    secondary_dataset=secondary_dataset,
                 )
 
             else:
@@ -98,16 +119,37 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                 f"'{output_resource_id}'."
             )
 
+            execution_metadata = {
+                "instruction_id": instruction.instruction_id,
+                "instruction_name": instruction.name,
+                "similarity_model_type": instruction.similarity_model_type.to_str(),
+                "input_dataset_resource_id": instruction.input_dataset_resource_id,
+                "secondary_dataset_resource_id": instruction.secondary_dataset_resource_id,
+                "trained_similarity_model_resource_id": output_resource_id,
+                "trained_model_type": type(trained_model).__name__,
+            }
+
+            # Flags cross-condition para auditoria/UI.
+            if (
+                instruction.uses_plda
+                and instruction.secondary_dataset_resource_id
+                and isinstance(trained_model, PLDASimilarityModel)
+                and trained_model.two_cov_state is not None
+            ):
+                state = trained_model.two_cov_state
+                execution_metadata.update({
+                    "cross_condition": getattr(state, "cross_condition", False),
+                    "n_ids_condition_a": getattr(state, "n_ids_condition_a", None),
+                    "n_ids_condition_b": getattr(state, "n_ids_condition_b", None),
+                    "n_common_identities": getattr(state, "n_common_identities", None),
+                    "cross_condition_within_mode": getattr(
+                        state, "cross_condition_within_mode", None
+                    ),
+                })
+
             return InstructionExecutionResult.ok(
                 produced_resource_ids=[output_resource_id],
-                metadata={
-                    "instruction_id": instruction.instruction_id,
-                    "instruction_name": instruction.name,
-                    "similarity_model_type": instruction.similarity_model_type.to_str(),
-                    "input_dataset_resource_id": instruction.input_dataset_resource_id,
-                    "trained_similarity_model_resource_id": output_resource_id,
-                    "trained_model_type": type(trained_model).__name__,
-                },
+                metadata=execution_metadata,
             )
 
         except Exception as e:
@@ -185,6 +227,65 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                     "O 'similarity_model_config' embutido não é um "
                     "PLDASimilarityModelConfig válido."
                 )
+            else:
+                # Validações do modo cross-condition.
+                secondary_id = instruction.secondary_dataset_resource_id
+                if secondary_id:
+                    config = instruction.similarity_model_config
+                    if not config.uses_any_two_covariance_variant:
+                        result.add_error(
+                            "secondary_dataset_resource_id (modo cross-condition) "
+                            "requer variante PLDA TWO_COVARIANCE ou "
+                            "SHRINKAGE_TWO_COVARIANCE — variante atual: "
+                            f"{config.plda_variant.value}."
+                        )
+                    elif not context.has_resource(secondary_id):
+                        result.add_error(
+                            f"O dataset secundário não foi encontrado no contexto: "
+                            f"'{secondary_id}'."
+                        )
+                    else:
+                        secondary_resource = context.get_resource(secondary_id)
+                        if secondary_resource is None or not isinstance(
+                            secondary_resource.payload, EmbeddingDataset
+                        ):
+                            result.add_error(
+                                f"O dataset secundário '{secondary_id}' não contém "
+                                "um EmbeddingDataset válido."
+                            )
+                        elif (
+                            instruction.input_dataset_resource_id
+                            and context.has_resource(instruction.input_dataset_resource_id)
+                        ):
+                            # Sanidade: dimensão de embedding compatível
+                            # entre primário e secundário (defesa em
+                            # profundidade — a regra plugável DATASETS_EMBEDDING_COMPAT
+                            # já verifica, mas mantemos hard-check aqui).
+                            primary_resource = context.get_resource(
+                                instruction.input_dataset_resource_id
+                            )
+                            if (
+                                primary_resource is not None
+                                and isinstance(primary_resource.payload, EmbeddingDataset)
+                            ):
+                                primary_dim = (
+                                    primary_resource.payload.matrix.shape[1]
+                                    if len(primary_resource.payload) > 0 else None
+                                )
+                                secondary_dim = (
+                                    secondary_resource.payload.matrix.shape[1]
+                                    if len(secondary_resource.payload) > 0 else None
+                                )
+                                if (
+                                    primary_dim is not None
+                                    and secondary_dim is not None
+                                    and primary_dim != secondary_dim
+                                ):
+                                    result.add_error(
+                                        f"Dimensões de embedding incompatíveis: "
+                                        f"primário D={primary_dim} vs "
+                                        f"secundário D={secondary_dim}."
+                                    )
 
         else:
             result.add_error(
@@ -223,11 +324,20 @@ class SimilarityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
         dataset: EmbeddingDataset,
         config_payload: PLDASimilarityModelConfig,
         context: StrategyExecutionContextProtocol,
+        secondary_dataset: EmbeddingDataset = None,
     ) -> PLDASimilarityModel:
         """
         Instancia e treina um PLDASimilarityModel a partir do config informado,
         encaminhando os logs para o contexto de execução.
+
+        Quando `secondary_dataset` é fornecido, dispara o estimador
+        cross-condition (modo `BALANCED_IDENTITY` por default — configurável
+        via `config.cross_condition_within_mode`).
         """
         model = PLDASimilarityModel(config=config_payload)
-        model.fit(dataset=dataset, logger_callback=context.log)
+        model.fit(
+            dataset=dataset,
+            logger_callback=context.log,
+            secondary_dataset=secondary_dataset,
+        )
         return model

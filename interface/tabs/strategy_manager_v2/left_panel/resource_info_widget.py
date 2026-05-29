@@ -1205,6 +1205,27 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                         extras.append(f"shrinkage={shrink_mode}")
                 if shrink_target is not None:
                     extras.append(f"target={shrink_target}")
+
+            # Metadados cross-condition (presentes apenas em estados treinados
+            # com secondary_dataset). Acesso defensivo via getattr — pickles
+            # antigos não têm os atributos.
+            two_cov_state = getattr(payload, "two_cov_state", None)
+            if two_cov_state is not None and getattr(
+                two_cov_state, "cross_condition", False
+            ):
+                extras.append("cross-condition=Sim")
+                within_mode = getattr(
+                    two_cov_state, "cross_condition_within_mode", None
+                )
+                if within_mode:
+                    extras.append(f"within_mode={within_mode}")
+                n_ids_a = getattr(two_cov_state, "n_ids_condition_a", None)
+                n_ids_b = getattr(two_cov_state, "n_ids_condition_b", None)
+                n_common = getattr(two_cov_state, "n_common_identities", None)
+                if n_ids_a is not None and n_ids_b is not None:
+                    extras.append(f"IDs A/B={int(n_ids_a)}/{int(n_ids_b)}")
+                if n_common is not None:
+                    extras.append(f"IDs comuns={int(n_common)}")
         elif is_simple_plda:
             em_iters = getattr(cfg, "em_iterations", None)
             if em_iters is not None:

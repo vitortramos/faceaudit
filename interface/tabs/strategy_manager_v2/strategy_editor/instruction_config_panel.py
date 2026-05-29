@@ -2237,7 +2237,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         if not self._instruction:
             return
         setattr(self._instruction, attr_name, new_dto)
-        self.config_changed.emit(self._instruction)
+        # Permite que a instrução manifeste que a mudança no DTO aninhado
+        # afetou a visibilidade dos resource specs do panel (ex: mudar a
+        # variante PLDA esconde/mostra o dropdown de dataset secundário).
+        hook = getattr(self._instruction, "should_rebuild_on_nested_change", None)
+        needs_rebuild = bool(hook(attr_name, new_dto)) if callable(hook) else False
+        if hasattr(self._instruction, "_sync_declared_io"):
+            self._instruction._sync_declared_io()
+        if needs_rebuild:
+            QtCore.QTimer.singleShot(0, self._rebuild_and_notify)
+        else:
+            self.config_changed.emit(self._instruction)
 
     def _rebuild_and_notify(self) -> None:
         if not self._instruction:

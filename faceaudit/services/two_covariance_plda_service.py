@@ -59,6 +59,18 @@ class TwoCovariancePLDAState:
         shrinkage_alpha_w: α efetivo aplicado a W (∈ [0, 1]) ou None.
         shrinkage_alpha_b: α efetivo aplicado a B. Reservado para futura
             extensão B_AND_W; na v1 fica sempre None pois B é mantida empírica.
+
+    Metadados cross-condition (populados quando o treino usa um segundo
+    dataset via `fit_cross_condition_two_covariance`; ficam None/False no
+    modo single-dataset). Em modo cross-condition `n_samples` e `n_classes`
+    têm semântica especial — ver docstring de `fit_cross_condition_two_covariance`:
+        cross_condition: True quando o estado foi treinado em modo cross-condition.
+        n_ids_condition_a: nº de identidades distintas com `identity != None`
+            no dataset A (inclui singletons em A).
+        n_ids_condition_b: análogo para B.
+        n_common_identities: nº de identidades presentes em A E B.
+        cross_condition_within_mode: string do `CrossConditionWithinMode`
+            usado ("PER_CONDITION" ou "BALANCED_IDENTITY") ou None.
     """
     mu: np.ndarray
     B: np.ndarray
@@ -70,6 +82,11 @@ class TwoCovariancePLDAState:
     shrinkage_target: Optional[str] = None
     shrinkage_alpha_w: Optional[float] = None
     shrinkage_alpha_b: Optional[float] = None
+    cross_condition: bool = False
+    n_ids_condition_a: Optional[int] = None
+    n_ids_condition_b: Optional[int] = None
+    n_common_identities: Optional[int] = None
+    cross_condition_within_mode: Optional[str] = None
 
 
 def fit_two_covariance(
