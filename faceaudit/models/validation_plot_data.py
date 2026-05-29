@@ -107,14 +107,24 @@ class ValidationPlotData:
     cal_curve_2d_intercept: Optional[float] = field(default=None, repr=False)
     cal_curve_2d_feature_names: List[str] = field(default_factory=list, repr=False)
 
-    # --- Curva de Calibração 2D: envelope de suporte dos dados (KDE) ---
-    # Densidade KDE 2D Gaussiana avaliada no mesmo grid 100×100 do
-    # heatmap log-LR. `cal_curve_2d_density_grid` é normalizada (max=1)
-    # pra facilitar contour overlay sem mexer em colorbar.
-    # `cal_curve_2d_envelope_levels` traz 2 thresholds — o primeiro
-    # encerra 95% da massa observada (envelope outer), o segundo 99%
-    # (envelope inner). Fora do envelope 99% o plot deve ser tratado
-    # como extrapolação do calibrador. Empty quando D != 2 ou pickle
-    # pré-envelope (defaults preservam retrocompat).
+    # --- Curva de Calibração 2D: envelope de suporte POOLED (legacy) ---
+    # Mantido pra retrocompat com pickles gerados entre ace1808 e este
+    # commit. Computado via KDE na UNIÃO gen+imp — vira sem-sentido
+    # quando as classes são desbalanceadas (80k imp × 1.5k gen → KDE
+    # dominada por impostores, envelope ignora genuínos). Substituído
+    # pelos campos per-classe abaixo; plot tenta per-classe primeiro
+    # e cai aqui se faltarem.
     cal_curve_2d_density_grid: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_2d_envelope_levels: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+
+    # --- Curva de Calibração 2D: envelopes PER-CLASSE (canônico) ---
+    # KDE separada por classe, normalizada pelo max próprio. Cada
+    # envelope é 1 contour ao nível que encerra 95% da massa DA
+    # PRÓPRIA classe. Plot renderiza 2 contours coloridos:
+    # verde (`#2e7d32`) pros genuínos, vermelho (`#c62828`) pros
+    # impostores. Resolve o viés do envelope POOLED em datasets
+    # desbalanceados. Empty quando D != 2 ou pickle pré-per-class.
+    cal_curve_2d_density_grid_gen: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_density_grid_imp: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
+    cal_curve_2d_envelope_level_gen: Optional[float] = field(default=None, repr=False)
+    cal_curve_2d_envelope_level_imp: Optional[float] = field(default=None, repr=False)

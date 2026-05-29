@@ -642,37 +642,81 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     cbar = figure.colorbar(mesh, ax=ax, pad=0.02, shrink=0.85)
     cbar.set_label("log-LR calibrado", fontsize=9)
 
-    # ─── Camada 2: envelope de suporte KDE ──────────────────────────────
-    density_grid = np.asarray(
-        getattr(pd, "cal_curve_2d_density_grid", []), dtype=np.float64,
+    # ─── Camada 2: envelopes de suporte KDE PER-CLASSE ──────────────────
+    # 2 contornos coloridos (verde=gen, vermelho=imp), cada um a 95%
+    # da massa DA PRÓPRIA classe. Resolve o viés do envelope pooled
+    # em datasets desbalanceados (80k imp × 1.5k gen → KDE pooled
+    # ignora os genuínos). Pickles antigos sem campos per-classe
+    # caem no fallback POOLED (legacy preservado em campo separado).
+    density_gen = np.asarray(
+        getattr(pd, "cal_curve_2d_density_grid_gen", []), dtype=np.float64,
     )
-    envelope_levels = np.asarray(
-        getattr(pd, "cal_curve_2d_envelope_levels", []), dtype=np.float64,
+    density_imp = np.asarray(
+        getattr(pd, "cal_curve_2d_density_grid_imp", []), dtype=np.float64,
     )
-    if (
-        density_grid.size > 0
-        and density_grid.shape == log_lr_grid.shape
-        and envelope_levels.size >= 2
-    ):
+    lvl_gen = getattr(pd, "cal_curve_2d_envelope_level_gen", None)
+    lvl_imp = getattr(pd, "cal_curve_2d_envelope_level_imp", None)
+    has_per_class = (
+        density_gen.size > 0
+        and density_imp.size > 0
+        and lvl_gen is not None
+        and lvl_imp is not None
+    )
+
+    def _draw_envelope(density: np.ndarray, level: float, color: str, label: str) -> None:
+        if density.size == 0 or density.shape != log_lr_grid.shape:
+            return
         try:
-            # Níveis em ordem crescente exigida pelo contour.
-            lvl_99, lvl_95 = float(envelope_levels.min()), float(envelope_levels.max())
-            cs_env = ax.contour(
-                x0_grid, x1_grid, density_grid,
-                levels=[lvl_99, lvl_95],
-                colors=["#333333", "#1a1a1a"],
-                linestyles=["dashed", "solid"],
-                linewidths=[0.9, 1.2],
-                alpha=0.55,
+            cs = ax.contour(
+                x0_grid, x1_grid, density,
+                levels=[float(level)],
+                colors=[color], linestyles=["solid"], linewidths=[1.4],
+                alpha=0.75,
             )
-            # Label só no envelope outer (95%) — inner fica anônimo.
             try:
-                fmt = {lvl_95: "envelope 95%", lvl_99: "99%"}
-                ax.clabel(cs_env, inline=True, fontsize=7, fmt=fmt)
+                ax.clabel(cs, inline=True, fontsize=7, fmt={float(level): label})
             except Exception:
                 pass
         except Exception:
-            pass  # KDE corrompido não bloqueia o resto
+            pass  # contour corrompido não bloqueia o resto do plot
+
+    if has_per_class:
+        _draw_envelope(density_gen, float(lvl_gen), "#1b5e20", "envelope gen 95%")
+        _draw_envelope(density_imp, float(lvl_imp), "#b71c1c", "envelope imp 95%")
+    else:
+        # Fallback legacy pra pickles entre ace1808 e este commit —
+        # envelope pooled único (visualmente enviesado em
+        # datasets desbalanceados, mas é o que temos).
+        density_grid = np.asarray(
+            getattr(pd, "cal_curve_2d_density_grid", []), dtype=np.float64,
+        )
+        envelope_levels = np.asarray(
+            getattr(pd, "cal_curve_2d_envelope_levels", []), dtype=np.float64,
+        )
+        if (
+            density_grid.size > 0
+            and density_grid.shape == log_lr_grid.shape
+            and envelope_levels.size >= 2
+        ):
+            try:
+                lvl_99, lvl_95 = float(envelope_levels.min()), float(envelope_levels.max())
+                cs_env = ax.contour(
+                    x0_grid, x1_grid, density_grid,
+                    levels=[lvl_99, lvl_95],
+                    colors=["#333333", "#1a1a1a"],
+                    linestyles=["dashed", "solid"],
+                    linewidths=[0.9, 1.2],
+                    alpha=0.55,
+                )
+                try:
+                    ax.clabel(
+                        cs_env, inline=True, fontsize=7,
+                        fmt={lvl_95: "envelope pooled 95%", lvl_99: "99%"},
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
     # ─── Camada 3: contornos log-LR labelados ───────────────────────────
     contour_levels = [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0]
@@ -845,8 +889,8 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     # `figure.text` é ignorado pelo layout engine e colide com o xlabel
     # do axes (bug visível na v2.0).
     figure.supxlabel(
-        "Regiões fora do envelope (linhas cinza) são extrapolação do calibrador — "
-        "interpretar log-LR ali com cautela.",
+        "Envelopes verde/vermelho encerram 95% da massa de cada classe; "
+        "regiões fora dos dois são extrapolação do calibrador — interpretar log-LR ali com cautela.",
         fontsize=7.5, color="#555", style="italic",
     )
 

@@ -376,6 +376,10 @@ class ValidationMathService:
             "cal_curve_2d_feature_names": [],
             "cal_curve_2d_density_grid": np.array([]),
             "cal_curve_2d_envelope_levels": np.array([]),
+            "cal_curve_2d_density_grid_gen": np.array([]),
+            "cal_curve_2d_density_grid_imp": np.array([]),
+            "cal_curve_2d_envelope_level_gen": None,
+            "cal_curve_2d_envelope_level_imp": None,
         }
 
     def _compute_calibration_curve_2d_grid(
@@ -490,39 +494,49 @@ class ValidationMathService:
         if coef_raw_arr.size == 2 and np.all(feature_sigma > 0):
             coef_std_arr = coef_raw_arr * feature_sigma
 
-        # ─── Density envelope via KDE 2D ─────────────────────────────────
-        density_grid = np.array([])
-        envelope_levels = np.array([])
-        try:
-            n_total = all_x.shape[0]
-            rng_kde = np.random.default_rng(42)
-            if n_total > kde_fit_cap:
-                idx_kde = rng_kde.choice(n_total, size=kde_fit_cap, replace=False)
-                kde_points = all_x[idx_kde].T  # shape (2, N) para gaussian_kde
-            else:
-                kde_points = all_x.T
-            kde = gaussian_kde(kde_points)  # Scott's rule auto
-            # Avalia no grid 100×100. ~10k pontos × bandwidth — segundos
-            # no pior caso.
-            grid_pts = np.vstack([xx.ravel(), yy.ravel()])
-            density_flat = kde(grid_pts)
-            density_grid = density_flat.reshape(xx.shape)
-            # Normaliza pelo max pra contour ficar agnóstico à magnitude
-            # absoluta da densidade.
-            d_max = float(density_grid.max())
-            if d_max > 0:
-                density_grid = density_grid / d_max
-            # Envelopes mass-based: percentil de densidade nos pontos
-            # observados, onde "5%" significa "5% dos pontos têm densidade
-            # menor que isto" → contorno nesse nível encerra 95% da massa.
-            dens_at_obs = kde(kde_points) / (d_max if d_max > 0 else 1.0)
-            level_95 = float(np.percentile(dens_at_obs, 5))
-            level_99 = float(np.percentile(dens_at_obs, 1))
-            envelope_levels = np.array([level_95, level_99])
-        except Exception:
-            # KDE pode falhar com poucos pontos ou covariância singular.
-            # Plot cai sem envelope (anotação textual ainda explica).
-            pass
+        # ─── Density envelopes PER-CLASSE via KDE 2D ─────────────────────
+        # Decisão de design: 2 KDEs separadas (uma por classe) em vez
+        # de 1 KDE na união gen+imp. Motivo: datasets forenses são
+        # tipicamente muito desbalanceados (80k impostores × 1.5k
+        # genuínos, ratio ~50:1). Numa KDE pooled, a classe minoritária
+        # vira ruído sob a maior; o envelope 95% mass-based ignora os
+        # genuínos completamente — não é o que o analista quer ver.
+        #
+        # Per-classe: cada envelope encerra 95% da massa DA PRÓPRIA
+        # classe. Plot renderiza 2 contours coloridos (verde+vermelho).
+        # Fora dos dois = extrapolação genuína. Dentro de um só = suporte
+        # parcial.
+        grid_pts = np.vstack([xx.ravel(), yy.ravel()])
+        rng_kde = np.random.default_rng(42)
+
+        def _class_envelope(class_x: np.ndarray) -> Tuple[np.ndarray, Optional[float]]:
+            """KDE 2D + nível 95% mass-based pra uma classe. Devolve
+            (density_grid normalizada, threshold) ou (empty, None) se
+            falhar (covariância singular, < 5 pontos, etc)."""
+            n = class_x.shape[0]
+            if n < 5:
+                return np.array([]), None
+            try:
+                if n > kde_fit_cap:
+                    idx = rng_kde.choice(n, size=kde_fit_cap, replace=False)
+                    pts = class_x[idx].T
+                else:
+                    pts = class_x.T
+                kde = gaussian_kde(pts)  # Scott's rule auto
+                density = kde(grid_pts).reshape(xx.shape)
+                d_max = float(density.max())
+                if d_max > 0:
+                    density = density / d_max
+                dens_at_obs = kde(pts) / (d_max if d_max > 0 else 1.0)
+                # Percentil 5 da densidade nos observados → contorno nesse
+                # nível encerra 95% da massa observada.
+                level_95 = float(np.percentile(dens_at_obs, 5))
+                return density, level_95
+            except Exception:
+                return np.array([]), None
+
+        density_grid_gen, envelope_level_gen = _class_envelope(gen_vectors)
+        density_grid_imp, envelope_level_imp = _class_envelope(imp_vectors)
 
         # ─── Scatter subsampled (caps diferenciados) ─────────────────────
         rng = np.random.default_rng(0)
@@ -547,8 +561,12 @@ class ValidationMathService:
         out["cal_curve_2d_coef_raw"] = coef_raw_arr
         out["cal_curve_2d_coef_std"] = coef_std_arr
         out["cal_curve_2d_intercept"] = intercept_val
-        out["cal_curve_2d_density_grid"] = density_grid
-        out["cal_curve_2d_envelope_levels"] = envelope_levels
+        # Campos POOLED ficam vazios — caminho legacy preservado pra
+        # pickles antigos pelo plot, mas executor novo não popula.
+        out["cal_curve_2d_density_grid_gen"] = density_grid_gen
+        out["cal_curve_2d_density_grid_imp"] = density_grid_imp
+        out["cal_curve_2d_envelope_level_gen"] = envelope_level_gen
+        out["cal_curve_2d_envelope_level_imp"] = envelope_level_imp
         return out
 
     def _compute_calibration_curve_grid(
