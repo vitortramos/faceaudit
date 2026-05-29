@@ -15,7 +15,7 @@ gera os 4 PNGs.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -707,6 +707,8 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
             pass  # contornos faltando não bloqueiam o heatmap
 
     # ─── Camada 4: scatter overlay (caps diferenciados) ─────────────────
+    # Sem `label=` — a legenda gen/imp foi removida porque o título já
+    # informa contagens. Cores são convenção do app (verde=gen, vermelho=imp).
     gen_x0 = np.asarray(getattr(pd, "cal_curve_2d_gen_x0", []), dtype=np.float64)
     gen_x1 = np.asarray(getattr(pd, "cal_curve_2d_gen_x1", []), dtype=np.float64)
     imp_x0 = np.asarray(getattr(pd, "cal_curve_2d_imp_x0", []), dtype=np.float64)
@@ -714,17 +716,9 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
     n_gen = int(getattr(result, "n_genuines", 0) or gen_x0.size)
     n_imp = int(getattr(result, "n_impostors", 0) or imp_x0.size)
     if imp_x0.size > 0:
-        ax.scatter(
-            imp_x0, imp_x1, s=4, c="#c62828", alpha=0.15,
-            edgecolors="none",
-            label=f"Impostores (N={n_imp:,})".replace(",", "."),
-        )
+        ax.scatter(imp_x0, imp_x1, s=4, c="#c62828", alpha=0.15, edgecolors="none")
     if gen_x0.size > 0:
-        ax.scatter(
-            gen_x0, gen_x1, s=4, c="#2e7d32", alpha=0.35,
-            edgecolors="none",
-            label=f"Genuínos (N={n_gen:,})".replace(",", "."),
-        )
+        ax.scatter(gen_x0, gen_x1, s=4, c="#2e7d32", alpha=0.35, edgecolors="none")
 
     # Título multilinha com métricas escalares.
     m = getattr(result, "metrics", None)
@@ -764,10 +758,14 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
 
     ax.set_xlabel(label_x, fontsize=9)
     ax.set_ylabel(label_y, fontsize=9)
-    ax.legend(loc="upper left", fontsize=8.5, framealpha=0.85)
     ax.tick_params(labelsize=8)
 
-    # ─── Caixa equação do calibrador (LogReg 2D) ────────────────────────
+    # ─── Caixa equação do calibrador (LogReg 2D, top-left) ──────────────
+    # Layout vertical estreito — substitui legenda gen/imp removida.
+    # Header explicita "escala bruta" pra não confundir com o coef_
+    # interno do sklearn (que pode estar na escala Z se Standardize foi
+    # ativado no treino). Mapeamento x₀/x₁ → nomes das features fica no
+    # topo pra eq logLR poder usar os símbolos curtos sem reler.
     coef_raw = np.asarray(getattr(pd, "cal_curve_2d_coef_raw", []), dtype=np.float64)
     coef_std = np.asarray(getattr(pd, "cal_curve_2d_coef_std", []), dtype=np.float64)
     intercept_eq = getattr(pd, "cal_curve_2d_intercept", None)
@@ -777,38 +775,67 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
         and intercept_eq is not None
         and len(feature_names) == 2
     ):
-        f0 = _short_label(feature_names[0], maxlen=18)
-        f1 = _short_label(feature_names[1], maxlen=18)
-        eq_line = (
-            f"logLR = {intercept_eq:+.3f} "
-            f"{coef_raw[0]:+.3f}·{f0} {coef_raw[1]:+.3f}·{f1}"
-        )
-        text_parts = [eq_line]
+        # Strip de prefixo comum + truncamento. Crítico pra labels do
+        # tipo "ESCORES VALID PLDA" / "ESCORES VALID COSSENO" — o
+        # truncamento ingênuo a 14 chars colapsaria os 2 em
+        # "ESCORES VAL…" indistinguíveis. Aqui detecta o prefixo
+        # comum em ≥ 6 chars e remove pra preservar a parte distintiva.
+        f0_full, f1_full = str(feature_names[0]), str(feature_names[1])
+        common = _common_prefix_strip(f0_full, f1_full, min_prefix=6)
+        f0 = _short_label(common[0], maxlen=18)
+        f1 = _short_label(common[1], maxlen=18)
+
+        # Bloco 1: header + mapeamento dos símbolos.
+        header_lines = [
+            "Equação do calibrador",
+            "(coefs em escala bruta do input)",
+            "",
+            f"x₀ = {f0}",
+            f"x₁ = {f1}",
+            "",
+        ]
+        # Bloco 2: equação compacta com símbolos.
+        eq_lines = [
+            "logLR = β₀ + β₁·x₀ + β₂·x₁",
+            "",
+            f"β₀ = {intercept_eq:+.3f}",
+            f"β₁ = {coef_raw[0]:+.3f}",
+            f"β₂ = {coef_raw[1]:+.3f}",
+        ]
+        # Bloco 3: βstd + diagnóstico (se disponível).
+        std_lines: List[str] = []
         if coef_std.size == 2:
-            text_parts.append(
-                f"βstd:  {f0}={coef_std[0]:+.3f}  ·  {f1}={coef_std[1]:+.3f}"
-            )
-            # Diagnóstico "qual domina?" via razão de |β_std|.
+            std_lines = [
+                "",
+                "βstd (Δ log-LR por 1σ",
+                "no conjunto observado):",
+                f"β₁ = {coef_std[0]:+.3f}",
+                f"β₂ = {coef_std[1]:+.3f}",
+            ]
             a, b = abs(float(coef_std[0])), abs(float(coef_std[1]))
             if a > 0 and b > 0:
                 if a > 1.5 * b:
-                    text_parts.append(f"({f0} domina)")
+                    std_lines.append(f"→ x₀ domina")
                 elif b > 1.5 * a:
-                    text_parts.append(f"({f1} domina)")
+                    std_lines.append(f"→ x₁ domina")
                 else:
-                    text_parts.append("(contribuição equivalente)")
+                    std_lines.append(f"→ contribuição equivalente")
+
+        text_block = "\n".join(header_lines + eq_lines + std_lines)
         ax.text(
-            0.99, 0.99,
-            "\n".join(text_parts),
+            0.015, 0.985,
+            text_block,
             transform=ax.transAxes,
-            ha="right", va="top",
-            fontsize=8,
+            ha="left", va="top",
+            fontsize=7.5,
             family="monospace",
+            linespacing=1.25,
             bbox=dict(
-                boxstyle="round,pad=0.4",
+                boxstyle="round,pad=0.45",
                 facecolor="white",
-                edgecolor="#999",
-                alpha=0.88,
+                edgecolor="#888",
+                alpha=0.92,
+                linewidth=0.8,
             ),
         )
 
@@ -830,6 +857,29 @@ def _short_label(label: str, maxlen: int = 18) -> str:
     if len(s) <= maxlen:
         return s
     return s[: maxlen - 1] + "…"
+
+
+def _common_prefix_strip(
+    a: str,
+    b: str,
+    *,
+    min_prefix: int = 6,
+) -> Tuple[str, str]:
+    """Se `a` e `b` compartilham prefixo de ≥ `min_prefix` caracteres,
+    remove esse prefixo dos dois pra preservar as partes distintivas no
+    truncamento posterior. Senão devolve as strings originais.
+
+    Útil pra labels como ('ESCORES VALID PLDA', 'ESCORES VALID COSSENO')
+    — sem isso, truncar a 14 chars colapsa ambos em 'ESCORES VALID' e
+    perde a info que distingue x₀ de x₁.
+    """
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    if i >= min_prefix:
+        return a[i:].lstrip(" -·"), b[i:].lstrip(" -·")
+    return a, b
 
 
 def _draw_calibration_curve_placeholder(figure: Figure, dim: int) -> None:
