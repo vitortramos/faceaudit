@@ -326,6 +326,24 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                 schema_metadata[b"faceaudit:score_vector_sources"] = ",".join(
                     str(s) for s in sources
                 ).encode()
+        # Coeficientes do calibrador (LogReg) — propagados pelo
+        # SCORE_CALIBRATION via ds_metadata e persistidos como JSON no
+        # schema. Sem isso, STRATEGY_EVALUATION ao recarregar do disco
+        # perde os coefs e cai na superfície interpolada + sem caixa
+        # de equação no plot 2D.
+        calib_coef = self.metadata.get("calibrator_coef_raw")
+        calib_intercept = self.metadata.get("calibrator_intercept_raw")
+        if calib_coef is not None and calib_intercept is not None:
+            try:
+                import json as _json
+                schema_metadata[b"faceaudit:calibrator_coef_raw"] = _json.dumps(
+                    list(calib_coef)
+                ).encode()
+                schema_metadata[b"faceaudit:calibrator_intercept_raw"] = (
+                    f"{float(calib_intercept):.17g}".encode()
+                )
+            except Exception:
+                pass  # JSON falha → simplesmente não persiste; plot cai em fallback
         schema = pa.schema(fields, metadata=schema_metadata or None)
 
         if n == 0:

@@ -813,11 +813,13 @@ def _draw_calibration_curve_2d(figure: Figure, result: Any) -> None:
         )
 
     # ─── Footer fixo de extrapolação ────────────────────────────────────
-    figure.text(
-        0.5, 0.005,
+    # Uso `supxlabel` em vez de `figure.text(y=0.005)`: o constrained_layout
+    # RESERVA espaço pro supxlabel automaticamente. Texto livre via
+    # `figure.text` é ignorado pelo layout engine e colide com o xlabel
+    # do axes (bug visível na v2.0).
+    figure.supxlabel(
         "Regiões fora do envelope (linhas cinza) são extrapolação do calibrador — "
         "interpretar log-LR ali com cautela.",
-        ha="center", va="bottom",
         fontsize=7.5, color="#555", style="italic",
     )
 

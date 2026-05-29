@@ -322,6 +322,8 @@ class StrategyResourceLoaderService:
         is_score_vector_explicit = False
         sv_dim_meta = 0
         sv_sources_meta: list = []
+        calib_coef_raw_meta: Optional[list] = None
+        calib_intercept_raw_meta: Optional[float] = None
         try:
             import pyarrow.parquet as pq
             schema_meta = pq.read_schema(path).metadata or {}
@@ -344,6 +346,20 @@ class StrategyResourceLoaderService:
                         sv_sources_meta = src_raw.decode().split(",")
                     except Exception:
                         sv_sources_meta = []
+            # Coefs do calibrador (LogReg) — propagados pelo SCORE_CALIBRATION
+            # e persistidos no schema. Usados pela curva de calibração 2D
+            # pra renderizar a superfície analítica + caixa equação.
+            coef_raw_b = schema_meta.get(b"faceaudit:calibrator_coef_raw")
+            intercept_raw_b = schema_meta.get(b"faceaudit:calibrator_intercept_raw")
+            if coef_raw_b is not None and intercept_raw_b is not None:
+                try:
+                    import json as _json
+                    parsed_coef = _json.loads(coef_raw_b.decode())
+                    if isinstance(parsed_coef, list):
+                        calib_coef_raw_meta = [float(v) for v in parsed_coef]
+                        calib_intercept_raw_meta = float(intercept_raw_b.decode())
+                except Exception:
+                    pass  # JSON corrompido → cai em fallback de interpolação
         except Exception:
             pass  # parquet sem metadata, ou erro — cai na inferência
 
@@ -446,6 +462,13 @@ class StrategyResourceLoaderService:
         ds_metadata: dict = {}
         if is_casework:
             ds_metadata["is_casework"] = True
+        # Reidrata coefs do calibrador (LogReg) propagados pelo
+        # SCORE_CALIBRATION via parquet schema. Consumidos por
+        # STRATEGY_EVALUATION pra superfície analítica + caixa
+        # equação no plot 2D.
+        if calib_coef_raw_meta is not None and calib_intercept_raw_meta is not None:
+            ds_metadata["calibrator_coef_raw"] = calib_coef_raw_meta
+            ds_metadata["calibrator_intercept_raw"] = calib_intercept_raw_meta
 
         # Reconstrói o score_vector_matrix das colunas `score_vector_*`
         # quando o parquet veio do SCORE_VECTORIZATION. Vetorizado via
