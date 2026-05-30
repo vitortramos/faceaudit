@@ -271,6 +271,25 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                         fn, [t.strip() for t in w.text().split(",") if t.strip()]
                     )
                 )
+            elif is_dataclass(value):
+                # Dataclass aninhada — renderiza recursivamente como
+                # sub-seção dentro deste form. A sub-instância tem seu
+                # próprio header colapsável (▶/▼); mudanças propagam pra
+                # cá via signal value_changed.
+                widget = NestedDTOInlineWidget(
+                    title=label_text,
+                    dto=value,
+                    parent=self,
+                )
+                widget.value_changed.connect(
+                    lambda new_dto, fn=f.name:
+                    self._on_field_changed(fn, new_dto)
+                )
+                # Atribui em linha cheia (sem coluna de label) — o header
+                # do sub-widget já carrega o título.
+                self._field_widgets[f.name] = widget
+                self._fields_layout.addRow(widget)
+                continue
             else:
                 # Tipos não-primitivos: ignora silenciosamente (DTO aninhado profundo
                 # deve usar NestedDTODialogTrigger, não inline).

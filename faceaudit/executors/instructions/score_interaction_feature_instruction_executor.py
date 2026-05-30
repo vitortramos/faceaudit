@@ -163,6 +163,23 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             )
             s0 = s0_meta["interaction_s0"]
 
+            # Centralização opcional da raridade por r0 (princípio
+            # hierárquico de Tukey). Quando ativada, transforma `rarity`
+            # em `rarity − r0` antes de aplicar a fórmula da interação.
+            # Sem efeito em HINGE_BASE (que ignora rarity). r0 é
+            # calculado/herdado em paralelo a s0 — mesma source no INHERIT.
+            r0_meta = self._resolve_r0(
+                instruction=instruction,
+                rarity_values=rarity_values,
+                context=context,
+            )
+            if (
+                instruction.center_rarity
+                and rarity_values is not None
+                and r0_meta["interaction_r0"] is not None
+            ):
+                rarity_values = rarity_values - float(r0_meta["interaction_r0"])
+
             # Construção da feature derivada.
             feature = self._build_feature(
                 mode=instruction.interaction_mode,
@@ -222,6 +239,9 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
                 fraction_above_s0=fraction_above_s0,
                 fraction_hinge_active=fraction_hinge_active,
             )
+            # Propaga r0 (quando center_rarity ativo) — incluído em
+            # paralelo às chaves s0 pra auditoria e INHERIT downstream.
+            output_metadata.update(r0_meta)
 
             output_samples = self._build_output_samples(
                 base_items=base_ds.items,
@@ -705,7 +725,13 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
         permitido para auditoria).
         """
         if score_type is TypicalityScoreType.TYPICALITY_PERCENTILE:
-            v01 = typicality.astype(np.float64) / 100.0
+            # Bugfix: TYPICALITY_PAIR_SCORING já normaliza percentile pra [0,1]
+            # (linha 369 do typicality_pair_scoring_instruction_executor.py:
+            # `return model.get_percentiles(matrix) / 100.0`). Dividir por 100
+            # de novo aqui produzia raridade saturada em ~0.99 pra todos os
+            # pares, neutralizando a feature de interação. Mantemos o valor
+            # como recebido (já em [0,1]).
+            v01 = typicality.astype(np.float64)
             if invert:
                 return 1.0 - v01, "1 - percentile_0_1"
             return v01, "percentile_0_1"
@@ -828,6 +854,76 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             "interaction_s0_C": cfg.C,
             "interaction_s0_training_method": "auto_logreg",
             "interaction_s0_coef_sign": "+" if coef > 0 else ("-" if coef < 0 else "0"),
+        }
+
+    def _resolve_r0(
+        self,
+        instruction: ScoreInteractionFeatureInstruction,
+        rarity_values: Optional[np.ndarray],
+        context: StrategyExecutionContextProtocol,
+    ) -> Dict[str, Any]:
+        """Resolve r0 (centralização da raridade) em paralelo a s0.
+
+        Convenção: piggy-back no `s0_mode` da própria instrução —
+        AUTO_LOGREG → calcula r0 = mean(rarity) no dataset atual e o
+        persiste; INHERIT → lê `interaction_r0` do mesmo recurso
+        apontado por `inherit_s0_from_resource_id`. MANUAL não suporta
+        centralização (r0 ficaria undefined em runtime).
+
+        Quando `center_rarity=False`, retorna o dict com r0=None (no-op).
+        Idempotente para HINGE_BASE (onde rarity é None).
+        """
+        if not instruction.center_rarity:
+            return {
+                "interaction_r0": None,
+                "interaction_r0_mode": None,
+                "interaction_r0_source_resource_id": None,
+            }
+        if rarity_values is None:
+            # HINGE_BASE ignora rarity — centralização vira no-op.
+            return {
+                "interaction_r0": None,
+                "interaction_r0_mode": None,
+                "interaction_r0_source_resource_id": None,
+            }
+
+        mode = instruction.s0_mode  # piggy-back
+        if mode is S0Mode.MANUAL:
+            raise ValueError(
+                "center_rarity=True com s0_mode=MANUAL não é suportado — "
+                "r0 ficaria indefinido. Use AUTO_LOGREG (calcula r0 = "
+                "mean(rarity) no dataset atual) ou INHERIT (lê de execução "
+                "anterior)."
+            )
+
+        if mode is S0Mode.INHERIT:
+            inherit_id = instruction.inherit_s0_from_resource_id
+            resource = context.get_resource(inherit_id) if inherit_id else None
+            payload = resource.payload if resource is not None else None
+            if not isinstance(payload, SimilarityScoreDataset):
+                raise ValueError(
+                    f"center_rarity: recurso para herdar r0 '{inherit_id}' "
+                    "não é SimilarityScoreDataset."
+                )
+            inherited_meta = payload.metadata or {}
+            if "interaction_r0" not in inherited_meta or inherited_meta.get("interaction_r0") is None:
+                raise ValueError(
+                    f"center_rarity: recurso '{inherit_id}' não carrega "
+                    "'interaction_r0' no metadata. Garanta que a "
+                    "execução de calibração rodou com center_rarity=True."
+                )
+            return {
+                "interaction_r0": float(inherited_meta["interaction_r0"]),
+                "interaction_r0_mode": mode.to_str(),
+                "interaction_r0_source_resource_id": inherit_id,
+            }
+
+        # AUTO_LOGREG → calcula r0 in-situ.
+        r0 = float(np.mean(rarity_values))
+        return {
+            "interaction_r0": r0,
+            "interaction_r0_mode": mode.to_str(),
+            "interaction_r0_source_resource_id": None,
         }
 
     @staticmethod

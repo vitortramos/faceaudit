@@ -135,6 +135,23 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
         )},
     )
 
+    center_rarity: bool = field(
+        default=False,
+        metadata={"help": (
+            "Quando True, centraliza a raridade por r0 antes de aplicar a "
+            "fórmula da interação — produz `h × (rarity − r0)` em vez de "
+            "`h × rarity`. r0 é calculado/herdado em paralelo a s0: "
+            "AUTO_LOGREG → r0 = mean(rarity) no dataset atual; INHERIT → "
+            "lê `interaction_r0` do recurso apontado por "
+            "`inherit_s0_from_resource_id` (mesmo source que s0). "
+            "Implementa o princípio hierárquico de Tukey: ao incluir "
+            "interação no modelo [cos, h, h·(rarity−r0)], a decomposição "
+            "fica interpretável (β₂ = efeito-base da hinge; β₃ = "
+            "modulação específica pela raridade em torno de uma face "
+            "típica). Sem efeito em HINGE_BASE (que ignora rarity)."
+        )},
+    )
+
     output_resource_id: Optional[str] = field(
         default=None,
         metadata={"help": "SimilarityScoreDataset de saída."},

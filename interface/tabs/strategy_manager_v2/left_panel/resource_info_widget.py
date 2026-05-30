@@ -1379,6 +1379,35 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                     extras.append(f"slope={coef:.4f}, intercept={bias:.4f}")
             except Exception:
                 pass
+
+            # Diagnóstico piecewise-linear (V1) — só aparece quando o
+            # calibrador foi treinado com `mode=PIECEWISE_LINEAR`. As chaves
+            # vêm do metadata persistido pelo
+            # `_validate_monotonicity_and_persist_diagnostics`.
+            calib_metadata = getattr(payload, "metadata", {}) or {}
+            if calib_metadata.get("piecewise_enabled"):
+                s0 = calib_metadata.get("hinge_anchor_s0")
+                slopes = calib_metadata.get("segment_slopes_raw")
+                monotonic = calib_metadata.get("is_monotonic")
+                zero_cross = calib_metadata.get(
+                    "effective_log_lr_zero_crossing"
+                )
+                aux_C = calib_metadata.get("hinge_anchor_aux_C")
+                pieces = ["⚙ Piecewise-linear ATIVO"]
+                if s0 is not None:
+                    pieces.append(f"s0={s0:.4f}")
+                if slopes:
+                    slopes_str = "[" + ", ".join(f"{s:.3f}" for s in slopes) + "]"
+                    pieces.append(f"slopes_raw={slopes_str}")
+                if monotonic is not None:
+                    pieces.append(
+                        "monotônica ✓" if monotonic else "⚠ NÃO monotônica"
+                    )
+                if zero_cross is not None:
+                    pieces.append(f"zero@{zero_cross:.4f}")
+                if aux_C is not None:
+                    pieces.append(f"aux_C={aux_C:g}")
+                extras.append(" | ".join(pieces))
         elif is_kde:
             n_gen = getattr(payload, "n_genuine_seen", None)
             n_imp = getattr(payload, "n_impostor_seen", None)
