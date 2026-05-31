@@ -33,10 +33,21 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.linear_model import LogisticRegression
 
 from faceaudit.enums.hinge_anchor_mode import HingeAnchorMode
+from faceaudit.enums.knot_placement import KnotPlacement
+from faceaudit.enums.knot_scale import KnotScale
 from faceaudit.models.calibration.logreg_s0_config import LogRegS0Config
 from faceaudit.models.calibration.piecewise_linear_calibration_config import (
     PiecewiseLinearCalibrationConfig,
 )
+
+
+# AUTO_FROM_MEDIANS: 2 knots fixos em [-log_lr_Hp_P50, -log_lr_Hd_P50].
+# A escolha entre 1 vs 2 knots não tem critério confiável só a partir
+# das medianas (validado empiricamente em cosseno e PLDA na sessão de
+# 2026-05). Em cosseno-like com forte assimetria entre as magnitudes
+# das medianas, 1 knot em [0.0] manual pode ser marginalmente melhor
+# — esses casos ficam pro modo MANUAL. AUTO entrega 2 knots como
+# heurística "boa em todos os casos, ótima nos PLDA-like".
 
 
 # Coeficiente do LogReg auxiliar abaixo deste limite trata-se como
@@ -50,7 +61,15 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
 
     Atributos aprendidos no `fit`:
     - `hinge_anchor_s0_`: float — âncora da basis function.
-    - `knots_absolute_`: list[float] — knots absolutos (s0 + offset).
+    - `knot_offsets_user_`: list[float] — offsets na unidade escolhida
+      pelo usuário (`config.knot_scale`). É o que o usuário escreveu.
+    - `knot_offsets_raw_`: list[float] — offsets convertidos para escala
+      bruta (usados internamente em `transform` e em `knots_absolute_`).
+      Em `KnotScale.RAW` coincide com `knot_offsets_user_`; em
+      `KnotScale.LOG_LR` é `[log_lr_j / aux_coef_ for log_lr_j in user]`.
+    - `knot_scale_`: KnotScale — eco da escala usada (auditável no pickle).
+    - `knots_absolute_`: list[float] — knots absolutos em escala bruta
+      (s0 + offset_raw). Sempre na escala do score.
     - `aux_coef_`, `aux_intercept_`, `aux_C_`: diagnóstico da LogReg
       auxiliar (None em modo MANUAL).
     - `n_train_samples_`: número de samples no treino do fit.
@@ -58,8 +77,9 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
       extrapolação no transform).
 
     O LogReg auxiliar (`AUTO_LOGREG`) é re-treinado em cada `fit` —
-    portanto cada fold do GridSearchCV tem seu próprio `s0`. Não há
-    estado compartilhado entre folds.
+    portanto cada fold do GridSearchCV tem seu próprio `s0` e seu próprio
+    `aux_coef`, o que implica que cada fold também tem sua própria
+    conversão `log-LR → raw` quando `knot_scale=LOG_LR`. Sem leakage.
     """
 
     def __init__(
@@ -201,9 +221,98 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
             self.aux_C_ = float(C)
             self.training_method_ = "auto_logreg"
 
-        self.knots_absolute_ = config.knots_absolute(self.hinge_anchor_s0_)
-        self.knot_offsets_ = list(config.knot_offsets)
-        self.n_features_out_ = 1 + len(self.knot_offsets_)
+        # Modo AUTO_FROM_MEDIANS: o transformer popula `knot_offsets`
+        # no próprio fit baseado nas medianas log-LR de cada classe.
+        # Fold-aware porque acontece dentro deste fit (cada fold do
+        # GridSearchCV chega aqui com seu próprio subset de treino).
+        # Sempre LOG_LR scale (consequência natural da fórmula).
+        self.knot_placement_ = config.knot_placement
+        if config.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+            if self.aux_coef_ is None or self.aux_coef_ <= 0:
+                raise RuntimeError(
+                    "knot_placement=AUTO_FROM_MEDIANS exige aux_coef do "
+                    f"LogReg auxiliar > 0. Obtido aux_coef={self.aux_coef_!r}. "
+                    "Provável erro de invariante — DTO deveria ter bloqueado."
+                )
+            if y is None:
+                raise ValueError(
+                    "AUTO_FROM_MEDIANS: `fit(X, y)` precisa de labels y."
+                )
+            labels = np.asarray(y, dtype=np.int32)
+            score_hp = score[labels == 1]
+            score_hd = score[labels == 0]
+            if score_hp.size == 0 or score_hd.size == 0:
+                raise ValueError(
+                    "AUTO_FROM_MEDIANS: precisa de ambas as classes no "
+                    f"fold (Hp={score_hp.size}, Hd={score_hd.size})."
+                )
+            # log-LR predito pelo LogReg auxiliar:
+            #   log_lr_aux(score) = aux_coef · (score − s0)
+            # Medianas log-LR por classe (no subset de treino do fold):
+            log_lr_hp_p50 = float(
+                self.aux_coef_ * (np.median(score_hp) - self.hinge_anchor_s0_)
+            )
+            log_lr_hd_p50 = float(
+                self.aux_coef_ * (np.median(score_hd) - self.hinge_anchor_s0_)
+            )
+            self.auto_log_lr_hp_p50_ = log_lr_hp_p50
+            self.auto_log_lr_hd_p50_ = log_lr_hd_p50
+            # 2 knots fixos em [-log_lr_Hp_P50, -log_lr_Hd_P50],
+            # ordenados. Em log-LR scale (sempre).
+            # Colapso defensivo: se as duas medianas estão muito próximas
+            # (caso degenerado de classes não separáveis no fold), colapsa
+            # pra 1 knot na média — evita slope colinear nas duas hinges.
+            auto_offsets_raw = sorted([-log_lr_hp_p50, -log_lr_hd_p50])
+            if abs(auto_offsets_raw[1] - auto_offsets_raw[0]) < 1e-6:
+                auto_offsets = [
+                    (auto_offsets_raw[0] + auto_offsets_raw[1]) / 2.0
+                ]
+            else:
+                auto_offsets = auto_offsets_raw
+            # Override do DTO: substitui knot_offsets/knot_scale pelos
+            # valores computados. Mantém o `config` original imutável.
+            self.knot_offsets_user_ = list(auto_offsets)
+            self.knot_scale_ = KnotScale.LOG_LR
+        else:
+            self.knot_offsets_user_ = list(config.knot_offsets)
+            self.knot_scale_ = config.knot_scale
+            self.auto_log_lr_hp_p50_ = None
+            self.auto_log_lr_hd_p50_ = None
+
+        # Resolve a escala dos offsets. `knot_offsets_user_` preserva
+        # o que o usuário escreveu (na unidade `knot_scale_`).
+        # `knot_offsets_raw_` é a versão sempre em escala bruta usada
+        # internamente por transform/knots_absolute/monotonicity check.
+        if self.knot_scale_ is KnotScale.LOG_LR:
+            # Conversão exige aux_coef positivo do LogReg auxiliar.
+            # Como `knot_scale=LOG_LR` é mutuamente exclusivo com MANUAL
+            # (validado no DTO), `self.aux_coef_` está garantidamente
+            # disponível e > 0 nesse ramo.
+            if self.aux_coef_ is None or self.aux_coef_ <= 0:
+                raise RuntimeError(
+                    "knot_scale=LOG_LR requer aux_coef do LogReg "
+                    f"auxiliar > 0. Obtido aux_coef={self.aux_coef_!r}. "
+                    "Provável erro de invariante — DTO deveria ter "
+                    "bloqueado essa combinação."
+                )
+            # Após dedup do DTO, knot_offsets_user_ está ordenado e
+            # finito. Como aux_coef_ > 0, dividir por ele preserva
+            # ordem — knot_offsets_raw_ também sai ordenado.
+            self.knot_offsets_raw_ = [
+                float(offset) / self.aux_coef_
+                for offset in self.knot_offsets_user_
+            ]
+        else:
+            self.knot_offsets_raw_ = list(self.knot_offsets_user_)
+
+        # Backward-compat: `knot_offsets_` historicamente apontava para
+        # os offsets já em escala bruta (consumidores externos esperam
+        # essa semântica). Mantém o alias.
+        self.knot_offsets_ = list(self.knot_offsets_raw_)
+        self.knots_absolute_ = [
+            self.hinge_anchor_s0_ + off for off in self.knot_offsets_raw_
+        ]
+        self.n_features_out_ = 1 + len(self.knot_offsets_raw_)
         return self
 
     def transform(self, X) -> np.ndarray:
@@ -222,7 +331,7 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
         z = score - self.hinge_anchor_s0_
 
         columns = [z]
-        for offset in self.knot_offsets_:
+        for offset in self.knot_offsets_raw_:
             columns.append(np.maximum(z - offset, 0.0))
 
         return np.column_stack(columns).astype(np.float64)
@@ -232,10 +341,10 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
 
     def get_feature_names_out(self, input_features=None):
         """Nomes das features expandidas para inspeção/debug."""
-        if not hasattr(self, "knot_offsets_"):
+        if not hasattr(self, "knot_offsets_raw_"):
             raise RuntimeError("Chame fit antes de get_feature_names_out.")
         names = ["z=score-s0"]
-        for offset in self.knot_offsets_:
+        for offset in self.knot_offsets_raw_:
             if offset == 0.0:
                 names.append("max(z, 0)")
             elif offset > 0.0:

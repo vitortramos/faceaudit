@@ -28,6 +28,8 @@ import math
 
 from faceaudit.enums.calibration_basis_mode import CalibrationBasisMode
 from faceaudit.enums.hinge_anchor_mode import HingeAnchorMode
+from faceaudit.enums.knot_placement import KnotPlacement
+from faceaudit.enums.knot_scale import KnotScale
 from faceaudit.enums.monotonicity_policy import MonotonicityPolicy
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
@@ -87,10 +89,36 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
     knot_offsets: List[float] = field(
         default_factory=lambda: [0.0],
         metadata={"help": (
-            "Offsets das dobras em relação a `hinge_anchor_s0`. "
-            "Uma única hinge no ponto neutro: [0.0] (default). Três "
-            "dobras: [-δ, 0, +δ]. UI V1 expõe só [0.0]; múltiplas "
-            "dobras disponíveis programaticamente."
+            "Offsets das dobras em relação a `hinge_anchor_s0`, expressos "
+            "na unidade definida por `knot_scale`. Uma única hinge no "
+            "ponto neutro: [0.0] (default). Três dobras: [-δ, 0, +δ]. "
+            "Em LOG_LR, [-2, 0, +2] = dobras em -2 / 0 / +2 unidades "
+            "log-LR (i.e., razão 100:1 contra Hp, neutro, e 100:1 a "
+            "favor de Hp). Em RAW, são offsets no domínio do score."
+        )},
+    )
+
+    knot_scale: KnotScale = field(
+        default=KnotScale.LOG_LR,
+        metadata={"help": (
+            "Escala em que `knot_offsets` é expresso. LOG_LR (default) "
+            "é universal entre modelos — converte raw_offset = log_lr "
+            "/ aux_coef no fit, fold-aware. RAW é diretamente no "
+            "domínio do score (backward-compat com calibradores antigos). "
+            "LOG_LR exige hinge_anchor_mode=AUTO_LOGREG."
+        )},
+    )
+
+    knot_placement: KnotPlacement = field(
+        default=KnotPlacement.AUTO_FROM_MEDIANS,
+        metadata={"help": (
+            "Como os knots são posicionados. AUTO_FROM_MEDIANS (default): "
+            "transformer popula knot_offsets no fit com 2 knots em "
+            "[-log_lr_Hp_P50, -log_lr_Hd_P50] (fold-aware, sem leakage). "
+            "Protocolo forense recomendado. MANUAL: usuário escreve "
+            "knot_offsets manualmente — útil para exploração de variantes "
+            "(e.g. 1 knot em [0.0]) ou quando há dev set independente do "
+            "holdout. Em AUTO, knot_offsets/knot_scale são ignorados."
         )},
     )
 
@@ -132,6 +160,10 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
             self.monotonicity_policy = MonotonicityPolicy.from_str(
                 self.monotonicity_policy
             )
+        if not isinstance(self.knot_scale, KnotScale):
+            self.knot_scale = KnotScale.from_str(self.knot_scale)
+        if not isinstance(self.knot_placement, KnotPlacement):
+            self.knot_placement = KnotPlacement.from_str(self.knot_placement)
 
         # Normalização e validação de knot_offsets.
         # - ordenar
@@ -156,10 +188,17 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
 
         # Validações cross-field.
         if self.mode is CalibrationBasisMode.PIECEWISE_LINEAR:
-            if not self.knot_offsets:
+            # Em AUTO_FROM_MEDIANS, knot_offsets é preenchido pelo
+            # transformer no fit — pode estar vazio no DTO.
+            if (
+                self.knot_placement is KnotPlacement.MANUAL
+                and not self.knot_offsets
+            ):
                 raise ValueError(
-                    "mode=PIECEWISE_LINEAR requer knot_offsets não vazio. "
-                    "Use [0.0] para uma hinge única no ponto neutro."
+                    "mode=PIECEWISE_LINEAR com knot_placement=MANUAL "
+                    "requer knot_offsets não vazio. Use [0.0] para uma "
+                    "hinge única no ponto neutro, ou troque para "
+                    "knot_placement=AUTO_FROM_MEDIANS."
                 )
             if (
                 self.hinge_anchor_mode is HingeAnchorMode.MANUAL
@@ -169,6 +208,17 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
                     "hinge_anchor_mode=MANUAL requer "
                     "hinge_anchor_manual_value não nulo."
                 )
+            # AUTO_FROM_MEDIANS depende do aux_coef do LogReg auxiliar
+            # pra mapear medianas raw → log-LR. Indisponível em MANUAL.
+            if (
+                self.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS
+                and self.hinge_anchor_mode is HingeAnchorMode.MANUAL
+            ):
+                raise ValueError(
+                    "knot_placement=AUTO_FROM_MEDIANS exige "
+                    "hinge_anchor_mode=AUTO_LOGREG (precisa do aux_coef "
+                    "do LogReg auxiliar pra calcular medianas log-LR)."
+                )
             if (
                 self.hinge_anchor_mode is HingeAnchorMode.MANUAL
                 and self.hinge_anchor_manual_value is not None
@@ -176,6 +226,20 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
             ):
                 raise ValueError(
                     "hinge_anchor_manual_value deve ser número finito."
+                )
+            # Conversão log-LR → raw depende de `aux_coef` do LogReg
+            # auxiliar, indisponível em MANUAL. Em MANUAL, o usuário
+            # precisa expressar os offsets diretamente no domínio do
+            # score (RAW).
+            if (
+                self.knot_scale is KnotScale.LOG_LR
+                and self.hinge_anchor_mode is HingeAnchorMode.MANUAL
+            ):
+                raise ValueError(
+                    "knot_scale=LOG_LR exige hinge_anchor_mode=AUTO_LOGREG "
+                    "(conversão log-LR → score bruto usa o coef do LogReg "
+                    "auxiliar). Em MANUAL, use knot_scale=RAW e expresse "
+                    "os offsets diretamente no domínio do score."
                 )
 
         if self.min_allowed_slope < 0:
@@ -185,8 +249,15 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
 
     # Fields cuja mudança dispara rebuild do form (ver NestedDTOInlineWidget):
     # - mode: muda a visibilidade de todos os outros fields (NONE esconde tudo).
-    # - hinge_anchor_mode: condiciona a visibilidade de hinge_anchor_manual_value.
-    REACTIVE_FIELDS = ("mode", "hinge_anchor_mode")
+    # - hinge_anchor_mode: condiciona visibilidade de hinge_anchor_manual_value
+    #   e a aceitação de knot_scale=LOG_LR.
+    # - knot_scale: muda o significado numérico de knot_offsets (label dinâmico).
+    REACTIVE_FIELDS = (
+        "mode",
+        "hinge_anchor_mode",
+        "knot_scale",
+        "knot_placement",
+    )
 
     def get_hidden_fields(self) -> set:
         """Visibilidade dinâmica de fields no formulário inline.
@@ -205,6 +276,8 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
                 "hinge_anchor_mode",
                 "hinge_anchor_manual_value",
                 "knot_offsets",
+                "knot_scale",
+                "knot_placement",
                 "require_monotonicity",
                 "monotonicity_policy",
                 "min_allowed_slope",
@@ -212,6 +285,18 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
         else:
             if self.hinge_anchor_mode is not HingeAnchorMode.MANUAL:
                 hidden.add("hinge_anchor_manual_value")
+            # Em MANUAL anchor, LOG_LR scale é proibido E AUTO_FROM_MEDIANS
+            # placement é proibido (ambos exigem aux_coef do auxiliar).
+            # Esconde knot_scale e knot_placement nesse caso.
+            if self.hinge_anchor_mode is HingeAnchorMode.MANUAL:
+                hidden.add("knot_scale")
+                hidden.add("knot_placement")
+            # Em AUTO_FROM_MEDIANS, o transformer popula knot_offsets/
+            # knot_scale automaticamente — esconde os dois pra evitar
+            # confusão visual ("estou preenchendo isso e nada acontece").
+            if self.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+                hidden.add("knot_offsets")
+                hidden.add("knot_scale")
         return hidden
 
     # ─────────────────────── conveniências ───────────────────────
@@ -226,7 +311,13 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
         return len(self.knot_offsets)
 
     def knots_absolute(self, hinge_anchor_s0: float) -> List[float]:
-        """Posição absoluta dos knots dado o `hinge_anchor_s0` aprendido."""
+        """Posição absoluta dos knots dado o `hinge_anchor_s0` aprendido.
+
+        ATENÇÃO: usa `knot_offsets` em sua escala literal — só faz sentido
+        quando `knot_scale=RAW`. Quando `knot_scale=LOG_LR`, a posição
+        absoluta só é definida após o `fit` (depende de `aux_coef`); use
+        `PiecewiseLinearScoreTransformer.knots_absolute_` em vez.
+        """
         return [float(hinge_anchor_s0) + offset for offset in self.knot_offsets]
 
     # ─────────────────────── (de)serialização ───────────────────────
@@ -240,6 +331,8 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
                 else float(self.hinge_anchor_manual_value)
             ),
             "knot_offsets": list(self.knot_offsets),
+            "knot_scale": self.knot_scale.to_str(),
+            "knot_placement": self.knot_placement.to_str(),
             "require_monotonicity": bool(self.require_monotonicity),
             "monotonicity_policy": self.monotonicity_policy.to_str(),
             "min_allowed_slope": float(self.min_allowed_slope),
@@ -249,6 +342,9 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
     def from_dict(cls: Type[T], data: Optional[dict]) -> T:
         if not data:
             return cls()
+        # Backward-compat: JSONs antigos sem `knot_scale` assumem RAW
+        # (semântica pré-existente). Novos defaults via construtor sem
+        # args usam LOG_LR — só impacta usuários que criem do zero.
         return cls(
             mode=CalibrationBasisMode.from_str(
                 data.get("mode", "NONE")
@@ -261,6 +357,10 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
                 else float(data["hinge_anchor_manual_value"])
             ),
             knot_offsets=list(data.get("knot_offsets", [0.0])),
+            knot_scale=KnotScale.from_str(data.get("knot_scale", "RAW")),
+            knot_placement=KnotPlacement.from_str(
+                data.get("knot_placement", "MANUAL")
+            ),
             require_monotonicity=bool(data.get("require_monotonicity", True)),
             monotonicity_policy=MonotonicityPolicy.from_str(
                 data.get("monotonicity_policy", "ERROR")

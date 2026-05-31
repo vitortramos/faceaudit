@@ -190,7 +190,42 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
             sk_logreg = getattr(calibrator, "logreg", None)
             sk_coef_attr = getattr(sk_logreg, "coef_", None) if sk_logreg is not None else None
             sk_intercept_attr = getattr(sk_logreg, "intercept_", None) if sk_logreg is not None else None
-            if sk_coef_attr is not None and sk_intercept_attr is not None:
+            piecewise_active = bool(calibrator_md.get("piecewise_enabled"))
+            if piecewise_active:
+                # Calibrador com expansão piecewise-linear interna: a
+                # standardização das features expandidas é feita por uma
+                # StandardScaler DENTRO da Pipeline, não pelos atributos
+                # `_feature_mean`/`_feature_std` (que ficam None nesse modo).
+                # Os coefs em escala bruta já foram pré-calculados pelo
+                # `_validate_monotonicity_and_persist_diagnostics` e
+                # persistidos no metadata; usamos esses valores diretamente.
+                coef_raw_list = calibrator_md.get("calibrator_coef_raw")
+                intercept_raw_val = calibrator_md.get("calibrator_intercept_raw")
+                if coef_raw_list is not None and intercept_raw_val is not None:
+                    ds_metadata["calibrator_coef_raw"] = list(coef_raw_list)
+                    ds_metadata["calibrator_intercept_raw"] = float(
+                        intercept_raw_val
+                    )
+                # Propaga estado piecewise pra STRATEGY_EVALUATION
+                # downstream conseguir desenhar a curva analiticamente
+                # (sem precisar interpolar pontos observados, que colapsa
+                # múltiplas dobras numa só visualmente).
+                for key in (
+                    "piecewise_enabled",
+                    "hinge_anchor_s0",
+                    "piecewise_knot_offsets",
+                    "piecewise_knot_offsets_user",
+                    "piecewise_knot_offsets_raw",
+                    "piecewise_knot_scale",
+                    "piecewise_knot_placement",
+                    "piecewise_auto_log_lr_hp_p50",
+                    "piecewise_auto_log_lr_hd_p50",
+                    "piecewise_knots_absolute",
+                    "segment_slopes_raw",
+                ):
+                    if key in calibrator_md and calibrator_md[key] is not None:
+                        ds_metadata[key] = calibrator_md[key]
+            elif sk_coef_attr is not None and sk_intercept_attr is not None:
                 try:
                     import numpy as _np
                     sk_coef = _np.asarray(sk_coef_attr, dtype=_np.float64).ravel()

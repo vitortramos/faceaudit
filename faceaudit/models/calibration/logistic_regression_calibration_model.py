@@ -115,6 +115,25 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 "+ CALIBRATION_MODEL_TRAINING sem piecewise interno."
             )
 
+        # Pre-fit validation: a UI permite mudanças de campo via setattr
+        # sem re-rodar __post_init__ (caso típico: usuário muda
+        # `hinge_anchor_mode` de AUTO_LOGREG → MANUAL mas esquece de
+        # preencher `hinge_anchor_manual_value`). Sem essa checagem o
+        # erro só apareceria fundo no sklearn GridSearchCV ("All 25
+        # fits failed"), ofuscando a causa real. Re-rodamos
+        # `__post_init__` explicitamente pra surfacear o problema ANTES
+        # de entrar no sklearn.
+        try:
+            pwl_cfg.__post_init__()
+        except ValueError as exc:
+            raise ValueError(
+                f"Configuração piecewise-linear inválida no calibrador: "
+                f"{exc}. Confira: mode={pwl_cfg.mode.to_str()}, "
+                f"hinge_anchor_mode={pwl_cfg.hinge_anchor_mode.to_str()}, "
+                f"hinge_anchor_manual_value={pwl_cfg.hinge_anchor_manual_value}, "
+                f"knot_offsets={list(pwl_cfg.knot_offsets)}."
+            ) from exc
+
         # Pipeline: o transformer aprende s0 fold-aware no GridSearchCV.
         score_1d = X.reshape(-1)
 
@@ -141,10 +160,17 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 else str(self.config.scoring)
             )
 
+            from faceaudit.enums.knot_placement import KnotPlacement
+            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+                knots_disp = "AUTO (medianas log-LR, fold-aware)"
+            else:
+                knots_disp = (
+                    f"{pwl_cfg.knot_offsets} ({pwl_cfg.knot_scale.unit_label})"
+                )
             logger_callback(
                 f"[{self.name}] 🧠 GridSearch piecewise-linear "
                 f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | "
-                f"knots={pwl_cfg.knot_offsets} | "
+                f"knots={knots_disp} | "
                 f"c_grid={self.config.c_grid} | cv={cv_folds})..."
             )
 
@@ -167,10 +193,18 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"(score={grid.best_score_:.4f})."
             )
         else:
+            from faceaudit.enums.knot_placement import KnotPlacement
+            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+                knots_disp = "AUTO (medianas log-LR)"
+            else:
+                knots_disp = (
+                    f"{pwl_cfg.knot_offsets} ({pwl_cfg.knot_scale.unit_label})"
+                )
             logger_callback(
                 f"[{self.name}] 🧠 Treinando piecewise-linear "
                 f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | "
-                f"knots={pwl_cfg.knot_offsets} | C={self.config.C})..."
+                f"knots={knots_disp} | "
+                f"C={self.config.C})..."
             )
             pipe = _make_pipeline(self.config.C)
             pipe.fit(score_1d, labels)
@@ -190,11 +224,15 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         # Validação de monotonicidade na escala bruta.
         self._validate_monotonicity_and_persist_diagnostics(
             logger_callback=logger_callback,
+            train_scores=score_1d,
+            train_labels=labels,
         )
 
     def _validate_monotonicity_and_persist_diagnostics(
         self,
         logger_callback: Callable[[str], None],
+        train_scores: Optional[np.ndarray] = None,
+        train_labels: Optional[np.ndarray] = None,
     ) -> None:
         """Valida monotonicidade da curva piecewise-linear na escala bruta
         e persiste diagnósticos no `self.metadata`.
@@ -241,13 +279,115 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         # Monotonicidade: todas as inclinações devem ser > min_allowed_slope.
         is_monotonic = all(s > pwl_cfg.min_allowed_slope for s in segment_slopes)
 
+        # Diagnóstico trecho-a-trecho com suporte estatístico (quantos
+        # pares Hp/Hd caem em cada trecho). Necessário pra dar pra o
+        # usuário pista de qual knot está em região com pouco suporte.
+        knots_abs = list(pwl_t.knots_absolute_)  # já ordenado
+        segment_bounds: List[tuple] = []  # [(low, high)] por trecho
+        for j in range(len(segment_slopes)):
+            low = knots_abs[j - 1] if j > 0 else float("-inf")
+            high = knots_abs[j] if j < len(knots_abs) else float("+inf")
+            segment_bounds.append((low, high))
+        # Conta pares Hp/Hd em cada trecho (quando temos os dados de treino).
+        segment_support: List[tuple] = []  # [(n_hp, n_hd)] por trecho
+        if train_scores is not None and train_labels is not None:
+            for low, high in segment_bounds:
+                in_seg = (train_scores >= low) & (train_scores < high)
+                n_hp = int(((train_labels == 1) & in_seg).sum())
+                n_hd = int(((train_labels == 0) & in_seg).sum())
+                segment_support.append((n_hp, n_hd))
+        else:
+            segment_support = [(None, None) for _ in segment_slopes]
+
+        def _fmt_segment(j: int, slope: float) -> str:
+            low, high = segment_bounds[j]
+            n_hp, n_hd = segment_support[j]
+            ok = slope > pwl_cfg.min_allowed_slope
+            marker = "✓" if ok else "❌"
+            # Bound display: -inf → "−∞", +inf → "+∞", senão valor.
+            low_str = "−∞" if low == float("-inf") else f"{low:+.4g}"
+            high_str = "+∞" if high == float("+inf") else f"{high:+.4g}"
+            sup = ""
+            if n_hp is not None:
+                sup = f", suporte: {n_hp} Hp + {n_hd} Hd"
+            return (
+                f"    Trecho {j+1} (score ∈ [{low_str}, {high_str}){sup}): "
+                f"slope = {slope:+.6f} {marker}"
+            )
+
         if pwl_cfg.require_monotonicity and not is_monotonic:
+            # Lista os trechos que violam, identifica os com menor suporte
+            # (provável causa raiz).
+            offenders = [
+                (j, s) for j, s in enumerate(segment_slopes)
+                if s <= pwl_cfg.min_allowed_slope
+            ]
+            offender_ids = [j + 1 for j, _ in offenders]
+            seg_lines = [_fmt_segment(j, s) for j, s in enumerate(segment_slopes)]
+            # Causa provável: trecho ofensor com menor suporte total
+            cause_line = ""
+            if segment_support[0][0] is not None:
+                offenders_with_sup = [
+                    (j + 1, segment_support[j][0] + segment_support[j][1])
+                    for j, _ in offenders
+                ]
+                if offenders_with_sup:
+                    j_worst, n_worst = min(offenders_with_sup, key=lambda x: x[1])
+                    # Knots que delimitam o trecho j_worst (1-indexed).
+                    # Trecho J em [knot[J-2], knot[J-1]) — exceto extremos.
+                    neighbor_hints = []
+                    user_offsets = list(pwl_t.knot_offsets_user_)
+                    scale_unit = pwl_cfg.knot_scale.unit_label
+                    if 1 < j_worst:
+                        left_idx = j_worst - 2  # knot que fecha o trecho à esquerda
+                        neighbor_hints.append(
+                            f"knot_offsets[{left_idx}]={user_offsets[left_idx]:+.4g}"
+                        )
+                    if j_worst <= len(user_offsets):
+                        right_idx = j_worst - 1
+                        neighbor_hints.append(
+                            f"knot_offsets[{right_idx}]={user_offsets[right_idx]:+.4g}"
+                        )
+                    neighbor_str = " ou ".join(neighbor_hints) if neighbor_hints else "knot vizinho"
+                    cause_line = (
+                        f"\n  Causa provável: trecho {j_worst} tem só "
+                        f"{n_worst} pares — sobreajuste em região esparsa. "
+                        f"Ajuste {neighbor_str} (escala {scale_unit}) "
+                        f"pra mover a fronteira pra região com mais suporte "
+                        f"OU aumente a regularização (c_grid menor)."
+                    )
+            # Apresenta os offsets na escala do usuário (LOG_LR ou RAW)
+            # E nos absolutos em raw, pra ele identificar qual knot
+            # ajustar no DTO.
+            user_offsets_disp = [
+                round(o, 4) for o in pwl_t.knot_offsets_user_
+            ]
+            raw_offsets_disp = [
+                round(o, 4) for o in pwl_t.knot_offsets_raw_
+            ]
+            scale_unit = pwl_cfg.knot_scale.unit_label
+            offsets_section = (
+                f"  knot_offsets (escala do usuário, {scale_unit}) = "
+                f"{user_offsets_disp}\n"
+            )
+            if pwl_cfg.knot_scale is KnotScale.LOG_LR:
+                offsets_section += (
+                    f"  knot_offsets (equivalente em score bruto) = "
+                    f"{raw_offsets_disp}  [conversão via aux_coef="
+                    f"{pwl_t.aux_coef_:.6g}]\n"
+                )
             msg = (
                 f"[{self.name}] curva piecewise-linear NÃO monotônica na "
-                f"escala bruta. Inclinações por trecho: "
-                f"{[round(s, 6) for s in segment_slopes]}. "
-                f"min_allowed_slope={pwl_cfg.min_allowed_slope}. "
-                "Calibrador inválido forensicamente (score_maior → "
+                f"escala bruta.\n"
+                + offsets_section +
+                f"  knots_absolute (score bruto) = "
+                f"{[round(k, 4) for k in knots_abs]}\n"
+                f"  inclinações por trecho:\n" +
+                "\n".join(seg_lines) +
+                f"\n  min_allowed_slope = {pwl_cfg.min_allowed_slope}\n"
+                f"  trechos ofensores (slope ≤ 0): {offender_ids}"
+                + cause_line + "\n"
+                "  Calibrador inválido forensicamente (score_maior → "
                 "log_LR_menor em algum trecho)."
             )
             if pwl_cfg.monotonicity_policy is MonotonicityPolicy.ERROR:
@@ -275,7 +415,13 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         diagnostics = {
             "calibration_basis_mode": pwl_cfg.mode.to_str(),
             "piecewise_enabled": True,
-            "piecewise_knot_offsets": list(pwl_t.knot_offsets_),
+            "piecewise_knot_offsets": list(pwl_t.knot_offsets_),  # raw (compat)
+            "piecewise_knot_offsets_user": list(pwl_t.knot_offsets_user_),
+            "piecewise_knot_offsets_raw": list(pwl_t.knot_offsets_raw_),
+            "piecewise_knot_scale": pwl_t.knot_scale_.to_str(),
+            "piecewise_knot_placement": pwl_t.knot_placement_.to_str(),
+            "piecewise_auto_log_lr_hp_p50": pwl_t.auto_log_lr_hp_p50_,
+            "piecewise_auto_log_lr_hd_p50": pwl_t.auto_log_lr_hd_p50_,
             "piecewise_knots_absolute": list(pwl_t.knots_absolute_),
             "hinge_anchor_s0": float(pwl_t.hinge_anchor_s0_),
             "hinge_anchor_mode": pwl_cfg.hinge_anchor_mode.to_str(),
