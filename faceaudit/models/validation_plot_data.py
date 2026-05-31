@@ -52,6 +52,22 @@ class ValidationPlotData:
     cal_curve_rug_gen_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
     cal_curve_rug_imp_x: np.ndarray = field(default_factory=lambda: np.array([]), repr=False)
 
+    # Knots do calibrador com expansão piecewise-linear interna
+    # (LogReg com mode=PIECEWISE_LINEAR). Vazio quando o calibrador não
+    # tem expansão. UI plota linhas verticais finas em cada knot pra
+    # tornar as quebras visualmente identificáveis — sem essa info, o
+    # eixo X largo (ex: PLDA range [-250, +70]) colapsa visualmente
+    # múltiplas dobras numa só.
+    cal_curve_piecewise_knots_absolute: List[float] = field(
+        default_factory=list, repr=False,
+    )
+    # Inclinações por trecho na escala bruta (len = n_knots + 1). UI
+    # mostra essas no subtítulo do plot — informa quantitativamente
+    # quanto cada knot muda a curva.
+    cal_curve_piecewise_segment_slopes: List[float] = field(
+        default_factory=list, repr=False,
+    )
+
     # --- Curva de Calibração: dimensionalidade + visualização 2D ---
     # `cal_curve_dim` indica quantos sistemas alimentam o calibrador:
     #   1 → calibrador 1D, plot 2-panel raw×logLR (atual).

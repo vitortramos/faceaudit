@@ -171,6 +171,14 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
             calibrator_coef_raw = ds_md.get("calibrator_coef_raw")
             calibrator_intercept_raw = ds_md.get("calibrator_intercept_raw")
 
+            # Estado piecewise-linear (V1, mode=PIECEWISE_LINEAR no LogReg).
+            # Permite o math service desenhar a curva analiticamente com
+            # quebras visíveis em cada knot — sem isso, np.interp em cima
+            # dos observados colapsa as N dobras numa só visualmente.
+            piecewise_enabled = bool(ds_md.get("piecewise_enabled"))
+            hinge_anchor_s0 = ds_md.get("hinge_anchor_s0")
+            piecewise_knots_absolute = ds_md.get("piecewise_knots_absolute")
+
             service = ValidationMathService()
             result = service.calculate_metrics(
                 strategy_id=str(strategy_id),
@@ -185,6 +193,9 @@ class StrategyEvaluationInstructionExecutor(StrategyInstructionExecutorBase):
                 score_vector_axis_labels=axis_labels,
                 calibrator_coef_raw=calibrator_coef_raw,
                 calibrator_intercept_raw=calibrator_intercept_raw,
+                piecewise_enabled=piecewise_enabled,
+                hinge_anchor_s0=hinge_anchor_s0,
+                piecewise_knots_absolute=piecewise_knots_absolute,
                 calibrator_cllr_train=ds_md.get("calibrator_cllr_train"),
                 calibrator_cllr_train_gen=ds_md.get("calibrator_cllr_train_gen"),
                 calibrator_cllr_train_imp=ds_md.get("calibrator_cllr_train_imp"),

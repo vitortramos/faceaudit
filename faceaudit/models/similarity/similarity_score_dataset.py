@@ -661,7 +661,12 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                 compute_calibration_curve_summary,
                 render_calibration_curve_png,
             )
-            summary = compute_calibration_curve_summary(self.items)
+            # Passa metadata pra que piecewise (knots/coefs) seja
+            # propagado ao summary e renderizado como curva analítica +
+            # marcadores nos knots.
+            summary = compute_calibration_curve_summary(
+                self.items, metadata=self.metadata,
+            )
             if summary is None:
                 return False
             render_calibration_curve_png(summary, target_png_path)
