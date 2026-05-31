@@ -36,6 +36,9 @@ class ValidationMathService:
                           score_vector_axis_labels: Optional[List[str]] = None,
                           calibrator_coef_raw: Optional[List[float]] = None,
                           calibrator_intercept_raw: Optional[float] = None,
+                          piecewise_enabled: bool = False,
+                          hinge_anchor_s0: Optional[float] = None,
+                          piecewise_knots_absolute: Optional[List[float]] = None,
                           calibrator_cllr_train: float = None,
                           calibrator_cllr_train_gen: float = None,
                           calibrator_cllr_train_imp: float = None,
@@ -136,6 +139,11 @@ class ValidationMathService:
             cal_curve = self._compute_calibration_curve_grid(
                 gen_raw_arr, imp_raw_arr, gen_arr, imp_arr,
                 calib_slope, calib_intercept,
+                piecewise_enabled=piecewise_enabled,
+                hinge_anchor_s0=hinge_anchor_s0,
+                piecewise_knots_absolute=piecewise_knots_absolute,
+                calibrator_coef_raw=calibrator_coef_raw,
+                calibrator_intercept_raw=calibrator_intercept_raw,
             )
             cal_curve["cal_curve_dim"] = 1
             cal_curve["cal_curve_axis_labels"] = []
@@ -580,6 +588,11 @@ class ValidationMathService:
         *,
         n_grid: int = 200,
         rug_cap: int = 2000,
+        piecewise_enabled: bool = False,
+        hinge_anchor_s0: Optional[float] = None,
+        piecewise_knots_absolute: Optional[List[float]] = None,
+        calibrator_coef_raw: Optional[List[float]] = None,
+        calibrator_intercept_raw: Optional[float] = None,
     ) -> dict:
         """Pré-computa grid uniforme do calibrador f(x) e da recalibração afim.
 
@@ -637,8 +650,43 @@ class ValidationMathService:
         if unique_raw.size < 2:
             return out
 
-        grid_x = np.linspace(unique_raw[0], unique_raw[-1], n_grid)
-        llr_y = np.interp(grid_x, unique_raw, unique_lr)
+        # Caminho piecewise-linear analítico: quando o calibrador foi
+        # treinado com mode=PIECEWISE_LINEAR, computamos f(x) DIRETO a
+        # partir dos coeficientes em escala bruta — sem np.interp dos
+        # observados. np.interp colapsa múltiplos knots numa única
+        # curvatura visual quando os knots estão próximos em relação ao
+        # range total (caso típico: PLDA com s0=-22.65 e knots em
+        # [-27.65, -22.65, -17.65] dentro de range [-250, +70]).
+        use_piecewise = (
+            piecewise_enabled
+            and hinge_anchor_s0 is not None
+            and piecewise_knots_absolute is not None
+            and calibrator_coef_raw is not None
+            and calibrator_intercept_raw is not None
+            and len(calibrator_coef_raw) == 1 + len(piecewise_knots_absolute)
+        )
+
+        if use_piecewise:
+            # Grid mais denso pra capturar as quebras com nitidez. Cobre
+            # range observado + 5% de folga em cada lado pra dar contexto
+            # visual do comportamento extrapolante além dos dados.
+            x_min, x_max = float(unique_raw[0]), float(unique_raw[-1])
+            span = x_max - x_min
+            grid_x = np.linspace(x_min - 0.05 * span, x_max + 0.05 * span, n_grid * 2)
+
+            # logLR(x) = β_z·(x − s0) + Σ β_j·max(x − knot_j, 0) + intercept
+            s0 = float(hinge_anchor_s0)
+            beta_z = float(calibrator_coef_raw[0])
+            beta_hinges = [float(b) for b in calibrator_coef_raw[1:]]
+            intercept_raw = float(calibrator_intercept_raw)
+            z = grid_x - s0
+            llr_y = beta_z * z + intercept_raw
+            for beta_j, knot_abs in zip(beta_hinges, piecewise_knots_absolute):
+                llr_y = llr_y + beta_j * np.maximum(grid_x - float(knot_abs), 0.0)
+        else:
+            grid_x = np.linspace(unique_raw[0], unique_raw[-1], n_grid)
+            llr_y = np.interp(grid_x, unique_raw, unique_lr)
+
         affine_y = slope * llr_y + intercept
         delta_y = affine_y - llr_y  # = (slope-1)·llr_y + intercept
 
@@ -659,6 +707,24 @@ class ValidationMathService:
         out["cal_curve_zero_raw_score"] = zero_raw
         out["cal_curve_rug_gen_x"] = _maybe_sample(gen_raw)
         out["cal_curve_rug_imp_x"] = _maybe_sample(imp_raw)
+
+        # Diagnósticos piecewise pro plot: knots + inclinações por trecho.
+        # UI usa pra desenhar linhas verticais nos knots + exibir slopes
+        # no subtítulo. Vazio quando o caminho não é piecewise.
+        if use_piecewise:
+            out["cal_curve_piecewise_knots_absolute"] = [
+                float(k) for k in piecewise_knots_absolute
+            ]
+            # Inclinações por trecho na escala bruta: segment[0] = β_z;
+            # segment[j] = β_z + cumulative sum of β_hinges até j.
+            beta_z = float(calibrator_coef_raw[0])
+            betas_hinge = [float(b) for b in calibrator_coef_raw[1:]]
+            slopes = [beta_z]
+            running = beta_z
+            for b in betas_hinge:
+                running += b
+                slopes.append(running)
+            out["cal_curve_piecewise_segment_slopes"] = slopes
         return out
 
     @staticmethod

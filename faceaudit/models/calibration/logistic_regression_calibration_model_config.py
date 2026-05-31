@@ -7,6 +7,9 @@ from typing import List, Optional, Type, TypeVar
 from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
+from faceaudit.models.calibration.piecewise_linear_calibration_config import (
+    PiecewiseLinearCalibrationConfig,
+)
 
 
 T = TypeVar("T", bound="LogisticRegressionCalibrationModelConfig")
@@ -110,6 +113,18 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         )}
     )
 
+    piecewise_linear_config: PiecewiseLinearCalibrationConfig = field(
+        default_factory=PiecewiseLinearCalibrationConfig,
+        metadata={"help": (
+            "Configuração da expansão piecewise-linear interna. Default = "
+            "mode NONE (backward-compat: calibrador opera direto sobre o "
+            "score sem expansão). Quando ativada (mode=PIECEWISE_LINEAR), "
+            "o calibrador aprende internamente `hinge_anchor_s0` fold-aware "
+            "e expande a feature em [z, max(z-offset_j, 0)]. Restrita a "
+            "score 1D na V1 — multivariado deve usar SCORE_INTERACTION_FEATURE."
+        )}
+    )
+
     def __post_init__(self) -> None:
         """
         Validação defensiva mínima do DTO.
@@ -132,6 +147,17 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         # Normaliza enum vindo de string (caso from_dict externo)
         if not isinstance(self.cv_split_mode, CalibratorCVSplitMode):
             self.cv_split_mode = CalibratorCVSplitMode.from_str(self.cv_split_mode)
+        # Normaliza PiecewiseLinearCalibrationConfig vindo de dict
+        if isinstance(self.piecewise_linear_config, dict):
+            self.piecewise_linear_config = (
+                PiecewiseLinearCalibrationConfig.from_dict(
+                    self.piecewise_linear_config
+                )
+            )
+        elif not isinstance(
+            self.piecewise_linear_config, PiecewiseLinearCalibrationConfig
+        ):
+            self.piecewise_linear_config = PiecewiseLinearCalibrationConfig()
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> Optional[T]:
@@ -160,6 +186,15 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         if "cv_split_mode" in processed:
             processed["cv_split_mode"] = CalibratorCVSplitMode.from_str(
                 processed["cv_split_mode"]
+            )
+
+        if "piecewise_linear_config" in processed and isinstance(
+            processed["piecewise_linear_config"], dict
+        ):
+            processed["piecewise_linear_config"] = (
+                PiecewiseLinearCalibrationConfig.from_dict(
+                    processed["piecewise_linear_config"]
+                )
             )
 
         return cls(**processed)

@@ -407,4 +407,10 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return TypicalityPairScoringInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.SCORE_INTERACTION_FEATURE:
+            from faceaudit.models.instructions.score_interaction_feature_instruction import (
+                ScoreInteractionFeatureInstruction,
+            )
+            return ScoreInteractionFeatureInstruction.from_dict(processed_data)
+
         return cls(**processed_data)

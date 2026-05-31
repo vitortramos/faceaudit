@@ -166,11 +166,30 @@ class StrategyInstructionType(Enum):
         "Aplica modelo(s) de tipicidade treinado(s) a cada face de cada par "
         "(probe, reference) de um dataset, e produz um SimilarityScoreDataset "
         "onde o score de cada par é a combinação simétrica (MEAN/MIN/MAX/PRODUCT/"
-        "ABS_DIFF) das tipicidades individuais. Suporta dois modelos distintos "
-        "(probe vs reference) para casos cross-população (ex.: cross-pose: "
-        "lateral × frontal). Pareado com SIMILARITY_SCORES pelo "
-        "SCORE_VECTORIZATION pra treinar calibrador 2D+ que conheça raridade "
-        "local.",
+        "ABS_DIFF) das tipicidades individuais OU a tipicidade de um papel só "
+        "(REFERENCE_ONLY/PROBE_ONLY — alimentam SCORE_INTERACTION_FEATURE). "
+        "Suporta dois modelos distintos (probe vs reference) para casos "
+        "cross-população (ex.: cross-pose: lateral × frontal). Pareado com "
+        "SIMILARITY_SCORES pelo SCORE_VECTORIZATION pra treinar calibrador "
+        "2D+ que conheça raridade local.",
+    )
+
+    SCORE_INTERACTION_FEATURE = (
+        "SCORE_INTERACTION_FEATURE",
+        "Score Interaction Feature",
+        "Feature de Interação Cosseno × Raridade",
+        "Constrói feature forense de interação `(base − s0)·rarity` "
+        "(modos ONE_SIDED_POSITIVE/LINEAR/HINGE_BASE) a partir de "
+        "DOIS SimilarityScoreDataset alinháveis por par: base (cosseno/PLDA) "
+        "e modifier (tipicidade do TYPICALITY_PAIR_SCORING). `s0` (ponto "
+        "de evidência neutra, logLR=0) é resolvido em três modos: "
+        "AUTO_LOGREG (calibrador auxiliar univariado), MANUAL (valor "
+        "fixo), INHERIT (herda metadata de execução anterior — "
+        "obrigatório em validação e casework). Inversão typicality→rarity "
+        "automática por score_type (PERCENTILE→1−v/100; MEAN_KNN/LOG_DENSITY→−v). "
+        "Output `raw_score` 1D consumível por SCORE_VECTORIZATION para "
+        "fusão LogReg multivariada. Bloqueia AUTO_LOGREG em casework; "
+        "valida `same_person` e família do modifier.",
     )
 
     def __new__(

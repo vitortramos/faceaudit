@@ -477,11 +477,20 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
             line3_parts.append(f"slope={slope:.3f} ({slope_diag})")
         if intercept is not None:
             line3_parts.append(f"intercept={intercept:+.3f}")
+        # Linha extra com slopes piecewise por trecho. Aparece só quando o
+        # calibrador tem expansão piecewise-linear ativa.
+        pwl_slopes = list(getattr(pd, "cal_curve_piecewise_segment_slopes", []) or [])
+        line4_parts: list[str] = []
+        if len(pwl_slopes) >= 2:
+            slopes_fmt = ", ".join(f"{s:.4f}" for s in pwl_slopes)
+            line4_parts.append(f"piecewise slopes (raw) = [{slopes_fmt}]")
         title_lines = [title_line1]
         if line2_parts:
             title_lines.append("  ·  ".join(line2_parts))
         if line3_parts:
             title_lines.append("  ·  ".join(line3_parts))
+        if line4_parts:
+            title_lines.append("  ·  ".join(line4_parts))
         ax_top.set_title("\n".join(title_lines), fontsize=10)
 
     # ── Camadas adicionais no top axes (só com grid) ─────────────────────
@@ -492,11 +501,31 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         rug_gen = np.asarray(getattr(pd, "cal_curve_rug_gen_x", []), dtype=np.float64)
         rug_imp = np.asarray(getattr(pd, "cal_curve_rug_imp_x", []), dtype=np.float64)
 
+        # Knots do calibrador piecewise-linear. Desenhamos ANTES da curva
+        # para que as linhas verticais fiquem atrás da curva azul (em zorder).
+        knots_abs = list(getattr(pd, "cal_curve_piecewise_knots_absolute", []) or [])
+        slopes_seg = list(getattr(pd, "cal_curve_piecewise_segment_slopes", []) or [])
+        if knots_abs:
+            knot_label = (
+                f"Knot piecewise (n={len(knots_abs)})" if len(knots_abs) > 1
+                else "Knot piecewise"
+            )
+            # Linhas verticais finas em cada knot — usa axvline com label
+            # só na primeira pra não poluir a legenda.
+            for idx, k in enumerate(knots_abs):
+                ax_top.axvline(
+                    float(k),
+                    color="#5a3a8a", linestyle=(0, (3, 3)), linewidth=1.0,
+                    alpha=0.6, zorder=2,
+                    label=knot_label if idx == 0 else None,
+                )
+
         # Curva f(x) — calibrador atual.
         ax_top.plot(
             grid_x, llr_y,
             color="#1a4f8a", linewidth=2.0, alpha=0.95,
             label="Calibrador atual f(x)",
+            zorder=3,
         )
         # Curva pós-afim Brümmer-Doddington. Apenas a fórmula vai na
         # label — diagnóstico (over-/under-confident) e Cllr_affine
