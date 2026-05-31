@@ -66,7 +66,7 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
     - `knot_offsets_raw_`: list[float] — offsets convertidos para escala
       bruta (usados internamente em `transform` e em `knots_absolute_`).
       Em `KnotScale.RAW` coincide com `knot_offsets_user_`; em
-      `KnotScale.LOG_LR` é `[log_lr_j / aux_coef_ for log_lr_j in user]`.
+      `KnotScale.AUX_LOG_LR` é `[aux_log_lr_j / aux_coef_ for aux_log_lr_j in user]`.
     - `knot_scale_`: KnotScale — eco da escala usada (auditável no pickle).
     - `knots_absolute_`: list[float] — knots absolutos em escala bruta
       (s0 + offset_raw). Sempre na escala do score.
@@ -272,7 +272,7 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
             # Override do DTO: substitui knot_offsets/knot_scale pelos
             # valores computados. Mantém o `config` original imutável.
             self.knot_offsets_user_ = list(auto_offsets)
-            self.knot_scale_ = KnotScale.LOG_LR
+            self.knot_scale_ = KnotScale.AUX_LOG_LR
         else:
             self.knot_offsets_user_ = list(config.knot_offsets)
             self.knot_scale_ = config.knot_scale
@@ -283,14 +283,14 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
         # o que o usuário escreveu (na unidade `knot_scale_`).
         # `knot_offsets_raw_` é a versão sempre em escala bruta usada
         # internamente por transform/knots_absolute/monotonicity check.
-        if self.knot_scale_ is KnotScale.LOG_LR:
+        if self.knot_scale_ is KnotScale.AUX_LOG_LR:
             # Conversão exige aux_coef positivo do LogReg auxiliar.
-            # Como `knot_scale=LOG_LR` é mutuamente exclusivo com MANUAL
+            # Como `knot_scale=AUX_LOG_LR` é mutuamente exclusivo com MANUAL
             # (validado no DTO), `self.aux_coef_` está garantidamente
             # disponível e > 0 nesse ramo.
             if self.aux_coef_ is None or self.aux_coef_ <= 0:
                 raise RuntimeError(
-                    "knot_scale=LOG_LR requer aux_coef do LogReg "
+                    "knot_scale=AUX_LOG_LR requer aux_coef do LogReg "
                     f"auxiliar > 0. Obtido aux_coef={self.aux_coef_!r}. "
                     "Provável erro de invariante — DTO deveria ter "
                     "bloqueado essa combinação."

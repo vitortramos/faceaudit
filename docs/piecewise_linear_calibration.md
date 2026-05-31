@@ -1,64 +1,174 @@
 # Calibração piecewise-linear de razão de verossimilhança
 
-Este documento descreve a calibração piecewise-linear (PWL) implementada
-no Faceaudit como extensão interna do calibrador de regressão logística.
-Cobre a motivação estatística, a formulação matemática, a interpretação
-geométrica das mudanças de inclinação, as opções de configuração
-disponíveis na ferramenta e as considerações de defensibilidade forense.
+Este documento descreve a calibração piecewise-linear implementada no
+FaceAudit como extensão interna do calibrador de regressão logística.
+Cobre o escopo do componente, a fundamentação forense, a formulação
+matemática, as opções de configuração disponíveis na ferramenta, os
+diagnósticos persistidos, considerações sobre uso operacional e
+limitações conhecidas.
 
 ---
 
-## 1. Contexto: calibração de scores em comparação facial forense
+## 0. Escopo e status
 
-Em um pipeline forense de comparação facial, cada par (probe, reference)
-produz um score de similaridade $s$ a partir de um modelo de comparação
-(cosseno entre embeddings, PLDA two-covariance, etc). O score $s$ é uma
-estatística informativa, mas não é em si uma razão de verossimilhança
-(*likelihood ratio*, LR). A apresentação de evidência em laudo requer
-uma quantidade calibrada com a seguinte interpretação probabilística:
+### 0.1 O que está implementado
 
-$$
-\text{LR}(s) \;=\; \frac{p(s \mid H_p)}{p(s \mid H_d)},
-$$
+Os elementos descritos neste documento estão presentes no código:
 
-onde $H_p$ é a hipótese da promotoria ("a face questionada pertence ao
-mesmo indivíduo do padrão") e $H_d$ é a hipótese da defesa ("são
-indivíduos distintos"). A função $s \mapsto \log \text{LR}(s)$ é
-chamada de **curva de calibração**. O calibrador é o estimador
-treinado de $\log \text{LR}(s)$.
+- Expansão de basis piecewise-linear interna ao calibrador, ativada
+  via `CalibrationBasisMode.PIECEWISE_LINEAR`.
+- Estimação do ponto âncora $s_0$ por LogReg auxiliar univariado
+  fold-aware (`HingeAnchorMode.AUTO_LOGREG`) ou valor fixo (`MANUAL`).
+- Escala dos offsets em score bruto (`KnotScale.RAW`) ou em log-LR do
+  calibrador auxiliar (`KnotScale.AUX_LOG_LR`).
+- Posicionamento manual (`KnotPlacement.MANUAL`) ou automático
+  (`KnotPlacement.AUTO_FROM_MEDIANS`).
+- Validação pós-fit de crescimento estrito por trecho, com política
+  configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
+- Algoritmo geral para identificar o ponto de cruzamento efetivo de
+  log-LR = 0 por segmento.
+- Persistência de diagnósticos para auditoria (§7).
 
-Brümmer & du Preez (2006) propõem a regressão logística como estimador
-do log-LR a partir de scores e rótulos binários $y \in \{0, 1\}$ (0
-para $H_d$, 1 para $H_p$). Sob certas hipóteses, o modelo linear
-$\log \text{LR}(s) = \beta_z \cdot s + \beta_0$ é consistente quando
-$P(H_p \mid s)$ é logística em $s$. A regressão logística é o
-calibrador padrão na literatura forense de reconhecimento biométrico.
+### 0.2 O que é estabelecido vs. experimental
+
+| Componente | Status |
+|---|---|
+| Calibração por regressão logística (linear) | Estabelecido na literatura forense (Brümmer & du Preez 2006, Morrison 2013). |
+| Expansão piecewise-linear como basis function | Estabelecido em estatística (Hastie, Tibshirani & Friedman 2009, §5.2). |
+| Validação pós-fit de crescimento estrito por trecho | Política operacional implementada no FaceAudit. |
+| Heurística `AUTO_FROM_MEDIANS` para posicionamento dos knots | Heurística experimental proposta no projeto. Não consta da literatura citada. Deve ser validada externamente no domínio de aplicação. |
+
+### 0.3 LR bruta do modelo vs. LR reportável
+
+O calibrador piecewise produz um valor de log-LR bruto a partir do
+`decision_function` da regressão logística. Esse valor é a saída
+matemática não censurada do componente.
+
+Decisões sobre **reportabilidade** — limites superiores e inferiores
+aceitos em laudo, política de exibição em casos onde o score
+extrapola o range de treino, e relato qualitativo da força da
+evidência — constituem uma camada operacional separada. O
+componente piecewise não define essa política; ele se limita a
+produzir o estimador. A guideline ENFSI para relatórios avaliativos
+enfatiza transparência, robustez e disponibilidade para auditoria da
+metodologia de atribuição do LR (ENFSI 2015).
 
 ---
 
-## 2. Limitações do calibrador linear puro
+## 1. Fundamento forense
+
+### 1.1 Proposições e LR baseada em score
+
+A apresentação avaliativa de evidência em comparação facial é
+formulada em termos de duas proposições mutuamente excludentes:
+
+- $H_p$: as imagens comparadas provêm do mesmo indivíduo.
+- $H_d$: as imagens comparadas provêm de indivíduos distintos.
+
+A razão de verossimilhança (LR) avalia a probabilidade dos achados
+condicionada a cada proposição:
+
+$$
+\text{LR}(s) \;=\; \frac{p(s \mid H_p)}{p(s \mid H_d)}.
+$$
+
+Quando $s$ é uma estatística-resumo derivada das imagens (e.g. score
+de similaridade entre embeddings), o resultado é uma **LR baseada em
+score** (*score-based LR*). A calibração piecewise-linear descrita
+aqui é um estimador dessa LR — ela melhora o mapeamento entre score
+e log-LR, mas não acrescenta informação ausente do score.
+
+Quando o score contém apenas similaridade, a suficiência da
+estatística-resumo para as proposições do caso deve ser demonstrada
+empiricamente. Informações adicionais (e.g. tipicidade da face
+questionada em relação à população relevante) exigem modelagem
+própria ou fusão multivariada. Morrison (2013, 2021) discute a
+relevância de incorporar tipicidade nos sistemas forenses
+biométricos.
+
+### 1.2 Convenção logarítmica
+
+Neste documento, log-LR significa $\ln(\text{LR})$, em nats (logaritmo
+natural). Conversões úteis:
+
+| log-LR (nats) | LR aproximada | log10(LR) |
+|---|---|---|
+| 0 | 1 | 0 |
+| $\ln(3) \approx 1{,}10$ | 3 | $\approx 0{,}48$ |
+| $\ln(10) \approx 2{,}30$ | 10 | 1 |
+| $\ln(100) \approx 4{,}61$ | 100 | 2 |
+| $\ln(10^4) \approx 9{,}21$ | $10^4$ | 4 |
+
+A regressão logística do scikit-learn opera em log-odds em base
+natural, e o método `decision_function` retorna o logit não censurado.
+
+### 1.3 Estimação por regressão logística
+
+Brümmer & du Preez (2006) e Morrison (2013) propõem a regressão
+logística como estimador de log-LR a partir de pares score/rótulo.
+Sob certas hipóteses, o modelo
+
+$$
+\log \text{LR}(s) \;=\; \beta_z \cdot s \;+\; \beta_0
+$$
+
+é consistente quando $P(H_p \mid s)$ é logística em $s$. A regressão
+logística é o calibrador padrão na literatura forense de
+reconhecimento biométrico (voz, face, etc).
+
+#### 1.3.1 Relação entre log-odds posteriores e log-LR
+
+A regressão logística estima log-odds posteriores efetivos:
+
+$$
+\eta(s) \;=\; \log \frac{P_{\text{eff}}(H_p \mid s)}{P_{\text{eff}}(H_d \mid s)}.
+$$
+
+Para convertê-los em log-LR é necessário subtrair os log-odds do
+prior efetivo no treino:
+
+$$
+\log \text{LR}(s) \;=\; \eta(s) \;-\; \log \frac{\pi_{\text{eff}}}{1 - \pi_{\text{eff}}}.
+$$
+
+No FaceAudit, o LogReg principal é treinado com
+`class_weight="balanced"`, que pondera as amostras de modo que a soma
+de pesos por classe seja idêntica. Isso resulta em
+$\pi_{\text{eff}} = 0{,}5$ e, portanto, $\log(\pi/(1-\pi)) = 0$. Nesse
+caso, `decision_function` retorna $\eta(s)$ idêntico a $\log
+\text{LR}(s)$. Essa propriedade é persistida no metadata como
+`effective_training_prior_hp = 0.5`, `effective_training_prior_hd =
+0.5`, `prior_log_odds_correction = 0.0`. Configurações de
+`class_weight` diferentes exigem revisão dessa relação antes de
+tratar `decision_function` como log-LR direto.
+
+---
+
+## 2. Por que uma calibração afim pode ser insuficiente
 
 A linearidade $\log \text{LR}(s) = \beta_z \cdot s + \beta_0$ assume
-inclinação constante em toda a faixa do score. Essa hipótese falha em
-distribuições reais quando há **regimes distintos** de evidência em
+inclinação constante em toda a faixa do score. Essa hipótese pode
+falhar em distribuições reais quando há **regimes distintos** em
 faixas diferentes:
 
-- Em modelos como o PLDA, a distribuição $p(s \mid H_d)$ tem pico
-  numericamente distante do pico de $p(s \mid H_p)$. Há regiões onde só
-  uma das classes tem massa relevante; nessas regiões, a razão de
-  densidades muda de comportamento (Hd cai exponencialmente, Hp ainda
-  tem massa).
+- Em modelos como o PLDA, a distribuição $p(s \mid H_d)$ pode ter
+  pico numericamente distante do pico de $p(s \mid H_p)$. Em regiões
+  onde apenas uma classe tem massa relevante, a razão local de
+  densidades muda de comportamento.
 - Em regiões com pouca sobreposição entre classes, o LogReg linear
-  extrapola o slope estimado no centro da distribuição e produz
-  log-LRs nas caudas que podem ser sub ou super-estimados em relação à
-  razão de densidades empírica.
-- Quando o calibrador usa `class_weight="balanced"` (caso do
-  Faceaudit), o gradiente do log-loss é uniforme por classe, mas a
-  flexibilidade na **forma** da curva continua restrita a uma reta.
+  extrapola a inclinação estimada no centro da distribuição e produz
+  log-LRs nas caudas que podem divergir da razão de densidades
+  empírica.
+- O uso de `class_weight="balanced"` equaliza o gradiente do log-loss
+  por classe, mas a flexibilidade na **forma** da curva permanece
+  restrita a uma reta.
 
-A calibração piecewise-linear é uma extensão da regressão logística
-que permite mudanças de inclinação em pontos pré-definidos do score
-sem perder a propriedade de calibrador probabilístico.
+A literatura compara calibrações lineares e não lineares (Brümmer,
+Swart & van Leeuwen 2014) e discute limitações de transformações
+afins em pontos operacionais distintos. A calibração piecewise-linear
+é uma extensão controlada da regressão logística que admite mudanças
+de inclinação em pontos pré-definidos do score, sem perder a
+estrutura paramétrica que a torna auditável.
 
 ---
 
@@ -66,7 +176,7 @@ sem perder a propriedade de calibrador probabilístico.
 
 ### 3.1 Basis expansion piecewise-linear
 
-Seja $s_0 \in \mathbb{R}$ um ponto âncora (definido em §4) e
+Seja $s_0 \in \mathbb{R}$ um ponto âncora (definido em §5.1) e
 $\delta_1 < \delta_2 < \cdots < \delta_K$ um conjunto de offsets
 relativos ao âncora. Define-se a variável centrada $z = s - s_0$ e a
 expansão piecewise-linear:
@@ -75,98 +185,181 @@ $$
 \boldsymbol{\phi}(s) \;=\; \big[\, z, \; \max(z - \delta_1, 0), \; \max(z - \delta_2, 0), \; \ldots, \; \max(z - \delta_K, 0) \,\big] \in \mathbb{R}^{K+1}.
 $$
 
-A regressão logística é então treinada sobre $\boldsymbol{\phi}(s)$
-em vez de $s$:
+A regressão logística é treinada sobre $\boldsymbol{\phi}(s)$ em vez
+de $s$:
 
 $$
 \log \text{LR}(s) \;\approx\; \beta_0 \;+\; \beta_z \cdot z \;+\; \sum_{j=1}^{K} \beta_j \cdot \max(z - \delta_j, 0).
 $$
 
-Cada função $\max(z - \delta_j, 0)$ é uma "hinge function" que vale
-zero abaixo do knot absoluto $k_j = s_0 + \delta_j$ e cresce
+Cada função $\max(z - \delta_j, 0)$ é uma **função hinge** (dobradiça)
+que vale zero abaixo do knot absoluto $k_j = s_0 + \delta_j$ e cresce
 linearmente com inclinação 1 acima dele.
+
+O termo $\beta_z \cdot z$ é incluído explicitamente — todas as
+features hinge são interpretadas como modificações da inclinação base
+$\beta_z$. Essa estrutura preserva o princípio de marginalidade
+(Nelder 1977): o termo linear principal deve estar presente sempre
+que termos de interação ou expansão dele estiverem.
 
 ### 3.2 Inclinação por trecho
 
-A derivada de $\log \text{LR}$ em relação ao score $s$ em um ponto
-$s \in [k_{j-1}, k_j)$ é:
+A derivada de $\log \text{LR}$ em relação a $s$ no trecho $j$
+(isto é, em $s \in [k_{j-1}, k_j)$, com a convenção $k_0 = -\infty$ e
+$k_{K+1} = +\infty$) é:
 
 $$
-\frac{d \log \text{LR}}{ds}\bigg|_{s \in [k_{j-1}, k_j)} \;=\; \beta_z \;+\; \sum_{i=1}^{j-1} \beta_i \;\equiv\; m_j.
+m_j \;\equiv\; \frac{d \log \text{LR}}{ds}\bigg|_{s \in [k_{j-1}, k_j)} \;=\; \beta_z \;+\; \sum_{i=1}^{j-1} \beta_i.
 $$
 
 A inclinação no trecho $j$ é a soma cumulativa de $\beta_z$ com os
 coeficientes das hinges que já "ativaram". A curva é um polinômio
 piecewise de grau 1 com vértices em $\{k_1, \ldots, k_K\}$.
 
-### 3.3 Restrição de monotonicidade
+### 3.3 Validação pós-fit de crescimento estrito
 
-Uma curva de calibração forense não pode ser não-monotônica em $s$:
-score maior deve corresponder a log-LR maior ou igual, sob pena de
-inversão da direção da evidência em parte do domínio. A condição
-formal é:
+A implementação não impõe restrições durante o ajuste — a regressão
+logística é treinada sem restrições e o sistema **valida os slopes
+cumulativos após o fit**. Fits que produzem trechos não-crescentes
+são rejeitados por default.
+
+Formalmente, exige-se:
 
 $$
 m_j \;>\; m_{\min} \quad \forall j \in \{1, \ldots, K+1\},
 $$
 
-onde $m_{\min} \geq 0$ é um limiar numérico de monotonicidade
-(`min_allowed_slope`, default $10^{-8}$).
+onde $m_{\min} \geq 0$ é um limiar numérico (`min_allowed_slope`,
+default $10^{-8}$). Embora uma função monotônica não-decrescente
+possa conter platôs ($m_j = 0$), o FaceAudit adota crescimento
+estrito como política operacional para evitar trechos sem
+discriminação e instabilidades numéricas.
 
-Quando a regressão logística sobre $\boldsymbol{\phi}(s)$ produz uma
-curva que viola essa restrição (tipicamente em trechos com pouco
-suporte estatístico, onde o $\beta_j$ pode ficar fortemente negativo
-e sobrepujar a soma cumulativa), o Faceaudit rejeita o fit por
-default (§5.5).
+Quando a regressão logística sobre $\boldsymbol{\phi}(s)$ viola essa
+restrição (tipicamente em trechos com pouco suporte estatístico, onde
+o $\beta_j$ pode ficar fortemente negativo), o calibrador é rejeitado
+com diagnóstico detalhado por trecho (§7.4).
 
 ### 3.4 Standardização interna
 
-A regressão logística no Faceaudit é treinada via `sklearn.Pipeline`
-composto por: `PiecewiseLinearScoreTransformer` → `StandardScaler` →
-`LogisticRegression`. A `StandardScaler` aprende
-$\mu_j, \sigma_j$ das features expandidas em treino e standardiza:
+O calibrador no FaceAudit é treinado via `sklearn.Pipeline` composto
+por: `PiecewiseLinearScoreTransformer` → `StandardScaler` →
+`LogisticRegression`. A `StandardScaler` aprende $\mu_j, \sigma_j$ das
+features expandidas em treino e standardiza:
 
 $$
 \tilde\phi_j(s) \;=\; \frac{\phi_j(s) - \mu_j}{\sigma_j}.
 $$
 
 Os coeficientes aprendidos $\beta_j^{\text{std}}$ vivem na escala
-standardizada. Para auditoria e cálculo de inclinações na escala bruta
-do score, recupera-se:
+standardizada. Para auditoria e cálculo de inclinações na escala
+bruta do score, recupera-se:
 
 $$
 \beta_j^{\text{raw}} \;=\; \beta_j^{\text{std}} / \sigma_j, \qquad
 \beta_0^{\text{raw}} \;=\; \beta_0^{\text{std}} \;-\; \sum_j \beta_j^{\text{std}} \cdot \mu_j / \sigma_j.
 $$
 
-Esta conversão é feita no calibrador após o `fit` e os coeficientes em
-escala bruta são persistidos no metadata para uso em diagnóstico e
-plot da curva analítica.
+Esta conversão é feita após o `fit` e os coeficientes em escala bruta
+são persistidos no metadata.
 
 ### 3.5 Ponto de cruzamento efetivo de log-LR = 0
 
-O âncora $s_0$ é o ponto onde $\log \text{LR}$ do **LogReg auxiliar
-linear** vale zero (cf. §4.1), mas em geral **não** coincide com o
-zero do calibrador piecewise final. O zero efetivo é determinado
-pelo trecho que contém o ponto. Para o trecho mais à direita (slope
-$m_{K+1} = \beta_z + \sum_i \beta_i$):
+O âncora $s_0$ é o ponto onde o LogReg auxiliar linear cruza log-LR =
+0 (§5.1). Em geral, **não coincide** com o zero do calibrador
+piecewise final, porque o piecewise tem inclinações diferentes do
+auxiliar e intercepto efetivo distinto.
+
+O zero do piecewise é determinado segmento por segmento. Em cada
+segmento $r$, seja $A_r = \{j : \delta_j < z\}$ o conjunto de hinges
+ativas no intervalo. A função pode ser escrita como
 
 $$
-s_{LR = 0} \;=\; s_0 \;-\; \frac{\beta_0^{\text{raw}}}{m_{K+1}}.
+f_r(z) \;=\; c_r \;+\; m_r \cdot z,
 $$
 
-Este valor é persistido como `effective_log_lr_zero_crossing` para
-documentação no laudo.
+com
+
+$$
+m_r \;=\; \beta_z \;+\; \sum_{j \in A_r} \beta_j, \qquad
+c_r \;=\; \beta_0^{\text{raw}} \;-\; \sum_{j \in A_r} \beta_j \cdot \delta_j.
+$$
+
+A raiz candidata no segmento é $z_r = -c_r / m_r$. A raiz é aceita
+apenas quando $z_r$ pertence ao intervalo do segmento. Sob
+crescimento estrito ($m_r > 0$ para todo $r$), existe no máximo uma
+raiz válida. O valor persistido é
+
+$$
+s_{LR = 0} \;=\; s_0 + z_r,
+$$
+
+acompanhado do índice do segmento onde foi encontrado
+(`effective_log_lr_zero_crossing_segment_index`) e de uma flag
+indicando se cai dentro do range observado de treino
+(`effective_log_lr_zero_crossing_inside_training_range`).
+
+> **Nota histórica.** Versões anteriores do componente reportavam
+> $s_{LR=0} = s_0 - \beta_0^{\text{raw}} / m_{K+1}$, fórmula correta
+> apenas no caso degenerado de zero knots ou knots todos em $\delta =
+> 0$. O algoritmo geral por segmento foi introduzido em maio de 2026.
 
 ---
 
-## 4. O ponto âncora $s_0$
+## 4. Treinamento sem leakage
+
+### 4.1 LogReg auxiliar e knots dentro do `Pipeline`
+
+O `PiecewiseLinearScoreTransformer` é um transformer
+`sklearn`-compatível inserido em um `sklearn.Pipeline`. Ao ser
+chamado dentro de `GridSearchCV`, seu `fit(X_train, y_train)` é
+re-executado em cada fold com apenas os dados de treino do fold:
+
+- Estimação do âncora $s_0$ via LogReg auxiliar (§5.1) ocorre **dentro
+  do fit do transformer**. Cada fold tem seu próprio $s_0$ estimado
+  apenas com seus dados de treino.
+- Conversão `aux_log_lr → raw` em `KnotScale.AUX_LOG_LR` usa o
+  $\alpha_{\text{aux}}$ daquele fold.
+- Cálculo dos knots em `KnotPlacement.AUTO_FROM_MEDIANS` (§6.2) usa
+  medianas calculadas apenas no subset de treino do fold.
+
+Nenhuma dessas operações lê dados do fold de validação. A propriedade
+fold-aware é garantida pela própria mecânica do `Pipeline` (ver
+documentação do scikit-learn sobre `Pipeline` e `GridSearchCV`).
+
+### 4.2 Agrupamento por identidade
+
+A propriedade fold-aware acima previne leakage de $s_0$ e dos knots
+entre treino e validação **do fold**, mas não previne leakage por
+correlação entre pares. Em comparação biométrica, múltiplos pares
+podem compartilhar a mesma identidade (e.g. par A=face1×face2 e par
+B=face1×face3 compartilham face1). Se folds forem construídos por par
+(via `StratifiedKFold` padrão), face1 pode aparecer simultaneamente
+no treino e na validação de um mesmo fold.
+
+Recomenda-se, sempre que possível, **construir folds agrupados por
+identidade ou por unidade independente relevante** (e.g.
+`StratifiedGroupKFold` do scikit-learn, com `groups` = identidade ou
+captura). A prevenção de leakage na estimação de $s_0$ e nos knots
+não elimina o leakage decorrente de pares correlacionados.
+
+O FaceAudit hoje não impõe agrupamento automático nos folds do
+calibrador. Essa escolha cabe ao desenho do pipeline do projeto. Se
+você usa `cv_folds = 5` em `LogisticRegressionCalibrationModelConfig`,
+verifique como o dataset de calibração foi construído antes de tratar
+o $C_{\text{llr}}$ de cross-validation interno como medida limpa.
+
+---
+
+## 5. Âncora e knots
+
+### 5.1 O ponto âncora $s_0$
 
 A basis expansion é parametrizada pelo âncora $s_0$. Os knots
 absolutos são $k_j = s_0 + \delta_j$. A escolha de $s_0$ define o que
-significa "centrar a expansão". Há dois modos:
+significa "centrar a expansão". Há dois modos.
 
-### 4.1 Estimação automática (`HingeAnchorMode.AUTO_LOGREG`)
+#### Estimação automática (`HingeAnchorMode.AUTO_LOGREG`)
 
 Um LogReg auxiliar univariado é treinado sobre os mesmos $(s, y)$ do
 treino do calibrador:
@@ -184,15 +377,10 @@ $$
 
 A inclinação $\alpha_{\text{aux}}$ tem interpretação útil: é o fator
 de conversão entre score bruto e log-LR linear local. Esse fator é
-usado pelas escalas `LOG_LR` (§5.3) e `AUTO_FROM_MEDIANS` (§5.4).
+usado pela escala `AUX_LOG_LR` (§5.2) e pelo posicionamento
+`AUTO_FROM_MEDIANS` (§6.2).
 
-O LogReg auxiliar é treinado **dentro** do
-`PiecewiseLinearScoreTransformer.fit`, o que o torna automaticamente
-fold-aware em pipelines com `GridSearchCV`: cada fold re-estima seu
-próprio $s_0$ usando apenas seus dados de treino, sem leakage do
-holdout.
-
-### 4.2 Valor fixo (`HingeAnchorMode.MANUAL`)
+#### Valor fixo (`HingeAnchorMode.MANUAL`)
 
 O usuário fornece $s_0$ diretamente via
 `hinge_anchor_manual_value`. Útil para reproduzir calibradores
@@ -200,221 +388,341 @@ externos já auditados ou aplicar regras de domínio explícitas. Não
 gera $\alpha_{\text{aux}}$ — escalas e modos que dependem dele ficam
 restritos.
 
----
-
-## 5. Opções de configuração no Faceaudit
-
-A configuração do piecewise vive no DTO
-`PiecewiseLinearCalibrationConfig`, embutido no
-`LogisticRegressionCalibrationModelConfig` via
-`piecewise_linear_config`. As subseções abaixo descrevem cada campo.
-
-### 5.1 `CalibrationBasisMode`
-
-Ativa ou desativa a basis expansion.
-
-| Valor | Efeito |
-|---|---|
-| `NONE` (default) | Calibrador opera como LogReg linear puro. Backward-compat. |
-| `PIECEWISE_LINEAR` | Ativa a basis expansion (§3). |
-
-### 5.2 `HingeAnchorMode`
-
-Como $s_0$ é determinado (§4).
-
-| Valor | Efeito |
-|---|---|
-| `AUTO_LOGREG` (default) | Aux LogReg fold-aware estima $s_0$ e $\alpha_{\text{aux}}$. |
-| `MANUAL` | Usa `hinge_anchor_manual_value` direto. |
-
-### 5.3 `KnotScale`
-
-Unidade em que `knot_offsets` é expresso.
+### 5.2 Escala dos offsets (`KnotScale`)
 
 | Valor | Significado |
 |---|---|
 | `RAW` | Offsets diretamente em unidades de score. Backward-compat com configs antigos. |
-| `LOG_LR` (default em construções novas) | Offsets em unidades de log-LR auxiliar. Conversão $\delta_j^{\text{raw}} = \delta_j^{\text{log-LR}} / \alpha_{\text{aux}}$ feita no fit. Exige `HingeAnchorMode.AUTO_LOGREG`. |
+| `AUX_LOG_LR` (default em novos calibradores) | Offsets em unidades de log-LR do calibrador auxiliar (nats). Conversão $\delta_j^{\text{raw}} = \delta_j^{\text{aux\_log\_lr}} / \alpha_{\text{aux}}$ feita no fit. Exige `HingeAnchorMode.AUTO_LOGREG`. |
 
-A escala `LOG_LR` é independente do modelo de similaridade subjacente:
-"+2 log-LR" significa "razão de verossimilhança de 100:1 a favor de
-$H_p$" tanto em cosseno quanto em PLDA. A escala `RAW` requer
-conhecer o domínio numérico do score (cosseno em ±1, PLDA tipicamente
-em ±100).
+A escala `AUX_LOG_LR` reduz a dependência do domínio numérico do
+score (cosseno em ±1 vs. PLDA em ±100). Não garante, no entanto,
+que os knots resultantes caiam dentro do range observado do score:
+em casos de $\alpha_{\text{aux}}$ muito pequeno, offsets numéricos
+grandes em log-LR auxiliar podem mapear para valores raw fora do
+domínio dos dados. O metadata persistido inclui o campo
+`knot_inside_training_range` por knot para auditar essa condição.
 
-### 5.4 `KnotPlacement`
+A escala se chama `AUX_LOG_LR` para evidenciar que vive na escala do
+**LogReg auxiliar**, não na curva piecewise final. O log-LR do
+piecewise final pode divergir do log-LR auxiliar quando o piecewise
+muda de inclinação.
+
+### 5.3 Posicionamento (`KnotPlacement`)
 
 Quem decide a posição dos knots.
 
 | Valor | Significado |
 |---|---|
 | `MANUAL` | Usuário escreve `knot_offsets` na configuração. |
-| `AUTO_FROM_MEDIANS` (default em construções novas) | Transformer popula `knot_offsets` no fit usando a heurística de §6. |
+| `AUTO_FROM_MEDIANS` (default em novos calibradores) | Transformer popula `knot_offsets` no fit usando a heurística experimental de §6.2. |
 
 Em `AUTO_FROM_MEDIANS`, os campos `knot_offsets` e `knot_scale` do
 DTO são ignorados; o transformer determina ambos automaticamente. A
 UI esconde esses campos quando AUTO está selecionado.
 
-### 5.5 `require_monotonicity` e `monotonicity_policy`
+---
 
-Controlam a verificação de monotonicidade (§3.3) após o fit final.
+## 6. Posicionamento dos knots
 
-| `monotonicity_policy` | Comportamento se a curva viola $m_j > m_{\min}$ |
+### 6.1 Modo MANUAL
+
+O usuário escreve `knot_offsets` no DTO. Exemplos com interpretação
+clara em `KnotScale.AUX_LOG_LR`:
+
+| `knot_offsets` (nats) | Interpretação |
 |---|---|
-| `ERROR` (default) | Levanta `ValueError` com diagnóstico detalhado por trecho. Calibrador não é entregue. |
-| `WARNING` | Emite log de aviso e mantém o fit. Reservado para diagnóstico. |
+| `[0.0]` | Um knot em $s_0$ (ponto neutro do auxiliar). |
+| `[-ln(10), 0, +ln(10)]` $\approx$ `[-2.30, 0, +2.30]` | Três knots: LR auxiliar 1:10 contra Hp, neutro, e 10:1 a favor de Hp. |
+| `[-ln(100), 0, +ln(100)]` $\approx$ `[-4.61, 0, +4.61]` | Três knots em LR auxiliar 1:100, neutro, e 100:1. |
 
-`require_monotonicity = False` desativa a checagem por inteiro (não
-recomendado em uso forense).
+A escolha entre alternativas pré-definidas deve ser feita via
+cross-validation interna ou dev set, **nunca pelo $C_{\text{llr}}$
+medido no mesmo holdout usado para reportar a métrica final** — esse
+procedimento constitui tuning sobre o test set.
 
-### 5.6 `min_allowed_slope`
+### 6.2 Modo AUTO_FROM_MEDIANS (heurística experimental)
 
-Limiar $m_{\min}$ abaixo do qual um slope é considerado violador
-(default $10^{-8}$). Mantém imunidade a ruído numérico (slopes
-positivos mas muito próximos de zero podem aparecer em fits
-pesadamente regularizados).
+**Status.** `AUTO_FROM_MEDIANS` é uma heurística automática,
+determinística e fold-aware proposta no FaceAudit. Não consta da
+literatura citada. Sua utilidade operacional deve ser validada
+externamente no domínio de aplicação antes de ser adotada como
+protocolo de produção.
 
-### 5.7 Configuração do LogReg auxiliar (`LogRegS0Config`)
+#### Definição
 
-Os hiperparâmetros do LogReg auxiliar (usado para estimar
-$\alpha_{\text{aux}}, s_0$) são embutidos em
-`s0_logreg_config`. Defaults: $C = 1.0$, `solver=liblinear`,
-`class_weight=balanced`, `max_iter=1000`. O `class_weight=balanced`
-garante que o âncora não seja deslocado pelo desbalanceamento entre
-classes.
-
----
-
-## 6. A heurística do espelho das medianas log-LR
-
-A heurística empírica para posicionar 2 knots, derivada da análise de
-estratégias PLDA e cosseno do projeto, é:
+A heurística posiciona dois knots em
 
 $$
-\boldsymbol\delta \;=\; \mathrm{sorted}\big(\big[\, -\, \text{med}(\log \text{LR} \mid H_p), \;\; -\, \text{med}(\log \text{LR} \mid H_d) \,\big]\big).
+\boldsymbol\delta \;=\; \mathrm{sorted}\big(\big[\, -\, \hat\ell_p, \;\; -\, \hat\ell_d \,\big]\big),
 $$
 
-**Interpretação geométrica.** Seja $\ell_p = \text{med}(\log \text{LR}
-\mid H_p)$ e $\ell_d = \text{med}(\log \text{LR} \mid H_d)$. Cada knot
-em $-\ell_p$ ou $-\ell_d$ posiciona-se no espelho em torno de zero
-da mediana log-LR da classe correspondente. O segmento entre os dois
-knots é a "zona de mistura", onde as duas classes têm massa
-relevante; fora dela, há predominância de uma classe.
-
-**Cálculo a partir do treino.** As medianas log-LR são calculadas
-analiticamente a partir das medianas raw e do $\alpha_{\text{aux}}$:
+onde $\hat\ell_p$ e $\hat\ell_d$ são as medianas log-LR auxiliares de
+cada classe estimadas no fold de treino:
 
 $$
-\ell_p \;=\; \alpha_{\text{aux}} \cdot (\text{med}(s \mid y = 1) - s_0), \qquad
-\ell_d \;=\; \alpha_{\text{aux}} \cdot (\text{med}(s \mid y = 0) - s_0).
+\hat\ell_p \;=\; \alpha_{\text{aux}} \cdot (\text{med}(s \mid y = 1) - s_0), \qquad
+\hat\ell_d \;=\; \alpha_{\text{aux}} \cdot (\text{med}(s \mid y = 0) - s_0).
 $$
 
-Essa fórmula não exige treinar um segundo calibrador completo nem
-ter um dev set separado; usa o próprio LogReg auxiliar já treinado
-para $s_0$.
+A fórmula não exige treinar um segundo calibrador completo nem ter um
+dev set separado; usa o próprio LogReg auxiliar já treinado para
+$s_0$.
 
-**Fold-awareness.** Em `AUTO_FROM_MEDIANS`, esse cálculo acontece
-dentro do `PiecewiseLinearScoreTransformer.fit`, que é chamado uma
-vez por fold do `GridSearchCV`. Cada fold tem seu próprio
-$\alpha_{\text{aux}}, s_0, \ell_p, \ell_d$ e, portanto, seus próprios
-knots, computados estritamente sobre seus dados de treino. Não há
-leakage do holdout do fold para a definição dos knots.
+#### Intuição geométrica
 
-**Quando a heurística falha.** A heurística posiciona dois knots
-fixos. Em distribuições com regimes "abruptos" próximos a $s_0$
-(caso típico do cosseno, onde $s_0 \approx \text{EER}$ e as
-distribuições $H_p$ e $H_d$ são aproximadamente simétricas em torno
-dele), a curva ótima pode ter uma única dobra em $z = 0$ em vez de
-duas em $-\ell_p$ e $-\ell_d$. A configuração `MANUAL` com
-`knot_offsets = [0.0]` em `KnotScale.LOG_LR` cobre esse caso.
+Cada knot em $-\hat\ell_p$ ou $-\hat\ell_d$ posiciona-se no espelho em
+torno de zero da mediana log-LR da classe correspondente. A heurística
+pretende aproximar uma **região intermediária de transição** entre os
+regimes de evidência. Essa interpretação é intuitiva mas não constitui
+garantia matemática de que o intervalo entre knots corresponda
+exatamente à região de sobreposição das classes.
 
----
+#### Fold-awareness
 
-## 7. Defensibilidade forense
+Em `AUTO_FROM_MEDIANS`, o cálculo das medianas acontece dentro do
+`PiecewiseLinearScoreTransformer.fit`, executado uma vez por fold do
+`GridSearchCV`. Cada fold tem seu próprio $\alpha_{\text{aux}}, s_0,
+\hat\ell_p, \hat\ell_d$ e, portanto, seus próprios knots, computados
+estritamente sobre seus dados de treino. Não há leakage dos folds de
+validação para a definição dos knots. (Subsiste o risco de leakage por
+correlação entre pares — ver §4.2.)
 
-### 7.1 Protocolo recomendado: `AUTO_FROM_MEDIANS`
+#### Limitação intrínseca: medianas do treino vs. holdout
 
-O modo `AUTO_FROM_MEDIANS` é o protocolo forense recomendado pelas
-seguintes razões:
-
-1. **Ausência de leakage.** Os knots são determinados exclusivamente
-   a partir do conjunto de treino do calibrador. O conjunto de
-   validação (holdout) permanece independente para avaliação de
-   $C_{\text{llr}}$ (Brümmer & van Leeuwen 2006).
-2. **Determinismo.** Dado o mesmo conjunto de treino e a mesma
-   semente de inicialização, o procedimento gera os mesmos knots.
-3. **Documentabilidade.** O critério cabe em uma única sentença no
-   laudo: "os knots foram posicionados em
-   $\mathrm{sorted}([-\hat\ell_p, -\hat\ell_d])$ a partir das
-   medianas log-LR auxiliares estimadas fold-aware sobre o dataset de
-   calibração". Todos os valores numéricos relevantes são persistidos
-   no metadata do calibrador (§9).
-4. **Sem dependência operacional.** Não exige rodar uma "estratégia
-   gêmea" linear sobre o holdout, procedimento que constituiria
-   leakage.
-
-### 7.2 Uso de `MANUAL`
-
-O modo `MANUAL` é defensável forensicamente quando:
-
-- O usuário tem um **dev set independente do holdout** e
-  computa $\ell_p, \ell_d$ sobre ele.
-- O usuário reproduz um calibrador previamente auditado.
-- O usuário aplica regra explícita de domínio (e.g. "knot no
-  $z = 0$" como hipótese a ser testada).
-
-Não é defensável quando os knots são escolhidos olhando estatísticas
-do mesmo conjunto onde $C_{\text{llr}}$ é reportado — esse
-procedimento constitui tuning de hiperparâmetros no test set e o
-ganho observado em $C_{\text{llr}}$ não generaliza para um dataset
-independente.
-
-### 7.3 Limitação intrínseca de `AUTO_FROM_MEDIANS`
-
-Em estratégias com forte mismatch entre as distribuições de treino e
-holdout (caso típico: PLDA cross-condition entre populações
-diferentes), as medianas $\ell_p, \ell_d$ do treino divergem das do
+Em estratégias com mismatch entre as distribuições de treino e
+holdout (e.g. PLDA cross-condition entre populações diferentes), as
+medianas $\hat\ell_p, \hat\ell_d$ computadas no treino divergem das do
 holdout. Os knots ótimos para minimizar $C_{\text{llr}}$ no holdout
 podem cair fora da posição escolhida por AUTO. Mesmo nesses casos,
-AUTO não introduz leakage e, portanto, o $C_{\text{llr}}$ reportado é
-honesto. Uma forma defensável de capturar o ganho é separar treino,
-dev e holdout, usando MANUAL com medianas do dev.
+AUTO não introduz leakage e o $C_{\text{llr}}$ reportado é honesto.
+
+#### Health checks recomendados
+
+Antes de aceitar um calibrador produzido por `AUTO_FROM_MEDIANS`,
+verificar no metadata:
+
+- `hinge_anchor_aux_coef > 0` — auxiliar não degenerou.
+- `piecewise_auto_log_lr_hp_p50 > 0` e
+  `piecewise_auto_log_lr_hd_p50 < 0` — as medianas auxiliares estão em
+  lados opostos do zero.
+- `knot_inside_training_range = [true, true]` — todos os knots caem
+  dentro do range observado de scores.
+- `segment_counts_total[r]` razoável em todos os trechos (e.g. ≥ 30).
+- `segment_support_warnings` vazio.
+- `is_monotonic = true`.
+
+Se as medianas não estiverem em lados opostos do zero, isso indica que
+o LogReg auxiliar não estratifica adequadamente as classes em torno do
+ponto neutro neste domínio — `AUTO_FROM_MEDIANS` pode não ser
+adequado. O metadata `piecewise_auto_log_lr_hp_p50` /
+`piecewise_auto_log_lr_hd_p50` permite essa verificação ex-post.
+
+#### Caso de fallback
+
+A heurística posiciona dois knots fixos. Em distribuições com regimes
+abruptos próximos a $s_0$ (caso observado em cosseno, onde $s_0$ pode
+ficar próximo do threshold de decisão associado à região de
+equilíbrio entre erros, e as distribuições $H_p$ e $H_d$ são
+aproximadamente simétricas em torno dele), a curva ótima pode ter uma
+única dobra em $z = 0$ em vez de duas em $-\hat\ell_p$ e $-\hat\ell_d$.
+Para essa situação, `MANUAL` com `knot_offsets = [0.0]` em
+`KnotScale.AUX_LOG_LR` é o equivalente direto.
 
 ---
 
-## 8. Limitações e armadilhas
+## 7. Diagnósticos persistidos
 
-### 8.1 Knots fora do domínio dos dados
+Após o fit, o calibrador armazena em `self.metadata` o conjunto
+abaixo de campos. Todos são serializados no pickle e ficam disponíveis
+para auditoria forense e reprodução. Esta seção é o **schema do
+contrato de auditoria** do componente.
+
+### 7.1 Configuração geral
+
+- `calibration_basis_mode`: `"PIECEWISE_LINEAR"` ou `"NONE"`.
+- `piecewise_enabled`: bool.
+- `knot_placement_protocol_version`: identificador da versão da
+  heurística usada (e.g. `"auto_from_medians_v1"`, `"manual_v1"`).
+
+### 7.2 Convenção de log-LR
+
+- `log_lr_base`: `"natural"` — base do logaritmo.
+- `log_lr_computation_method`: `"decision_function"` — método usado
+  para extrair log-LR do estimador.
+- `positive_class_label`: rótulo numérico da classe positiva no
+  treino.
+- `effective_training_prior_hp`, `effective_training_prior_hd`:
+  prior efetivo de cada classe no treino. Com
+  `class_weight="balanced"`, ambos = 0.5.
+- `prior_log_odds_correction`: $\log(\pi/(1-\pi))$ que deve ser
+  subtraído de `decision_function` para obter log-LR. Com prior
+  balanceado = 0.0.
+
+### 7.3 Âncora $s_0$
+
+- `hinge_anchor_mode`: `"AUTO_LOGREG"` ou `"MANUAL"`.
+- `hinge_anchor_s0`: $s_0$ aprendido ou informado.
+- `hinge_anchor_aux_coef`, `hinge_anchor_aux_intercept`,
+  `hinge_anchor_aux_C`: parâmetros do LogReg auxiliar (None em modo
+  MANUAL).
+- `hinge_anchor_training_method`: `"auto_logreg"` ou `"manual"`.
+- `hinge_anchor_inside_training_range`: bool — $s_0$ cai dentro do
+  range observado dos scores de treino?
+
+### 7.4 Knots e suporte
+
+- `piecewise_knot_scale`: `"RAW"` ou `"AUX_LOG_LR"`.
+- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MEDIANS"`.
+- `piecewise_knot_offsets_user`: offsets na escala do usuário.
+- `piecewise_knot_offsets_raw`: offsets em escala de score (sempre).
+- `piecewise_knots_absolute`: posições absolutas $k_j$ em escala de
+  score.
+- `piecewise_auto_log_lr_hp_p50`, `piecewise_auto_log_lr_hd_p50`:
+  medianas log-LR computadas no fit (None em modo MANUAL).
+- `knot_inside_training_range`: lista bool — cada knot cai dentro do
+  range observado?
+- `fraction_scores_above_each_knot`: fração da amostra de treino
+  acima de cada knot.
+- `segment_counts_total`, `segment_counts_hp`, `segment_counts_hd`:
+  contagem de pares por trecho.
+- `segment_fractions_total`: fração da amostra de treino em cada
+  trecho.
+- `segment_support_warnings`: lista de avisos quando algum trecho
+  tem suporte abaixo dos limiares operacionais.
+
+### 7.5 Coeficientes
+
+- `calibrator_coef_standardized`, `calibrator_intercept_standardized`:
+  parâmetros na escala da `StandardScaler` interna.
+- `calibrator_coef_raw`, `calibrator_intercept_raw`: parâmetros em
+  escala de score bruta (§3.4).
+
+### 7.6 Inclinações e monotonicidade
+
+- `segment_slopes_raw`: lista $[m_1, m_2, \ldots, m_{K+1}]$ na
+  escala de score.
+- `is_monotonic`: bool.
+- `min_allowed_slope`: $m_{\min}$ usado na verificação.
+- `monotonicity_check`: descreve a política aplicada (
+  `"strict_increasing_post_fit"`).
+
+### 7.7 Ponto de cruzamento efetivo
+
+- `effective_log_lr_zero_crossing`: $s_{LR=0}$ (None se nenhum
+  segmento contém zero válido).
+- `effective_log_lr_zero_crossing_segment_index`: índice do segmento
+  onde a raiz cai (0-indexado).
+- `effective_log_lr_zero_crossing_inside_training_range`: bool.
+
+### 7.8 Range observado
+
+- `raw_score_min_training`, `raw_score_max_training`: extremos do
+  score no treino.
+- `raw_log_lr_min_training`, `raw_log_lr_max_training`: extremos do
+  log-LR estimado pelo próprio piecewise nos pontos de treino.
+
+### 7.9 Auxiliar
+
+- `pipeline_feature_names`: nomes descritivos das features expandidas
+  (e.g. `["z=score-s0", "max(z, 0)", "max(z - +2.0000, 0)", ...]`).
+
+---
+
+## 8. Uso operacional e reportabilidade
+
+### 8.1 Distinção entre log-LR bruto do modelo e LR reportável
+
+A curva piecewise é linear no último trecho e, portanto, extrapola
+sem limite quando $s \to +\infty$ (assumindo slope final positivo) ou
+$s \to -\infty$ (slope inicial positivo, log-LR → $-\infty$).
+
+Isso é matematicamente correto, mas não implica que qualquer log-LR
+produzido pelo calibrador seja defensável em laudo. Recomenda-se
+distinguir, na arquitetura operacional:
+
+- **`raw_model_log_lr`**: saída matemática não censurada do
+  calibrador (o que o componente piecewise entrega).
+- **`reportable_log_lr`**: valor eventualmente submetido a política
+  conservadora de reportabilidade baseada em suporte empírico,
+  validação externa, e diretrizes do laboratório/jurisdição.
+
+A política de limite reportável não é definida pela expansão
+piecewise-linear. Constitui uma camada operacional separada.
+
+### 8.2 Extrapolação
+
+Os campos `raw_score_min_training` e `raw_score_max_training`
+permitem identificar se um par observado em validação ou casework
+está dentro ou fora do range em que o calibrador foi estimado.
+Recomenda-se documentar e tratar com cautela casos onde o score do
+caso cai fora do `[raw_score_min_training, raw_score_max_training]` —
+o log-LR nesses pontos é extrapolação linear, não interpolação.
+
+### 8.3 Cllr_min e cal_loss como diagnósticos exploratórios
+
+O `Cllr_min` (via PAVA in-sample) e `cal_loss = Cllr − Cllr_min`
+calculados sobre o conjunto avaliado são **diagnósticos
+exploratórios**, não medidas operacionais significativas do grau de
+calibração. Morrison (2021) argumenta que métricas baseadas em
+PAV/PAVA não devem ser tratadas como critério isolado para escolha
+de sistema pericial em casework. Elas continuam úteis para diagnóstico
+comparativo entre variantes do mesmo pipeline, mas não substituem:
+
+- Validação externa em datasets independentes representativos do
+  domínio de aplicação.
+- Análise das caudas e da estabilidade do modelo.
+- Avaliação da aplicabilidade ao caso específico.
+
+### 8.4 Validação por bootstrap
+
+Em uso forense, recomenda-se complementar o $C_{\text{llr}}$ pontual
+com intervalos via bootstrap, preferencialmente reamostrando por
+**identidade** (não por par) para preservar a estrutura de
+correlação.
+
+---
+
+## 9. Limitações
+
+### 9.1 Knots fora do domínio dos dados
 
 Quando os knots absolutos $k_j = s_0 + \delta_j$ caem fora do range
 observado dos scores, a feature $\max(z - \delta_j, 0)$ é constante
-(igual a zero ou linearmente colinear com $z$) sobre todos os pontos
-de treino. O LogReg estima coeficientes próximos de zero para essas
-features e o modelo colapsa para o LogReg linear puro. O risco é
-particularmente relevante quando offsets são escritos em
-`KnotScale.RAW` para modelos com scores em pequena faixa numérica
-(cosseno em ±1), onde valores como ±10 caem fora do domínio. A
-escala `KnotScale.LOG_LR` evita esse problema por construção.
+(zero em todos os pontos) ou linearmente colinear com $z$ em todos os
+pontos. No primeiro caso, a feature não carrega informação e o
+LogReg estima $\beta_j$ próximo de zero. No segundo caso, a feature
+deixa de carregar informação independente e, na presença de
+regularização L2, o coeficiente pode ser **reduzido, redistribuído
+entre colunas colineares, ou tornar-se numericamente instável**.
 
-### 8.2 Knots em regiões de baixo suporte
+O metadata `knot_inside_training_range` permite identificar esse
+problema.
 
-Quando um knot é colocado em uma faixa esparsa do score (e.g. cauda
-direita extrema), o número de amostras no trecho correspondente é
-pequeno. O coeficiente $\beta_j$ associado tem alta variância e pode
-assumir valor fortemente negativo ao tentar acomodar ruído local,
-violando a condição de monotonicidade do trecho seguinte. Quando
-isso ocorre com `MonotonicityPolicy.ERROR`, o fit é rejeitado com
-diagnóstico detalhado por trecho indicando a suspeita.
+### 9.2 Suporte insuficiente por trecho
 
-### 8.3 Número de knots vs. graus de liberdade
+Quando um knot é colocado em uma faixa esparsa do score (cauda
+extrema), o número de amostras no trecho correspondente é pequeno. O
+coeficiente $\beta_j$ associado tem alta variância e pode assumir
+valor fortemente negativo ao tentar acomodar ruído local, violando a
+condição de monotonicidade do trecho seguinte. Quando isso ocorre
+com `MonotonicityPolicy.ERROR`, o fit é rejeitado com diagnóstico
+detalhado por trecho.
+
+Os campos `segment_counts_total`, `segment_counts_hp`,
+`segment_counts_hd` e `segment_support_warnings` permitem
+identificar trechos frágeis após um fit bem-sucedido.
+
+### 9.3 Número de knots vs. graus de liberdade
 
 Cada knot adiciona um parâmetro $\beta_j$ ao modelo. Com $K$ knots, o
 calibrador tem $K + 2$ parâmetros (incluindo $\beta_0$ e $\beta_z$).
 Em datasets pequenos ou desbalanceados, número grande de knots
-favorece sobreajuste. O modo AUTO usa 2 knots sempre (com colapso
-defensivo a 1 quando as duas medianas coincidem numericamente).
+favorece sobreajuste. O modo AUTO_FROM_MEDIANS usa 2 knots (com
+colapso defensivo a 1 quando as duas medianas coincidem
+numericamente).
 
-### 8.4 Compatibilidade com `SCORE_VECTORIZATION`
+### 9.4 Compatibilidade com `SCORE_VECTORIZATION`
 
 A expansão piecewise-linear assume score 1D. Em pipelines de
 calibração multivariada (input `SCORE_VECTORIZATION` com $D > 1$),
@@ -423,96 +731,22 @@ multivariados, usar `SCORE_INTERACTION_FEATURE` externo com
 calibrador linear, ou aplicar piecewise apenas após reduzir o vetor a
 1D.
 
----
+### 9.5 Score sem tipicidade explícita
 
-## 9. Diagnósticos persistidos
-
-Após o fit, o calibrador armazena em `self.metadata` o conjunto
-abaixo de campos para auditoria forense e reprodução:
-
-**Configuração:**
-- `calibration_basis_mode`: "PIECEWISE_LINEAR" ou "NONE".
-- `piecewise_enabled`: bool.
-- `piecewise_knot_placement`: "MANUAL" ou "AUTO_FROM_MEDIANS".
-- `piecewise_knot_scale`: "RAW" ou "LOG_LR".
-
-**Âncora:**
-- `hinge_anchor_mode`: "AUTO_LOGREG" ou "MANUAL".
-- `hinge_anchor_s0`: $s_0$ aprendido ou informado.
-- `hinge_anchor_aux_coef`, `hinge_anchor_aux_intercept`,
-  `hinge_anchor_aux_C`: parâmetros do LogReg auxiliar (None em modo
-  MANUAL).
-- `hinge_anchor_training_method`: "auto_logreg" ou "manual".
-- `hinge_anchor_inside_training_range`: bool indicando se $s_0$ cai
-  dentro do range observado dos scores de treino.
-
-**Knots:**
-- `piecewise_knot_offsets_user`: offsets na escala do usuário
-  (`LOG_LR` ou `RAW`).
-- `piecewise_knot_offsets_raw`: offsets em escala de score (sempre).
-- `piecewise_knots_absolute`: posições absolutas $k_j$ em escala de
-  score.
-
-**Medianas (modo AUTO):**
-- `piecewise_auto_log_lr_hp_p50`, `piecewise_auto_log_lr_hd_p50`:
-  $\ell_p, \ell_d$ computados no fit (None em modo MANUAL).
-
-**Coeficientes:**
-- `calibrator_coef_standardized`, `calibrator_intercept_standardized`:
-  parâmetros na escala da `StandardScaler` interna.
-- `calibrator_coef_raw`, `calibrator_intercept_raw`: parâmetros em
-  escala de score bruta (§3.4).
-
-**Slopes e monotonicidade:**
-- `segment_slopes_raw`: lista $[m_1, m_2, \ldots, m_{K+1}]$ na
-  escala de score.
-- `is_monotonic`: bool.
-- `min_allowed_slope`: $m_{\min}$ usado.
-
-**Ponto de evidência neutra:**
-- `effective_log_lr_zero_crossing`: $s_{LR=0}$ no trecho mais à
-  direita (§3.5).
-
-**Nomes das features:**
-- `pipeline_feature_names`: lista descritiva como
-  `["z=score-s0", "max(z, 0)", "max(z - +2.0000, 0)", ...]` para
-  inspeção e debug.
+Conforme §1.1, o calibrador piecewise produz uma LR baseada em
+score. Quando o score representa apenas similaridade, sem incorporar
+tipicidade da face questionada em relação à população relevante, a
+LR resultante deve ser interpretada como tal. Incluir tipicidade
+requer modelagem específica (e.g. `TYPICALITY_PAIR_SCORING` no
+FaceAudit) e fusão multivariada, não compensável por refinamento da
+calibração 1D.
 
 ---
 
-## 10. Referências
+## 10. Relação com `SCORE_INTERACTION_FEATURE`
 
-- **Brümmer, N., & du Preez, J. (2006).** *Application-independent
-  evaluation of speaker detection.* Computer Speech & Language,
-  20(2–3), 230–275. Introduz $C_{\text{llr}}$ como métrica de
-  calibração e a regressão logística como calibrador padrão de
-  log-LR.
-- **Brümmer, N., & van Leeuwen, D. (2006).** *On calibration of
-  language recognition scores.* IEEE Odyssey 2006: The Speaker and
-  Language Recognition Workshop. Aprofunda a teoria do
-  $C_{\text{llr}}$ e da calibração afim.
-- **Morrison, G. S. (2021).** *In the context of forensic casework,
-  are there meaningful metrics of the degree of calibration?*
-  Science & Justice, 61(1), 102–113. Discute a relação entre PAVA
-  in-sample e medidas operacionais de calibração; relevante para a
-  interpretação do `Cllr_min` e do `cal_loss` reportados pelo
-  Faceaudit.
-- **Tukey, J. W. (1977).** *Exploratory Data Analysis.* Princípio da
-  hierarquia em modelos com termos de interação: incluir o termo
-  principal sempre que se inclui o termo de interação. Aplica-se ao
-  desenho da expansão piecewise (sempre incluir $z$ como primeira
-  feature).
-- **Hastie, T., Tibshirani, R., & Friedman, J. (2009).** *The
-  Elements of Statistical Learning,* §5.2 — Piecewise polynomials
-  and splines. Referência geral sobre expansão de basis functions
-  piecewise-linear.
-
----
-
-## 11. Apêndice: relação com expansão SCORE_INTERACTION_FEATURE
-
-A instrução `SCORE_INTERACTION_FEATURE` do Faceaudit também
-implementa um termo `HINGE_BASE` (`max(s - s_0, 0)`) como feature
+A instrução `SCORE_INTERACTION_FEATURE` do FaceAudit também
+implementa um termo `HINGE_BASE` ($\max(s - s_0, 0)$) como feature
 auxiliar para calibradores multivariados. A diferença é onde a hinge
 vive:
 
@@ -526,8 +760,48 @@ vive:
   `SCORE_VECTORIZATION`. O $s_0$ pode ser MANUAL, AUTO_LOGREG (com a
   mesma fórmula deste documento) ou herdado de execução anterior.
 
-Os dois caminhos são equivalentes matematicamente no caso 1D com
+Os dois caminhos são matematicamente equivalentes no caso 1D com
 mesmo $s_0$ e mesma regularização. O piecewise interno é a forma
 ergonômica para o caso 1D; o `SCORE_INTERACTION_FEATURE` é a forma
 para combinações multivariadas onde a hinge é uma entre várias
 features.
+
+---
+
+## 11. Referências
+
+- **Brümmer, N., & du Preez, J. (2006).** *Application-independent
+  evaluation of speaker detection.* Computer Speech & Language,
+  20(2–3), 230–275. Introduz $C_{\text{llr}}$ como métrica de
+  calibração e a regressão logística como calibrador padrão de
+  log-LR.
+- **Brümmer, N., & van Leeuwen, D. (2006).** *On calibration of
+  language recognition scores.* IEEE Odyssey 2006: The Speaker and
+  Language Recognition Workshop. Aprofunda a teoria do
+  $C_{\text{llr}}$ e da calibração afim.
+- **Brümmer, N., Swart, A., & van Leeuwen, D. (2014).** *A
+  comparison of linear and non-linear calibrations for speaker
+  recognition.* Odyssey 2014: The Speaker and Language Recognition
+  Workshop. Compara calibrações lineares e não lineares e discute
+  limitações de transformações afins em diferentes pontos
+  operacionais.
+- **Morrison, G. S. (2013).** *Tutorial on logistic-regression
+  calibration and fusion: Converting a score to a likelihood ratio.*
+  Australian Journal of Forensic Sciences, 45(2), 173–197.
+- **Morrison, G. S. (2021).** *In the context of forensic casework,
+  are there meaningful metrics of the degree of calibration?*
+  Forensic Science International: Synergy, 3, 100157. Argumenta que
+  métricas baseadas em PAV/PAVA não são medidas operacionais
+  significativas do grau de calibração em casework.
+- **Nelder, J. A. (1977).** *A Reformulation of Linear Models.*
+  Journal of the Royal Statistical Society. Series A, 140(1),
+  48–63. Referência canônica do princípio de marginalidade/hierarquia
+  em modelos com termos de interação ou expansão.
+- **Hastie, T., Tibshirani, R., & Friedman, J. (2009).** *The
+  Elements of Statistical Learning,* §5.2 — Piecewise polynomials
+  and splines. Referência geral sobre expansão de basis functions
+  piecewise-linear.
+- **ENFSI (2015).** *Guideline for Evaluative Reporting in Forensic
+  Science.* European Network of Forensic Science Institutes.
+  Moldura geral de relato avaliativo, requisitos de transparência,
+  robustez e auditabilidade na atribuição de LR em laudo.

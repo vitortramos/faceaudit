@@ -92,20 +92,21 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
             "Offsets das dobras em relação a `hinge_anchor_s0`, expressos "
             "na unidade definida por `knot_scale`. Uma única hinge no "
             "ponto neutro: [0.0] (default). Três dobras: [-δ, 0, +δ]. "
-            "Em LOG_LR, [-2, 0, +2] = dobras em -2 / 0 / +2 unidades "
-            "log-LR (i.e., razão 100:1 contra Hp, neutro, e 100:1 a "
-            "favor de Hp). Em RAW, são offsets no domínio do score."
+            "Em AUX_LOG_LR, [-ln(10), 0, +ln(10)] ≈ [-2.30, 0, +2.30] "
+            "= dobras em LR auxiliar 10:1 contra Hp, neutro, e 10:1 a "
+            "favor de Hp. Em RAW, são offsets no domínio do score."
         )},
     )
 
     knot_scale: KnotScale = field(
-        default=KnotScale.LOG_LR,
+        default=KnotScale.AUX_LOG_LR,
         metadata={"help": (
-            "Escala em que `knot_offsets` é expresso. LOG_LR (default) "
-            "é universal entre modelos — converte raw_offset = log_lr "
-            "/ aux_coef no fit, fold-aware. RAW é diretamente no "
-            "domínio do score (backward-compat com calibradores antigos). "
-            "LOG_LR exige hinge_anchor_mode=AUTO_LOGREG."
+            "Escala em que `knot_offsets` é expresso. AUX_LOG_LR (default) "
+            "usa unidades de log-LR do calibrador auxiliar (nats); "
+            "converte raw_offset = aux_log_lr / aux_coef no fit, "
+            "fold-aware. RAW usa diretamente o domínio do score "
+            "(backward-compat com calibradores antigos). AUX_LOG_LR "
+            "exige hinge_anchor_mode=AUTO_LOGREG."
         )},
     )
 
@@ -227,17 +228,17 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
                 raise ValueError(
                     "hinge_anchor_manual_value deve ser número finito."
                 )
-            # Conversão log-LR → raw depende de `aux_coef` do LogReg
+            # Conversão aux_log_lr → raw depende de `aux_coef` do LogReg
             # auxiliar, indisponível em MANUAL. Em MANUAL, o usuário
             # precisa expressar os offsets diretamente no domínio do
             # score (RAW).
             if (
-                self.knot_scale is KnotScale.LOG_LR
+                self.knot_scale is KnotScale.AUX_LOG_LR
                 and self.hinge_anchor_mode is HingeAnchorMode.MANUAL
             ):
                 raise ValueError(
-                    "knot_scale=LOG_LR exige hinge_anchor_mode=AUTO_LOGREG "
-                    "(conversão log-LR → score bruto usa o coef do LogReg "
+                    "knot_scale=AUX_LOG_LR exige hinge_anchor_mode=AUTO_LOGREG "
+                    "(conversão aux_log_lr → score bruto usa o coef do LogReg "
                     "auxiliar). Em MANUAL, use knot_scale=RAW e expresse "
                     "os offsets diretamente no domínio do score."
                 )

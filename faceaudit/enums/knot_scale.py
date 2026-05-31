@@ -3,18 +3,19 @@
 """Escala em que o usuário expressa os `knot_offsets` da expansão
 piecewise-linear do calibrador.
 
-Separado em módulo `enums` pra evitar import circular com os configs
+Separado em módulo `enums` para evitar import circular com os configs
 de calibração que dependem dessa escala.
 
 Motivação: `knot_offsets` em escala bruta exige conhecer o domínio
 numérico de cada modelo de similaridade (cosseno em [−1, 1], PLDA pode
-variar em [−200, +200] dependendo da população). Expressar em escala
-log-LR é universal: "dobra a 2 unidades log-LR acima da neutralidade"
-significa a mesma coisa para qualquer calibrador.
+variar em [−200, +200] dependendo da população). Expressar os offsets
+na escala do LogReg auxiliar (em unidades de log-LR_aux) tem
+interpretação invariante ao modelo de similaridade subjacente.
 
-A conversão `log_lr → raw` é feita no transformer no momento do fit:
+A conversão `aux_log_lr → raw` é feita no transformer no momento do
+fit:
 
-    offset_raw_j = offset_log_lr_j / aux_coef
+    offset_raw_j = offset_aux_log_lr_j / aux_coef
 
 onde `aux_coef` é a inclinação do LogReg auxiliar univariado treinado
 sobre o score (i.e., a escala em que `score` é mapeado para log-LR
@@ -22,9 +23,20 @@ linearmente em torno de `s0`). Cada fold do GridSearchCV recomputa
 `aux_coef` sobre apenas seus dados de treino — mantém a propriedade
 fold-aware sem leakage.
 
-Restrição: `LOG_LR` requer `HingeAnchorMode.AUTO_LOGREG`. Em `MANUAL`,
-não há LogReg auxiliar para fornecer a escala — use `RAW` com offsets
-diretos no domínio do score.
+Os offsets vivem na escala do LogReg auxiliar, NÃO na curva piecewise
+final. O log-LR final pode divergir do log-LR auxiliar quando o
+piecewise muda de inclinação. O nome `AUX_LOG_LR` reflete essa
+distinção.
+
+Convenção: log-LR significa logaritmo natural da razão de
+verossimilhança (nats). Conversões para base 10:
+
+    aux_log_lr = ln(10)  ≈ 2,303  → LR_aux = 10
+    aux_log_lr = ln(100) ≈ 4,605  → LR_aux = 100
+
+Restrição: `AUX_LOG_LR` requer `HingeAnchorMode.AUTO_LOGREG`. Em
+`MANUAL`, não há LogReg auxiliar para fornecer a escala — use `RAW`
+com offsets diretos no domínio do score.
 """
 
 from __future__ import annotations
@@ -43,10 +55,12 @@ class KnotScale(Enum):
       campo `knot_scale` no JSON. Exige conhecer o domínio numérico
       do score (-1..+1 para cosseno, etc.).
 
-    - `LOG_LR`: offsets em unidades de **log-LR auxiliar** (i.e., a
-      escala em que o score é projetado pelo LogReg auxiliar univariado).
-      Universal entre modelos — "+2 log-LR acima da neutralidade"
-      significa "10× mais provável Hp". Exige `HingeAnchorMode.AUTO_LOGREG`.
+    - `AUX_LOG_LR`: offsets em unidades de **log-LR do calibrador
+      auxiliar** (logaritmo natural). Conversão raw_offset =
+      aux_log_lr_offset / aux_coef feita fold-aware no fit. Reduz
+      dependência do domínio numérico do score, mas não garante que
+      os knots resultantes caiam dentro do range observado. Exige
+      `HingeAnchorMode.AUTO_LOGREG`.
     """
 
     RAW = (
@@ -56,12 +70,13 @@ class KnotScale(Enum):
         "em ±100, etc.). Backward-compat com calibradores legados.",
     )
 
-    LOG_LR = (
-        "LOG_LR",
-        "Log-LR (universal entre modelos)",
-        "Offsets em unidades de log-LR auxiliar. '+2 log-LR' = '10× mais "
-        "provável Hp'. Conversão raw_offset = log_lr_offset / aux_coef "
-        "feita fold-aware no fit. Exige âncora AUTO_LOGREG.",
+    AUX_LOG_LR = (
+        "AUX_LOG_LR",
+        "Log-LR auxiliar (logaritmo natural)",
+        "Offsets em unidades de log-LR do calibrador auxiliar "
+        "univariado (nats). ln(10)≈2.303 = LR auxiliar 10:1. Conversão "
+        "raw_offset = aux_log_lr / aux_coef feita fold-aware no fit. "
+        "Exige âncora AUTO_LOGREG.",
     )
 
     def __new__(cls, value: str, label_pt: str, description: str):
@@ -102,7 +117,7 @@ class KnotScale(Enum):
 
     @property
     def unit_label(self) -> str:
-        """Label curto pra logs/mensagens — ex: 'log-LR' ou 'score bruto'."""
-        if self is KnotScale.LOG_LR:
-            return "log-LR"
+        """Label curto pra logs/mensagens."""
+        if self is KnotScale.AUX_LOG_LR:
+            return "log-LR aux (nats)"
         return "score bruto"

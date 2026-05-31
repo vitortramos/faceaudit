@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import pickle
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
@@ -370,7 +370,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"  knot_offsets (escala do usuário, {scale_unit}) = "
                 f"{user_offsets_disp}\n"
             )
-            if pwl_cfg.knot_scale is KnotScale.LOG_LR:
+            if pwl_cfg.knot_scale is KnotScale.AUX_LOG_LR:
                 offsets_section += (
                     f"  knot_offsets (equivalente em score bruto) = "
                     f"{raw_offsets_disp}  [conversão via aux_coef="
@@ -395,26 +395,175 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             else:
                 logger_callback(f"⚠️ WARNING: {msg}")
 
-        # Cruzamento efetivo com log-LR = 0 — não é o mesmo que s0 quando
-        # houver mais de 1 knot ou intercept não compensável.
-        # Para 1 knot em z=0: logit(z) = β_z·z + β_max·max(z,0) + b_raw.
-        #   z ≤ 0: logit = β_z·z + b_raw = 0 → z = −b_raw/β_z (se válido)
-        #   z > 0: logit = (β_z+β_max)·z + b_raw = 0 → z = −b_raw/(β_z+β_max)
-        # Pra múltiplos knots ficaria mais elaborado; reportamos o valor
-        # do trecho à direita do último knot por padrão (cobre o caso típico).
-        last_segment_slope = segment_slopes[-1]
-        if abs(last_segment_slope) > pwl_cfg.min_allowed_slope:
-            z_zero = -intercept_raw / last_segment_slope
-            effective_zero_crossing = float(
-                pwl_t.hinge_anchor_s0_ + z_zero
+        # Cruzamento efetivo com log-LR = 0 — algoritmo geral por segmento.
+        #
+        # Decomposição da função no segmento r (todas as hinges j com δ_j < z
+        # estão ativas; chamamos esse conjunto de A_r):
+        #
+        #   f_r(z) = c_r + m_r · z
+        #
+        # onde:
+        #   m_r = β_z + Σ_{j ∈ A_r} β_j                 (inclinação do segmento)
+        #   c_r = β_0_raw − Σ_{j ∈ A_r} β_j · δ_j       (intercepto efetivo)
+        #
+        # Raiz candidata em z: z_r = −c_r / m_r. Aceita se cai dentro do
+        # intervalo do segmento [δ_{r-1}, δ_r) (extremos vão pra ±∞).
+        # Sob crescimento estrito (m_r > 0 em todos os segmentos), existe
+        # no máximo uma raiz válida.
+        #
+        # offsets_sorted é a lista de δ_j na escala bruta (já ordenada).
+        # beta_hinge_per_knot tem β_j (índices alinhados com offsets_sorted).
+        # segment_slopes tem m_r (já calculado acima).
+        effective_zero_crossing: Optional[float] = None
+        effective_zero_crossing_segment_index: Optional[int] = None
+        effective_zero_crossing_inside_training_range: Optional[bool] = None
+
+        # Soma cumulativa de β_j · δ_j conforme entram as hinges.
+        cum_beta_delta = 0.0
+        for r, m_r in enumerate(segment_slopes):
+            # c_r usa as hinges ativas no segmento r (todas com índice < r).
+            c_r = intercept_raw - cum_beta_delta
+            if abs(m_r) > pwl_cfg.min_allowed_slope:
+                z_r = -c_r / m_r
+                # Intervalo do segmento em z. Os offsets já estão em escala
+                # bruta (offsets_sorted vem de pwl_t.knot_offsets_).
+                z_lo = offsets_sorted[r - 1] if r > 0 else float("-inf")
+                z_hi = offsets_sorted[r] if r < len(offsets_sorted) else float("+inf")
+                if z_lo <= z_r < z_hi:
+                    effective_zero_crossing = float(
+                        pwl_t.hinge_anchor_s0_ + z_r
+                    )
+                    effective_zero_crossing_segment_index = r
+                    s0_eff = effective_zero_crossing
+                    effective_zero_crossing_inside_training_range = bool(
+                        pwl_t.score_min_ <= s0_eff <= pwl_t.score_max_
+                    )
+                    break
+            # Avança a cumulativa: ao passar pro segmento r+1, a hinge δ_r
+            # entra em A (se houver knot nessa posição).
+            if r < len(offsets_sorted):
+                cum_beta_delta += beta_hinge_per_knot[r] * offsets_sorted[r]
+
+        # === Diagnósticos adicionais por trecho e auditoria forense ===
+        #
+        # Suporte de Hp/Hd já foi calculado em segment_support (acima);
+        # extraímos contagens totais e fração da amostra de treino que
+        # cai em cada trecho. Necessário pra avaliar se uma inclinação
+        # extrema num trecho está apoiada por amostra suficiente.
+        segment_counts_total: List[Optional[int]] = []
+        segment_counts_hp: List[Optional[int]] = []
+        segment_counts_hd: List[Optional[int]] = []
+        segment_fractions_total: List[Optional[float]] = []
+        segment_support_warnings: List[str] = []
+        n_train_total = pwl_t.n_train_samples_
+        # Limite empírico abaixo do qual a inclinação do trecho é
+        # considerada estatisticamente frágil. 30 amostras totais ou
+        # 5 de cada classe. Configurável no DTO no futuro se necessário.
+        _MIN_TOTAL_SUPPORT = 30
+        _MIN_PER_CLASS_SUPPORT = 5
+        for j, (n_hp, n_hd) in enumerate(segment_support):
+            if n_hp is None or n_hd is None:
+                segment_counts_total.append(None)
+                segment_counts_hp.append(None)
+                segment_counts_hd.append(None)
+                segment_fractions_total.append(None)
+                continue
+            total = n_hp + n_hd
+            segment_counts_total.append(total)
+            segment_counts_hp.append(n_hp)
+            segment_counts_hd.append(n_hd)
+            segment_fractions_total.append(
+                total / n_train_total if n_train_total > 0 else None
             )
+            if total < _MIN_TOTAL_SUPPORT:
+                segment_support_warnings.append(
+                    f"trecho {j + 1}: suporte total ({total}) abaixo "
+                    f"de {_MIN_TOTAL_SUPPORT} — inclinação pouco "
+                    f"confiável."
+                )
+            elif n_hp < _MIN_PER_CLASS_SUPPORT or n_hd < _MIN_PER_CLASS_SUPPORT:
+                segment_support_warnings.append(
+                    f"trecho {j + 1}: cobertura por classe assimétrica "
+                    f"(Hp={n_hp}, Hd={n_hd}); inclinação pode estar "
+                    f"dominada por uma classe."
+                )
+
+        # Diagnóstico por knot: posição absoluta cai dentro do range de
+        # treino? Fração da amostra acima de cada knot? Útil pra detectar
+        # knots inertes (fora do range = features colineares ou nulas).
+        knot_inside_training_range: List[bool] = []
+        fraction_scores_above_each_knot: List[Optional[float]] = []
+        for k_abs in knots_abs:
+            knot_inside_training_range.append(
+                bool(pwl_t.score_min_ <= k_abs <= pwl_t.score_max_)
+            )
+            if train_scores is not None and n_train_total > 0:
+                frac = float((train_scores > k_abs).sum()) / n_train_total
+                fraction_scores_above_each_knot.append(frac)
+            else:
+                fraction_scores_above_each_knot.append(None)
+
+        # Range de score e de log-LR observados no treino (escala bruta).
+        # Permite documentar até onde a curva foi estimada vs onde está
+        # extrapolando em validação ou casework.
+        if train_scores is not None and n_train_total > 0:
+            raw_score_min_training = float(train_scores.min())
+            raw_score_max_training = float(train_scores.max())
+            # log-LR estimado pelo próprio calibrador piecewise nos extremos
+            # do score de treino (apenas referência — extrapolação dos
+            # segmentos lineares).
+            train_z = train_scores - pwl_t.hinge_anchor_s0_
+            train_log_lr = (
+                beta_z * train_z + intercept_raw
+                + np.sum(
+                    [
+                        b * np.maximum(train_z - off, 0.0)
+                        for b, off in zip(beta_hinge_per_knot, offsets_sorted)
+                    ],
+                    axis=0,
+                ) if beta_hinge_per_knot else (beta_z * train_z + intercept_raw)
+            )
+            raw_log_lr_min_training = float(train_log_lr.min())
+            raw_log_lr_max_training = float(train_log_lr.max())
         else:
-            effective_zero_crossing = None
+            raw_score_min_training = None
+            raw_score_max_training = None
+            raw_log_lr_min_training = None
+            raw_log_lr_max_training = None
+
+        # Prior efetivo no treino. Com class_weight="balanced", o sklearn
+        # pondera cada amostra por n_total / (n_classes · n_classe_dela),
+        # resultando em soma de pesos igual entre Hp e Hd → prior efetivo
+        # de 0.5 para cada classe. Nesse caso, a decision_function do LogReg
+        # retorna log-odds idêntico ao log-LR (correção de prior = 0). Esse
+        # campo deixa explícito que estamos usando essa propriedade.
+        cw = self.logreg.class_weight
+        if cw == "balanced":
+            n_pos = int(np.sum(np.asarray(self.logreg.classes_) == 1))  # eficiência irrelevante
+            # class_weight="balanced" sempre gera pesos que igualam soma por classe.
+            effective_training_prior_hp = 0.5
+            effective_training_prior_hd = 0.5
+            prior_log_odds_correction = 0.0
+        else:
+            # Outros class_weight: prior efetivo precisa de aproximação ou
+            # documentação extra. Aqui marcamos como None pra forçar revisão
+            # antes de tratar decision_function como log-LR.
+            effective_training_prior_hp = None
+            effective_training_prior_hd = None
+            prior_log_odds_correction = None
 
         # Persiste diagnósticos pra auditoria forense.
         diagnostics = {
+            # === Config geral ===
             "calibration_basis_mode": pwl_cfg.mode.to_str(),
             "piecewise_enabled": True,
+            "knot_placement_protocol_version": (
+                "auto_from_medians_v1"
+                if pwl_t.knot_placement_.to_str() == "AUTO_FROM_MEDIANS"
+                else "manual_v1"
+            ),
+
+            # === Knots ===
             "piecewise_knot_offsets": list(pwl_t.knot_offsets_),  # raw (compat)
             "piecewise_knot_offsets_user": list(pwl_t.knot_offsets_user_),
             "piecewise_knot_offsets_raw": list(pwl_t.knot_offsets_raw_),
@@ -423,6 +572,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "piecewise_auto_log_lr_hp_p50": pwl_t.auto_log_lr_hp_p50_,
             "piecewise_auto_log_lr_hd_p50": pwl_t.auto_log_lr_hd_p50_,
             "piecewise_knots_absolute": list(pwl_t.knots_absolute_),
+            "knot_inside_training_range": knot_inside_training_range,
+            "fraction_scores_above_each_knot": fraction_scores_above_each_knot,
+
+            # === Âncora s0 ===
             "hinge_anchor_s0": float(pwl_t.hinge_anchor_s0_),
             "hinge_anchor_mode": pwl_cfg.hinge_anchor_mode.to_str(),
             "hinge_anchor_aux_coef": (
@@ -439,19 +592,53 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "hinge_anchor_inside_training_range": bool(
                 pwl_t.score_min_ <= pwl_t.hinge_anchor_s0_ <= pwl_t.score_max_
             ),
+
+            # === Coeficientes ===
             "calibrator_coef_standardized": [float(b) for b in beta_std],
             "calibrator_intercept_standardized": float(intercept_std),
             "calibrator_coef_raw": [float(b) for b in beta_raw],
             "calibrator_intercept_raw": float(intercept_raw),
+
+            # === Slopes e monotonicidade ===
             "segment_slopes_raw": [float(s) for s in segment_slopes],
             "is_monotonic": bool(is_monotonic),
             "min_allowed_slope": float(pwl_cfg.min_allowed_slope),
+            "monotonicity_check": "strict_increasing_post_fit",
+
+            # === Suporte por segmento ===
+            "segment_counts_total": segment_counts_total,
+            "segment_counts_hp": segment_counts_hp,
+            "segment_counts_hd": segment_counts_hd,
+            "segment_fractions_total": segment_fractions_total,
+            "segment_support_warnings": segment_support_warnings,
+
+            # === Ponto de cruzamento efetivo de log-LR = 0 ===
             "effective_log_lr_zero_crossing": effective_zero_crossing,
+            "effective_log_lr_zero_crossing_segment_index": (
+                effective_zero_crossing_segment_index
+            ),
+            "effective_log_lr_zero_crossing_inside_training_range": (
+                effective_zero_crossing_inside_training_range
+            ),
+
+            # === Range observado no treino ===
+            "raw_score_min_training": raw_score_min_training,
+            "raw_score_max_training": raw_score_max_training,
+            "raw_log_lr_min_training": raw_log_lr_min_training,
+            "raw_log_lr_max_training": raw_log_lr_max_training,
+
+            # === Prior e método de cálculo ===
+            "log_lr_base": "natural",
+            "log_lr_computation_method": "decision_function",
+            "positive_class_label": int(logreg.classes_[-1]),
+            "effective_training_prior_hp": effective_training_prior_hp,
+            "effective_training_prior_hd": effective_training_prior_hd,
+            "prior_log_odds_correction": prior_log_odds_correction,
+
+            # === Auxiliar ===
             "pipeline_feature_names": [
                 str(n) for n in pwl_t.get_feature_names_out()
             ],
-            "log_lr_computation_method": "decision_function",
-            "positive_class_label": int(logreg.classes_[-1]),
         }
         self.metadata.update(diagnostics)
 
