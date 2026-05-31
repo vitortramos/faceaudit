@@ -14,6 +14,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 from faceaudit.enums.calibration_basis_mode import CalibrationBasisMode
+from faceaudit.enums.knot_scale import KnotScale
 from faceaudit.enums.monotonicity_policy import MonotonicityPolicy
 from faceaudit.models.calibration.logistic_regression_calibration_model_config import (
     LogisticRegressionCalibrationModelConfig,
