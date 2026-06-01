@@ -1260,6 +1260,15 @@ seleção descrita em §9.3:
   de atribuição de identidades a grupos —
   `"balanced"` (LPT scheduling — default V2.10) ou `"round_robin"`
   (legado V2.9).
+- `cv_strict_random_state` (V2.11, só em STRICT): seed do
+  embaralhamento prévio à atribuição (42 fixo).
+- `cv_strict_id_to_group_mapping` (V2.11, só em STRICT): dict
+  `{identity_str: group_index}` com a atribuição explícita de
+  cada identidade ao seu grupo (fold de teste). Permite
+  **reprodução exata dos folds** em uma análise externa sem
+  precisar rerodar o LPT scheduling — basta carregar o mapping e
+  aplicar as máscaras dinâmicas. Chaves stringificadas para
+  serialização JSON.
 - `cv_strict_n_unique_identities` (V2.10, só em STRICT): tamanho da
   união (probe ∪ reference) particionada em $K$ grupos.
 - `cv_strict_n_identities_per_group` (V2.10, só em STRICT): vetor

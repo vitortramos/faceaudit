@@ -211,6 +211,15 @@ class IdentityDisjointPairKFold(BaseCrossValidator):
             "n_unique_identities": self._n_unique_identities,
             "n_identities_per_group": list(self._n_identities_per_group),
             "assignment_strategy": self.assignment_strategy,
+            "random_state": self.random_state,
+            # Mapeamento explícito identidade → grupo (fold de teste).
+            # Persistido como dict {identity: group_index} para
+            # reprodução exata dos folds sem depender de rerodar com
+            # mesmo random_state. Chaves stringificadas para
+            # serialização JSON-friendly via JSONSerializableMixin.
+            "id_to_group_mapping": {
+                str(ident): int(g) for ident, g in self._id_to_group.items()
+            },
             "train_counts_by_fold": train_counts,
             "test_counts_by_fold": test_counts,
             "excluded_boundary_counts_by_fold": excluded_boundary_counts,
