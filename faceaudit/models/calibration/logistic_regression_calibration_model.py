@@ -11,6 +11,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import (
     GridSearchCV,
+    PredefinedSplit,
     StratifiedGroupKFold,
     StratifiedKFold,
 )
@@ -184,21 +185,65 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"scoring={scoring_label})..."
             )
 
-            # Splitter: prefere agrupamento por identidade do probe quando
-            # disponível via self.metadata (V2.8). Os pares biométricos
-            # compartilham identidades — sem agrupamento, o CV pode explorar
-            # correlações entre folds e selecionar C que não generaliza
-            # para um holdout disjunto por identidade. Ver §4.2 do doc.
+            # Splitter:
+            #   - "STRICT_BY_IDENTITY" (opt-in V2.9): particiona identidades
+            #     em K grupos disjuntos e DESCARTA pares Hd cross-grupo.
+            #     Garantia total de disjunção entre folds.
+            #   - "BY_IDENTITY_PROBE" (default V2.8 quando identidades
+            #     disponíveis): StratifiedGroupKFold com groups=probe_id.
+            #     Probe disjunto; reference Hd pode cruzar (parcial).
+            #   - "BY_PAIR" (fallback): StratifiedKFold. Pares
+            #     correlacionados podem cruzar folds (limitação completa).
+            cv_split_mode_request = (
+                self.metadata.get("cv_split_mode_request") or "AUTO"
+            ).upper()
             train_probe_ids = self.metadata.get("train_probe_identities")
+            train_ref_ids = self.metadata.get("train_reference_identities")
             cv_groups: Optional[np.ndarray] = None
-            if (
+            strict_split_info: Optional[Dict[str, Any]] = None
+            score_for_cv = score_1d
+            labels_for_cv = labels
+
+            use_strict = (
+                cv_split_mode_request == "STRICT_BY_IDENTITY"
+                and train_probe_ids is not None
+                and train_ref_ids is not None
+                and len(train_probe_ids) == len(score_1d)
+                and len(train_ref_ids) == len(score_1d)
+            )
+
+            if use_strict:
+                # Particiona identidades em cv_folds grupos; descarta Hd
+                # cross-grupo. cv_folds pode reduzir se houver poucas
+                # identidades por classe.
+                strict_split_info = self._build_identity_strict_split(
+                    score_1d=score_1d,
+                    labels=labels,
+                    probe_ids=train_probe_ids,
+                    reference_ids=train_ref_ids,
+                    n_splits=cv_folds,
+                    random_state=42,
+                )
+                cv = strict_split_info["split"]
+                score_for_cv = strict_split_info["score_kept"]
+                labels_for_cv = strict_split_info["labels_kept"]
+                splitter_label = "PredefinedSplit_StrictByIdentity"
+                grouping_level = "identity_partition"
+                disjointness_label = True
+                logger_callback(
+                    f"[{self.name}] 🛡️ Splitter purista: "
+                    f"{strict_split_info['n_kept_total']} pares mantidos, "
+                    f"{strict_split_info['n_dropped_hd']} Hd cross-grupo "
+                    f"descartados ({strict_split_info['n_unique_identities']} "
+                    f"identidades em {cv_folds} grupos disjuntos)."
+                )
+            elif (
                 train_probe_ids is not None
                 and len(train_probe_ids) == len(score_1d)
             ):
                 cv_groups = np.asarray(train_probe_ids)
                 # cv_folds pode precisar ser ajustado: StratifiedGroupKFold
                 # exige pelo menos n_splits grupos distintos por classe.
-                # Conta grupos distintos onde y=1 e onde y=0.
                 groups_hp = set(cv_groups[labels == 1].tolist())
                 groups_hd = set(cv_groups[labels == 0].tolist())
                 min_groups = min(len(groups_hp), len(groups_hd))
@@ -216,7 +261,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 )
                 splitter_label = "StratifiedGroupKFold"
                 grouping_level = "identity_probe"
-                disjointness_label = "partial"  # probe disjunto; ref pode cruzar
+                disjointness_label = "partial"
             else:
                 cv = StratifiedKFold(
                     n_splits=cv_folds, shuffle=True, random_state=42,
@@ -233,8 +278,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             # monotônica é o escolhido. Persiste lista completa de
             # candidatos válidos e rejeitados pra auditoria.
             selection = self._select_monotonic_C(
-                score_1d=score_1d,
-                labels=labels,
+                score_1d=score_for_cv,
+                labels=labels_for_cv,
                 cv=cv,
                 c_grid=list(self.config.c_grid),
                 scoring=scoring_obj,
@@ -287,6 +332,20 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             #                     identidade de referência).
             self.metadata["cv_grouping_level"] = grouping_level
             self.metadata["cv_identity_disjointness_verified"] = disjointness_label
+            # V2.9 (purista): estatísticas do split estrito por identidade.
+            if strict_split_info is not None:
+                self.metadata["cv_strict_n_dropped_hd"] = (
+                    strict_split_info["n_dropped_hd"]
+                )
+                self.metadata["cv_strict_n_kept_total"] = (
+                    strict_split_info["n_kept_total"]
+                )
+                self.metadata["cv_strict_n_unique_identities"] = (
+                    strict_split_info["n_unique_identities"]
+                )
+                self.metadata["cv_strict_n_identities_per_group"] = list(
+                    strict_split_info["n_identities_per_group"]
+                )
 
             logger_callback(
                 f"[{self.name}] ✅ Melhor C válido (monotônico): "
@@ -301,8 +360,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             # da heurística (especialmente útil para AUTO_FROM_MIRRORED_MEDIANS).
             try:
                 cv_diag = self._compute_cv_fold_diagnostics(
-                    score_1d=score_1d,
-                    labels=labels,
+                    score_1d=score_for_cv,
+                    labels=labels_for_cv,
                     cv=cv,
                     c_value=self.best_C_,
                     make_pipeline=_make_pipeline,
@@ -351,6 +410,89 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         )
 
     # ─────────────────────── helpers internos ───────────────────────
+
+    @staticmethod
+    def _build_identity_strict_split(
+        score_1d: np.ndarray,
+        labels: np.ndarray,
+        probe_ids,
+        reference_ids,
+        n_splits: int,
+        random_state: int = 42,
+    ):
+        """Versão purista do split por identidade (V2.9, opt-in).
+
+        Particiona as identidades únicas em `n_splits` grupos disjuntos
+        via round-robin sobre permutação reprodutível. Para cada par do
+        dataset:
+        - Pares Hp (probe == ref): pertence ao grupo de probe_id; mantido.
+        - Pares Hd intra-grupo (probe_id e ref_id no mesmo grupo): mantido.
+        - Pares Hd cross-grupo (probe_id e ref_id em grupos diferentes):
+          DESCARTADO — garante disjunção total de identidades entre folds.
+
+        Retorna dict com:
+        - `split`: `PredefinedSplit` para usar em `GridSearchCV.cv`;
+        - `kept_mask`: ndarray bool com pares mantidos;
+        - `score_kept`, `labels_kept`: arrays filtrados;
+        - `fold_per_kept_row`: ndarray int com fold assigment final;
+        - `n_dropped_hd`, `n_kept_total`, `n_unique_identities`,
+          `n_identities_per_group`: estatísticas para auditoria.
+        """
+        probe_arr = np.asarray(probe_ids)
+        ref_arr = np.asarray(reference_ids)
+
+        unique_ids = sorted(set(probe_arr.tolist()) | set(ref_arr.tolist()))
+        rng = np.random.default_rng(random_state)
+        shuffled = np.array(unique_ids, dtype=object)
+        rng.shuffle(shuffled)
+
+        id_to_group: Dict[Any, int] = {}
+        for i, ident in enumerate(shuffled):
+            id_to_group[ident] = int(i % n_splits)
+
+        n_rows = len(score_1d)
+        fold_per_row = np.full(n_rows, -1, dtype=np.int64)
+        kept_mask = np.zeros(n_rows, dtype=bool)
+        n_dropped_hd = 0
+        for i in range(n_rows):
+            gp = id_to_group.get(probe_arr[i])
+            gr = id_to_group.get(ref_arr[i])
+            if gp is None or gr is None:
+                # identidade não vista durante o particionamento
+                # (não deve acontecer com `unique_ids` calculado acima).
+                continue
+            if labels[i] == 1:
+                # Hp: probe == ref ⇒ gp == gr; mantido.
+                fold_per_row[i] = gp
+                kept_mask[i] = True
+            else:
+                if gp == gr:
+                    fold_per_row[i] = gp
+                    kept_mask[i] = True
+                else:
+                    n_dropped_hd += 1
+
+        fold_per_kept_row = fold_per_row[kept_mask]
+        # `PredefinedSplit` interpreta cada elemento como o fold em que o
+        # ponto é teste; folds são determinísticos.
+        split = PredefinedSplit(test_fold=fold_per_kept_row)
+
+        # Estatísticas pra auditoria.
+        n_identities_per_group: List[int] = [0] * n_splits
+        for g in id_to_group.values():
+            n_identities_per_group[g] += 1
+
+        return {
+            "split": split,
+            "kept_mask": kept_mask,
+            "score_kept": score_1d[kept_mask],
+            "labels_kept": labels[kept_mask],
+            "fold_per_kept_row": fold_per_kept_row,
+            "n_dropped_hd": int(n_dropped_hd),
+            "n_kept_total": int(kept_mask.sum()),
+            "n_unique_identities": len(unique_ids),
+            "n_identities_per_group": n_identities_per_group,
+        }
 
     @staticmethod
     def _estimator_prior_log_odds_correction(estimator) -> float:
@@ -1371,12 +1513,55 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"scoring={scoring_label})..."
             )
 
-            # Splitter: prefere StratifiedGroupKFold quando temos
-            # train_probe_identities (V2.8). Mesma motivação do branch
-            # piecewise — evita leakage por correlação de pares.
+            # Splitter (V2.9):
+            #   - STRICT_BY_IDENTITY (opt-in): particiona identidades em
+            #     K grupos disjuntos e descarta Hd cross-grupo. Só 1D.
+            #   - BY_IDENTITY_PROBE (V2.8, default quando ids disponíveis):
+            #     StratifiedGroupKFold por probe_identity.
+            #   - BY_PAIR (fallback): StratifiedKFold.
+            cv_split_mode_request = (
+                self.metadata.get("cv_split_mode_request") or "AUTO"
+            ).upper()
             train_probe_ids = self.metadata.get("train_probe_identities")
+            train_ref_ids = self.metadata.get("train_reference_identities")
             cv_groups: Optional[np.ndarray] = None
-            if (
+            strict_split_info: Optional[Dict[str, Any]] = None
+            X_for_cv = X
+            labels_for_cv = labels_arr
+
+            use_strict = (
+                cv_split_mode_request == "STRICT_BY_IDENTITY"
+                and X.shape[1] == 1
+                and train_probe_ids is not None
+                and train_ref_ids is not None
+                and len(train_probe_ids) == X.shape[0]
+                and len(train_ref_ids) == X.shape[0]
+            )
+
+            if use_strict:
+                strict_split_info = self._build_identity_strict_split(
+                    score_1d=X.reshape(-1),
+                    labels=labels_arr,
+                    probe_ids=train_probe_ids,
+                    reference_ids=train_ref_ids,
+                    n_splits=cv_folds,
+                    random_state=42,
+                )
+                cv = strict_split_info["split"]
+                X_for_cv = strict_split_info["score_kept"].reshape(-1, 1)
+                labels_for_cv = strict_split_info["labels_kept"]
+                splitter_label = "PredefinedSplit_StrictByIdentity"
+                grouping_level = "identity_partition"
+                disjointness_label = True
+                logger_callback(
+                    f"[{self.name}] 🛡️ Splitter purista: "
+                    f"{strict_split_info['n_kept_total']} pares mantidos, "
+                    f"{strict_split_info['n_dropped_hd']} Hd cross-grupo "
+                    f"descartados "
+                    f"({strict_split_info['n_unique_identities']} "
+                    f"identidades em {cv_folds} grupos disjuntos)."
+                )
+            elif (
                 train_probe_ids is not None
                 and len(train_probe_ids) == X.shape[0]
             ):
@@ -1415,7 +1600,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 n_jobs=-1,
                 refit=True,
             )
-            grid.fit(X, labels_arr, groups=cv_groups)
+            grid.fit(X_for_cv, labels_for_cv, groups=cv_groups)
 
             best_estimator = grid.best_estimator_
             self.logreg = best_estimator
@@ -1440,6 +1625,19 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             self.metadata["cv_fold_count"] = int(cv_folds)
             self.metadata["cv_grouping_level"] = grouping_level
             self.metadata["cv_identity_disjointness_verified"] = disjointness_label
+            if strict_split_info is not None:
+                self.metadata["cv_strict_n_dropped_hd"] = (
+                    strict_split_info["n_dropped_hd"]
+                )
+                self.metadata["cv_strict_n_kept_total"] = (
+                    strict_split_info["n_kept_total"]
+                )
+                self.metadata["cv_strict_n_unique_identities"] = (
+                    strict_split_info["n_unique_identities"]
+                )
+                self.metadata["cv_strict_n_identities_per_group"] = list(
+                    strict_split_info["n_identities_per_group"]
+                )
 
             logger_callback(
                 f"[{self.name}] ✅ Melhor C: {self.best_C_} "

@@ -519,11 +519,81 @@ divergência é evidência empírica direta da limitação do CV por par
 e justifica o splitter agrupado como default V2.8.
 
 **Limitação residual da V2.8.** O probe é disjunto entre folds,
-mas a identidade de referência dos pares Hd ainda pode cruzar — a
-versão purista (`PredefinedSplit` baseado em partições upstream
-das identidades, descartando pares Hd cross-grupo) é a próxima
-evolução proposta. Até lá, recomenda-se complementar o
-$C_{\text{llr}}$ interno com bootstrap por identidade (§9.5).
+mas a identidade de referência dos pares Hd ainda pode cruzar —
+um par Hd $(p, r)$ tem **duas** identidades; agrupar só por
+$p$ não impede que $r$ apareça em folds distintos. A versão
+purista da V2.9 (próxima seção) elimina esse leakage residual.
+
+### 4.3 V2.9 (purista): partição de identidades e descarte de Hd cross-grupo
+
+Quando `cv_split_mode_request = "STRICT_BY_IDENTITY"` for ativado
+(opt-in), a V2.9 substitui o `StratifiedGroupKFold` por uma
+construção `PredefinedSplit` mais restritiva:
+
+1. **Partição prévia das identidades**: o conjunto único de
+   identidades (probe ∪ reference) é embaralhado com
+   `random_state=42` e distribuído round-robin em $K$ grupos
+   disjuntos. Cada identidade pertence a **exatamente um** grupo.
+2. **Filtragem dos pares**:
+   - Pares Hp ($p = r$) ficam no grupo de $p$;
+   - Pares Hd intra-grupo ($p$ e $r$ no mesmo grupo) ficam no
+     grupo comum;
+   - Pares Hd **cross-grupo** ($p$ e $r$ em grupos diferentes) são
+     **descartados** do treino e do CV.
+3. **`PredefinedSplit`**: cada par mantido recebe seu grupo como
+   fold de teste; o splitter passa a ser totalmente determinístico
+   e auditável.
+
+Custo: descarte significativo de pares Hd (no exemplo BFW, 53 332
+de 64 620 pares Hd cross-grupo descartados — ≈82 %). O conjunto
+de calibração efetivo cai de 66 339 para 13 007 pares (≈19,6 %).
+
+**Validação empírica V2.9.** Mesmo holdout BFW split B, mesmo
+pipeline PLDA SHRINK CROSS. Comparativo entre **PAIR**
+(`StratifiedKFold` — V2.7), **GROUPED** (`StratifiedGroupKFold` —
+V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
+— V2.9):
+
+| Calibrador | PAIR ($C$, $C_{\text{llr}}$) | GROUPED ($C$, $C_{\text{llr}}$) | STRICT ($C$, $C_{\text{llr}}$) |
+|---|---|---|---|
+| Linear puro | 0,001 ; 0,0474 | 0,001 ; 0,0474 | 0,001 ; **0,0463** |
+| OFFSET ZERO 1 knot | 10 ; 0,0465 | **0,1 ; 0,0434** | 1,0 ; 0,0436 |
+| AUTO 2 knots | 0,1 ; 0,0465 | 0,1 ; 0,0465 | 1,0 ; 0,0468 |
+
+Leituras:
+
+- **Confirmação do efeito V2.8 em OFFSET ZERO**: PAIR enviesou para
+  $C=10$ (regularização fraca, possível de over-ajustar
+  correlações entre pares). GROUPED e STRICT concordam que esse
+  $C$ não generaliza — STRICT escolhe $C=1{,}0$ e GROUPED escolhe
+  $C=0{,}1$, ambos com holdout ≈0,043 (vs 0,047 de PAIR).
+- **Linear puro**: STRICT melhora marginalmente o holdout
+  (0,0463 vs 0,0474) sem mudar $C$. Diferença pequena consistente
+  com modelo de baixa flexibilidade (2 graus de liberdade).
+- **AUTO 2 knots**: STRICT degrada levemente (0,0468 vs 0,0465).
+  Hipótese: o subset purista é pequeno e os knots automáticos
+  (medianas espelhadas, §6.2) se deslocam para uma posição menos
+  representativa do domínio operacional cheio.
+
+**Recomendação prática.**
+
+- Para auditoria forense com $N_{\text{ids}} \gtrsim 50$ no domínio
+  de calibração, STRICT é o splitter mais defensável (disjunção
+  total garantida, auditável via `cv_strict_n_dropped_hd` e
+  `cv_strict_n_identities_per_group`).
+- Para domínios de calibração pequenos (poucas identidades,
+  como neste teste com 36 ids), STRICT pode descartar a maioria
+  dos pares Hd e prejudicar a estabilidade do CV. Nesses casos,
+  GROUPED continua sendo o trade-off recomendado.
+- STRICT permanece **opt-in** via
+  `model.metadata["cv_split_mode_request"] = "STRICT_BY_IDENTITY"`
+  na V2.9; o default segue GROUPED quando há identidades de
+  probe/reference disponíveis no contexto do calibrador.
+
+Metadados persistidos no modo STRICT (§7.10):
+`cv_strict_n_kept_total`, `cv_strict_n_dropped_hd`,
+`cv_strict_n_unique_identities`,
+`cv_strict_n_identities_per_group` (vetor de $K$ ints).
 
 ---
 
@@ -966,26 +1036,36 @@ seleção descrita em §9.3:
 - `piecewise_cv_scoring_class_aggregation`: como Hp e Hd são
   agregados (`"equal_class_weight"` em `neg_cllr_balanced`;
   `"per_sample"` em `neg_log_loss`).
-- `cv_splitter_type`: `"StratifiedGroupKFold"` (default V2.8 quando
+- `cv_splitter_type`: `"PredefinedSplit_StrictByIdentity"` (V2.9 com
+  modo STRICT), `"StratifiedGroupKFold"` (default V2.8 quando
   identidades estão disponíveis) ou `"StratifiedKFold"` (fallback
   quando o input não traz identidades, e.g. dict raw).
 - `cv_splitter_random_seed`: seed do splitter (42 fixo, garante
   reprodutibilidade).
 - `cv_fold_count`: número de folds efetivamente usado. Pode ser
   reduzido em relação a `cv_folds` da config quando: (a) a classe
-  minoritária tem poucas amostras (`StratifiedKFold`) ou (b) o
+  minoritária tem poucas amostras (`StratifiedKFold`), (b) o
   número de identidades únicas da classe minoritária é menor que
-  `cv_folds` (`StratifiedGroupKFold`).
+  `cv_folds` (`StratifiedGroupKFold`), ou (c) o número de
+  identidades únicas é menor que `cv_folds` no modo STRICT.
 - `cv_grouping_level`: granularidade do agrupamento dos folds
-  (`"identity_probe"` em V2.8 quando o splitter é
-  `StratifiedGroupKFold`; `"pair"` quando é `StratifiedKFold`).
-  Versões futuras podem expor `"identity_partition"` quando o
-  particionamento upstream com `PredefinedSplit` for suportado.
-- `cv_identity_disjointness_verified`: `"partial"` em V2.8 com
+  (`"identity_partition"` em V2.9 com modo STRICT; `"identity_probe"`
+  em V2.8 com `StratifiedGroupKFold`; `"pair"` em `StratifiedKFold`).
+- `cv_identity_disjointness_verified`: `True` em V2.9 com modo
+  STRICT (partição prévia das identidades em $K$ grupos disjuntos +
+  descarte de pares Hd cross-grupo); `"partial"` em V2.8 com
   splitter grouped (probe disjunto entre folds; reference pode
-  cruzar nos pares Hd), `True` apenas quando os folds são
-  construídos por uma partição upstream com disjunção total de
-  identidades, ou `False` quando o splitter é por par (ver §4.2).
+  cruzar nos pares Hd); `False` quando o splitter é por par
+  (ver §4.2).
+- `cv_strict_n_kept_total` (V2.9, só em STRICT): número de pares
+  mantidos após o descarte de Hd cross-grupo.
+- `cv_strict_n_dropped_hd` (V2.9, só em STRICT): número de pares
+  Hd descartados por cruzarem grupos de identidades.
+- `cv_strict_n_unique_identities` (V2.9, só em STRICT): tamanho da
+  união (probe ∪ reference) particionada em $K$ grupos.
+- `cv_strict_n_identities_per_group` (V2.9, só em STRICT): vetor de
+  $K$ ints com a contagem de identidades por grupo (round-robin com
+  `random_state=42`).
 
 Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
 quais foram descartados como inviáveis (sem ajuste post-hoc do
