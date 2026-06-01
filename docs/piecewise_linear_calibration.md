@@ -133,14 +133,26 @@ $$
 
 No FaceAudit, o LogReg principal é treinado com
 `class_weight="balanced"`, que pondera as amostras de modo que a soma
-de pesos por classe seja idêntica. Isso resulta em
+de pesos por classe seja idêntica. **Na ausência de `sample_weight`
+adicionais ou de ponderações específicas por par**, isso resulta em
 $\pi_{\text{eff}} = 0{,}5$ e, portanto, $\log(\pi/(1-\pi)) = 0$. Nesse
 caso, `decision_function` retorna $\eta(s)$ idêntico a $\log
 \text{LR}(s)$. Essa propriedade é persistida no metadata como
 `effective_training_prior_hp = 0.5`, `effective_training_prior_hd =
-0.5`, `prior_log_odds_correction = 0.0`. Configurações de
-`class_weight` diferentes exigem revisão dessa relação antes de
-tratar `decision_function` como log-LR direto.
+0.5`, `prior_log_odds_correction = 0.0`.
+
+Quando pesos adicionais são introduzidos via `sample_weight` (e.g.
+ponderação por raridade de pares, importance sampling para
+domain adaptation), o prior efetivo deve ser **calculado a partir da
+soma final de pesos** por classe, não presumido como 0,5. A
+implementação atual do FaceAudit não introduz `sample_weight` no
+calibrador piecewise; alterações futuras desse componente devem
+persistir `effective_weight_sum_hp` e `effective_weight_sum_hd` no
+metadata e recalcular `prior_log_odds_correction` de acordo.
+
+Configurações de `class_weight` diferentes (e.g. `class_weight=None`
+ou dicionário explícito) também exigem revisão dessa relação antes
+de tratar `decision_function` como log-LR direto.
 
 ---
 
@@ -337,17 +349,40 @@ B=face1×face3 compartilham face1). Se folds forem construídos por par
 (via `StratifiedKFold` padrão), face1 pode aparecer simultaneamente
 no treino e na validação de um mesmo fold.
 
-Recomenda-se, sempre que possível, **construir folds agrupados por
-identidade ou por unidade independente relevante** (e.g.
-`StratifiedGroupKFold` do scikit-learn, com `groups` = identidade ou
-captura). A prevenção de leakage na estimação de $s_0$ e nos knots
-não elimina o leakage decorrente de pares correlacionados.
+Há uma dificuldade adicional específica a datasets de pares: cada
+**par impostor contém duas identidades distintas**. O
+`StratifiedGroupKFold` do scikit-learn aceita apenas um `group` por
+linha; atribuir `groups = probe_identity` impede leakage pela
+identidade probe, mas não evita que a identidade de referência
+apareça em outro fold. Atribuir `groups = unordered_pair(id_a, id_b)`
+evita repetir o mesmo par mas ainda permite que cada identidade
+apareça em múltiplos folds via pares diferentes.
 
-O FaceAudit hoje não impõe agrupamento automático nos folds do
-calibrador. Essa escolha cabe ao desenho do pipeline do projeto. Se
-você usa `cv_folds = 5` em `LogisticRegressionCalibrationModelConfig`,
-verifique como o dataset de calibração foi construído antes de tratar
-o $C_{\text{llr}}$ de cross-validation interno como medida limpa.
+O protocolo correto é **particionar identidades antes da geração dos
+pares**:
+
+1. dividir o universo de identidades em partições disjuntas;
+2. manter todas as capturas de cada identidade na mesma partição;
+3. gerar pares genuínos e impostores **exclusivamente dentro de cada
+   partição** — nunca entre identidades de partições diferentes;
+4. em comparações cross-condition (e.g. frontal × lateral), dividir
+   simultaneamente os datasets das duas condições preservando
+   correspondência de identidade;
+5. persistir e verificar empiricamente que não há identidades
+   compartilhadas entre partições ($|V \cap C| = 0$).
+
+No FaceAudit, a instrução `PAIRED_DATASET_SPLIT` (§10.4) implementa
+essa propriedade canonicamente: divide pares (frontal, lateral) por
+identidade, com `grouping_strategy = PRESERVE_LOOKALIKES` mantendo
+clusters de identidades parecidas no mesmo subset.
+
+Quando pares já estiverem materializados em um
+`SimilarityScoreDataset` antes do calibrador rodar, `cv_folds = 5`
+em `LogisticRegressionCalibrationModelConfig` cria folds **por par,
+sem agrupamento por identidade** — o $C_{\text{llr}}$ de
+cross-validation interno reportado nesse caso não é uma medida
+limpa. Para folds defensavelmente agrupados, o pipeline de
+construção dos pares deve garantir a propriedade upstream.
 
 ---
 
@@ -446,22 +481,55 @@ A figura abaixo ilustra um calibrador piecewise com
 sobre o mesmo domínio (BFW split, com identidades disjuntas entre os
 subsets). A curva piecewise (azul) tem dois segmentos com
 inclinações `[0.166, 0.291]` — slope mais íngreme acima de $s_0$,
-refletindo a transição empírica entre regiões dominadas por Hd e por
-Hp. A linha tracejada laranja é a calibração afim ótima a posteriori
+permitindo que scores PLDA mais altos produzam aumento mais rápido
+do log-LR. $s_0$ é a âncora estimada pelo calibrador auxiliar como
+ponto aproximado de evidência neutra; neste experimento, ela
+coincide aproximadamente com a região de transição entre os regimes
+predominantes de Hd e Hp (isto não é garantido matematicamente, mas
+é uma propriedade empírica frequente em scores PLDA). A linha
+tracejada laranja é a calibração afim ótima a posteriori
 (`pós-afim: 0.893·logLR + 0.313`), com `slope ≈ 0.89 < 1` indicando
 ligeira sobreconfiança da curva piecewise. As barras vermelhas e
 verdes na base mostram a distribuição empírica de impostores e
-genuínos.
+genuínos. Resultado:
+$C_{\text{llr}} = 0{,}0434$, $C_{\text{llr,affine}} = 0{,}0419$,
+$C_{\text{llr,min}} = 0{,}0362$ (185 797 impostores, 2 483 genuínos
+no holdout).
 
 ![Curva piecewise com 1 knot em s0](images/pwl_calibration_curve_singleknot.png)
 
 ### 6.2 Modo AUTO_FROM_MEDIANS (heurística experimental)
 
 **Status.** `AUTO_FROM_MEDIANS` é uma heurística automática,
-determinística e fold-aware proposta no FaceAudit. Não consta da
-literatura citada. Sua utilidade operacional deve ser validada
-externamente no domínio de aplicação antes de ser adotada como
-protocolo de produção.
+determinística e ajustada separadamente em cada fold do CV,
+proposta no FaceAudit para o posicionamento parcimonioso de dois
+knots. Não consta da literatura citada. Deve ser tratada como
+**protocolo experimental** até que sua estabilidade seja demonstrada
+em validação externa representativa do domínio de aplicação.
+
+**Nome mais preciso.** A heurística não usa diretamente as medianas
+log-LR auxiliares das classes — usa-as **refletidas em torno de
+log-LR = 0**:
+$\boldsymbol\delta = \mathrm{sorted}(\,[-\hat\ell_p, -\hat\ell_d]\,)$.
+Em distribuições aproximadamente simétricas
+($\hat\ell_d \approx -\hat\ell_p$), as medianas refletidas coincidem
+aproximadamente com as medianas observadas, e a distinção é
+cosmética; em distribuições assimétricas, o espelhamento é uma
+decisão de regularização não-trivial. Um nome mais preciso para a
+heurística seria `AUTO_FROM_MIRRORED_MEDIANS`. Em versões futuras do
+componente, recomenda-se renomear a entrada do enum (mantendo
+`AUTO_FROM_MEDIANS` como alias retroativo para JSONs existentes).
+
+**Default operacional recomendado.** Apesar de o construtor
+`PiecewiseLinearCalibrationConfig` atualmente usar
+`KnotPlacement.AUTO_FROM_MEDIANS` como padrão para novos
+calibradores, a evidência empírica reunida neste documento (§6.2
+abaixo e §10) sugere que essa escolha **não é defensavelmente
+superior** à configuração mais simples e estabelecida
+(`KnotPlacement.MANUAL` com `knot_offsets=[0.0]` em
+`KnotScale.AUX_LOG_LR`). Para deployment operacional, a dobra única
+em $s_0$ deve ser preferida; `AUTO_FROM_MEDIANS` deve ser habilitada
+explicitamente como opt-in experimental.
 
 #### Definição
 
@@ -508,14 +576,35 @@ A figura abaixo mostra um calibrador piecewise produzido por
 `AUTO_FROM_MEDIANS` sobre o mesmo dataset usado em §6.1. Dois knots
 foram posicionados nos espelhos das medianas log-LR auxiliares de
 cada classe (em $-89{,}19$ e $+13{,}68$ na escala bruta), gerando
-três segmentos com inclinações `[0.077, 0.221, 0.319]`. Note como o
-segmento direito (acima do knot $+13{,}68$) tem inclinação maior que
-os anteriores — o coeficiente da hinge correspondente é positivo
-porque a regularização L2 escolhida (`C = 0.1`) foi suficiente para
-manter o slope estritamente crescente mesmo num trecho com cobertura
-assimétrica (sem Hd). Comparar com §9.2 e §8.3.
+três segmentos com inclinações `[0.077, 0.221, 0.319]`. A curva
+permaneceu estritamente crescente. O trecho à direita do segundo
+knot, entretanto, possui **cobertura assimétrica por classe**: há
+genuínos, mas aparentemente nenhum impostor observado no treino. A
+inclinação positiva desse trecho deve ser interpretada com cautela,
+pois fica fracamente identificada pelos dados locais e depende mais
+fortemente da continuidade paramétrica da curva, dos demais trechos
+e da regularização L2 (`C = 0.1` foi suficiente neste fit). Ver
+§9.2 e §8.3.
 
 ![Curva piecewise AUTO 2 knots](images/pwl_calibration_curve_autoknots.png)
+
+#### Avaliação empírica comparada à dobra única em $s_0$
+
+No mesmo split (BFW-A → BFW-B, mesmo pipeline PLDA SHRINK CROSS), as
+duas configurações produziram:
+
+| Posicionamento | $C_{\text{llr}}$ | $C_{\text{llr,affine}}$ | slope pós-afim |
+|---|---|---|---|
+| Uma dobra em $s_0$ (`MANUAL`, `knot_offsets=[0.0]`) | **0,0434** | 0,0419 | 0,893 |
+| Dois knots refletidos (`AUTO_FROM_MEDIANS`) | 0,0465 | 0,0437 | 0,810 |
+
+O modo automático produziu uma curva tecnicamente coerente, mas
+**não superou** a configuração manual com uma única dobra neste
+experimento. A complexidade adicional (dois knots em vez de um) não
+se traduziu em ganho de calibração. O resultado reforça que
+`AUTO_FROM_MEDIANS` deve ser tratado como heurística experimental e
+avaliado comparativamente, não adotado como configuração
+universalmente superior.
 
 #### Limitação intrínseca: medianas do treino vs. holdout
 
@@ -718,14 +807,43 @@ diretamente o comportamento dos coeficientes das hinges:
 Um caso prático observado: com `c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]`
 e knots posicionados por `AUTO_FROM_MEDIANS` num PLDA com Hd ausente
 no trecho direito, o GridSearch escolheu `C = 100` e produziu
-$m_3 = -0{,}016$ (rejeição). Reduzindo para `c_grid = [0.01, 0.1]`, o
-mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica), sem
-qualquer outra alteração na configuração.
+$m_3 = -0{,}016$ (rejeição). Reduzindo o grid para `[0.01, 0.1]`, o
+mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica).
 
-Recomendação: usar `c_grid` moderado a forte como default
+#### Monotonicidade como restrição de viabilidade
+
+A solução acima — restringir manualmente o `c_grid` após observar a
+falha — é operacionalmente conveniente mas metodologicamente frágil:
+constitui um ajuste experimental orientado pelo resultado. O
+procedimento mais defensável é tratar **monotonicidade como
+restrição de viabilidade do modelo** durante a seleção de $C$:
+
+1. definir `c_grid` *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
+2. ajustar cada candidato dentro do CV;
+3. **marcar como inválidos** os candidatos cujo fit final produz
+   curva não-monotônica;
+4. selecionar o melhor $C$ **entre os candidatos válidos** (e.g.
+   menor `neg_log_loss` CV);
+5. **persistir** quais candidatos foram descartados e por quê
+   (`piecewise_invalid_c_values`, `piecewise_invalid_c_reasons`,
+   `piecewise_valid_c_values`, `piecewise_selected_c`,
+   `piecewise_selection_policy = "best_valid_candidate"`);
+6. validar novamente a monotonicidade no fit final.
+
+Esse procedimento converte a rejeição por não-monotonicidade num
+filtro automático, evita ajuste post-hoc do `c_grid`, e mantém
+auditabilidade — o laudo pode citar quais $C$ foram avaliados e
+quais foram descartados como inviáveis.
+
+Recomendação geral: usar `c_grid` moderado a forte como default
 (`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
 defensáveis apenas em datasets com cobertura simétrica robusta por
 trecho.
+
+> **Status de implementação.** A versão atual do FaceAudit ainda
+> não filtra automaticamente candidatos não-monotônicos durante o
+> `GridSearchCV` — a rejeição acontece apenas no fit final. A
+> integração descrita acima é uma evolução proposta do componente.
 
 ### 8.4 Cllr_min e cal_loss como diagnósticos exploratórios
 
@@ -835,26 +953,52 @@ calibração 1D.
 
 ## 10. Protocolo de validação: domain match
 
-### 10.1 Motivação
+### 10.1 Motivação e taxonomia dos corpora
+
+Um protocolo forense defensável requer que os corpora envolvidos
+sejam distinguidos explicitamente:
+
+- **$D_{\text{model}}$** — dados usados para treinar encoder,
+  transformações e modelo de similaridade (PLDA, cosseno após
+  whitening etc.).
+- **$D_{\text{cal}}$** — dados usados para ajustar o calibrador.
+- **$D_{\text{dev}}$** — dados opcionais usados para escolher
+  protocolo, hiperparâmetros e variantes de calibrador.
+- **$D_{\text{val}}$** — holdout externo final, mantido intocado até
+  a avaliação consolidada.
+- **$D_{\text{case}}$** — material do caso concreto em casework.
 
 A função de calibração estimada pelo componente piecewise depende da
-distribuição empírica $(s, y)$ usada no treino do calibrador. Quando
-o treino e o holdout vêm de **distribuições diferentes** — e.g.
-pipeline + PLDA treinados num dataset A (CFP) e calibrador validado
-num dataset B (BFW) — a função aprendida não reflete a geometria
-real de B. Os parâmetros do LogReg auxiliar ($\alpha_{\text{aux}},
-s_0$), as medianas log-LR estimadas para
-`AUTO_FROM_MEDIANS`, e os coeficientes finais $\beta_j$ refletem A,
-não B. Operacionalmente, isso compromete o $C_{\text{llr}}$
-reportado.
+distribuição empírica $(s, y)$ em $D_{\text{cal}}$. Quando
+$D_{\text{cal}}$ e $D_{\text{val}}$ vêm de **distribuições diferentes**
+— e.g. $D_{\text{model}} = D_{\text{cal}} = \text{CFP}$ e
+$D_{\text{val}} = \text{BFW}$ — a função aprendida não reflete a
+geometria real de $D_{\text{val}}$. Os parâmetros do LogReg auxiliar
+($\alpha_{\text{aux}}, s_0$), as medianas log-LR estimadas para
+`AUTO_FROM_MEDIANS`, e os coeficientes finais $\beta_j$ refletem
+$D_{\text{cal}}$, não $D_{\text{val}}$. Operacionalmente, isso
+compromete o $C_{\text{llr}}$ reportado.
 
-A solução defensável é **particionar o dataset de validação** em dois
-subsets disjuntos por identidade — uma fração para treino do
-calibrador, outra para validação — preservando o pipeline e o modelo
-de similaridade treinados externamente. No FaceAudit, isso é feito
-via `PAIRED_DATASET_SPLIT` com `grouping_strategy =
-PRESERVE_LOOKALIKES` aplicado ao par (frontal, lateral) do dataset
-operacional.
+A solução defensável é **particionar o dataset operacional** em
+subsets disjuntos por identidade. No FaceAudit, isso é feito via
+`PAIRED_DATASET_SPLIT` com `grouping_strategy = PRESERVE_LOOKALIKES`
+aplicado ao par (frontal, lateral). Tipicamente:
+$D_{\text{cal}} = \text{BFW split A}$ (40 %), $D_{\text{val}} =
+\text{BFW split B}$ (60 %), com identidades disjuntas.
+
+> **Ressalva metodológica importante.** Quando o mesmo
+> $D_{\text{val}}$ é usado para **escolher** entre variantes de
+> calibrador (e.g. comparar 1-knot em $s_0$ vs AUTO 2-knots vs BI
+> GAUSS) e para **reportar** o $C_{\text{llr}}$ final, o conjunto
+> está funcionando como $D_{\text{dev}}$, não como
+> $D_{\text{val}}$. Os resultados nesse modo são **evidência
+> exploratória** legítima, mas otimistas em relação ao desempenho
+> esperado em casos novos. Para reportar desempenho final sem
+> otimismo, é necessário um $D_{\text{val}}$ externo independente
+> (e.g. um terceiro split do BFW reservado *a priori*) ou
+> procedimento aninhado (nested CV) equivalente. A tabela §10.2 a
+> seguir é, portanto, evidência exploratória para seleção do
+> protocolo, não validação final do calibrador escolhido.
 
 ### 10.2 Evidência empírica
 
@@ -889,38 +1033,76 @@ foi o melhor ($0{,}0434$) e BI GAUSS foi o pior ($0{,}0597$). Não
 existe um calibrador universalmente superior — o ranking depende do
 protocolo de validação.
 
-**(c) Sample efficiency.** A regressão logística paramétrica precisa
-fixar 2 a 4 parâmetros e tolera bem amostras menores. BI GAUSS é
-não-paramétrico (KDE em ambas as densidades) e perde precisão nas
-caudas quando a amostra de treino diminui. O BFW split A
-(36 identidades / ~684 amostras totais) é uma amostra pequena para
-estimar duas densidades suavizadas.
+**(c) Sample efficiency.** A regressão logística piecewise precisa
+fixar 2 a 4 parâmetros e tolera amostras menores razoavelmente bem.
+O calibrador BI GAUSS implementado no FaceAudit é o algoritmo de
+**Morrison (2024) — Bi-Gaussianized calibration**: aplica um
+calibrador inicial (LogReg, KDE ou identidade), estima a CDF
+empírica das duas classes com pesos $0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$,
+e mapeia o output via $F^{-1}(G(x))$ onde $F$ é a mistura paramétrica
+$0{,}5 \cdot \mathcal{N}(+\sigma^2/2, \sigma^2) + 0{,}5 \cdot
+\mathcal{N}(-\sigma^2/2, \sigma^2)$ com $\sigma$ derivado do
+$C_{\text{llr}}$ ou do EER do output inicial. A CDF empírica é
+sensível ao $N$ da amostra de treino — especialmente nas caudas, onde
+poucas observações geram saltos discretos grandes em $G(x)$.
+
+No BFW split A (36 identidades / ≈ 684 amostras totais), a CDF
+empírica está mal-resolvida nas caudas — gera log-LRs operacionais
+ruidosos na região dos genuínos extremos, exatamente onde o
+$C_{\text{llr}}$ penaliza fortemente. Os calibradores LogReg são mais
+robustos a esse regime de amostra pequena por suporem forma
+paramétrica linear ou piecewise-linear em $z$.
 
 ### 10.3 Comportamento empírico das caudas
 
-A figura abaixo mostra os quantis por classe ($H_p$ em verde,
+A figura abaixo apresenta os quantis por classe ($H_p$ em verde,
 $H_d$ em vermelho) em escala log-LR pós-calibração, para um
 calibrador piecewise treinado no protocolo cross-domain (CFP →
-BFW). O marcador ⚠ inversão no título indica que existe pelo menos
-um par (percentil de $H_p$, percentil de $H_d$) em que o log-LR do
-percentil de $H_p$ é menor que o do percentil de $H_d$ — em
-particular, $H_p$ no percentil 1 cai em $-1{,}79$, abaixo do
-$H_d$ no percentil 99 ($-2{,}02$). A barra esquerda em verde claro
-mostra a contribuição ao $C_{\text{llr}}$ dos genuínos
-mal-calibrados nessa região (alta no P1, indicando penalidade
-forte).
+BFW). Os genuínos difíceis apresentam penalidade relevante: o
+percentil 1 de $H_p$ cai em $-1{,}79$, ainda no lado de log-LR
+favorável a $H_d$, enquanto o percentil 5 está em $+1{,}39$. Para
+os impostores, P95 = $-3{,}96$ e P99 = $-2{,}02$. A margem entre
+quantis extremos é positiva, mas pequena:
+
+$$
+-1{,}79 - (-2{,}02) \;=\; +0{,}23.
+$$
+
+Portanto, não há inversão entre esses quantis destacados. Há,
+contudo, uma cauda genuína com sinal contrário (log-LR $< 0$ no P1),
+responsável pela contribuição elevada ao $C_{\text{llr}}$ visível no
+painel inferior do gráfico (≈ 3 bits no bin P1).
 
 ![Quantis por classe — calibrador em CFP](images/pwl_quantiles_cfp_train.png)
 
-A figura abaixo mostra os mesmos quantis para um calibrador piecewise
-treinado no mesmo PLDA mas com o protocolo split (BFW-A → BFW-B). A
-sobreposição entre caudas Hp/Hd diminuiu: $H_p$ no P1 ($-0{,}69$) está
-agora acima de $H_d$ no P99 ($-1{,}21$) em magnitude relativa, e a
-contribuição ao $C_{\text{llr}}$ no P1 caiu substancialmente. A
-calibração reflete melhor a geometria empírica do domínio de
-validação.
+A figura seguinte apresenta os mesmos quantis para um calibrador
+treinado em dados do domínio operacional (BFW-A → BFW-B). A cauda
+genuína melhora substancialmente: P1 passa de $-1{,}79$ para
+$-0{,}68$, e P5 de $+1{,}39$ para $+4{,}08$. A margem extrema
+aumenta:
+
+$$
+-0{,}68 - (-1{,}21) \;=\; +0{,}53.
+$$
+
+A cauda impostora extrema, entretanto, aproxima-se de zero (P99:
+$-2{,}02 \to -1{,}21$). O ganho global não representa melhora
+uniforme de ambas as classes — decorre principalmente de melhor
+calibração dos genuínos difíceis no domínio operacional, refletido
+na queda da contribuição ao $C_{\text{llr}}$ no bin P1 de ≈ 3 bits
+para < 2 bits.
 
 ![Quantis por classe — calibrador em BFW split](images/pwl_quantiles_bfw_split.png)
+
+> **Nota sobre o aviso "⚠ inversão" no título dos gráficos.** O título
+> exibido pelo widget de plotagem do FaceAudit contém o marcador "⚠
+> inversão" em ambas as figuras acima. Pelos números destacados, **não
+> existe inversão entre o P1 de $H_p$ e o P99 de $H_d$** em nenhum dos
+> dois casos (margem positiva $+0{,}23$ e $+0{,}53$ respectivamente).
+> O aviso provavelmente indica apenas a presença de genuínos com
+> log-LR $< 0$ (cauda Hp com sinal contrário), e não cruzamento entre
+> quantis extremos das classes. A semântica do marcador no widget
+> deve ser revista para distinguir os dois fenômenos.
 
 ### 10.4 Implementação no FaceAudit
 
