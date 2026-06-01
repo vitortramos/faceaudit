@@ -58,6 +58,20 @@ class IdentityDisjointPairKFold(BaseCrossValidator):
         Número de grupos (folds). Deve ser ≥ 2.
     random_state : int
         Seed para o embaralhamento das identidades antes do round-robin.
+    assignment_strategy : str
+        `"balanced"` (default V2.10 — LPT scheduling) ou
+        `"round_robin"` (legado V2.9).
+    lookalike_clusters : Optional[Sequence[Sequence[Any]]]
+        V2.11.2 — lista de clusters de identidades parecidas
+        (lookalikes). Identidades de um mesmo cluster são tratadas
+        como **unidade atômica** na atribuição a grupos: todas
+        recebem o mesmo `group_index`, evitando que um par Hd
+        entre lookalikes apareça com uma identidade no train e
+        outra no test (leakage por similaridade visual). A carga
+        do cluster no LPT scheduling é o somatório das cargas
+        individuais. Identidades não declaradas em nenhum cluster
+        funcionam como clusters singletons. Default: None
+        (comportamento V2.10).
     """
 
     def __init__(
@@ -67,6 +81,7 @@ class IdentityDisjointPairKFold(BaseCrossValidator):
         n_splits: int = 5,
         random_state: int = 42,
         assignment_strategy: str = "balanced",
+        lookalike_clusters: Optional[Sequence[Sequence[Any]]] = None,
     ) -> None:
         if len(probe_identities) != len(reference_identities):
             raise ValueError(
@@ -88,45 +103,88 @@ class IdentityDisjointPairKFold(BaseCrossValidator):
         self.assignment_strategy = assignment_strategy
 
         # Carga por identidade = total de aparições (probe + reference).
-        # Importante: identidades com mais capturas geram mais pares e
-        # devem ser balanceadas entre grupos para que folds tenham massa
-        # similar.
         unique_ids: List[Any] = sorted(
             set(self._probe.tolist()) | set(self._reference.tolist())
         )
         rng = np.random.default_rng(self.random_state)
 
+        # ── V2.11.2: super-identidades para lookalike clusters ──────
+        # Cada cluster de lookalikes vira uma "super-identidade" com
+        # carga = soma das cargas das identidades membros. Identidades
+        # não-clusterizadas funcionam como singletons. O LPT scheduling
+        # opera sobre super-identidades; cada identidade individual
+        # herda o grupo da sua super.
+        from collections import Counter
+        counts = Counter(self._probe.tolist())
+        counts.update(self._reference.tolist())
+
+        id_to_super: dict = {}
+        super_to_members: dict = {}
+        n_clustered_identities = 0
+        n_clusters = 0
+        if lookalike_clusters:
+            for i, cluster in enumerate(lookalike_clusters):
+                if not cluster:
+                    continue
+                # Apenas identidades realmente presentes no dataset entram.
+                members_present = [m for m in cluster if m in counts]
+                if len(members_present) < 2:
+                    # cluster com 0 ou 1 identidade efetiva é trivial.
+                    continue
+                super_id = f"__cluster_{i}__"
+                super_to_members[super_id] = list(members_present)
+                for ident in members_present:
+                    id_to_super[ident] = super_id
+                n_clusters += 1
+                n_clustered_identities += len(members_present)
+
+        # Identidades não-clusterizadas viram super-ids singletons.
+        for ident in unique_ids:
+            if ident not in id_to_super:
+                id_to_super[ident] = ident
+                super_to_members[ident] = [ident]
+
+        unique_supers = sorted(super_to_members.keys(), key=str)
+        super_loads_input = {
+            sup: sum(counts[m] for m in members)
+            for sup, members in super_to_members.items()
+        }
+
+        self._n_lookalike_clusters = n_clusters
+        self._n_clustered_identities = n_clustered_identities
+        self._lookalike_used = lookalike_clusters is not None and n_clusters > 0
+
         if assignment_strategy == "round_robin":
-            # V2.9 / V2.10 default original: shuffle + round-robin puro.
-            shuffled = np.array(unique_ids, dtype=object)
+            # V2.9 / V2.10 round-robin sobre super-ids.
+            shuffled = np.array(unique_supers, dtype=object)
             rng.shuffle(shuffled)
-            id_to_group: dict = {}
-            for i, ident in enumerate(shuffled):
-                id_to_group[ident] = int(i % self.n_splits)
+            super_to_group: dict = {}
+            for i, sup in enumerate(shuffled):
+                super_to_group[sup] = int(i % self.n_splits)
         else:
-            # V2.10 balanced (default): Longest Processing Time (LPT)
-            # scheduling — ordena identidades por carga (desc) e atribui
-            # cada uma ao grupo com menor carga acumulada. Empates
-            # quebrados por embaralhamento prévio reprodutível.
-            # Resultado: cargas por grupo dentro de (max_load − min_load)
-            # ≤ max_id_load, ótimo conhecido para o problema de
-            # particionamento balanceado (Graham 1969 4/3 − 1/(3K)).
-            from collections import Counter
-            counts = Counter(self._probe.tolist())
-            counts.update(self._reference.tolist())
-            id_load: List[tuple] = [(ident, counts[ident]) for ident in unique_ids]
-            # Embaralha antes pra romper empates de carga de forma estável.
-            rng.shuffle(id_load)
-            id_load.sort(key=lambda x: -x[1])  # carga desc; estável quebra empate por shuffle
+            # V2.10 balanced (default): LPT scheduling sobre super-ids
+            # com carga = soma das cargas das identidades membros.
+            super_load: List[tuple] = [
+                (sup, super_loads_input[sup]) for sup in unique_supers
+            ]
+            rng.shuffle(super_load)
+            super_load.sort(key=lambda x: -x[1])
 
             group_loads = np.zeros(self.n_splits, dtype=np.int64)
-            id_to_group = {}
-            for ident, load in id_load:
+            super_to_group = {}
+            for sup, load in super_load:
                 g = int(np.argmin(group_loads))
-                id_to_group[ident] = g
+                super_to_group[sup] = g
                 group_loads[g] += load
             self._balance_group_loads = group_loads.tolist()
+
+        # Expande para mapeamento identidade → grupo.
+        id_to_group: dict = {}
+        for ident in unique_ids:
+            id_to_group[ident] = super_to_group[id_to_super[ident]]
         self._id_to_group = id_to_group
+        self._super_to_group = super_to_group
+        self._id_to_super = id_to_super
 
         # Grupos de probe e reference por linha — cacheados pra split rápido.
         self._probe_group = np.array(
@@ -220,6 +278,10 @@ class IdentityDisjointPairKFold(BaseCrossValidator):
             "id_to_group_mapping": {
                 str(ident): int(g) for ident, g in self._id_to_group.items()
             },
+            # V2.11.2 — clusters de lookalikes tratados como unidade atômica.
+            "lookalike_clusters_used": self._lookalike_used,
+            "n_lookalike_clusters": self._n_lookalike_clusters,
+            "n_clustered_identities": self._n_clustered_identities,
             "train_counts_by_fold": train_counts,
             "test_counts_by_fold": test_counts,
             "excluded_boundary_counts_by_fold": excluded_boundary_counts,

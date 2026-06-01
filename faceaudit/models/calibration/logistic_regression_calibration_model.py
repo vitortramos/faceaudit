@@ -447,12 +447,18 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                     f"identidades únicas ({len(unique_ids)})."
                 )
             cv_folds = cv_folds_effective
+            # V2.11.2: lookalike clusters propagados via metadata
+            # (`lookalike_clusters`: lista de listas de identidades).
+            # Quando presentes, identidades de um mesmo cluster são
+            # tratadas como unidade atômica na atribuição a grupos.
+            lookalike_clusters = self.metadata.get("lookalike_clusters")
             splitter_obj = IdentityDisjointPairKFold(
                 probe_identities=probe_ids,
                 reference_identities=ref_ids,
                 n_splits=cv_folds,
                 random_state=42,
                 assignment_strategy="balanced",
+                lookalike_clusters=lookalike_clusters,
             )
             cv = splitter_obj
             splitter_label = "IdentityDisjointPairKFold"

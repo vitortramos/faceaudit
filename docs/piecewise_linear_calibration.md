@@ -611,6 +611,22 @@ de **fit final** (sobre todo o D_cal):
 Disjunção total verificada: para cada fold,
 $\text{identidades(train)} \cap \text{identidades(test)} = \emptyset$.
 
+**Clusters de lookalikes como unidade atômica (V2.11.2).** Quando
+o usuário injeta `metadata["lookalike_clusters"]` como uma lista
+de listas de identidades, o splitter trata cada cluster como uma
+**super-identidade** durante a atribuição a grupos — todas as
+identidades de um cluster ficam no mesmo fold, com carga LPT
+agregada. Isso alinha o CV interno ao princípio do
+`PAIRED_DATASET_SPLIT` com `PRESERVE_LOOKALIKES` (§8.4), evitando
+que um par Hd entre duas identidades visualmente parecidas
+apareça com uma no train e outra no test — um vazamento de
+similaridade que distorceria a seleção de $C$ na direção de
+fronteiras de decisão otimistas. Identidades não declaradas em
+nenhum cluster funcionam como singletons. Metadados:
+`cv_strict_lookalike_clusters_used`,
+`cv_strict_n_lookalike_clusters`,
+`cv_strict_n_clustered_identities` (§7.10).
+
 **Configuração na V2.10.** Ativada via DTO (não mais via metadata):
 
 ```python
@@ -1269,6 +1285,15 @@ seleção descrita em §9.3:
   precisar rerodar o LPT scheduling — basta carregar o mapping e
   aplicar as máscaras dinâmicas. Chaves stringificadas para
   serialização JSON.
+- `cv_strict_lookalike_clusters_used` (V2.11.2, só em STRICT):
+  bool indicando se clusters de lookalikes foram declarados via
+  `metadata["lookalike_clusters"]` e aplicados na atribuição.
+- `cv_strict_n_lookalike_clusters` (V2.11.2): número de clusters
+  efetivamente aplicados (clusters com 0 ou 1 identidade efetiva
+  no dataset são ignorados como triviais).
+- `cv_strict_n_clustered_identities` (V2.11.2): soma das
+  identidades efetivamente clusterizadas (ignora membros
+  declarados mas ausentes do dataset).
 - `cv_strict_n_unique_identities` (V2.10, só em STRICT): tamanho da
   união (probe ∪ reference) particionada em $K$ grupos.
 - `cv_strict_n_identities_per_group` (V2.10, só em STRICT): vetor
