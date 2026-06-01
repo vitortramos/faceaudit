@@ -617,15 +617,39 @@ de listas de identidades, o splitter trata cada cluster como uma
 **super-identidade** durante a atribuição a grupos — todas as
 identidades de um cluster ficam no mesmo fold, com carga LPT
 agregada. Isso alinha o CV interno ao princípio do
-`PAIRED_DATASET_SPLIT` com `PRESERVE_LOOKALIKES` (§8.4), evitando
-que um par Hd entre duas identidades visualmente parecidas
-apareça com uma no train e outra no test — um vazamento de
-similaridade que distorceria a seleção de $C$ na direção de
-fronteiras de decisão otimistas. Identidades não declaradas em
-nenhum cluster funcionam como singletons. Metadados:
+`PAIRED_DATASET_SPLIT` com `PRESERVE_LOOKALIKES` (§8.4): pares Hd
+entre duas identidades de um cluster ficam sempre no mesmo fold,
+evitando que a similaridade visual entre lookalikes seja "vazada"
+do treino para o teste. Identidades não declaradas em nenhum
+cluster funcionam como singletons. Metadados:
 `cv_strict_lookalike_clusters_used`,
 `cv_strict_n_lookalike_clusters`,
 `cv_strict_n_clustered_identities` (§7.10).
+
+> **Validação empírica preliminar (V2.12).** Em corpus BFW (36
+> identidades), uma heurística sintética de detecção de clusters
+> baseada em score médio Hd acima do percentil 95 produziu **1
+> cluster gigante de 26 identidades** (BFW é demograficamente
+> homogêneo: todos males adultos brancos no split testado, scores
+> Hd globalmente similares; P95 captura ruído e não lookalikes
+> reais). Em 50 réplicas de bootstrap, o calibrador com esses
+> pseudo-clusters injetados **degradou** o $C_{\text{llr}}$
+> holdout (mediana 0,0471 → 0,0710, W/T/L 7/1/42 — clusters perdem
+> em 84 % das réplicas) e colapsou a seleção de $C$ no extremo de
+> regularização ($C = 0{,}001$ em 48/50 reps, vs distribuição
+> ampla {0,01..10} sem clusters). **Leitura prática**: a feature
+> funciona corretamente — respeita atomicidade, reduz boundary
+> excluído de ≈20 k para ≈11 k pares — mas é **muito sensível à
+> qualidade dos clusters declarados**. Clusters bem-anotados
+> (e.g. pares conhecidos identificados manualmente ou por
+> pipeline upstream com supervisão) são esperados ter 2–10
+> identidades cada, com cobertura parcial do corpus. Clusters
+> mal-definidos que agrupam a maioria das identidades
+> **destroem** o calibrador. Recomendação: usar essa feature
+> apenas quando há fonte externa confiável de clusters
+> (anotações manuais, pipeline de detecção de lookalikes
+> independente), nunca com heurísticas automáticas sobre os
+> próprios scores de calibração.
 
 **Configuração na V2.10.** Ativada via DTO (não mais via metadata):
 
