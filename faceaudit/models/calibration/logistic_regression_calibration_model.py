@@ -162,7 +162,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             )
 
             from faceaudit.enums.knot_placement import KnotPlacement
-            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS:
                 knots_disp = "AUTO (medianas log-LR, fold-aware)"
             else:
                 knots_disp = (
@@ -195,7 +195,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             )
         else:
             from faceaudit.enums.knot_placement import KnotPlacement
-            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+            if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS:
                 knots_disp = "AUTO (medianas log-LR)"
             else:
                 knots_disp = (

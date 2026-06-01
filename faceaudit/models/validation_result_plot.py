@@ -1329,7 +1329,18 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     ax_top.set_xlim(0, 100)
     ax_top.set_ylabel("log-LR calibrado")
 
-    # Title 3-line + flag wrong-side se houver inversões nos pontos críticos.
+    # Title 3-line + flags semanticamente distintas pra cada fenômeno.
+    #
+    # São DUAS condições diferentes:
+    # (1) inversão entre quantis extremos: P1g < P99i. As caudas das
+    #     classes literalmente se cruzam — separação operacional
+    #     comprometida nos extremos.
+    # (2) cauda com sinal contrário: genuíno crítico com log-LR < 0
+    #     OU impostor crítico com log-LR > 0. A separação pode estar
+    #     OK (P1g > P99i), mas a calibração coloca parte dos pontos
+    #     críticos do lado errado de zero — comum em domain mismatch.
+    #
+    # Avisos separados pra não confundir os fenômenos no título.
     m = getattr(result, "metrics", None)
     cllr_val = getattr(m, "cllr", None) if m else None
     cllr_min_val = getattr(m, "cllr_min", None) if m else None
@@ -1342,6 +1353,7 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     # hard-tail (P5g − P95i) e extreme (P1g − P99i). Positivo = boa
     # separação; ≈0 ou negativo = overlap relevante.
     line3_parts = []
+    has_extreme_inversion = False
     if gen_q is not None and imp_q is not None:
         idx_p1, idx_p5 = 0, 1
         idx_p95, idx_p99 = 7, 8
@@ -1349,9 +1361,17 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
         extreme_tail_gap = float(gen_q[idx_p1] - imp_q[idx_p99])
         line3_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
         line3_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
+        has_extreme_inversion = extreme_tail_gap < 0.0
     title_main = "Quantis por Classe"
-    if n_wrong_gen or n_wrong_imp:
-        title_main += "  ⚠ inversão"
+    warning_parts = []
+    if has_extreme_inversion:
+        warning_parts.append("⚠ inversão de caudas (P1g < P99i)")
+    if n_wrong_gen:
+        warning_parts.append(f"⚠ cauda Hp com log-LR < 0 (n={n_wrong_gen})")
+    if n_wrong_imp:
+        warning_parts.append(f"⚠ cauda Hd com log-LR > 0 (n={n_wrong_imp})")
+    if warning_parts:
+        title_main += "  " + "  ".join(warning_parts)
     title_lines = [title_main]
     if line2_parts:
         title_lines.append("  ·  ".join(line2_parts))

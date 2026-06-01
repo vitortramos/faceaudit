@@ -227,7 +227,7 @@ class PiecewiseLinearScoreTransformer(BaseEstimator, TransformerMixin):
         # GridSearchCV chega aqui com seu próprio subset de treino).
         # Sempre LOG_LR scale (consequência natural da fórmula).
         self.knot_placement_ = config.knot_placement
-        if config.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+        if config.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS:
             if self.aux_coef_ is None or self.aux_coef_ <= 0:
                 raise RuntimeError(
                     "knot_placement=AUTO_FROM_MEDIANS exige aux_coef do "

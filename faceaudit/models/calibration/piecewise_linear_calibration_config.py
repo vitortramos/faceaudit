@@ -111,15 +111,15 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
     )
 
     knot_placement: KnotPlacement = field(
-        default=KnotPlacement.AUTO_FROM_MEDIANS,
+        default=KnotPlacement.MANUAL,
         metadata={"help": (
-            "Como os knots são posicionados. AUTO_FROM_MEDIANS (default): "
-            "transformer popula knot_offsets no fit com 2 knots em "
-            "[-log_lr_Hp_P50, -log_lr_Hd_P50] (fold-aware, sem leakage). "
-            "Protocolo forense recomendado. MANUAL: usuário escreve "
-            "knot_offsets manualmente — útil para exploração de variantes "
-            "(e.g. 1 knot em [0.0]) ou quando há dev set independente do "
-            "holdout. Em AUTO, knot_offsets/knot_scale são ignorados."
+            "Como os knots são posicionados. MANUAL (default): usuário "
+            "escreve knot_offsets. Configuração operacional recomendada: "
+            "knot_offsets=[0.0] em knot_scale=AUX_LOG_LR (uma única dobra "
+            "no ponto neutro do auxiliar). AUTO_FROM_MIRRORED_MEDIANS: "
+            "transformer popula knot_offsets no fit com 2 knots espelhados "
+            "em torno de zero — heurística experimental, opt-in. Em AUTO, "
+            "knot_offsets/knot_scale do DTO são ignorados."
         )},
     )
 
@@ -212,7 +212,7 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
             # AUTO_FROM_MEDIANS depende do aux_coef do LogReg auxiliar
             # pra mapear medianas raw → log-LR. Indisponível em MANUAL.
             if (
-                self.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS
+                self.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS
                 and self.hinge_anchor_mode is HingeAnchorMode.MANUAL
             ):
                 raise ValueError(
@@ -295,7 +295,7 @@ class PiecewiseLinearCalibrationConfig(JSONSerializableMixin):
             # Em AUTO_FROM_MEDIANS, o transformer popula knot_offsets/
             # knot_scale automaticamente — esconde os dois pra evitar
             # confusão visual ("estou preenchendo isso e nada acontece").
-            if self.knot_placement is KnotPlacement.AUTO_FROM_MEDIANS:
+            if self.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS:
                 hidden.add("knot_offsets")
                 hidden.add("knot_scale")
         return hidden

@@ -22,7 +22,8 @@ Os elementos descritos neste documento estão presentes no código:
 - Escala dos offsets em score bruto (`KnotScale.RAW`) ou em log-LR do
   calibrador auxiliar (`KnotScale.AUX_LOG_LR`).
 - Posicionamento manual (`KnotPlacement.MANUAL`) ou automático
-  (`KnotPlacement.AUTO_FROM_MEDIANS`).
+  experimental (`KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS`, antigo
+  `AUTO_FROM_MEDIANS`).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
 - Algoritmo geral para identificar o ponto de cruzamento efetivo de
@@ -36,7 +37,7 @@ Os elementos descritos neste documento estão presentes no código:
 | Calibração por regressão logística (linear) | Estabelecido na literatura forense (Brümmer & du Preez 2006, Morrison 2013). |
 | Expansão piecewise-linear como basis function | Estabelecido em estatística (Hastie, Tibshirani & Friedman 2009, §5.2). |
 | Validação pós-fit de crescimento estrito por trecho | Política operacional implementada no FaceAudit. |
-| Heurística `AUTO_FROM_MEDIANS` para posicionamento dos knots | Heurística experimental proposta no projeto. Não consta da literatura citada. Deve ser validada externamente no domínio de aplicação. |
+| Heurística `AUTO_FROM_MIRRORED_MEDIANS` para posicionamento dos knots | Heurística experimental proposta no projeto. Não consta da literatura citada. Deve ser validada externamente no domínio de aplicação. |
 
 ### 0.3 LR bruta do modelo vs. LR reportável
 
@@ -371,7 +372,7 @@ pares**:
 5. persistir e verificar empiricamente que não há identidades
    compartilhadas entre partições ($|V \cap C| = 0$).
 
-No FaceAudit, a instrução `PAIRED_DATASET_SPLIT` (§10.4) implementa
+No FaceAudit, a instrução `PAIRED_DATASET_SPLIT` (§8.4) implementa
 essa propriedade canonicamente: divide pares (frontal, lateral) por
 identidade, com `grouping_strategy = PRESERVE_LOOKALIKES` mantendo
 clusters de identidades parecidas no mesmo subset.
@@ -524,7 +525,7 @@ componente, recomenda-se renomear a entrada do enum (mantendo
 `PiecewiseLinearCalibrationConfig` atualmente usar
 `KnotPlacement.AUTO_FROM_MEDIANS` como padrão para novos
 calibradores, a evidência empírica reunida neste documento (§6.2
-abaixo e §10) sugere que essa escolha **não é defensavelmente
+abaixo e §8) sugere que essa escolha **não é defensavelmente
 superior** à configuração mais simples e estabelecida
 (`KnotPlacement.MANUAL` com `knot_offsets=[0.0]` em
 `KnotScale.AUX_LOG_LR`). Para deployment operacional, a dobra única
@@ -584,7 +585,7 @@ inclinação positiva desse trecho deve ser interpretada com cautela,
 pois fica fracamente identificada pelos dados locais e depende mais
 fortemente da continuidade paramétrica da curva, dos demais trechos
 e da regularização L2 (`C = 0.1` foi suficiente neste fit). Ver
-§9.2 e §8.3.
+§10.2 e §9.3.
 
 ![Curva piecewise AUTO 2 knots](images/pwl_calibration_curve_autoknots.png)
 
@@ -756,204 +757,9 @@ contrato de auditoria** do componente.
 
 ---
 
-## 8. Uso operacional e reportabilidade
+## 8. Protocolo de validação: domain match
 
-### 8.1 Distinção entre log-LR bruto do modelo e LR reportável
-
-A curva piecewise é linear no último trecho e, portanto, extrapola
-sem limite quando $s \to +\infty$ (assumindo slope final positivo) ou
-$s \to -\infty$ (slope inicial positivo, log-LR → $-\infty$).
-
-Isso é matematicamente correto, mas não implica que qualquer log-LR
-produzido pelo calibrador seja defensável em laudo. Recomenda-se
-distinguir, na arquitetura operacional:
-
-- **`raw_model_log_lr`**: saída matemática não censurada do
-  calibrador (o que o componente piecewise entrega).
-- **`reportable_log_lr`**: valor eventualmente submetido a política
-  conservadora de reportabilidade baseada em suporte empírico,
-  validação externa, e diretrizes do laboratório/jurisdição.
-
-A política de limite reportável não é definida pela expansão
-piecewise-linear. Constitui uma camada operacional separada.
-
-### 8.2 Extrapolação
-
-Os campos `raw_score_min_training` e `raw_score_max_training`
-permitem identificar se um par observado em validação ou casework
-está dentro ou fora do range em que o calibrador foi estimado.
-Recomenda-se documentar e tratar com cautela casos onde o score do
-caso cai fora do `[raw_score_min_training, raw_score_max_training]` —
-o log-LR nesses pontos é extrapolação linear, não interpolação.
-
-### 8.3 Regularização L2 e seleção de `c_grid`
-
-O calibrador é treinado com `LogisticRegression(C=...)` (inverso da
-regularização L2). A escolha de `c_grid` no `GridSearchCV` afeta
-diretamente o comportamento dos coeficientes das hinges:
-
-- **`C` alto (≥ 10)** corresponde a regularização fraca. O LogReg fica
-  flexível e tende a ajustar coeficientes individuais grandes em
-  trechos com pouco contraste discriminativo. Em piecewise com
-  cobertura assimétrica por classe (§9.2), isso pode produzir slopes
-  negativos em trechos sem Hp ou sem Hd — violação da monotonicidade
-  rejeitada por default.
-- **`C` moderado a forte (0.001 a 1)** força coeficientes menores. A
-  curva fica mais suave, e em trechos sem contraste o $\beta_j$ da
-  hinge tende a zero, mantendo o slope efetivo do trecho próximo do
-  slope do trecho anterior (positivo). Geralmente resolve violações
-  de monotonicidade sem necessidade de reposicionar knots.
-
-Um caso prático observado: com `c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]`
-e knots posicionados por `AUTO_FROM_MEDIANS` num PLDA com Hd ausente
-no trecho direito, o GridSearch escolheu `C = 100` e produziu
-$m_3 = -0{,}016$ (rejeição). Reduzindo o grid para `[0.01, 0.1]`, o
-mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica).
-
-#### Monotonicidade como restrição de viabilidade
-
-A solução acima — restringir manualmente o `c_grid` após observar a
-falha — é operacionalmente conveniente mas metodologicamente frágil:
-constitui um ajuste experimental orientado pelo resultado. O
-procedimento mais defensável é tratar **monotonicidade como
-restrição de viabilidade do modelo** durante a seleção de $C$:
-
-1. definir `c_grid` *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
-2. ajustar cada candidato dentro do CV;
-3. **marcar como inválidos** os candidatos cujo fit final produz
-   curva não-monotônica;
-4. selecionar o melhor $C$ **entre os candidatos válidos** (e.g.
-   menor `neg_log_loss` CV);
-5. **persistir** quais candidatos foram descartados e por quê
-   (`piecewise_invalid_c_values`, `piecewise_invalid_c_reasons`,
-   `piecewise_valid_c_values`, `piecewise_selected_c`,
-   `piecewise_selection_policy = "best_valid_candidate"`);
-6. validar novamente a monotonicidade no fit final.
-
-Esse procedimento converte a rejeição por não-monotonicidade num
-filtro automático, evita ajuste post-hoc do `c_grid`, e mantém
-auditabilidade — o laudo pode citar quais $C$ foram avaliados e
-quais foram descartados como inviáveis.
-
-Recomendação geral: usar `c_grid` moderado a forte como default
-(`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
-defensáveis apenas em datasets com cobertura simétrica robusta por
-trecho.
-
-> **Status de implementação.** A versão atual do FaceAudit ainda
-> não filtra automaticamente candidatos não-monotônicos durante o
-> `GridSearchCV` — a rejeição acontece apenas no fit final. A
-> integração descrita acima é uma evolução proposta do componente.
-
-### 8.4 Cllr_min e cal_loss como diagnósticos exploratórios
-
-O `Cllr_min` (via PAVA in-sample) e `cal_loss = Cllr − Cllr_min`
-calculados sobre o conjunto avaliado são **diagnósticos
-exploratórios**, não medidas operacionais significativas do grau de
-calibração. Morrison (2021) argumenta que métricas baseadas em
-PAV/PAVA não devem ser tratadas como critério isolado para escolha
-de sistema pericial em casework. Elas continuam úteis para diagnóstico
-comparativo entre variantes do mesmo pipeline, mas não substituem:
-
-- Validação externa em datasets independentes representativos do
-  domínio de aplicação.
-- Análise das caudas e da estabilidade do modelo.
-- Avaliação da aplicabilidade ao caso específico.
-
-### 8.5 Validação por bootstrap
-
-Em uso forense, recomenda-se complementar o $C_{\text{llr}}$ pontual
-com intervalos via bootstrap, preferencialmente reamostrando por
-**identidade** (não por par) para preservar a estrutura de
-correlação.
-
----
-
-## 9. Limitações
-
-### 9.1 Knots fora do domínio dos dados
-
-Quando os knots absolutos $k_j = s_0 + \delta_j$ caem fora do range
-observado dos scores, a feature $\max(z - \delta_j, 0)$ é constante
-(zero em todos os pontos) ou linearmente colinear com $z$ em todos os
-pontos. No primeiro caso, a feature não carrega informação e o
-LogReg estima $\beta_j$ próximo de zero. No segundo caso, a feature
-deixa de carregar informação independente e, na presença de
-regularização L2, o coeficiente pode ser **reduzido, redistribuído
-entre colunas colineares, ou tornar-se numericamente instável**.
-
-O metadata `knot_inside_training_range` permite identificar esse
-problema.
-
-### 9.2 Suporte por trecho
-
-Há duas situações distintas que comprometem a estabilidade da
-inclinação num trecho, ambas detectadas e reportadas em
-`segment_support_warnings`:
-
-**(a) Suporte total baixo.** Quando o knot é colocado numa faixa
-esparsa do score (cauda extrema), o número total de amostras no trecho
-correspondente é pequeno. O coeficiente $\beta_j$ tem alta variância e
-pode assumir valor fortemente negativo ao tentar acomodar ruído local,
-violando a condição de monotonicidade do trecho seguinte.
-
-**(b) Cobertura assimétrica por classe.** O suporte total pode ser
-grande, mas uma das classes pode estar **totalmente ausente** no
-trecho (e.g. cauda direita pura Hp, sem nenhuma amostra Hd; ou cauda
-esquerda pura Hd, sem nenhuma amostra Hp). Nessa situação o LogReg
-principal não tem contraste discriminativo para estimar inclinação
-estritamente positiva — o gradiente da log-loss em relação a $\beta_j$
-fica indeterminado em discriminação. Sob regularização L2 fraca
-($C$ alto), $\beta_j$ pode assumir valor ligeiramente negativo, levando
-ao slope negativo no trecho correspondente. Esse padrão é comum em
-distribuições PLDA com classes bem separadas, exatamente onde a
-heurística `AUTO_FROM_MEDIANS` posiciona os knots (na fronteira onde
-uma das classes desaparece).
-
-A mitigação preferencial para (b) é aumentar a regularização L2 via
-`c_grid` mais restrito (§8.3). A mitigação alternativa, mais agressiva,
-é reposicionar manualmente o knot para uma região onde ambas as
-classes ainda têm representação.
-
-Os campos `segment_counts_total`, `segment_counts_hp`,
-`segment_counts_hd` e `segment_support_warnings` permitem identificar
-ambas as situações após um fit bem-sucedido. Em fits rejeitados por
-não-monotonicidade, a mensagem de erro exibe o suporte de cada classe
-por trecho explicitamente.
-
-### 9.3 Número de knots vs. graus de liberdade
-
-Cada knot adiciona um parâmetro $\beta_j$ ao modelo. Com $K$ knots, o
-calibrador tem $K + 2$ parâmetros (incluindo $\beta_0$ e $\beta_z$).
-Em datasets pequenos ou desbalanceados, número grande de knots
-favorece sobreajuste. O modo AUTO_FROM_MEDIANS usa 2 knots (com
-colapso defensivo a 1 quando as duas medianas coincidem
-numericamente).
-
-### 9.4 Compatibilidade com `SCORE_VECTORIZATION`
-
-A expansão piecewise-linear assume score 1D. Em pipelines de
-calibração multivariada (input `SCORE_VECTORIZATION` com $D > 1$),
-ativar `mode=PIECEWISE_LINEAR` resulta em erro. Para casos
-multivariados, usar `SCORE_INTERACTION_FEATURE` externo com
-calibrador linear, ou aplicar piecewise apenas após reduzir o vetor a
-1D.
-
-### 9.5 Score sem tipicidade explícita
-
-Conforme §1.1, o calibrador piecewise produz uma LR baseada em
-score. Quando o score representa apenas similaridade, sem incorporar
-tipicidade da face questionada em relação à população relevante, a
-LR resultante deve ser interpretada como tal. Incluir tipicidade
-requer modelagem específica (e.g. `TYPICALITY_PAIR_SCORING` no
-FaceAudit) e fusão multivariada, não compensável por refinamento da
-calibração 1D.
-
----
-
-## 10. Protocolo de validação: domain match
-
-### 10.1 Motivação e taxonomia dos corpora
+### 8.1 Motivação e taxonomia dos corpora
 
 Um protocolo forense defensável requer que os corpora envolvidos
 sejam distinguidos explicitamente:
@@ -996,11 +802,11 @@ $D_{\text{cal}} = \text{BFW split A}$ (40 %), $D_{\text{val}} =
 > esperado em casos novos. Para reportar desempenho final sem
 > otimismo, é necessário um $D_{\text{val}}$ externo independente
 > (e.g. um terceiro split do BFW reservado *a priori*) ou
-> procedimento aninhado (nested CV) equivalente. A tabela §10.2 a
+> procedimento aninhado (nested CV) equivalente. A tabela §8.2 a
 > seguir é, portanto, evidência exploratória para seleção do
 > protocolo, não validação final do calibrador escolhido.
 
-### 10.2 Evidência empírica
+### 8.2 Evidência empírica
 
 A tabela abaixo compara duas configurações de protocolo no mesmo
 pipeline PLDA SHRINK CROSS, holdout BFW:
@@ -1053,7 +859,7 @@ $C_{\text{llr}}$ penaliza fortemente. Os calibradores LogReg são mais
 robustos a esse regime de amostra pequena por suporem forma
 paramétrica linear ou piecewise-linear em $z$.
 
-### 10.3 Comportamento empírico das caudas
+### 8.3 Comportamento empírico das caudas
 
 A figura abaixo apresenta os quantis por classe ($H_p$ em verde,
 $H_d$ em vermelho) em escala log-LR pós-calibração, para um
@@ -1104,7 +910,7 @@ para < 2 bits.
 > quantis extremos das classes. A semântica do marcador no widget
 > deve ser revista para distinguir os dois fenômenos.
 
-### 10.4 Implementação no FaceAudit
+### 8.4 Implementação no FaceAudit
 
 A instrução `PAIRED_DATASET_SPLIT` divide simultaneamente os dois
 datasets de uma comparação cross-pose (e.g. frontal e lateral)
@@ -1130,7 +936,7 @@ pipeline e o modelo de similaridade permanecem treinados em A
 (CFP, no exemplo) — apenas o calibrador é treinado em B (BFW split
 A).
 
-### 10.5 Reportabilidade
+### 8.5 Reportabilidade
 
 No laudo, o protocolo de validação deve estar documentado
 explicitamente. Itens mínimos:
@@ -1143,8 +949,203 @@ explicitamente. Itens mínimos:
 - Política sobre amostras com pose ausente: o split paired pode
   produzir identidades com apenas uma das poses representadas em um
   dos subsets, reduzindo o $N$ efetivo de pares cross-pose.
-- Intervalos via bootstrap por identidade (§8.5) quando o suporte
+- Intervalos via bootstrap por identidade (§9.5) quando o suporte
   por classe ou pose é fino.
+
+---
+
+## 9. Uso operacional e reportabilidade
+
+### 9.1 Distinção entre log-LR bruto do modelo e LR reportável
+
+A curva piecewise é linear no último trecho e, portanto, extrapola
+sem limite quando $s \to +\infty$ (assumindo slope final positivo) ou
+$s \to -\infty$ (slope inicial positivo, log-LR → $-\infty$).
+
+Isso é matematicamente correto, mas não implica que qualquer log-LR
+produzido pelo calibrador seja defensável em laudo. Recomenda-se
+distinguir, na arquitetura operacional:
+
+- **`raw_model_log_lr`**: saída matemática não censurada do
+  calibrador (o que o componente piecewise entrega).
+- **`reportable_log_lr`**: valor eventualmente submetido a política
+  conservadora de reportabilidade baseada em suporte empírico,
+  validação externa, e diretrizes do laboratório/jurisdição.
+
+A política de limite reportável não é definida pela expansão
+piecewise-linear. Constitui uma camada operacional separada.
+
+### 9.2 Extrapolação
+
+Os campos `raw_score_min_training` e `raw_score_max_training`
+permitem identificar se um par observado em validação ou casework
+está dentro ou fora do range em que o calibrador foi estimado.
+Recomenda-se documentar e tratar com cautela casos onde o score do
+caso cai fora do `[raw_score_min_training, raw_score_max_training]` —
+o log-LR nesses pontos é extrapolação linear, não interpolação.
+
+### 9.3 Regularização L2 e seleção de `c_grid`
+
+O calibrador é treinado com `LogisticRegression(C=...)` (inverso da
+regularização L2). A escolha de `c_grid` no `GridSearchCV` afeta
+diretamente o comportamento dos coeficientes das hinges:
+
+- **`C` alto (≥ 10)** corresponde a regularização fraca. O LogReg fica
+  flexível e tende a ajustar coeficientes individuais grandes em
+  trechos com pouco contraste discriminativo. Em piecewise com
+  cobertura assimétrica por classe (§10.2), isso pode produzir slopes
+  negativos em trechos sem Hp ou sem Hd — violação da monotonicidade
+  rejeitada por default.
+- **`C` moderado a forte (0.001 a 1)** força coeficientes menores. A
+  curva fica mais suave, e em trechos sem contraste o $\beta_j$ da
+  hinge tende a zero, mantendo o slope efetivo do trecho próximo do
+  slope do trecho anterior (positivo). Geralmente resolve violações
+  de monotonicidade sem necessidade de reposicionar knots.
+
+Um caso prático observado: com `c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]`
+e knots posicionados por `AUTO_FROM_MEDIANS` num PLDA com Hd ausente
+no trecho direito, o GridSearch escolheu `C = 100` e produziu
+$m_3 = -0{,}016$ (rejeição). Reduzindo o grid para `[0.01, 0.1]`, o
+mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica).
+
+#### Monotonicidade como restrição de viabilidade
+
+A solução acima — restringir manualmente o `c_grid` após observar a
+falha — é operacionalmente conveniente mas metodologicamente frágil:
+constitui um ajuste experimental orientado pelo resultado. O
+procedimento mais defensável é tratar **monotonicidade como
+restrição de viabilidade do modelo** durante a seleção de $C$:
+
+1. definir `c_grid` *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
+2. ajustar cada candidato dentro do CV;
+3. **marcar como inválidos** os candidatos cujo fit final produz
+   curva não-monotônica;
+4. selecionar o melhor $C$ **entre os candidatos válidos** (e.g.
+   menor `neg_log_loss` CV);
+5. **persistir** quais candidatos foram descartados e por quê
+   (`piecewise_invalid_c_values`, `piecewise_invalid_c_reasons`,
+   `piecewise_valid_c_values`, `piecewise_selected_c`,
+   `piecewise_selection_policy = "best_valid_candidate"`);
+6. validar novamente a monotonicidade no fit final.
+
+Esse procedimento converte a rejeição por não-monotonicidade num
+filtro automático, evita ajuste post-hoc do `c_grid`, e mantém
+auditabilidade — o laudo pode citar quais $C$ foram avaliados e
+quais foram descartados como inviáveis.
+
+Recomendação geral: usar `c_grid` moderado a forte como default
+(`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
+defensáveis apenas em datasets com cobertura simétrica robusta por
+trecho.
+
+> **Status de implementação.** A versão atual do FaceAudit ainda
+> não filtra automaticamente candidatos não-monotônicos durante o
+> `GridSearchCV` — a rejeição acontece apenas no fit final. A
+> integração descrita acima é uma evolução proposta do componente.
+
+### 9.4 Cllr_min e cal_loss como diagnósticos exploratórios
+
+O `Cllr_min` (via PAVA in-sample) e `cal_loss = Cllr − Cllr_min`
+calculados sobre o conjunto avaliado são **diagnósticos
+exploratórios**, não medidas operacionais significativas do grau de
+calibração. Morrison (2021) argumenta que métricas baseadas em
+PAV/PAVA não devem ser tratadas como critério isolado para escolha
+de sistema pericial em casework. Elas continuam úteis para diagnóstico
+comparativo entre variantes do mesmo pipeline, mas não substituem:
+
+- Validação externa em datasets independentes representativos do
+  domínio de aplicação.
+- Análise das caudas e da estabilidade do modelo.
+- Avaliação da aplicabilidade ao caso específico.
+
+### 9.5 Validação por bootstrap
+
+Em uso forense, recomenda-se complementar o $C_{\text{llr}}$ pontual
+com intervalos via bootstrap, preferencialmente reamostrando por
+**identidade** (não por par) para preservar a estrutura de
+correlação.
+
+---
+
+## 10. Limitações
+
+### 10.1 Knots fora do domínio dos dados
+
+Quando os knots absolutos $k_j = s_0 + \delta_j$ caem fora do range
+observado dos scores, a feature $\max(z - \delta_j, 0)$ é constante
+(zero em todos os pontos) ou linearmente colinear com $z$ em todos os
+pontos. No primeiro caso, a feature não carrega informação e o
+LogReg estima $\beta_j$ próximo de zero. No segundo caso, a feature
+deixa de carregar informação independente e, na presença de
+regularização L2, o coeficiente pode ser **reduzido, redistribuído
+entre colunas colineares, ou tornar-se numericamente instável**.
+
+O metadata `knot_inside_training_range` permite identificar esse
+problema.
+
+### 10.2 Suporte por trecho
+
+Há duas situações distintas que comprometem a estabilidade da
+inclinação num trecho, ambas detectadas e reportadas em
+`segment_support_warnings`:
+
+**(a) Suporte total baixo.** Quando o knot é colocado numa faixa
+esparsa do score (cauda extrema), o número total de amostras no trecho
+correspondente é pequeno. O coeficiente $\beta_j$ tem alta variância e
+pode assumir valor fortemente negativo ao tentar acomodar ruído local,
+violando a condição de monotonicidade do trecho seguinte.
+
+**(b) Cobertura assimétrica por classe.** O suporte total pode ser
+grande, mas uma das classes pode estar **totalmente ausente** no
+trecho (e.g. cauda direita pura Hp, sem nenhuma amostra Hd; ou cauda
+esquerda pura Hd, sem nenhuma amostra Hp). Nessa situação o LogReg
+principal não tem contraste discriminativo para estimar inclinação
+estritamente positiva — o gradiente da log-loss em relação a $\beta_j$
+fica indeterminado em discriminação. Sob regularização L2 fraca
+($C$ alto), $\beta_j$ pode assumir valor ligeiramente negativo, levando
+ao slope negativo no trecho correspondente. Esse padrão é comum em
+distribuições PLDA com classes bem separadas, exatamente onde a
+heurística `AUTO_FROM_MEDIANS` posiciona os knots (na fronteira onde
+uma das classes desaparece).
+
+A mitigação preferencial para (b) é aumentar a regularização L2 via
+`c_grid` mais restrito (§9.3). A mitigação alternativa, mais agressiva,
+é reposicionar manualmente o knot para uma região onde ambas as
+classes ainda têm representação.
+
+Os campos `segment_counts_total`, `segment_counts_hp`,
+`segment_counts_hd` e `segment_support_warnings` permitem identificar
+ambas as situações após um fit bem-sucedido. Em fits rejeitados por
+não-monotonicidade, a mensagem de erro exibe o suporte de cada classe
+por trecho explicitamente.
+
+### 10.3 Número de knots vs. graus de liberdade
+
+Cada knot adiciona um parâmetro $\beta_j$ ao modelo. Com $K$ knots, o
+calibrador tem $K + 2$ parâmetros (incluindo $\beta_0$ e $\beta_z$).
+Em datasets pequenos ou desbalanceados, número grande de knots
+favorece sobreajuste. O modo AUTO_FROM_MEDIANS usa 2 knots (com
+colapso defensivo a 1 quando as duas medianas coincidem
+numericamente).
+
+### 10.4 Compatibilidade com `SCORE_VECTORIZATION`
+
+A expansão piecewise-linear assume score 1D. Em pipelines de
+calibração multivariada (input `SCORE_VECTORIZATION` com $D > 1$),
+ativar `mode=PIECEWISE_LINEAR` resulta em erro. Para casos
+multivariados, usar `SCORE_INTERACTION_FEATURE` externo com
+calibrador linear, ou aplicar piecewise apenas após reduzir o vetor a
+1D.
+
+### 10.5 Score sem tipicidade explícita
+
+Conforme §1.1, o calibrador piecewise produz uma LR baseada em
+score. Quando o score representa apenas similaridade, sem incorporar
+tipicidade da face questionada em relação à população relevante, a
+LR resultante deve ser interpretada como tal. Incluir tipicidade
+requer modelagem específica (e.g. `TYPICALITY_PAIR_SCORING` no
+FaceAudit) e fusão multivariada, não compensável por refinamento da
+calibração 1D.
 
 ---
 
