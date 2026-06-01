@@ -32,10 +32,12 @@ Os elementos descritos neste documento estão presentes no código:
 - Splitter do CV agrupado por identidade do probe (`StratifiedGroupKFold`,
   default V2.8 quando o input tem identidades disponíveis). Fallback
   `StratifiedKFold` por par quando identidades ausentes (§4.2).
-- Splitter purista opt-in `PredefinedSplit_StrictByIdentity` (V2.9) —
-  particiona identidades em $K$ grupos disjuntos e descarta pares Hd
-  cross-grupo. Disjunção total entre folds, ao custo de descarte de
-  parte do conjunto de calibração (§4.3).
+- Splitter dinâmico opt-in `IdentityDisjointPairKFold` (V2.10) —
+  particiona identidades em $K$ grupos balanceados via LPT
+  scheduling; em cada fold, train e test são totalmente disjuntos
+  por identidade e pares boundary (uma id dentro, outra fora)
+  ficam excluídos apenas daquele fold. Refit final em todo
+  $D_{\text{cal}}$ (§4.4).
 - Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.11).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
@@ -497,14 +499,19 @@ escolhe o splitter:
   as identidades estão disponíveis (V2.8). O probe é disjunto entre
   folds; pares Hp ficam totalmente disjuntos por identidade. Pares
   Hd têm probe disjunto, mas a identidade de **referência** ainda
-  pode aparecer em múltiplos folds (cada par Hd carrega duas
-  identidades e o splitter aceita apenas uma label de grupo por
-  linha). O metadata registra `cv_grouping_level = "identity_probe"`,
-  `cv_identity_disjointness_verified = "partial"`.
+  pode aparecer em múltiplos folds. O metadata registra
+  `cv_identity_disjointness_level = "probe_only"`,
+  `cv_identity_disjointness_verified = False`.
+- **`IdentityDisjointPairKFold`** quando o config seleciona
+  `STRICT_IDENTITY` (V2.10). Folds totalmente disjuntos por
+  identidade; pares boundary excluídos apenas no fold corrente
+  (§4.4). Metadata registra
+  `cv_identity_disjointness_level = "full"`,
+  `cv_identity_disjointness_verified = True`.
 - **`StratifiedKFold`** quando as identidades não estão disponíveis
   (caso raro: input dict sem identidades, ou executor anterior à V2.5).
-  Metadata registra `cv_grouping_level = "pair"`,
-  `cv_identity_disjointness_verified = false`.
+  Metadata registra `cv_identity_disjointness_level = "none"`,
+  `cv_identity_disjointness_verified = False`.
 
 **Validação empírica V2.8.** No holdout BFW split B (pipeline PLDA
 SHRINK CROSS), a troca para `StratifiedGroupKFold` produziu o
@@ -526,47 +533,101 @@ estava em C extremamente regularizado; AUTO 2 knots não dependeu
 de correlações entre pares no C ótimo deste experimento. O
 comportamento é consistente com a hipótese de que o CV por par
 superestimou a capacidade de generalização da configuração menos
-regularizada — porém a evidência repousa sobre um único split de
-holdout (BFW-B com 36 identidades de treino), e a robustez sob
-amostragem é discutida na §4.4. A adoção do splitter agrupado como
-default V2.8 é sustentada **provisoriamente** enquanto a evidência
-multi-split / bootstrap é consolidada em corpora maiores.
+regularizada. A análise de robustez em §4.5 (bootstrap por
+identidade, 200 réplicas com multiplicidades preservadas)
+corrobora empiricamente a vantagem de GROUPED sobre PAIR neste
+corpus (PAIR perde em 56 % das réplicas vs 2 % de wins, mediana de
+$\Delta C_{\text{llr}}$ = +0,0011). A adoção do splitter agrupado
+como default V2.8 é sustentada por essa evidência empírica + a
+motivação metodológica original; sua replicação em outros corpora
+permanece desejável antes de generalização ampla.
 
 **Limitação residual da V2.8.** O probe é disjunto entre folds,
 mas a identidade de referência dos pares Hd ainda pode cruzar —
 um par Hd $(p, r)$ tem **duas** identidades; agrupar só por
-$p$ não impede que $r$ apareça em folds distintos. A versão
-purista da V2.9 (próxima seção) elimina esse leakage residual.
+$p$ não impede que $r$ apareça em folds distintos. A V2.9 (§4.3)
+tentou eliminar esse leakage residual com um filtro global de Hd;
+a V2.10 (§4.4) substituiu a abordagem por máscaras dinâmicas por
+fold + refit final em D_cal cheio.
 
-### 4.3 V2.9 (purista): partição de identidades e descarte de Hd cross-grupo
+### 4.3 V2.9 (histórica): filtro global estrito por identidade — substituída
 
-Quando `cv_split_mode_request = "STRICT_BY_IDENTITY"` for ativado
-(opt-in), a V2.9 substitui o `StratifiedGroupKFold` por uma
-construção `PredefinedSplit` mais restritiva:
+> **Status**: substituída pela V2.10 (§4.4). Esta seção permanece
+> como registro da evolução do componente.
 
-1. **Partição prévia das identidades**: o conjunto único de
-   identidades (probe ∪ reference) é embaralhado com
-   `random_state=42` e distribuído round-robin em $K$ grupos
-   disjuntos. Cada identidade pertence a **exatamente um** grupo.
-2. **Filtragem dos pares**:
-   - Pares Hp ($p = r$) ficam no grupo de $p$;
-   - Pares Hd intra-grupo ($p$ e $r$ no mesmo grupo) ficam no
-     grupo comum;
-   - Pares Hd **cross-grupo** ($p$ e $r$ em grupos diferentes) são
-     **descartados** do treino e do CV.
-3. **`PredefinedSplit`**: cada par mantido recebe seu grupo como
-   fold de teste; o splitter passa a ser totalmente determinístico
-   e auditável.
+Quando ativada (opt-in via metadata na V2.9), a V2.9 substituía o
+`StratifiedGroupKFold` por uma construção `PredefinedSplit` com
+filtragem global:
 
-Custo: descarte significativo de pares Hd (no exemplo BFW, 53 332
-de 64 620 pares Hd cross-grupo descartados — ≈82 %). O conjunto
-de calibração efetivo cai de 66 339 para 13 007 pares (≈19,6 %).
+1. **Partição prévia das identidades**: identidades únicas (probe ∪
+   reference) embaralhadas com `random_state=42` e distribuídas
+   round-robin em $K$ grupos disjuntos.
+2. **Filtragem global**:
+   - Pares Hp ($p = r$) ficavam no grupo de $p$;
+   - Pares Hd intra-grupo ficavam no grupo comum;
+   - Pares Hd **cross-grupo** eram **descartados** globalmente do
+     treino, do CV e do refit final.
+3. **`PredefinedSplit`** sobre o subset filtrado.
 
-**Validação empírica V2.9.** Mesmo holdout BFW split B, mesmo
-pipeline PLDA SHRINK CROSS. Comparativo entre **PAIR**
-(`StratifiedKFold` — V2.7), **GROUPED** (`StratifiedGroupKFold` —
-V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
-— V2.9):
+**Limitação identificada da V2.9.** No exemplo BFW, 53 332 de 64 620
+pares Hd cross-grupo (≈82 %) eram descartados permanentemente — o
+conjunto de calibração efetivo caía de 66 339 para 13 007 pares
+(≈19,6 %). Isso confundia dois efeitos: redução de leakage e perda
+de amostra. A própria curva calibrada final era treinada apenas
+sobre os pares retidos, prejudicando inferência.
+
+### 4.4 V2.10 (atual): folds estritos dinâmicos + refit em D_cal cheio
+
+A V2.10 corrige o problema acima separando explicitamente
+**seleção de hiperparâmetro** (sob disjunção identitária por fold)
+de **fit final** (sobre todo o D_cal):
+
+1. **Partição balanceada das identidades** em $K$ grupos via LPT
+   scheduling (Graham 1969): identidades ordenadas por carga
+   (somatório de aparições probe + reference) e atribuídas ao
+   grupo com menor carga acumulada. Reduz dispersão dos folds
+   quando identidades têm número desigual de capturas
+   (no BFW, range de train_counts cai de 43 → 3).
+2. **Máscaras dinâmicas por fold** (splitter customizado
+   `IdentityDisjointPairKFold`):
+
+   ```python
+   for test_group in identity_groups:
+       test_mask  = probe.isin(test_group) & ref.isin(test_group)
+       train_mask = ~probe.isin(test_group) & ~ref.isin(test_group)
+       # boundary (uma id dentro, outra fora): excluído deste fold
+       # mas elegível em outros folds.
+       yield np.where(train_mask)[0], np.where(test_mask)[0]
+   ```
+
+   Cada fold preserva ≈ $((K-1)/K)^2$ do conjunto Hd no treino
+   (≈64 % com $K=5$) em vez dos ≈1/K do filtro global da V2.9.
+3. **Refit final em todo $D_{\text{cal}}$** após a seleção de $C$
+   — o splitter governa apenas a iteração de folds do
+   `GridSearchCV`; o modelo operacional é treinado sobre o
+   conjunto completo, incluindo pares boundary que foram
+   excluídos de cada fold individual.
+
+Disjunção total verificada: para cada fold,
+$\text{identidades(train)} \cap \text{identidades(test)} = \emptyset$.
+
+**Configuração na V2.10.** Ativada via DTO (não mais via metadata):
+
+```python
+LogisticRegressionCalibrationModelConfig(
+    ...,
+    gridsearch_cv_mode=LogRegGridSearchCVMode.STRICT_IDENTITY,
+)
+```
+
+Modos disponíveis: `AUTO` (default — escolhe GROUPED_PROBE quando
+identidades estão disponíveis, cai em PAIR caso contrário), `PAIR`,
+`GROUPED_PROBE`, `STRICT_IDENTITY`. O metadata persiste
+`cv_split_mode_requested`, `cv_split_mode_applied` e
+`cv_split_mode_fallback_reason` (§7.10).
+
+**Comparativo PAIR / GROUPED / STRICT V2.10.** Holdout BFW split B,
+pipeline PLDA SHRINK CROSS, 36 identidades de treino:
 
 | Calibrador | PAIR ($C$, $C_{\text{llr}}$) | GROUPED ($C$, $C_{\text{llr}}$) | STRICT V2.10 ($C$, $C_{\text{llr}}$) |
 |---|---|---|---|
@@ -575,115 +636,150 @@ V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
 | AUTO 2 knots | 0,1 ; 0,0465 | 0,1 ; 0,0465 | 0,01 ; **0,0446** |
 
 > **Nota sobre comparação com a tabela §4.2**: o calibrador
-> **MANUAL 7-KNOT** da §4.2 V2.8 (Cllr 0,04234 → 0,04126, com knots em
-> `[−15, −12, −9, −6, −3, 0, +6]`) é uma configuração piecewise
-> distinta do **1-KNOT S0** desta tabela (Cllr 0,0465 → 0,0434 →
-> 0,0458, com knot único em $s_0$). A tabela V2.9 acima mostra o
-> calibrador mais simples e comum em laudo (modelo bilinear com uma
-> dobra); a tabela V2.8 mostrou uma configuração com sete knots
-> manuais escolhidos sobre o eixo bruto. Os deltas relativos das
-> duas tabelas **não devem ser combinados ou comparados
-> diretamente** — são objetos diferentes.
+> **MANUAL 7-KNOT** da §4.2 V2.8 (Cllr 0,04234 → 0,04126) é uma
+> configuração piecewise distinta do **1-KNOT S0** desta tabela.
+> Os deltas relativos das duas tabelas **não devem ser combinados
+> ou comparados diretamente** — são objetos diferentes.
 
 A figura abaixo sobrepõe as três curvas de calibração (mesmo
-calibrador piecewise 1-knot em $s_0$, mesmo train set, mesmo
-holdout), variando apenas o splitter do CV interno:
+calibrador piecewise 1-KNOT S0, mesmo train set, mesmo holdout),
+variando apenas o splitter do CV interno:
 
-![Comparação V2.7 / V2.8 / V2.10 do calibrador piecewise 1-knot em $s_0$](images/pwl_splitter_comparison.png)
+![Comparação V2.7 / V2.8 / V2.10 do calibrador piecewise 1-KNOT S0](images/pwl_splitter_comparison.png)
 
 Leitura: PAIR (vermelho, $C=10$) selecionou regularização fraca e
-produziu slopes 0,214 / 0,266 — o efeito da expansão em $s_0$ é
-quase indistinguível de uma reta linear (a dobra ficou suave).
-GROUPED e STRICT V2.10 chegaram **à mesma escolha de hiperparâmetro
-($C=0{,}1$)** e, como o refit final em ambos os modos é em todo o
-D_cal, produzem **curvas calibradas idênticas** (slopes 0,166 /
-0,290 — dobra evidente em $s_0$). No gráfico, as linhas GROUPED e
-STRICT se sobrepõem perfeitamente. A convergência dos dois modos
-de CV no mesmo $C$ neste split é **evidência exploratória**
-favorável à regularização intermediária; a robustez dessa
-conclusão é avaliada por bootstrap em §4.4 — onde a vantagem do
-GROUPED sobre o PAIR se mostra estatisticamente indistinguível.
+produziu slopes 0,214 / 0,266. GROUPED e STRICT V2.10 chegaram à
+mesma escolha de hiperparâmetro ($C=0{,}1$) e, como o refit final
+em ambos os modos é em todo o $D_{\text{cal}}$, produzem curvas
+calibradas idênticas (slopes 0,166 / 0,290). No gráfico, as
+linhas GROUPED e STRICT se sobrepõem perfeitamente — a
+convergência dos dois modos no mesmo $C$ é coerente com a hipótese
+de que neste split o leakage de pareamento favoreceu regularização
+fraca demais, e tanto o agrupamento por probe quanto a disjunção
+total identificaram esse viés. A análise de bootstrap em §4.5
+(200 réplicas com multiplicidades preservadas) corrobora a
+vantagem de GROUPED sobre PAIR (PAIR perde em 56 % das réplicas,
+ganha em 2 %); STRICT_IDENTITY permanece estatisticamente
+equivalente a GROUPED_PROBE neste corpus.
 
-Leituras:
+**Health checks por fold (V2.10).** O splitter
+`IdentityDisjointPairKFold` calcula `fold_health` (persistido em
+`cv_strict_fold_health`, §7.10) com critérios mínimos de suporte:
+≥ 50 Hp e ≥ 50 Hd no train por fold, ≥ 10 Hp e ≥ 10 Hd no test,
+boundary excluído < 50 % do total. `overall_status` ∈ {ok, warning,
+critical}. Estes thresholds são **guardrails técnicos** para
+detectar folds degenerados, não critérios de suficiência amostral
+para uso pericial — a defensibilidade forense depende
+adicionalmente de estabilidade dos parâmetros entre folds (§7.11),
+cobertura por identidade, análise das caudas (§8.3) e validação
+externa.
 
-- **Efeito V2.8 em 1-KNOT S0 neste split específico**: PAIR
-  selecionou $C=10$ (regularização fraca, exposta a over-ajustar
-  correlações entre pares). GROUPED e STRICT V2.10 chegaram ao
-  mesmo $C=0{,}1$ e mesmo Cllr 0,0434 — convergência completa após
-  o refit em D_cal cheio. **Este efeito não reproduziu sob
-  bootstrap por identidade (§4.4)** — a diferença observada vive
-  dentro da variabilidade amostral natural de 36 identidades.
-- **Linear puro**: holdout idêntico (0,0474) entre os três modos —
-  sem efeito mensurável da escolha do splitter, como esperado para
-  modelo bilinear de 2 graus de liberdade.
-- **AUTO 2 knots**: PAIR e GROUPED idênticos (0,0465); STRICT V2.10
-  seleciona $C$ mais regularizado ($0{,}01$) e produz holdout
-  0,0446 — ligeira melhoria. Hipótese: o CV estrito penaliza mais
-  knots agressivos do que o CV agrupado, empurrando para shrinkage
-  mais forte. Magnitude pequena, dentro do ruído amostral de §4.4.
+**Recomendação prática V2.10.**
 
-### 4.4 Análise de robustez por bootstrap de identidades
+- `STRICT_IDENTITY` é conceitualmente o modo mais defensável
+  quando seus folds preservam suporte suficiente segundo os
+  `fold_health` configurados (`overall_status = ok`). Em corpora
+  pequenos, mesmo a exclusão dinâmica pode reduzir
+  $((K-1)/K)^2 \cdot N_{\text{Hd}}$ a um nível em que o CV se
+  torna instável — nesses casos, `GROUPED_PROBE` constitui um
+  compromisso pragmático.
+- A decisão deve ser baseada em **health checks por fold**
+  (`fold_health.per_fold_status`), não em uma regra rígida de
+  número absoluto de identidades.
+- Para auditoria, persistir `cv_split_mode_requested`,
+  `cv_split_mode_applied`, `cv_split_mode_fallback_reason` e
+  `cv_strict_fold_health` no laudo permite justificar a escolha.
+
+### 4.5 Análise exploratória de robustez por bootstrap de identidades
 
 Para avaliar se a vantagem do GROUPED sobre o PAIR observada em
-§4.2 / §4.3 reproduz sob amostragem, executamos um experimento de
-bootstrap por identidade com **30 réplicas**: em cada réplica,
-amostramos com reposição o conjunto de 36 identidades únicas do
-treino, restringimos os pares aos que têm ambas identidades na
-amostra, ajustamos o calibrador 1-KNOT S0 nos três modos (PAIR /
-GROUPED_PROBE / STRICT_IDENTITY V2.10) e avaliamos no holdout BFW-B
-fixo.
+§4.2 / §4.4 reproduz sob reamostragem, executamos bootstrap por
+identidade no domínio de calibração com o holdout BFW-B fixo.
 
-| Modo | Mediana $C_{\text{llr}}$ | IC 95% | Win rate |
+**Protocolo (V2.11).** 200 réplicas. Em cada réplica:
+
+1. amostra com **reposição** das 36 identidades únicas →
+   contagem $m_i$ por identidade $i$;
+2. **materialização** do subset preservando multiplicidades: cada
+   par $(p, r)$ é replicado $m_p \cdot m_r$ vezes — é o bootstrap
+   clássico, e não apenas subamostragem por presença/ausência;
+3. ajuste do calibrador 1-KNOT S0 nos três modos (PAIR /
+   GROUPED_PROBE / STRICT_IDENTITY V2.10) sobre o subset
+   materializado;
+4. avaliação no holdout BFW-B fixo (mesmo dataset em todas as
+   réplicas);
+5. comparação par-a-par com win/tie/loss usando tolerância
+   $\varepsilon = 10^{-4}$.
+
+| Modo | Mediana $C_{\text{llr}}$ | IC 95% | $C$ mais frequente |
 |---|---|---|---|
-| PAIR | 0,0451 | [0,0435, 0,0715] | 18/30 (60,0 %) |
-| GROUPED_PROBE | 0,0447 | [0,0417, 0,0715] | 11/30 (36,7 %) |
-| STRICT_IDENTITY (V2.10) | 0,0450 | [0,0422, 0,0715] | 1/30 (3,3 %) |
+| PAIR | 0,0492 | [0,0438, 0,0947] | 1,0 (133/200), 10 (66) |
+| GROUPED_PROBE | 0,0474 | [0,0423, 0,0923] | 0,1 (90), 1,0 (77), 10 (30) |
+| STRICT_IDENTITY (V2.10) | 0,0475 | [0,0424, 0,0923] | 1,0 (83), 0,1 (75), 10 (36) |
 
-Diferenças par-a-par:
+Diferenças par-a-par e contagens W/T/L ($\varepsilon = 10^{-4}$):
 
-- $\Delta C_{\text{llr}}$ (STRICT − GROUPED): mediana **+0,0000**,
-  IC95 **[−0,0016, +0,0033]** — cruza zero.
-- $\Delta C_{\text{llr}}$ (PAIR − GROUPED): mediana **+0,0000**,
-  IC95 **[−0,0013, +0,0033]** — cruza zero.
+| Comparação | $\Delta C_{\text{llr}}$ mediana | IC 95% | Wins | Ties | Losses |
+|---|---|---|---|---|---|
+| PAIR − GROUPED | **+0,0011** | [−0,0000, +0,0108] | 5 (2 %) | 84 (42 %) | **111 (56 %)** |
+| STRICT − GROUPED | +0,0000 | [−0,0073, +0,0079] | 28 (14 %) | 127 (64 %) | 45 (22 %) |
+| STRICT − PAIR | −0,0009 | [−0,0097, +0,0024] | — | — | — |
 
-**Leitura central.** Com $N_{\text{ids}}=36$ no domínio de
-calibração, os três modos de CV interno **não são empiricamente
-distinguíveis em mediana de $C_{\text{llr}}$**. A vantagem do
-GROUPED sobre o PAIR documentada na §4.2 (Cllr 0,0465 → 0,0434 em
-1-KNOT S0) é artefato do split específico avaliado e não sobrevive
-a bootstrap por identidade. PAIR venceu mais réplicas em
-contagem absoluta, mas todas as três tiveram pelo menos uma vitória
-e os ICs se sobrepõem amplamente.
+**Leitura central V2.11.**
 
-**Implicação metodológica.** Em corpora pequenos (≲ 50 identidades),
-a escolha do splitter do CV interno é dominada por variabilidade
-amostral; nenhuma das três opções pode ser reportada como
-sistematicamente superior. A justificativa para preferir GROUPED ou
-STRICT permanece **conceitual** (eliminar leakage que poderia
-distorcer a seleção de $C$ em corpora maiores), não estatística
-neste regime. A estabilidade da conclusão deve ser verificada em
-outros corpora e em outros seeds antes que GROUPED ou STRICT seja
-proposto como padrão definitivo.
+- **GROUPED_PROBE > PAIR (empírico)**: com 200 réplicas e
+  bootstrap preservando multiplicidades, **PAIR perde em 56 % das
+  réplicas e ganha em apenas 2 %**, com mediana de
+  $\Delta C_{\text{llr}}$ de +0,0011 e limite inferior do IC 95 %
+  encostando em zero (−0,0000). Esta é evidência mais consistente
+  do que o resultado V2.10 anterior (com 30 reps sem
+  multiplicidades, onde a diferença cruzava zero). Confirma —
+  empiricamente neste corpus — a justificativa metodológica de
+  preferir GROUPED_PROBE sobre PAIR.
+- **STRICT_IDENTITY ≈ GROUPED_PROBE**: com mediana de
+  $\Delta C_{\text{llr}}$ exatamente zero, IC 95 % amplo
+  ([−0,0073, +0,0079]) e 64 % de empates dentro de $\varepsilon$,
+  os dois modos são **estatisticamente equivalentes** neste
+  corpus. STRICT_IDENTITY não trouxe vantagem empírica
+  detectável sobre GROUPED_PROBE com $N_{\text{ids}} = 36$.
+- **Distribuição de $C$**: PAIR escolhe $C \ge 1$ em 100 % das
+  réplicas (regularização fraca); GROUPED e STRICT distribuem-se
+  mais amplamente, com $C = 0{,}1$ presente em 45 % e 38 %
+  respectivamente — reflete que o CV agrupado por identidade
+  rejeita parte do regime $C$ alto.
+- **Hipótese de trabalho**: a preferência por GROUPED_PROBE sobre
+  PAIR é consistente com a teoria (eliminar leakage por
+  correlação entre pares) e agora corroborada por evidência
+  empírica neste corpus. A preferência por STRICT_IDENTITY sobre
+  GROUPED_PROBE permanece **conceitual** (disjunção identitária
+  total auditável + refit em D_cal cheio), não empiricamente
+  diferenciada com $N_{\text{ids}}=36$.
 
-**Recomendação prática.**
+**Limitações deste experimento.**
 
-- Para auditoria forense com $N_{\text{ids}} \gtrsim 50$ no domínio
-  de calibração, STRICT é o splitter mais defensável (disjunção
-  total garantida, auditável via `cv_strict_n_dropped_hd` e
-  `cv_strict_n_identities_per_group`).
-- Para domínios de calibração pequenos (poucas identidades,
-  como neste teste com 36 ids), STRICT pode descartar a maioria
-  dos pares Hd e prejudicar a estabilidade do CV. Nesses casos,
-  GROUPED continua sendo o trade-off recomendado.
-- STRICT permanece **opt-in** via
-  `model.metadata["cv_split_mode_request"] = "STRICT_BY_IDENTITY"`
-  na V2.9; o default segue GROUPED quando há identidades de
-  probe/reference disponíveis no contexto do calibrador.
+- **Holdout fixo (BFW-B).** O experimento mede sensibilidade do
+  calibrador à composição de $D_{\text{cal}}$, não a incerteza
+  total esperada do desempenho operacional. Variar também
+  $D_{\text{val}}$ exigiria uma estrutura distinta (e.g. nested
+  identity holdout). Foi tentada uma Análise B com partição
+  identitária interna do conjunto disponível (70 % $D_{\text{cal}}$ +
+  30 % $D_{\text{val}}$), mas os parquets BFW-A (treino) e BFW-B
+  (val) já têm identidades disjuntas por construção (36 + 64,
+  overlap = 0), tornando essa partição inviável neste corpus.
+  Avaliação multi-domain exigiria corpora adicionais.
+- **36 identidades** continua sendo um corpus pequeno. Mesmo com
+  200 réplicas de bootstrap, o IC superior da distribuição de
+  $C_{\text{llr}}$ ([0,094, 0,092]) reflete reamostragens onde
+  poucas identidades ficaram representadas, gerando calibradores
+  fracos.
+- **Replicação cross-domínio**: a vantagem GROUPED > PAIR
+  observada aqui precisa ser verificada em outros corpora
+  (CFP, BFW completo, corpora com mais identidades) antes de
+  generalização.
 
-Metadados persistidos no modo STRICT (§7.10):
-`cv_strict_n_kept_total`, `cv_strict_n_dropped_hd`,
-`cv_strict_n_unique_identities`,
-`cv_strict_n_identities_per_group` (vetor de $K$ ints).
+Metadados persistidos no modo STRICT_IDENTITY estão descritos em
+§7.10 (contagens dinâmicas por fold, balance loads,
+`fold_health` formalizado).
 
 ---
 
@@ -1126,10 +1222,12 @@ seleção descrita em §9.3:
 - `piecewise_cv_scoring_class_aggregation`: como Hp e Hd são
   agregados (`"equal_class_weight"` em `neg_cllr_balanced`;
   `"per_sample"` em `neg_log_loss`).
-- `cv_splitter_type`: `"PredefinedSplit_StrictByIdentity"` (V2.9 com
-  modo STRICT), `"StratifiedGroupKFold"` (default V2.8 quando
-  identidades estão disponíveis) ou `"StratifiedKFold"` (fallback
-  quando o input não traz identidades, e.g. dict raw).
+- `cv_splitter_type`: `"IdentityDisjointPairKFold"` (V2.10 com
+  modo STRICT_IDENTITY), `"StratifiedGroupKFold"` (V2.8 GROUPED_PROBE
+  quando identidades estão disponíveis), `"StratifiedKFold"`
+  (V2.7 PAIR — fallback quando o input não traz identidades, e.g.
+  dict raw). Valores legados V2.9 como
+  `"PredefinedSplit_StrictByIdentity"` não são mais emitidos.
 - `cv_splitter_random_seed`: seed do splitter (42 fixo, garante
   reprodutibilidade).
 - `cv_fold_count`: número de folds efetivamente usado. Pode ser
@@ -1137,16 +1235,17 @@ seleção descrita em §9.3:
   minoritária tem poucas amostras (`StratifiedKFold`), (b) o
   número de identidades únicas da classe minoritária é menor que
   `cv_folds` (`StratifiedGroupKFold`), ou (c) o número de
-  identidades únicas é menor que `cv_folds` no modo STRICT.
-- `cv_grouping_level`: granularidade do agrupamento dos folds
-  (`"identity_partition"` em V2.9 com modo STRICT; `"identity_probe"`
-  em V2.8 com `StratifiedGroupKFold`; `"pair"` em `StratifiedKFold`).
-- `cv_identity_disjointness_verified`: `True` em V2.9 com modo
-  STRICT (partição prévia das identidades em $K$ grupos disjuntos +
-  descarte de pares Hd cross-grupo); `"partial"` em V2.8 com
-  splitter grouped (probe disjunto entre folds; reference pode
-  cruzar nos pares Hd); `False` quando o splitter é por par
-  (ver §4.2).
+  identidades únicas é menor que `cv_folds` no modo STRICT_IDENTITY.
+- `cv_identity_disjointness_level` (V2.10): enum textual com nível
+  de disjunção identitária garantido pelo splitter
+  (`"full"` — STRICT_IDENTITY V2.10; `"probe_only"` — GROUPED_PROBE
+  V2.8; `"none"` — PAIR V2.7).
+- `cv_identity_disjointness_verified` (V2.10): bool puro indicando
+  se a disjunção declarada foi verificada na construção dos folds.
+  `True` em STRICT_IDENTITY. `False` em PAIR e em GROUPED_PROBE —
+  esse último garante disjunção apenas parcial (probe), e o campo
+  `cv_identity_disjointness_level = "probe_only"` registra essa
+  natureza separadamente.
 - `cv_split_mode_requested` (V2.10): valor do enum
   `LogRegGridSearchCVMode` requisitado pelo config
   (`AUTO`/`PAIR`/`GROUPED_PROBE`/`STRICT_IDENTITY`).
@@ -1186,6 +1285,24 @@ seleção descrita em §9.3:
   `critical`; abaixo dos mínimos mas não-zero ficam `warning`.
   Critical loga 🚨, warning loga ⚠️ no logger_callback.
 
+> **Natureza dos thresholds dos health checks.** Os limiares acima
+> (≥ 50/10 Hp/Hd, < 50 % boundary) são **guardrails técnicos**
+> para detectar folds degenerados de forma automática. Eles não
+> constituem critérios estatísticos de **suficiência amostral para
+> uso pericial** — a defensibilidade forense depende
+> adicionalmente da estabilidade dos parâmetros entre folds
+> (§7.11), cobertura por identidade e por pose, comportamento das
+> caudas dos scores (§8.3), e validação externa em corpora
+> independentes. `overall_status = ok` é condição necessária,
+> não suficiente.
+
+**Campos legados V2.9** (não emitidos pela V2.10):
+`cv_strict_n_kept_total`, `cv_strict_n_dropped_hd`,
+`cv_grouping_level`. Persistiam apenas no protocolo V2.9 do
+filtro global e foram substituídos pelas contagens dinâmicas por
+fold acima e por `cv_identity_disjointness_level`. Pickles V2.9
+antigos ainda podem conter esses campos; novos artefatos não.
+
 Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
 quais foram descartados como inviáveis (sem ajuste post-hoc do
 grid), qual função objetivo orientou a escolha, e quais foram os
@@ -1203,25 +1320,34 @@ sensível ao split e seu valor operacional deve ser questionado.
 
 > **Ressalva metodológica importante.** Os diagnósticos `cv_*`
 > medem estabilidade entre folds do splitter configurado. Três
-> regimes são possíveis:
+> regimes são possíveis na V2.10:
 >
-> - **V2.9 STRICT (opt-in)** — `cv_splitter_type =
->   "PredefinedSplit_StrictByIdentity"`, `cv_grouping_level =
->   "identity_partition"`, `cv_identity_disjointness_verified =
->   True`. Identidades particionadas em $K$ grupos disjuntos e Hd
->   cross-grupo descartado. Disjunção total verificada (§4.3).
-> - **V2.8 default** — `cv_splitter_type = "StratifiedGroupKFold"`,
->   `cv_grouping_level = "identity_probe"`. Probe disjunto entre
->   folds; a identidade de **referência** dos pares Hd pode ainda
->   aparecer em múltiplos folds (cada par Hd carrega duas
+> - **STRICT_IDENTITY (V2.10, opt-in)** — `cv_splitter_type =
+>   "IdentityDisjointPairKFold"`,
+>   `cv_identity_disjointness_level = "full"`,
+>   `cv_identity_disjointness_verified = True`. Identidades
+>   particionadas em $K$ grupos balanceados via LPT scheduling;
+>   pares Hd boundary excluídos apenas do fold corrente (não
+>   globalmente); refit final em todo $D_{\text{cal}}$. Disjunção
+>   total verificada por fold (§4.4).
+> - **GROUPED_PROBE (V2.8 default)** —
+>   `cv_splitter_type = "StratifiedGroupKFold"`,
+>   `cv_identity_disjointness_level = "probe_only"`,
+>   `cv_identity_disjointness_verified = False`. Probe disjunto
+>   entre folds; a identidade de **referência** dos pares Hd pode
+>   ainda aparecer em múltiplos folds (cada par Hd carrega duas
 >   identidades e o splitter aceita apenas uma label de grupo por
 >   linha). Cobertura parcial.
-> - **V2.7 fallback** — `cv_splitter_type = "StratifiedKFold"`,
->   `cv_grouping_level = "pair"`. Folds formados por par e podem
->   compartilhar identidades inteiramente.
+> - **PAIR (V2.7 fallback)** —
+>   `cv_splitter_type = "StratifiedKFold"`,
+>   `cv_identity_disjointness_level = "none"`,
+>   `cv_identity_disjointness_verified = False`. Folds formados
+>   por par e podem compartilhar identidades inteiramente.
 >
-> Em todos os casos, essas métricas não substituem bootstrap por
-> identidade (§9.5).
+> Em todos os casos, essas métricas não substituem reamostragem
+> por identidade (§9.5) e a vantagem empírica entre splitters em
+> corpora pequenos deve ser verificada por análise de robustez
+> dedicada (§4.5).
 
 Campos persistidos:
 
@@ -1443,15 +1569,33 @@ para < 2 bits.
 
 ![Quantis por classe — calibrador em BFW split](images/pwl_quantiles_bfw_split.png)
 
-> **Nota sobre o aviso "⚠ inversão" no título dos gráficos.** O título
-> exibido pelo widget de plotagem do FaceAudit contém o marcador "⚠
-> inversão" em ambas as figuras acima. Pelos números destacados, **não
-> existe inversão entre o P1 de $H_p$ e o P99 de $H_d$** em nenhum dos
-> dois casos (margem positiva $+0{,}23$ e $+0{,}53$ respectivamente).
-> O aviso provavelmente indica apenas a presença de genuínos com
-> log-LR $< 0$ (cauda Hp com sinal contrário), e não cruzamento entre
-> quantis extremos das classes. A semântica do marcador no widget
-> deve ser revista para distinguir os dois fenômenos.
+> **Notas sobre estado das figuras.**
+>
+> 1. **Figura BFW (segunda imagem)**: regenerada na V2.4 com a
+>    semântica corrigida do aviso —
+>    `⚠ cauda Hp com log-LR < 0 (n=N)` substituindo o antigo
+>    `⚠ inversão`.
+> 2. **Figura CFP (primeira imagem)**: gerada em versão anterior
+>    (V2.2/V2.3) com o aviso legado `⚠ inversão` ainda exibido.
+>    Tentativas posteriores de regenerar a figura com a nova
+>    semântica usando os datasets de score disponíveis no projeto
+>    (cosseno CFP in-sample, cross-domain CFP→BFW cosseno) não
+>    reproduziram cauda Hp com log-LR negativo — os calibradores
+>    treinados produzem P1(Hp) > 0 em todos esses cenários. A
+>    figura original possivelmente foi gerada com PLDA CFP, cujo
+>    parquet de scores não está mais disponível neste projeto.
+>    Pelos números no texto da §8.3 (P1(Hp) $= -1{,}79$), o aviso
+>    correto na figura CFP também seria
+>    `⚠ cauda Hp com log-LR < 0`, não `⚠ inversão` — não há
+>    cruzamento entre os quantis extremos destacados (margem
+>    $+0{,}23$).
+> 3. **Distinção semântica**: o widget de plotagem do FaceAudit
+>    foi corrigido na V2.4 — a partir dessa versão, o marcador
+>    indica explicitamente a presença de genuínos com log-LR < 0
+>    (cauda Hp com sinal contrário) e o número de genuínos
+>    afetados (`n=N`). "Inversão entre quantis extremos das
+>    classes" é fenômeno distinto e não é mais sinalizado pelo
+>    mesmo aviso.
 
 ### 8.4 Implementação no FaceAudit
 
