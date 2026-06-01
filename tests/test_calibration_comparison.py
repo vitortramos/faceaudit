@@ -50,6 +50,26 @@ def test_cllr_helper_matches_production():
         np.testing.assert_allclose(a, b, rtol=0, atol=0)
 
 
+def test_compute_cllr_matches_manual_softplus_formula():
+    """O `compute_cllr` de produção deve casar uma reimplementação manual da
+    fórmula `0.5·(mean log₂(1+e^(-llr_hp)) + mean log₂(1+e^(+llr_hd)))`.
+
+    Não é tautológico (o helper local delega para `compute_cllr`; este teste
+    valida a fórmula em si). Inclui logits extremos (±20) para travar a
+    estabilidade numérica de `logaddexp`.
+    """
+    from faceaudit.services.cllr_math import compute_cllr
+    llr_hp = np.array([-20.0, -3.0, 0.0, 2.0, 20.0])
+    llr_hd = np.array([-20.0, -2.0, 0.0, 3.0, 20.0])
+    expected_gen = np.mean(np.logaddexp(0.0, -llr_hp)) / np.log(2.0)
+    expected_imp = np.mean(np.logaddexp(0.0, +llr_hd)) / np.log(2.0)
+    expected_cllr = 0.5 * (expected_gen + expected_imp)
+    actual_cllr, actual_gen, actual_imp = compute_cllr(llr_hp, llr_hd)
+    np.testing.assert_allclose(actual_cllr, expected_cllr, atol=1e-12)
+    np.testing.assert_allclose(actual_gen, expected_gen, atol=1e-12)
+    np.testing.assert_allclose(actual_imp, expected_imp, atol=1e-12)
+
+
 def test_scenario_C_oracle_is_not_clipped_in_mass_region():
     """O oráculo de C deve ser ≈ 2d·t (sem platô artificial) na faixa de massa.
 
