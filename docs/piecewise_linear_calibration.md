@@ -27,7 +27,9 @@ Os elementos descritos neste documento estão presentes no código:
 - Seleção de hiperparâmetro $C$ por `GridSearchCV` sob restrição de
   monotonicidade — candidatos cuja curva final é não-monotônica são
   descartados; selecionado o melhor $C$ entre os válidos por CV score.
-- Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.10).
+- Função objetivo do CV: `neg_cllr_balanced` (padrão V2.6) — equivalente
+  a −Cllr balanceado por classe (§9.3).
+- Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.11).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
 - Algoritmo geral para identificar o ponto de cruzamento efetivo de
@@ -85,11 +87,11 @@ e log-LR, mas não acrescenta informação ausente do score.
 
 Quando o score contém apenas similaridade, a suficiência da
 estatística-resumo para as proposições do caso deve ser demonstrada
-empiricamente. Informações adicionais (e.g. tipicidade da face
-questionada em relação à população relevante) exigem modelagem
-própria ou fusão multivariada. Morrison (2013, 2021) discute a
-relevância de incorporar tipicidade nos sistemas forenses
-biométricos.
+empiricamente. Em determinados contextos, scores baseados apenas em
+similaridade ou diferença podem ser insuficientes pois não
+incorporam a tipicidade da amostra questionada em relação à
+população relevante (Morrison & Enzinger, 2018). Informações
+adicionais exigem modelagem própria ou fusão multivariada.
 
 ### 1.2 Convenção logarítmica
 
@@ -337,7 +339,7 @@ re-executado em cada fold com apenas os dados de treino do fold:
   apenas com seus dados de treino.
 - Conversão `aux_log_lr → raw` em `KnotScale.AUX_LOG_LR` usa o
   $\alpha_{\text{aux}}$ daquele fold.
-- Cálculo dos knots em `KnotPlacement.AUTO_FROM_MEDIANS` (§6.2) usa
+- Cálculo dos knots em `KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS` (§6.2) usa
   medianas calculadas apenas no subset de treino do fold.
 
 Nenhuma dessas operações lê dados do fold de validação. A propriedade
@@ -418,7 +420,7 @@ $$
 A inclinação $\alpha_{\text{aux}}$ tem interpretação útil: é o fator
 de conversão entre score bruto e log-LR linear local. Esse fator é
 usado pela escala `AUX_LOG_LR` (§5.2) e pelo posicionamento
-`AUTO_FROM_MEDIANS` (§6.2).
+`AUTO_FROM_MIRRORED_MEDIANS` (§6.2).
 
 #### Valor fixo (`HingeAnchorMode.MANUAL`)
 
@@ -455,9 +457,9 @@ Quem decide a posição dos knots.
 | Valor | Significado |
 |---|---|
 | `MANUAL` | Usuário escreve `knot_offsets` na configuração. |
-| `AUTO_FROM_MEDIANS` (default em novos calibradores) | Transformer popula `knot_offsets` no fit usando a heurística experimental de §6.2. |
+| `AUTO_FROM_MIRRORED_MEDIANS` (default em novos calibradores) | Transformer popula `knot_offsets` no fit usando a heurística experimental de §6.2. |
 
-Em `AUTO_FROM_MEDIANS`, os campos `knot_offsets` e `knot_scale` do
+Em `AUTO_FROM_MIRRORED_MEDIANS`, os campos `knot_offsets` e `knot_scale` do
 DTO são ignorados; o transformer determina ambos automaticamente. A
 UI esconde esses campos quando AUTO está selecionado.
 
@@ -503,9 +505,9 @@ no holdout).
 
 ![Curva piecewise com 1 knot em s0](images/pwl_calibration_curve_singleknot.png)
 
-### 6.2 Modo AUTO_FROM_MEDIANS (heurística experimental)
+### 6.2 Modo AUTO_FROM_MIRRORED_MEDIANS (heurística experimental)
 
-**Status.** `AUTO_FROM_MEDIANS` é uma heurística automática,
+**Status.** `AUTO_FROM_MIRRORED_MEDIANS` é uma heurística automática,
 determinística e ajustada separadamente em cada fold do CV,
 proposta no FaceAudit para o posicionamento parcimonioso de dois
 knots. Não consta da literatura citada. Deve ser tratada como
@@ -567,7 +569,7 @@ exatamente à região de sobreposição das classes.
 
 #### Fold-awareness
 
-Em `AUTO_FROM_MEDIANS`, o cálculo das medianas acontece dentro do
+Em `AUTO_FROM_MIRRORED_MEDIANS`, o cálculo das medianas acontece dentro do
 `PiecewiseLinearScoreTransformer.fit`, executado uma vez por fold do
 `GridSearchCV`. Cada fold tem seu próprio $\alpha_{\text{aux}}, s_0,
 \hat\ell_p, \hat\ell_d$ e, portanto, seus próprios knots, computados
@@ -575,10 +577,10 @@ estritamente sobre seus dados de treino. Não há leakage dos folds de
 validação para a definição dos knots. (Subsiste o risco de leakage por
 correlação entre pares — ver §4.2.)
 
-#### Exemplo de curva treinada por AUTO_FROM_MEDIANS
+#### Exemplo de curva treinada por AUTO_FROM_MIRRORED_MEDIANS
 
 A figura abaixo mostra um calibrador piecewise produzido por
-`AUTO_FROM_MEDIANS` sobre o mesmo dataset usado em §6.1. Dois knots
+`AUTO_FROM_MIRRORED_MEDIANS` sobre o mesmo dataset usado em §6.1. Dois knots
 foram posicionados nos espelhos das medianas log-LR auxiliares de
 cada classe (em $-89{,}19$ e $+13{,}68$ na escala bruta), gerando
 três segmentos com inclinações `[0.077, 0.221, 0.319]`. A curva
@@ -601,13 +603,13 @@ duas configurações produziram:
 | Posicionamento | $C_{\text{llr}}$ | $C_{\text{llr,affine}}$ | slope pós-afim |
 |---|---|---|---|
 | Uma dobra em $s_0$ (`MANUAL`, `knot_offsets=[0.0]`) | **0,0434** | 0,0419 | 0,893 |
-| Dois knots refletidos (`AUTO_FROM_MEDIANS`) | 0,0465 | 0,0437 | 0,810 |
+| Dois knots refletidos (`AUTO_FROM_MIRRORED_MEDIANS`) | 0,0465 | 0,0437 | 0,810 |
 
 O modo automático produziu uma curva tecnicamente coerente, mas
 **não superou** a configuração manual com uma única dobra neste
 experimento. A complexidade adicional (dois knots em vez de um) não
 se traduziu em ganho de calibração. O resultado reforça que
-`AUTO_FROM_MEDIANS` deve ser tratado como heurística experimental e
+`AUTO_FROM_MIRRORED_MEDIANS` deve ser tratado como heurística experimental e
 avaliado comparativamente, não adotado como configuração
 universalmente superior.
 
@@ -622,7 +624,7 @@ AUTO não introduz leakage e o $C_{\text{llr}}$ reportado é honesto.
 
 #### Health checks recomendados
 
-Antes de aceitar um calibrador produzido por `AUTO_FROM_MEDIANS`,
+Antes de aceitar um calibrador produzido por `AUTO_FROM_MIRRORED_MEDIANS`,
 verificar no metadata:
 
 - `hinge_anchor_aux_coef > 0` — auxiliar não degenerou.
@@ -635,18 +637,21 @@ verificar no metadata:
 - **Cobertura por classe em cada trecho**: `segment_counts_hp[r] > 0` e
   `segment_counts_hd[r] > 0`. Quando uma das classes está totalmente
   ausente num trecho (e.g. cauda direita pura Hp ou cauda esquerda
-  pura Hd), o LogReg principal não tem contraste discriminativo para
-  estimar inclinação estritamente positiva — o coeficiente $\beta_j$
-  da hinge correspondente pode assumir valor próximo de zero ou
-  ligeiramente negativo, violando a monotonicidade. Esse risco é
-  intrínseco ao posicionamento por medianas, porque os knots ficam
-  exatamente nas fronteiras onde a outra classe começa a desaparecer.
+  pura Hd), a inclinação local fica fracamente identificada pelos
+  dados daquela região. Sua estimativa passa a depender mais
+  intensamente da continuidade paramétrica da curva, dos demais
+  trechos e da regularização L2. Nessa condição, coeficientes
+  instáveis e inclinações negativas tornam-se mais prováveis,
+  especialmente com regularização fraca. Esse risco **pode ocorrer
+  com maior frequência** no modo automático quando os knots
+  refletidos caem em regiões de cauda com cobertura assimétrica por
+  classe.
 - `segment_support_warnings` vazio.
 - `is_monotonic = true`.
 
 Se as medianas não estiverem em lados opostos do zero, isso indica que
 o LogReg auxiliar não estratifica adequadamente as classes em torno do
-ponto neutro neste domínio — `AUTO_FROM_MEDIANS` pode não ser
+ponto neutro neste domínio — `AUTO_FROM_MIRRORED_MEDIANS` pode não ser
 adequado. O metadata `piecewise_auto_log_lr_hp_p50` /
 `piecewise_auto_log_lr_hd_p50` permite essa verificação ex-post.
 
@@ -675,7 +680,9 @@ contrato de auditoria** do componente.
 - `calibration_basis_mode`: `"PIECEWISE_LINEAR"` ou `"NONE"`.
 - `piecewise_enabled`: bool.
 - `knot_placement_protocol_version`: identificador da versão da
-  heurística usada (e.g. `"auto_from_medians_v1"`, `"manual_v1"`).
+  heurística usada (e.g. `"auto_from_mirrored_medians_v1"` desde
+  V2.6; `"auto_from_medians_v1"` em pickles V2.0–V2.5;
+  `"manual_v1"`).
 
 ### 7.2 Convenção de log-LR
 
@@ -705,7 +712,7 @@ contrato de auditoria** do componente.
 ### 7.4 Knots e suporte
 
 - `piecewise_knot_scale`: `"RAW"` ou `"AUX_LOG_LR"`.
-- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MEDIANS"`
+- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MIRRORED_MEDIANS"`
   (string serializada — o valor `AUTO_FROM_MEDIANS` é preservado
   como tag retroativa mesmo após o rename do enum para
   `AUTO_FROM_MIRRORED_MEDIANS` na V2.4).
@@ -781,15 +788,33 @@ seleção descrita em §9.3:
   (`"best_valid_candidate_by_cv_score"`).
 - `piecewise_valid_c_values`: lista de $C$ cuja curva final passou em
   monotonicidade estrita.
-- `piecewise_valid_c_cv_scores`: CV scores correspondentes
-  (`neg_log_loss`), paralelos a `piecewise_valid_c_values`.
+- `piecewise_valid_c_cv_scores`: CV scores correspondentes (na
+  função objetivo escolhida — ver `piecewise_cv_scoring` abaixo),
+  paralelos a `piecewise_valid_c_values`.
 - `piecewise_invalid_c_values`: lista de $C$ rejeitados.
 - `piecewise_invalid_c_reasons`: motivo textual por $C$ rejeitado
   (inclui slopes computados e índices dos trechos ofensores),
   paralelo a `piecewise_invalid_c_values`.
+- `piecewise_cv_scoring`: identificador da função objetivo do CV
+  (`"neg_cllr_balanced"` padrão a partir de V2.6, ou
+  `"neg_log_loss"` / `"roc_auc"` para escolhas explícitas).
+- `piecewise_cv_scoring_log_base`: base do logaritmo na função
+  objetivo (`"bits"` em `neg_cllr_balanced`; `"natural"` em
+  `neg_log_loss`).
+- `piecewise_cv_scoring_class_aggregation`: como Hp e Hd são
+  agregados (`"equal_class_weight"` em `neg_cllr_balanced`;
+  `"per_sample"` em `neg_log_loss`).
+- `cv_splitter_type`: `"StratifiedKFold"`.
+- `cv_splitter_random_seed`: seed do splitter (42 fixo, garante
+  reprodutibilidade).
+- `cv_fold_count`: número de folds efetivamente usado (pode ser
+  menor que `cv_folds` da config quando a classe minoritária tem
+  poucas amostras).
 
-Auditoria forense: o laudo pode citar quais $C$ foram avaliados e
-quais foram descartados como inviáveis sem ajuste post-hoc do grid.
+Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
+quais foram descartados como inviáveis (sem ajuste post-hoc do
+grid), qual função objetivo orientou a escolha, e quais foram os
+folds usados.
 
 ### 7.11 Estabilidade entre folds do CV (V2.5)
 
@@ -841,19 +866,28 @@ A função de calibração estimada pelo componente piecewise depende da
 distribuição empírica $(s, y)$ em $D_{\text{cal}}$. Quando
 $D_{\text{cal}}$ e $D_{\text{val}}$ vêm de **distribuições diferentes**
 — e.g. $D_{\text{model}} = D_{\text{cal}} = \text{CFP}$ e
-$D_{\text{val}} = \text{BFW}$ — a função aprendida não reflete a
-geometria real de $D_{\text{val}}$. Os parâmetros do LogReg auxiliar
+$D_{\text{val}} = \text{BFW}$ — os parâmetros do LogReg auxiliar
 ($\alpha_{\text{aux}}, s_0$), as medianas log-LR estimadas para
-`AUTO_FROM_MEDIANS`, e os coeficientes finais $\beta_j$ refletem
-$D_{\text{cal}}$, não $D_{\text{val}}$. Operacionalmente, isso
-compromete o $C_{\text{llr}}$ reportado.
+`AUTO_FROM_MIRRORED_MEDIANS`, e os coeficientes finais $\beta_j$
+refletem a geometria de $D_{\text{cal}}$, não a de $D_{\text{val}}$.
 
-A solução defensável é **particionar o dataset operacional** em
-subsets disjuntos por identidade. No FaceAudit, isso é feito via
-`PAIRED_DATASET_SPLIT` com `grouping_strategy = PRESERVE_LOOKALIKES`
-aplicado ao par (frontal, lateral). Tipicamente:
-$D_{\text{cal}} = \text{BFW split A}$ (40 %), $D_{\text{val}} =
-\text{BFW split B}$ (60 %), com identidades disjuntas.
+O $C_{\text{llr}}$ medido nesse protocolo continua sendo uma medida
+honesta — responde à pergunta "quão bem o calibrador treinado em
+$D_{\text{cal}}$ transfere para $D_{\text{val}}$?". O que ele **não**
+responde diretamente é "qual seria o desempenho esperado de um
+calibrador ajustado especificamente para o domínio operacional
+$D_{\text{val}}$?". Operacionalmente, em casework no domínio de
+$D_{\text{val}}$, há ganho de calibração potencial não capturado.
+
+Uma solução defensável, **quando existem dados representativos
+suficientes no domínio operacional**, é particionar o dataset
+operacional em subsets disjuntos por identidade. No FaceAudit, isso
+é feito via `PAIRED_DATASET_SPLIT` com `grouping_strategy =
+PRESERVE_LOOKALIKES` aplicado ao par (frontal, lateral).
+Tipicamente: $D_{\text{cal}} = \text{BFW split A}$ (60 %),
+$D_{\text{val}} = \text{BFW split B}$ (40 %), com identidades
+disjuntas. Quando não há corpus operacional suficiente, o protocolo
+cross-domain continua válido com a ressalva acima.
 
 > **Ressalva metodológica importante.** Quando o mesmo
 > $D_{\text{val}}$ é usado para **escolher** entre variantes de
@@ -890,9 +924,15 @@ Três observações empíricas:
 **(a) Magnitude do ganho.** Os calibradores LogReg melhoraram entre
 24 % e 34 % em $C_{\text{llr}}$ apenas pela mudança de protocolo —
 nenhum hiperparâmetro do calibrador foi alterado. O `Cllr_min`
-mudou marginalmente (0,038 → 0,036), indicando que a ordenação
-subjacente do PLDA é praticamente a mesma. O ganho é integralmente de
-**calibração**.
+permaneceu em faixa próxima nos dois cenários ($\approx 0{,}038$ no
+BFW completo e $\approx 0{,}036$ no BFW split B), compatível com
+discriminação potencial semelhante. Importante: os holdouts não são
+idênticos (BFW completo vs. BFW split B disjunto por identidade), de
+modo que essa comparação **não demonstra invariância exata** da
+ordenação subjacente do PLDA. A queda observada em $C_{\text{llr}}$ é
+predominantemente atribuível à calibração; uma decomposição precisa
+exigiria avaliar ambos os calibradores sobre o **mesmo conjunto de
+pares**.
 
 **(b) Inversão do ranking entre calibradores.** No protocolo
 cross-domain (CFP → BFW), BI GAUSS foi o melhor calibrador
@@ -905,15 +945,22 @@ protocolo de validação.
 **(c) Sample efficiency.** A regressão logística piecewise precisa
 fixar 2 a 4 parâmetros e tolera amostras menores razoavelmente bem.
 O calibrador BI GAUSS implementado no FaceAudit é o algoritmo de
-**Morrison (2024) — Bi-Gaussianized calibration**: aplica um
-calibrador inicial (LogReg, KDE ou identidade), estima a CDF
-empírica das duas classes com pesos $0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$,
-e mapeia o output via $F^{-1}(G(x))$ onde $F$ é a mistura paramétrica
+**Morrison (2024) — Bi-Gaussianized calibration**: aplica uma
+calibração inicial por LogReg ou KDE (variantes principais do
+artigo), ou identidade (`NONE` — quando os scores de entrada já são
+log-LRs e dispensam a primeira calibração, e.g. saída direta de
+PLDA); estima a CDF empírica das duas classes com pesos
+$0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$; e mapeia o output via
+$F^{-1}(G(x))$ onde $F$ é a mistura paramétrica
 $0{,}5 \cdot \mathcal{N}(+\sigma^2/2, \sigma^2) + 0{,}5 \cdot
 \mathcal{N}(-\sigma^2/2, \sigma^2)$ com $\sigma$ derivado do
-$C_{\text{llr}}$ ou do EER do output inicial. A CDF empírica é
-sensível ao $N$ da amostra de treino — especialmente nas caudas, onde
-poucas observações geram saltos discretos grandes em $G(x)$.
+$C_{\text{llr}}$ ou do EER do output inicial (Morrison 2024, §2).
+A CDF empírica é sensível ao $N$ da amostra de treino —
+especialmente nas caudas, onde poucas observações geram saltos
+discretos grandes em $G(x)$. O artigo destaca a importância de usar
+dados de treino representativos da população relevante e amostras
+suficientemente grandes para evitar overfitting e falha de
+generalização.
 
 No BFW split A (36 identidades / ≈ 684 amostras totais), a CDF
 empírica está mal-resolvida nas caudas — gera log-LRs operacionais
@@ -1066,7 +1113,7 @@ diretamente o comportamento dos coeficientes das hinges:
   de monotonicidade sem necessidade de reposicionar knots.
 
 Um caso prático observado: com `c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]`
-e knots posicionados por `AUTO_FROM_MEDIANS` num PLDA com Hd ausente
+e knots posicionados por `AUTO_FROM_MIRRORED_MEDIANS` num PLDA com Hd ausente
 no trecho direito, o GridSearch escolheu `C = 100` e produziu
 $m_3 = -0{,}016$ (rejeição). Reduzindo o grid para `[0.01, 0.1]`, o
 mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica).
@@ -1082,12 +1129,14 @@ viabilidade do modelo** durante a seleção de $C$ via o método
 fluxo é:
 
 1. `c_grid` é definido *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
-2. `GridSearchCV(refit=False)` calcula CV score (`neg_log_loss`)
-   de cada candidato;
-3. candidatos são iterados em ordem decrescente de CV score; para
-   cada um, é feito fit completo + verificação de monotonicidade;
-4. o **primeiro candidato** cuja curva final é estritamente
-   crescente em todos os trechos é selecionado;
+2. `GridSearchCV(refit=False)` calcula CV score de cada candidato
+   usando o scorer balanceado descrito abaixo;
+3. **todos** os candidatos são iterados em ordem decrescente de CV
+   score; para cada um, é feito fit completo + verificação de
+   monotonicidade (Opção A: avalia todos antes de selecionar, pra
+   persistir lista completa de aprovações e rejeições);
+4. o primeiro candidato cuja curva final é estritamente
+   crescente em todos os trechos é selecionado como `best_C`;
 5. todos os candidatos avaliados (válidos e inválidos) são
    persistidos no metadata para auditoria (§7.10);
 6. quando **nenhum candidato** produz curva monotônica, o calibrador
@@ -1103,6 +1152,42 @@ Recomendação geral: usar `c_grid` moderado a forte como default
 (`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
 defensáveis apenas em datasets com cobertura simétrica robusta por
 trecho.
+
+#### Função objetivo do cross-validation (V2.6)
+
+Como o número de pares impostores pode ser muito maior que o número
+de pares genuínos (caso típico em comparação biométrica, com
+$N_d / N_p$ entre 10 e 1000), a seleção de $C$ **não deve** usar o
+`neg_log_loss` convencional do scikit-learn sem ponderação. Esse
+scorer calcula a perda média por amostra; em datasets fortemente
+desbalanceados, fica dominado pela classe majoritária. O $C$
+selecionado pode ser ótimo para a perda média por par mas
+sub-ótimo para o objetivo forense balanceado medido por
+$C_{\text{llr}}$.
+
+A partir de V2.6, o FaceAudit utiliza um scorer balanceado
+equivalente a $-C_{\text{llr}}$ em base 2 (default da config
+`LogisticRegressionCalibrationModelConfig.scoring =
+NEG_CLLR_BALANCED`):
+
+$$
+\text{Cllr}_{\text{CV}} \;=\; \frac{1}{2}\left[\frac{1}{N_p}\sum_{i \in H_p}\log_2(1 + e^{-\ell_i}) \;+\; \frac{1}{N_d}\sum_{j \in H_d}\log_2(1 + e^{+\ell_j})\right],
+$$
+
+com $\ell_k = \text{decision\_function}(x_k)$ — calculado
+diretamente do estimador via `decision_function` (não usa
+`predict_proba` + clipping, evitando ceilings artificiais). As duas
+classes recebem peso agregado igual a $0{,}5$ independentemente da
+quantidade de pares. O método correspondente é
+`LogisticRegressionCalibrationModel._neg_cllr_balanced_scorer`. O
+scorer é registrado como callable diretamente no `GridSearchCV` —
+o sklearn aceita callables com assinatura
+`(estimator, X, y) -> float`.
+
+A escolha é persistida em `piecewise_cv_scoring` (§7.10) para
+auditoria. Se você deliberadamente preferir o `neg_log_loss`
+clássico, basta setar `scoring = NEG_LOG_LOSS` no DTO; o metadata
+registra a escolha.
 
 ### 9.4 Cllr_min e cal_loss como diagnósticos exploratórios
 
@@ -1159,15 +1244,16 @@ violando a condição de monotonicidade do trecho seguinte.
 **(b) Cobertura assimétrica por classe.** O suporte total pode ser
 grande, mas uma das classes pode estar **totalmente ausente** no
 trecho (e.g. cauda direita pura Hp, sem nenhuma amostra Hd; ou cauda
-esquerda pura Hd, sem nenhuma amostra Hp). Nessa situação o LogReg
-principal não tem contraste discriminativo para estimar inclinação
-estritamente positiva — o gradiente da log-loss em relação a $\beta_j$
-fica indeterminado em discriminação. Sob regularização L2 fraca
-($C$ alto), $\beta_j$ pode assumir valor ligeiramente negativo, levando
-ao slope negativo no trecho correspondente. Esse padrão é comum em
-distribuições PLDA com classes bem separadas, exatamente onde a
-heurística `AUTO_FROM_MEDIANS` posiciona os knots (na fronteira onde
-uma das classes desaparece).
+esquerda pura Hd, sem nenhuma amostra Hp). Nessa situação, a
+inclinação local fica fracamente identificada pelos dados daquela
+região; sua estimativa passa a depender mais intensamente da
+continuidade paramétrica da curva, dos demais trechos e da
+regularização L2. Sob regularização fraca ($C$ alto), $\beta_j$ pode
+assumir valor ligeiramente negativo, levando a slope negativo no
+trecho correspondente. Esse padrão pode ocorrer com maior frequência
+em distribuições PLDA com classes bem separadas, particularmente
+quando a heurística `AUTO_FROM_MIRRORED_MEDIANS` posiciona os knots
+em regiões de cauda com cobertura assimétrica.
 
 A mitigação preferencial para (b) é aumentar a regularização L2 via
 `c_grid` mais restrito (§9.3). A mitigação alternativa, mais agressiva,
@@ -1185,7 +1271,7 @@ por trecho explicitamente.
 Cada knot adiciona um parâmetro $\beta_j$ ao modelo. Com $K$ knots, o
 calibrador tem $K + 2$ parâmetros (incluindo $\beta_0$ e $\beta_z$).
 Em datasets pequenos ou desbalanceados, número grande de knots
-favorece sobreajuste. O modo AUTO_FROM_MEDIANS usa 2 knots (com
+favorece sobreajuste. O modo AUTO_FROM_MIRRORED_MEDIANS usa 2 knots (com
 colapso defensivo a 1 quando as duas medianas coincidem
 numericamente).
 
@@ -1228,10 +1314,23 @@ vive:
   mesma fórmula deste documento) ou herdado de execução anterior.
 
 Os dois caminhos são matematicamente equivalentes no caso 1D com
-mesmo $s_0$ e mesma regularização. O piecewise interno é a forma
-ergonômica para o caso 1D; o `SCORE_INTERACTION_FEATURE` é a forma
-para combinações multivariadas onde a hinge é uma entre várias
-features.
+mesmo $s_0$, mesma regularização e mesma escala de standardização. A
+**equivalência matemática não implica equivalência operacional**
+durante a seleção de hiperparâmetros: no fluxo interno deste
+documento, $s_0$ e os knots são aprendidos dentro de cada fold do
+`Pipeline` (§4.1), garantindo que o CV avalie variações reais; no
+fluxo externo, caso a hinge seja materializada **antes** do
+`GridSearchCV` (e.g. via `SCORE_INTERACTION_FEATURE` rodado uma vez
+sobre todos os dados), o posicionamento da dobra pode ter usado
+informações do conjunto completo e introduz leakage sutil na seleção
+de $C$. Essa é uma das razões para preferir a expansão interna em
+calibração univariada.
+
+O piecewise interno é a forma ergonômica para o caso 1D; o
+`SCORE_INTERACTION_FEATURE` é a forma para combinações multivariadas
+onde a hinge é uma entre várias features e o leakage da
+materialização precisa ser gerenciado separadamente (e.g. via
+particionamento por identidade upstream).
 
 ---
 
@@ -1260,6 +1359,18 @@ features.
   Forensic Science International: Synergy, 3, 100157. Argumenta que
   métricas baseadas em PAV/PAVA não são medidas operacionais
   significativas do grau de calibração em casework.
+- **Morrison, G. S., & Enzinger, E. (2018).** *Score based procedures
+  for the calculation of forensic likelihood ratios — Scores should
+  take account of both similarity and typicality.* Science & Justice,
+  58(1), 47–58. Demonstra empiricamente que scores baseados apenas em
+  similaridade ou diferença podem ser inadequados, enquanto scores
+  que incorporam similaridade e tipicidade se comportam melhor.
+- **Morrison, G. S. (2024).** *Bi-Gaussianized calibration of
+  likelihood ratios.* Law, Probability and Risk, 23(1), mgae004.
+  Apresenta o algoritmo Bi-Gaussianized adotado no
+  `BiGaussianizedCalibrationModel` do FaceAudit (mapeamento via
+  CDF empírica das classes em direção a uma mistura paramétrica de
+  duas Gaussianas calibradas via Cllr ou EER).
 - **Nelder, J. A. (1977).** *A Reformulation of Linear Models.*
   Journal of the Royal Statistical Society. Series A, 140(1),
   48–63. Referência canônica do princípio de marginalidade/hierarquia

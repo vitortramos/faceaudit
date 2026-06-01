@@ -57,11 +57,15 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
     )
 
     scoring: LogRegGridScoringMetric = field(
-        default=LogRegGridScoringMetric.NEG_LOG_LOSS,
+        default=LogRegGridScoringMetric.NEG_CLLR_BALANCED,
         metadata={"help": (
-            "Métrica de avaliação no GridSearch. NEG_LOG_LOSS (padrão) é ideal "
-            "para calibração — penaliza miscalibração diretamente. ROC_AUC "
-            "otimiza separabilidade/ranking, não calibração."
+            "Métrica de avaliação no GridSearch. NEG_CLLR_BALANCED (padrão "
+            "V2.6) é equivalente a −Cllr — média da log-loss em base 2 com "
+            "peso agregado igual entre Hp e Hd, independente do número de "
+            "pares em cada classe. Recomendado para calibração forense em "
+            "datasets desbalanceados (N_Hd >> N_Hp). NEG_LOG_LOSS faz média "
+            "por amostra e pode ser dominado pela classe majoritária. "
+            "ROC_AUC otimiza separabilidade/ranking, não calibração."
         )}
     )
 

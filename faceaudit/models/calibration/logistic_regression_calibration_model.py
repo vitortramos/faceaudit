@@ -155,7 +155,11 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                     f"minoritária tem {min_class_size} amostras."
                 )
 
-            scoring_str = (
+            # Resolve scoring: NEG_CLLR_BALANCED vira o callable customizado
+            # (balanceado por classe, equivalente a -Cllr); demais viram
+            # string nativa do sklearn.
+            scoring_obj = self._resolve_scoring(self.config.scoring)
+            scoring_label = (
                 self.config.scoring.value
                 if hasattr(self.config.scoring, "value")
                 else str(self.config.scoring)
@@ -172,7 +176,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"[{self.name}] 🧠 GridSearch piecewise-linear "
                 f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | "
                 f"knots={knots_disp} | "
-                f"c_grid={self.config.c_grid} | cv={cv_folds})..."
+                f"c_grid={self.config.c_grid} | cv={cv_folds} | "
+                f"scoring={scoring_label})..."
             )
 
             cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
@@ -189,7 +194,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 labels=labels,
                 cv=cv,
                 c_grid=list(self.config.c_grid),
-                scoring_str=scoring_str,
+                scoring=scoring_obj,
                 pwl_cfg=pwl_cfg,
                 make_pipeline=_make_pipeline,
                 logger_callback=logger_callback,
@@ -210,6 +215,23 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             self.metadata["piecewise_selection_policy"] = (
                 "best_valid_candidate_by_cv_score"
             )
+            # Função objetivo do CV — auditável no laudo.
+            from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+            self.metadata["piecewise_cv_scoring"] = scoring_label
+            if self.config.scoring is LogRegGridScoringMetric.NEG_CLLR_BALANCED:
+                self.metadata["piecewise_cv_scoring_log_base"] = "bits"
+                self.metadata["piecewise_cv_scoring_class_aggregation"] = (
+                    "equal_class_weight"
+                )
+            else:
+                self.metadata["piecewise_cv_scoring_log_base"] = "natural"
+                self.metadata["piecewise_cv_scoring_class_aggregation"] = (
+                    "per_sample"
+                )
+            # Contrato de reprodutibilidade do CV.
+            self.metadata["cv_splitter_type"] = "StratifiedKFold"
+            self.metadata["cv_splitter_random_seed"] = 42
+            self.metadata["cv_fold_count"] = int(cv_folds)
 
             logger_callback(
                 f"[{self.name}] ✅ Melhor C válido (monotônico): "
@@ -275,6 +297,59 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
     # ─────────────────────── helpers internos ───────────────────────
 
     @staticmethod
+    def _neg_cllr_balanced_scorer(estimator, X, y) -> float:
+        """Scorer sklearn-compatible que retorna `-Cllr` balanceado por classe.
+
+        Diferente do `neg_log_loss` do sklearn (média por amostra), esta
+        métrica calcula a média da log-loss em base 2 por classe e agrega
+        com peso igual entre Hp (y=1) e Hd (y=0):
+
+            Cllr = 0.5 · [ mean_{i ∈ Hp} log2(1 + exp(-ℓ_i))
+                          + mean_{j ∈ Hd} log2(1 + exp(+ℓ_j)) ]
+
+        onde ℓ_k = decision_function(x_k). Equivalente ao Cllr de
+        Brümmer & du Preez (2006) calculado a partir do estimador
+        (não precisa de `predict_proba` + clipping).
+
+        Em datasets fortemente desbalanceados (N_Hd >> N_Hp), o
+        `neg_log_loss` padrão fica dominado pela classe majoritária e
+        pode selecionar um C ótimo para impostores médios mas mal
+        calibrado para os genuínos difíceis. Esta versão balanceada
+        evita esse viés. Retorna `-Cllr` (scorer maximiza).
+        """
+        llr = np.asarray(estimator.decision_function(X), dtype=np.float64)
+        y_arr = np.asarray(y)
+        hp = llr[y_arr == 1]
+        hd = llr[y_arr == 0]
+        if hp.size == 0 or hd.size == 0:
+            # Fold sem ambas as classes — retorna pior pontuação possível
+            # pra que esse C não seja escolhido.
+            return float("-inf")
+        # log-loss em base 2; `np.logaddexp(0, x) = log(1 + exp(x))` é
+        # numericamente estável pra valores grandes.
+        cllr_hp = float(np.mean(np.logaddexp(0.0, -hp))) / np.log(2.0)
+        cllr_hd = float(np.mean(np.logaddexp(0.0, hd))) / np.log(2.0)
+        cllr = 0.5 * (cllr_hp + cllr_hd)
+        return -cllr
+
+    @classmethod
+    def _resolve_scoring(cls, scoring_enum):
+        """Converte o enum `LogRegGridScoringMetric` num objeto aceito
+        pelo `GridSearchCV.scoring` (string ou callable).
+
+        Para `NEG_CLLR_BALANCED`, retorna a função `_neg_cllr_balanced_scorer`
+        diretamente — o GridSearchCV aceita callables com assinatura
+        `(estimator, X, y) -> float`. Para as demais, retorna a string
+        nativa do sklearn.
+        """
+        from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+        if scoring_enum is LogRegGridScoringMetric.NEG_CLLR_BALANCED:
+            return cls._neg_cllr_balanced_scorer
+        if hasattr(scoring_enum, "value"):
+            return scoring_enum.value
+        return str(scoring_enum)
+
+    @staticmethod
     def _compute_pipeline_slopes(
         pipeline: Pipeline,
     ) -> Dict[str, Any]:
@@ -335,17 +410,24 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         labels: np.ndarray,
         cv: StratifiedKFold,
         c_grid: List[float],
-        scoring_str: str,
+        scoring,
         pwl_cfg: Any,
         make_pipeline: Callable[[float], Pipeline],
         logger_callback: Callable[[str], None],
     ) -> Dict[str, Any]:
-        """Varredura de C com filtro de monotonicidade.
+        """Varredura de C com filtro de monotonicidade (política Opção A).
 
-        Para cada C em `c_grid` (ordenado pelo CV score desc), faz fit
-        completo do pipeline e checa monotonicidade. O primeiro C cuja
-        curva treinada é monotônica é selecionado. Persiste candidatos
-        válidos e inválidos pra auditoria.
+        Para cada C em `c_grid`, faz fit completo do pipeline e checa
+        monotonicidade. **Avalia todos** os candidatos (não para no
+        primeiro válido) pra que o metadata persista a lista completa
+        de aprovações e rejeições — útil pra auditoria. O candidato
+        selecionado é o primeiro válido na ordenação por CV score
+        decrescente.
+
+        `scoring` aceita string sklearn ("neg_log_loss", "roc_auc") ou
+        callable `(estimator, X, y) -> float` (caso do scorer
+        `_neg_cllr_balanced_scorer` — recomendado para calibração
+        forense em datasets desbalanceados, ver §9.3 do doc).
 
         Retorna dict com:
         - `selected_pipeline`: Pipeline já treinada (best valid candidate)
@@ -360,7 +442,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             estimator=make_pipeline(c_grid[0]),
             param_grid={"logreg__C": list(c_grid)},
             cv=cv,
-            scoring=scoring_str,
+            scoring=scoring,
             n_jobs=-1,
             refit=False,
         )
@@ -375,8 +457,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             key=lambda i: -float(cv_scores[i]),
         )
 
-        # Segunda fase: pra cada candidato, fit completo + checa
-        # monotonicidade. Para no primeiro válido.
+        # Segunda fase: avalia TODOS os candidatos (Opção A do veredito)
+        # e seleciona o primeiro válido por ranking. Custo: c_grid fits
+        # adicionais sobre o pipeline (grids tipicamente ≤ 6 elementos —
+        # custo aceitável em troca de auditoria completa).
         valid_C: List[float] = []
         valid_C_cv_scores: List[float] = []
         invalid_C: List[float] = []
@@ -914,7 +998,9 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "calibration_basis_mode": pwl_cfg.mode.to_str(),
             "piecewise_enabled": True,
             "knot_placement_protocol_version": (
-                "auto_from_medians_v1"
+                # Nome semântico atual; "auto_from_medians_v1" continua
+                # aceito como tag legada em pickles V2.0-V2.5.
+                "auto_from_mirrored_medians_v1"
                 if pwl_t.knot_placement_.to_str() == "AUTO_FROM_MEDIANS"
                 else "manual_v1"
             ),

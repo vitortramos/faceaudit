@@ -16,12 +16,25 @@ class LogRegGridScoringMetric(Enum):
     e linha contextual).
     """
 
+    NEG_CLLR_BALANCED = (
+        "neg_cllr_balanced",
+        "Negative Cllr balanceado por classe (forense)",
+        "Equivalente a −Cllr: média da log-loss em base 2 por classe, "
+        "com peso agregado igual entre Hp e Hd (0.5 cada). "
+        "Métrica recomendada para calibração forense — não é dominada "
+        "pela classe majoritária em datasets desbalanceados (caso típico "
+        "em comparação biométrica, com N_Hd >> N_Hp). "
+        "Diferente do neg_log_loss do sklearn, que faz média por amostra.",
+    )
+
     NEG_LOG_LOSS = (
         "neg_log_loss",
-        "Negative Log-Loss (calibração)",
-        "Penaliza miscalibração diretamente — ideal para calibradores. "
-        "Modelos com probabilidades 'honestas' (próximas da frequência real) "
-        "vencem. É a métrica recomendada para calibração forense.",
+        "Negative Log-Loss (média por amostra)",
+        "Métrica de calibração que penaliza miscalibração diretamente. "
+        "Calcula a média da log-loss por amostra. Em datasets fortemente "
+        "desbalanceados (N_Hd >> N_Hp), pode ser dominada pela classe "
+        "majoritária — não recomendado para calibração forense. "
+        "Use neg_cllr_balanced em vez disso.",
     )
 
     ROC_AUC = (
@@ -58,7 +71,7 @@ class LogRegGridScoringMetric(Enum):
     @classmethod
     def from_str(cls, value: str) -> "LogRegGridScoringMetric":
         if not value:
-            return cls.NEG_LOG_LOSS
+            return cls.NEG_CLLR_BALANCED
         if isinstance(value, cls):
             return value
         try:
@@ -67,7 +80,7 @@ class LogRegGridScoringMetric(Enum):
             try:
                 return cls[str(value).strip().upper()]
             except KeyError:
-                return cls.NEG_LOG_LOSS
+                return cls.NEG_CLLR_BALANCED
 
     # --- Helpers para UI ---
 
