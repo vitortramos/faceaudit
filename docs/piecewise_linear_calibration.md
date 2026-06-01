@@ -37,13 +37,27 @@ Os elementos descritos neste documento estão presentes no código:
   scheduling; em cada fold, train e test são totalmente disjuntos
   por identidade e pares boundary (uma id dentro, outra fora)
   ficam excluídos apenas daquele fold. Refit final em todo
-  $D_{\text{cal}}$ (§4.4).
+  $D_{\text{cal}}$ (§4.4). Mapeamento explícito identidade → fold
+  persistido como `cv_strict_id_to_group_mapping` (V2.11.1) para
+  reprodução exata.
+- Clusters de lookalikes como unidade atômica no LPT scheduling
+  (V2.11.2): identidades de um cluster declarado em
+  `metadata["lookalike_clusters"]` ficam no mesmo fold,
+  preservando carga LPT agregada. Validação empírica em §4.4
+  mostra forte sensibilidade à qualidade dos clusters declarados.
 - Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.11).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
 - Algoritmo geral para identificar o ponto de cruzamento efetivo de
   log-LR = 0 por segmento.
 - Persistência de diagnósticos para auditoria (§7).
+- Testes unitários do splitter `IdentityDisjointPairKFold` em
+  `tests/test_identity_disjoint_pair_kfold.py` (V2.12, 25 testes):
+  validações do construtor, balanceamento LPT vs round-robin,
+  disjunção identitária por fold, contagens dinâmicas,
+  fold_health, reprodutibilidade, atomicidade de clusters de
+  lookalikes, descarte silencioso de identidades órfãs em
+  clusters declarados.
 
 ### 0.2 Princípios metodológicos adotados
 
