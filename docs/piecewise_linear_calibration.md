@@ -441,6 +441,20 @@ cross-validation interna ou dev set, **nunca pelo $C_{\text{llr}}$
 medido no mesmo holdout usado para reportar a métrica final** — esse
 procedimento constitui tuning sobre o test set.
 
+A figura abaixo ilustra um calibrador piecewise com
+`knot_offsets = [0.0]` (um único knot em $s_0$) treinado e validado
+sobre o mesmo domínio (BFW split, com identidades disjuntas entre os
+subsets). A curva piecewise (azul) tem dois segmentos com
+inclinações `[0.166, 0.291]` — slope mais íngreme acima de $s_0$,
+refletindo a transição empírica entre regiões dominadas por Hd e por
+Hp. A linha tracejada laranja é a calibração afim ótima a posteriori
+(`pós-afim: 0.893·logLR + 0.313`), com `slope ≈ 0.89 < 1` indicando
+ligeira sobreconfiança da curva piecewise. As barras vermelhas e
+verdes na base mostram a distribuição empírica de impostores e
+genuínos.
+
+![Curva piecewise com 1 knot em s0](images/pwl_calibration_curve_singleknot.png)
+
 ### 6.2 Modo AUTO_FROM_MEDIANS (heurística experimental)
 
 **Status.** `AUTO_FROM_MEDIANS` é uma heurística automática,
@@ -488,6 +502,21 @@ estritamente sobre seus dados de treino. Não há leakage dos folds de
 validação para a definição dos knots. (Subsiste o risco de leakage por
 correlação entre pares — ver §4.2.)
 
+#### Exemplo de curva treinada por AUTO_FROM_MEDIANS
+
+A figura abaixo mostra um calibrador piecewise produzido por
+`AUTO_FROM_MEDIANS` sobre o mesmo dataset usado em §6.1. Dois knots
+foram posicionados nos espelhos das medianas log-LR auxiliares de
+cada classe (em $-89{,}19$ e $+13{,}68$ na escala bruta), gerando
+três segmentos com inclinações `[0.077, 0.221, 0.319]`. Note como o
+segmento direito (acima do knot $+13{,}68$) tem inclinação maior que
+os anteriores — o coeficiente da hinge correspondente é positivo
+porque a regularização L2 escolhida (`C = 0.1`) foi suficiente para
+manter o slope estritamente crescente mesmo num trecho com cobertura
+assimétrica (sem Hd). Comparar com §9.2 e §8.3.
+
+![Curva piecewise AUTO 2 knots](images/pwl_calibration_curve_autoknots.png)
+
 #### Limitação intrínseca: medianas do treino vs. holdout
 
 Em estratégias com mismatch entre as distribuições de treino e
@@ -509,6 +538,15 @@ verificar no metadata:
 - `knot_inside_training_range = [true, true]` — todos os knots caem
   dentro do range observado de scores.
 - `segment_counts_total[r]` razoável em todos os trechos (e.g. ≥ 30).
+- **Cobertura por classe em cada trecho**: `segment_counts_hp[r] > 0` e
+  `segment_counts_hd[r] > 0`. Quando uma das classes está totalmente
+  ausente num trecho (e.g. cauda direita pura Hp ou cauda esquerda
+  pura Hd), o LogReg principal não tem contraste discriminativo para
+  estimar inclinação estritamente positiva — o coeficiente $\beta_j$
+  da hinge correspondente pode assumir valor próximo de zero ou
+  ligeiramente negativo, violando a monotonicidade. Esse risco é
+  intrínseco ao posicionamento por medianas, porque os knots ficam
+  exatamente nas fronteiras onde a outra classe começa a desaparecer.
 - `segment_support_warnings` vazio.
 - `is_monotonic = true`.
 
@@ -659,7 +697,37 @@ Recomenda-se documentar e tratar com cautela casos onde o score do
 caso cai fora do `[raw_score_min_training, raw_score_max_training]` —
 o log-LR nesses pontos é extrapolação linear, não interpolação.
 
-### 8.3 Cllr_min e cal_loss como diagnósticos exploratórios
+### 8.3 Regularização L2 e seleção de `c_grid`
+
+O calibrador é treinado com `LogisticRegression(C=...)` (inverso da
+regularização L2). A escolha de `c_grid` no `GridSearchCV` afeta
+diretamente o comportamento dos coeficientes das hinges:
+
+- **`C` alto (≥ 10)** corresponde a regularização fraca. O LogReg fica
+  flexível e tende a ajustar coeficientes individuais grandes em
+  trechos com pouco contraste discriminativo. Em piecewise com
+  cobertura assimétrica por classe (§9.2), isso pode produzir slopes
+  negativos em trechos sem Hp ou sem Hd — violação da monotonicidade
+  rejeitada por default.
+- **`C` moderado a forte (0.001 a 1)** força coeficientes menores. A
+  curva fica mais suave, e em trechos sem contraste o $\beta_j$ da
+  hinge tende a zero, mantendo o slope efetivo do trecho próximo do
+  slope do trecho anterior (positivo). Geralmente resolve violações
+  de monotonicidade sem necessidade de reposicionar knots.
+
+Um caso prático observado: com `c_grid = [0.01, 0.1, 1.0, 10.0, 100.0]`
+e knots posicionados por `AUTO_FROM_MEDIANS` num PLDA com Hd ausente
+no trecho direito, o GridSearch escolheu `C = 100` e produziu
+$m_3 = -0{,}016$ (rejeição). Reduzindo para `c_grid = [0.01, 0.1]`, o
+mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica), sem
+qualquer outra alteração na configuração.
+
+Recomendação: usar `c_grid` moderado a forte como default
+(`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
+defensáveis apenas em datasets com cobertura simétrica robusta por
+trecho.
+
+### 8.4 Cllr_min e cal_loss como diagnósticos exploratórios
 
 O `Cllr_min` (via PAVA in-sample) e `cal_loss = Cllr − Cllr_min`
 calculados sobre o conjunto avaliado são **diagnósticos
@@ -674,7 +742,7 @@ comparativo entre variantes do mesmo pipeline, mas não substituem:
 - Análise das caudas e da estabilidade do modelo.
 - Avaliação da aplicabilidade ao caso específico.
 
-### 8.4 Validação por bootstrap
+### 8.5 Validação por bootstrap
 
 Em uso forense, recomenda-se complementar o $C_{\text{llr}}$ pontual
 com intervalos via bootstrap, preferencialmente reamostrando por
@@ -699,19 +767,41 @@ entre colunas colineares, ou tornar-se numericamente instável**.
 O metadata `knot_inside_training_range` permite identificar esse
 problema.
 
-### 9.2 Suporte insuficiente por trecho
+### 9.2 Suporte por trecho
 
-Quando um knot é colocado em uma faixa esparsa do score (cauda
-extrema), o número de amostras no trecho correspondente é pequeno. O
-coeficiente $\beta_j$ associado tem alta variância e pode assumir
-valor fortemente negativo ao tentar acomodar ruído local, violando a
-condição de monotonicidade do trecho seguinte. Quando isso ocorre
-com `MonotonicityPolicy.ERROR`, o fit é rejeitado com diagnóstico
-detalhado por trecho.
+Há duas situações distintas que comprometem a estabilidade da
+inclinação num trecho, ambas detectadas e reportadas em
+`segment_support_warnings`:
+
+**(a) Suporte total baixo.** Quando o knot é colocado numa faixa
+esparsa do score (cauda extrema), o número total de amostras no trecho
+correspondente é pequeno. O coeficiente $\beta_j$ tem alta variância e
+pode assumir valor fortemente negativo ao tentar acomodar ruído local,
+violando a condição de monotonicidade do trecho seguinte.
+
+**(b) Cobertura assimétrica por classe.** O suporte total pode ser
+grande, mas uma das classes pode estar **totalmente ausente** no
+trecho (e.g. cauda direita pura Hp, sem nenhuma amostra Hd; ou cauda
+esquerda pura Hd, sem nenhuma amostra Hp). Nessa situação o LogReg
+principal não tem contraste discriminativo para estimar inclinação
+estritamente positiva — o gradiente da log-loss em relação a $\beta_j$
+fica indeterminado em discriminação. Sob regularização L2 fraca
+($C$ alto), $\beta_j$ pode assumir valor ligeiramente negativo, levando
+ao slope negativo no trecho correspondente. Esse padrão é comum em
+distribuições PLDA com classes bem separadas, exatamente onde a
+heurística `AUTO_FROM_MEDIANS` posiciona os knots (na fronteira onde
+uma das classes desaparece).
+
+A mitigação preferencial para (b) é aumentar a regularização L2 via
+`c_grid` mais restrito (§8.3). A mitigação alternativa, mais agressiva,
+é reposicionar manualmente o knot para uma região onde ambas as
+classes ainda têm representação.
 
 Os campos `segment_counts_total`, `segment_counts_hp`,
-`segment_counts_hd` e `segment_support_warnings` permitem
-identificar trechos frágeis após um fit bem-sucedido.
+`segment_counts_hd` e `segment_support_warnings` permitem identificar
+ambas as situações após um fit bem-sucedido. Em fits rejeitados por
+não-monotonicidade, a mensagem de erro exibe o suporte de cada classe
+por trecho explicitamente.
 
 ### 9.3 Número de knots vs. graus de liberdade
 
@@ -743,7 +833,140 @@ calibração 1D.
 
 ---
 
-## 10. Relação com `SCORE_INTERACTION_FEATURE`
+## 10. Protocolo de validação: domain match
+
+### 10.1 Motivação
+
+A função de calibração estimada pelo componente piecewise depende da
+distribuição empírica $(s, y)$ usada no treino do calibrador. Quando
+o treino e o holdout vêm de **distribuições diferentes** — e.g.
+pipeline + PLDA treinados num dataset A (CFP) e calibrador validado
+num dataset B (BFW) — a função aprendida não reflete a geometria
+real de B. Os parâmetros do LogReg auxiliar ($\alpha_{\text{aux}},
+s_0$), as medianas log-LR estimadas para
+`AUTO_FROM_MEDIANS`, e os coeficientes finais $\beta_j$ refletem A,
+não B. Operacionalmente, isso compromete o $C_{\text{llr}}$
+reportado.
+
+A solução defensável é **particionar o dataset de validação** em dois
+subsets disjuntos por identidade — uma fração para treino do
+calibrador, outra para validação — preservando o pipeline e o modelo
+de similaridade treinados externamente. No FaceAudit, isso é feito
+via `PAIRED_DATASET_SPLIT` com `grouping_strategy =
+PRESERVE_LOOKALIKES` aplicado ao par (frontal, lateral) do dataset
+operacional.
+
+### 10.2 Evidência empírica
+
+A tabela abaixo compara duas configurações de protocolo no mesmo
+pipeline PLDA SHRINK CROSS, holdout BFW:
+
+| Protocolo | Calibrador | $C_{\text{llr}}$ |
+|---|---|---|
+| Calibrador treinado em CFP, holdout BFW completo | Linear puro | 0,0631 |
+| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | 0,0662 |
+|  | AUTO 2 knots | 0,0631 |
+|  | BI GAUSS | 0,0509 |
+| Calibrador treinado em BFW split A (60%), holdout BFW split B (40%) — identidades disjuntas | Linear puro | **0,0479** |
+| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | **0,0434** |
+|  | AUTO 2 knots | 0,0465 |
+|  | BI GAUSS | 0,0597 |
+
+Três observações empíricas:
+
+**(a) Magnitude do ganho.** Os calibradores LogReg melhoraram entre
+24 % e 34 % em $C_{\text{llr}}$ apenas pela mudança de protocolo —
+nenhum hiperparâmetro do calibrador foi alterado. O `Cllr_min`
+mudou marginalmente (0,038 → 0,036), indicando que a ordenação
+subjacente do PLDA é praticamente a mesma. O ganho é integralmente de
+**calibração**.
+
+**(b) Inversão do ranking entre calibradores.** No protocolo
+cross-domain (CFP → BFW), BI GAUSS foi o melhor calibrador
+($C_{\text{llr}} = 0{,}0509$) e o 1-knot em $s_0$ foi o pior
+($0{,}0662$). No protocolo split (BFW-A → BFW-B), 1-knot em $s_0$
+foi o melhor ($0{,}0434$) e BI GAUSS foi o pior ($0{,}0597$). Não
+existe um calibrador universalmente superior — o ranking depende do
+protocolo de validação.
+
+**(c) Sample efficiency.** A regressão logística paramétrica precisa
+fixar 2 a 4 parâmetros e tolera bem amostras menores. BI GAUSS é
+não-paramétrico (KDE em ambas as densidades) e perde precisão nas
+caudas quando a amostra de treino diminui. O BFW split A
+(36 identidades / ~684 amostras totais) é uma amostra pequena para
+estimar duas densidades suavizadas.
+
+### 10.3 Comportamento empírico das caudas
+
+A figura abaixo mostra os quantis por classe ($H_p$ em verde,
+$H_d$ em vermelho) em escala log-LR pós-calibração, para um
+calibrador piecewise treinado no protocolo cross-domain (CFP →
+BFW). O marcador ⚠ inversão no título indica que existe pelo menos
+um par (percentil de $H_p$, percentil de $H_d$) em que o log-LR do
+percentil de $H_p$ é menor que o do percentil de $H_d$ — em
+particular, $H_p$ no percentil 1 cai em $-1{,}79$, abaixo do
+$H_d$ no percentil 99 ($-2{,}02$). A barra esquerda em verde claro
+mostra a contribuição ao $C_{\text{llr}}$ dos genuínos
+mal-calibrados nessa região (alta no P1, indicando penalidade
+forte).
+
+![Quantis por classe — calibrador em CFP](images/pwl_quantiles_cfp_train.png)
+
+A figura abaixo mostra os mesmos quantis para um calibrador piecewise
+treinado no mesmo PLDA mas com o protocolo split (BFW-A → BFW-B). A
+sobreposição entre caudas Hp/Hd diminuiu: $H_p$ no P1 ($-0{,}69$) está
+agora acima de $H_d$ no P99 ($-1{,}21$) em magnitude relativa, e a
+contribuição ao $C_{\text{llr}}$ no P1 caiu substancialmente. A
+calibração reflete melhor a geometria empírica do domínio de
+validação.
+
+![Quantis por classe — calibrador em BFW split](images/pwl_quantiles_bfw_split.png)
+
+### 10.4 Implementação no FaceAudit
+
+A instrução `PAIRED_DATASET_SPLIT` divide simultaneamente os dois
+datasets de uma comparação cross-pose (e.g. frontal e lateral)
+mantendo identidades emparelhadas. Parâmetros relevantes:
+
+- `split_ratio`: fração da identidade alocada para o subset A.
+  Valores típicos: 0,5 a 0,7 dependendo do tamanho do dataset
+  operacional.
+- `grouping_strategy = PRESERVE_LOOKALIKES`: mantém clusters de
+  identidades parecidas no mesmo subset, prevenindo leakage por
+  similaridade visual cross-identidade.
+- `random_seed`: fixar para reprodutibilidade entre execuções.
+- `min_calibration_pairs`, `min_calibration_ids`, `min_samples_per_id`:
+  pisos operacionais. Se o split não consegue gerar pares ou
+  identidades suficientes para calibração robusta, a instrução
+  falha cedo.
+
+O subset designado para calibração entra no pipeline corrente como
+input da instrução `SIMILARITY_SCORING` que alimenta o
+`CALIBRATION_MODEL_TRAINING`. O subset designado para validação
+entra como input do `SIMILARITY_SCORING` na fase de validação. O
+pipeline e o modelo de similaridade permanecem treinados em A
+(CFP, no exemplo) — apenas o calibrador é treinado em B (BFW split
+A).
+
+### 10.5 Reportabilidade
+
+No laudo, o protocolo de validação deve estar documentado
+explicitamente. Itens mínimos:
+
+- Dataset operacional e como foi particionado (ratio, seed,
+  grouping_strategy, número final de identidades em cada subset).
+- Confirmação empírica de disjunção de identidades entre treino do
+  calibrador e validação ($|V \cap C| = 0$).
+- Tamanho efetivo da amostra de calibração (pares e identidades).
+- Política sobre amostras com pose ausente: o split paired pode
+  produzir identidades com apenas uma das poses representadas em um
+  dos subsets, reduzindo o $N$ efetivo de pares cross-pose.
+- Intervalos via bootstrap por identidade (§8.5) quando o suporte
+  por classe ou pose é fino.
+
+---
+
+## 11. Relação com `SCORE_INTERACTION_FEATURE`
 
 A instrução `SCORE_INTERACTION_FEATURE` do FaceAudit também
 implementa um termo `HINGE_BASE` ($\max(s - s_0, 0)$) como feature
@@ -768,7 +991,7 @@ features.
 
 ---
 
-## 11. Referências
+## 12. Referências
 
 - **Brümmer, N., & du Preez, J. (2006).** *Application-independent
   evaluation of speaker detection.* Computer Speech & Language,
