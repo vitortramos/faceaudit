@@ -572,6 +572,25 @@ V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
 > bilinear); a tabela V2.8 mostrou outra configuração com 7 knots
 > manuais. Os deltas relativos não devem ser combinados.
 
+A figura abaixo sobrepõe as três curvas de calibração (mesmo
+calibrador piecewise 1-knot em $s_0$, mesmo train set, mesmo
+holdout), variando apenas o splitter do CV interno:
+
+![Comparação V2.7 / V2.8 / V2.9 do calibrador piecewise 1-knot em $s_0$](images/pwl_splitter_comparison.png)
+
+Leitura: as três curvas convergem na vizinhança de $s_0 \approx
+-34{,}16$ e divergem nas caudas. PAIR (vermelho, $C=10$)
+selecionou regularização fraca e produziu slopes 0,214 / 0,266 —
+o efeito da expansão em $s_0$ é quase indistinguível de uma reta
+linear (a dobra ficou suave). GROUPED ($C=0{,}1$) e STRICT
+($C=1{,}0$) — ambas em regime mais regularizado — exibem a dobra
+explicitamente: slope esquerdo $\approx 0{,}17$, slope direito
+$\approx 0{,}30$. A coerência das curvas GROUPED e STRICT é o
+sinal empírico de que a configuração com leakage controlado
+($C \in [0{,}1, 1{,}0]$) é a regularização defensável; o PAIR foi
+para o extremo do grid porque o CV por par superestimou a
+generalização.
+
 Leituras:
 
 - **Confirmação do efeito V2.8 em OFFSET ZERO**: PAIR enviesou para
