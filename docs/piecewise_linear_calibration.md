@@ -611,7 +611,7 @@ A figura abaixo ilustra um calibrador piecewise com
 `knot_offsets = [0.0]` (um único knot em $s_0$) treinado e validado
 sobre o mesmo domínio (BFW split, com identidades disjuntas entre os
 subsets). A curva piecewise (azul) tem dois segmentos com
-inclinações `[0.166, 0.291]` — slope mais íngreme acima de $s_0$,
+inclinações `[0.215, 0.266]` — slope mais íngreme acima de $s_0$,
 permitindo que scores PLDA mais altos produzam aumento mais rápido
 do log-LR. $s_0$ é a âncora estimada pelo calibrador auxiliar como
 ponto aproximado de evidência neutra; neste experimento, ela
@@ -621,16 +621,14 @@ foi observado neste experimento e é uma hipótese plausível a
 investigar em outros scores PLDA — não uma propriedade
 matematicamente garantida). A linha
 tracejada laranja é a calibração afim ótima a posteriori
-(`pós-afim: 0.893·logLR + 0.313`), com `slope ≈ 0.89 < 1` indicando
-ligeira sobreconfiança da curva piecewise. As barras vermelhas e
-verdes na base mostram a distribuição empírica de impostores e
-genuínos. Resultado (V2.6, `neg_cllr_balanced`):
-$C_{\text{llr}} = 0{,}0423$, $C_{\text{llr,affine}} = 0{,}0402$,
-$C_{\text{llr,min}} = 0{,}0362$ (185 797 impostores, 2 483 genuínos
-no holdout). A figura abaixo foi gerada com a versão V2.5
-(`neg_log_loss`, $C_{\text{llr}} = 0{,}0434$); o reescaneamento com
-o scorer V2.6 selecionou um $C$ ligeiramente maior, melhorando
-$C_{\text{llr}}$ em ≈ 2,5 %.
+(`pós-afim: 0.776·logLR + 0.263`), com `slope ≈ 0.78 < 1` indicando
+sobreconfiança da curva piecewise. As barras vermelhas e verdes na
+base mostram a distribuição empírica de impostores e genuínos.
+Resultado (V2.7, `neg_cllr_balanced`, `c_grid = [0.001, 0.01, 0.1,
+1.0, 10.0]`, $C$ selecionado $= 10{,}0$):
+$C_{\text{llr}} = 0{,}0465$, $C_{\text{llr,affine}} = 0{,}0429$,
+$C_{\text{llr,min}} = 0{,}0362$, `segment_slopes_raw = [0,2145, 0,2663]`
+(185 797 impostores, 2 483 genuínos no holdout).
 
 ![Curva piecewise com 1 knot em s0](images/pwl_calibration_curve_singleknot.png)
 
@@ -733,16 +731,21 @@ scorer `neg_cllr_balanced` V2.6), as duas configurações produziram:
 
 | Posicionamento | $C_{\text{llr}}$ | $C_{\text{llr,affine}}$ | slope pós-afim |
 |---|---|---|---|
-| Uma dobra em $s_0$ (`MANUAL`, `knot_offsets=[0.0]`) | **0,0423** | 0,0402 | — |
+| Uma dobra em $s_0$ (`MANUAL`, `knot_offsets=[0.0]`) | **0,0465** | 0,0429 | 0,776 |
 | Dois knots refletidos (`AUTO_FROM_MIRRORED_MEDIANS`) | 0,0465 | 0,0437 | 0,810 |
 
-O modo automático produziu uma curva tecnicamente coerente, mas
-**não superou** a configuração manual com uma única dobra neste
-experimento. A complexidade adicional (dois knots em vez de um) não
-se traduziu em ganho de calibração. O resultado reforça que
-`AUTO_FROM_MIRRORED_MEDIANS` deve ser tratado como heurística experimental e
-avaliado comparativamente, não adotado como configuração
-universalmente superior.
+Com c_grid amplo (V2.7), as duas configurações empataram em
+$C_{\text{llr}}$ neste experimento: a complexidade adicional do modo
+automático (dois knots em vez de um) não se traduziu em ganho
+operacional sobre a dobra única em $s_0$. O modo automático apresenta
+$C_{\text{llr,affine}}$ marginalmente pior ($0{,}0437$ vs $0{,}0429$),
+indicando que a forma da curva está ligeiramente mais distante da
+forma ideal a posteriori, mas a diferença é pequena. O resultado
+mantém a recomendação de que `AUTO_FROM_MIRRORED_MEDIANS` seja
+tratado como heurística experimental e avaliado comparativamente,
+não adotado como configuração universalmente superior. A dobra única
+em $s_0$ continua sendo a escolha mais parcimoniosa para deployment
+operacional padrão.
 
 #### Limitação intrínseca: medianas do treino vs. holdout
 
@@ -1079,11 +1082,10 @@ cross-domain continua válido com a ressalva acima.
 ### 8.2 Evidência empírica
 
 A tabela abaixo compara duas configurações de protocolo no mesmo
-pipeline PLDA SHRINK CROSS, holdout BFW. Os valores foram obtidos
-com a função objetivo balanceada `neg_cllr_balanced` (padrão V2.6,
-§9.3). Para os 1-knot manual, o scorer balanceado seleciona um
-$C$ ligeiramente diferente do `neg_log_loss` usado anteriormente,
-o que aparece na coluna correspondente.
+pipeline PLDA SHRINK CROSS, holdout BFW. Os valores no segundo bloco
+(BFW split A → BFW split B) foram obtidos com a função objetivo
+balanceada `neg_cllr_balanced` (padrão V2.6, §9.3) e `c_grid =
+[0,001, 0,01, 0,1, 1,0, 10,0]`.
 
 | Protocolo | Calibrador | $C_{\text{llr}}$ |
 |---|---|---|
@@ -1091,8 +1093,8 @@ o que aparece na coluna correspondente.
 | (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | 0,0662 |
 |  | AUTO 2 knots | 0,0631 |
 |  | BI GAUSS | 0,0509 |
-| Calibrador treinado em BFW split A (60%), holdout BFW split B (40%) — identidades disjuntas | Linear puro | **0,0479** |
-| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | **0,0423** |
+| Calibrador treinado em BFW split A (60%), holdout BFW split B (40%) — identidades disjuntas | Linear puro | **0,0474** |
+| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | **0,0465** |
 |  | AUTO 2 knots | 0,0465 |
 |  | BI GAUSS | 0,0597 |
 
@@ -1114,11 +1116,12 @@ pares**.
 **(b) Inversão do ranking entre calibradores.** No protocolo
 cross-domain (CFP → BFW), BI GAUSS foi o melhor calibrador
 ($C_{\text{llr}} = 0{,}0509$) e o 1-knot em $s_0$ foi o pior
-($0{,}0662$). No protocolo split (BFW-A → BFW-B), 1-knot em $s_0$
-foi o melhor ($0{,}0423$ com `neg_cllr_balanced`) e BI GAUSS foi o
-pior ($0{,}0597$). Não
-existe um calibrador universalmente superior — o ranking depende do
-protocolo de validação.
+($0{,}0662$). No protocolo split (BFW-A → BFW-B), tanto 1-knot em
+$s_0$ quanto AUTO 2 knots foram os melhores ($0{,}0465$ empatados,
+com `neg_cllr_balanced` + c_grid amplo); Linear puro ficou logo
+acima ($0{,}0474$); BI GAUSS foi o pior ($0{,}0597$). Não existe um
+calibrador universalmente superior — o ranking depende do protocolo
+de validação.
 
 **(c) Sample efficiency.** A regressão logística piecewise precisa
 fixar 2 a 4 parâmetros e tolera amostras menores razoavelmente bem.
