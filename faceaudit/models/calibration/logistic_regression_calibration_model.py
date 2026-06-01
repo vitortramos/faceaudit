@@ -9,7 +9,11 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import (
+    GridSearchCV,
+    StratifiedGroupKFold,
+    StratifiedKFold,
+)
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -180,12 +184,51 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"scoring={scoring_label})..."
             )
 
-            cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+            # Splitter: prefere agrupamento por identidade do probe quando
+            # disponível via self.metadata (V2.8). Os pares biométricos
+            # compartilham identidades — sem agrupamento, o CV pode explorar
+            # correlações entre folds e selecionar C que não generaliza
+            # para um holdout disjunto por identidade. Ver §4.2 do doc.
+            train_probe_ids = self.metadata.get("train_probe_identities")
+            cv_groups: Optional[np.ndarray] = None
+            if (
+                train_probe_ids is not None
+                and len(train_probe_ids) == len(score_1d)
+            ):
+                cv_groups = np.asarray(train_probe_ids)
+                # cv_folds pode precisar ser ajustado: StratifiedGroupKFold
+                # exige pelo menos n_splits grupos distintos por classe.
+                # Conta grupos distintos onde y=1 e onde y=0.
+                groups_hp = set(cv_groups[labels == 1].tolist())
+                groups_hd = set(cv_groups[labels == 0].tolist())
+                min_groups = min(len(groups_hp), len(groups_hd))
+                cv_folds_effective = max(2, min(cv_folds, min_groups))
+                if cv_folds_effective < cv_folds:
+                    logger_callback(
+                        f"[{self.name}] ⚠️ cv_folds reduzido de {cv_folds} "
+                        f"para {cv_folds_effective} — limitado pelo "
+                        f"número de identidades únicas da classe "
+                        f"minoritária ({min_groups})."
+                    )
+                cv_folds = cv_folds_effective
+                cv = StratifiedGroupKFold(
+                    n_splits=cv_folds, shuffle=True, random_state=42,
+                )
+                splitter_label = "StratifiedGroupKFold"
+                grouping_level = "identity_probe"
+                disjointness_label = "partial"  # probe disjunto; ref pode cruzar
+            else:
+                cv = StratifiedKFold(
+                    n_splits=cv_folds, shuffle=True, random_state=42,
+                )
+                splitter_label = "StratifiedKFold"
+                grouping_level = "pair"
+                disjointness_label = False
 
             # Seleção de C sob restrição de monotonicidade.
             # Antes (V2.4): GridSearchCV escolhia por CV score; só depois
             # o fit final podia ser rejeitado por não-monotonicidade.
-            # Agora (V2.5): pra cada C ordenado por CV score, faz fit
+            # Agora (V2.5+): pra cada C ordenado por CV score, faz fit
             # completo e checa monotonicidade. O primeiro C cuja curva é
             # monotônica é o escolhido. Persiste lista completa de
             # candidatos válidos e rejeitados pra auditoria.
@@ -198,6 +241,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 pwl_cfg=pwl_cfg,
                 make_pipeline=_make_pipeline,
                 logger_callback=logger_callback,
+                groups=cv_groups,
             )
             self._pipeline = selection["selected_pipeline"]
             self.best_C_ = selection["selected_C"]
@@ -229,19 +273,20 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                     "per_sample"
                 )
             # Contrato de reprodutibilidade do CV.
-            self.metadata["cv_splitter_type"] = "StratifiedKFold"
+            self.metadata["cv_splitter_type"] = splitter_label
             self.metadata["cv_splitter_random_seed"] = 42
             self.metadata["cv_fold_count"] = int(cv_folds)
-            # Limitação metodológica: o splitter atual estratifica POR PAR
-            # (cada linha é uma observação independente do ponto de vista do
-            # sklearn), mas pares biométricos compartilham identidades.
-            # Os flags abaixo documentam essa limitação — diagnósticos cv_*
-            # do §7.11 medem estabilidade sob redistribuição de pares, não
-            # estabilidade sob troca de identidades. Disjunção por
-            # identidade entre folds só seria garantida com PredefinedSplit
-            # baseado em partições upstream (ver §4.2 do doc).
-            self.metadata["cv_grouping_level"] = "pair"
-            self.metadata["cv_identity_disjointness_verified"] = False
+            # Granularidade do agrupamento dos folds (V2.8):
+            # - "pair"          → cv_folds estratificados por par;
+            #                     pares correlacionados podem cruzar folds.
+            # - "identity_probe" → cv_folds agrupados por probe_identity;
+            #                     pares Hp totalmente disjuntos por identidade
+            #                     entre folds; pares Hd têm probe disjunto,
+            #                     mas reference pode aparecer em outros folds
+            #                     (cobertura parcial — leakage residual via
+            #                     identidade de referência).
+            self.metadata["cv_grouping_level"] = grouping_level
+            self.metadata["cv_identity_disjointness_verified"] = disjointness_label
 
             logger_callback(
                 f"[{self.name}] ✅ Melhor C válido (monotônico): "
@@ -261,6 +306,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                     cv=cv,
                     c_value=self.best_C_,
                     make_pipeline=_make_pipeline,
+                    groups=cv_groups,
                 )
                 self.metadata.update(cv_diag)
             except Exception as exc:
@@ -462,12 +508,13 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         self,
         score_1d: np.ndarray,
         labels: np.ndarray,
-        cv: StratifiedKFold,
+        cv,
         c_grid: List[float],
         scoring,
         pwl_cfg: Any,
         make_pipeline: Callable[[float], Pipeline],
         logger_callback: Callable[[str], None],
+        groups: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """Varredura de C com filtro de monotonicidade (política Opção A).
 
@@ -491,7 +538,9 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         - `invalid_C_reasons`: List[str] (paralela a invalid_C_values)
         - `cv_score_of_selected`: float
         """
-        # Primeira fase: GridSearchCV(refit=False) pra obter scores CV
+        # Primeira fase: GridSearchCV(refit=False) pra obter scores CV.
+        # `groups` é propagado pelo GridSearchCV pro splitter quando este é
+        # group-aware (StratifiedGroupKFold); ignorado pelo StratifiedKFold.
         grid = GridSearchCV(
             estimator=make_pipeline(c_grid[0]),
             param_grid={"logreg__C": list(c_grid)},
@@ -500,7 +549,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             n_jobs=-1,
             refit=False,
         )
-        grid.fit(score_1d, labels)
+        grid.fit(score_1d, labels, groups=groups)
         cv_scores = grid.cv_results_["mean_test_score"]
         c_values_from_grid = [
             float(p["logreg__C"]) for p in grid.cv_results_["params"]
@@ -599,13 +648,17 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         self,
         score_1d: np.ndarray,
         labels: np.ndarray,
-        cv: StratifiedKFold,
+        cv,
         c_value: float,
         make_pipeline: Callable[[float], Pipeline],
+        groups: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """Roda cv.split com C selecionado e coleta s0/aux_coef/knots/slopes
         por fold pra avaliar estabilidade da heurística (especialmente
         relevante para `AUTO_FROM_MIRRORED_MEDIANS`).
+
+        `groups` é propagado pro splitter quando este é group-aware
+        (StratifiedGroupKFold); ignorado pelo StratifiedKFold.
 
         Custo: `cv_folds` fits adicionais sobre o pipeline. Aceitável
         porque já há cv_folds fits no GridSearch — duplica esse custo.
@@ -618,7 +671,13 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         fold_non_monotonic_indices_per_fold: List[List[int]] = []
         fold_min_segment_slope_per_fold: List[float] = []
 
-        for train_idx, _ in cv.split(score_1d, labels):
+        # StratifiedGroupKFold.split exige `groups`; StratifiedKFold ignora.
+        split_iter = (
+            cv.split(score_1d, labels, groups)
+            if groups is not None
+            else cv.split(score_1d, labels)
+        )
+        for train_idx, _ in split_iter:
             try:
                 pipe = make_pipeline(c_value)
                 pipe.fit(score_1d[train_idx], labels[train_idx])
@@ -1312,7 +1371,42 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"scoring={scoring_label})..."
             )
 
-            cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
+            # Splitter: prefere StratifiedGroupKFold quando temos
+            # train_probe_identities (V2.8). Mesma motivação do branch
+            # piecewise — evita leakage por correlação de pares.
+            train_probe_ids = self.metadata.get("train_probe_identities")
+            cv_groups: Optional[np.ndarray] = None
+            if (
+                train_probe_ids is not None
+                and len(train_probe_ids) == X.shape[0]
+            ):
+                cv_groups = np.asarray(train_probe_ids)
+                groups_hp = set(cv_groups[labels_arr == 1].tolist())
+                groups_hd = set(cv_groups[labels_arr == 0].tolist())
+                min_groups = min(len(groups_hp), len(groups_hd))
+                cv_folds_effective = max(2, min(cv_folds, min_groups))
+                if cv_folds_effective < cv_folds:
+                    logger_callback(
+                        f"[{self.name}] ⚠️ cv_folds reduzido de "
+                        f"{cv_folds} para {cv_folds_effective} "
+                        f"— limitado pelo número de identidades "
+                        f"únicas ({min_groups})."
+                    )
+                cv_folds = cv_folds_effective
+                cv = StratifiedGroupKFold(
+                    n_splits=cv_folds, shuffle=True, random_state=42,
+                )
+                splitter_label = "StratifiedGroupKFold"
+                grouping_level = "identity_probe"
+                disjointness_label = "partial"
+            else:
+                cv = StratifiedKFold(
+                    n_splits=cv_folds, shuffle=True, random_state=42,
+                )
+                splitter_label = "StratifiedKFold"
+                grouping_level = "pair"
+                disjointness_label = False
+
             grid = GridSearchCV(
                 estimator=self._build_estimator(self.config.C),
                 param_grid={"C": list(self.config.c_grid)},
@@ -1321,15 +1415,35 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 n_jobs=-1,
                 refit=True,
             )
-            grid.fit(X, labels_arr)
+            grid.fit(X, labels_arr, groups=cv_groups)
 
             best_estimator = grid.best_estimator_
             self.logreg = best_estimator
             self.best_C_ = float(grid.best_params_.get("C", self.config.C))
 
+            # Auditoria do CV no branch linear puro (contrato análogo
+            # ao branch piecewise — §7.10 do doc).
+            self.metadata["piecewise_cv_scoring"] = scoring_label
+            from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+            if self.config.scoring is LogRegGridScoringMetric.NEG_CLLR_BALANCED:
+                self.metadata["piecewise_cv_scoring_log_base"] = "bits"
+                self.metadata["piecewise_cv_scoring_class_aggregation"] = (
+                    "equal_class_weight"
+                )
+            else:
+                self.metadata["piecewise_cv_scoring_log_base"] = "natural"
+                self.metadata["piecewise_cv_scoring_class_aggregation"] = (
+                    "per_sample"
+                )
+            self.metadata["cv_splitter_type"] = splitter_label
+            self.metadata["cv_splitter_random_seed"] = 42
+            self.metadata["cv_fold_count"] = int(cv_folds)
+            self.metadata["cv_grouping_level"] = grouping_level
+            self.metadata["cv_identity_disjointness_verified"] = disjointness_label
+
             logger_callback(
                 f"[{self.name}] ✅ Melhor C: {self.best_C_} "
-                f"(score={grid.best_score_:.4f})."
+                f"(score={grid.best_score_:.4f}, splitter={splitter_label})."
             )
         else:
             logger_callback(

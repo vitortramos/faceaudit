@@ -29,6 +29,9 @@ Os elementos descritos neste documento estão presentes no código:
   descartados; selecionado o melhor $C$ entre os válidos por CV score.
 - Função objetivo do CV: `neg_cllr_balanced` (padrão V2.6) — equivalente
   a −Cllr balanceado por classe (§9.3).
+- Splitter do CV agrupado por identidade do probe (`StratifiedGroupKFold`,
+  default V2.8 quando o input tem identidades disponíveis). Fallback
+  `StratifiedKFold` por par quando identidades ausentes (§4.2).
 - Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.11).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
@@ -476,26 +479,51 @@ identidade, com `grouping_strategy = PRESERVE_LOOKALIKES` mantendo
 clusters de identidades parecidas no mesmo subset.
 
 Quando pares já estiverem materializados em um
-`SimilarityScoreDataset` antes do calibrador rodar, o
-`StratifiedKFold` interno do `LogisticRegressionCalibrationModel`
-cria folds **por par, sem agrupamento por identidade**. O metadata
-do calibrador registra explicitamente essa limitação (`cv_grouping_level
-= "pair"`, `cv_identity_disjointness_verified = false` — §7.10). O
-holdout externo (e.g. `BFW split B`) pode ser disjunto por identidade
-e proteger a avaliação final, mas o CV interno (usado pra selecionar
-$C$ e medir estabilidade entre folds em §7.11) ainda pode explorar
-correlações entre pares que compartilham identidades — não constitui
-estimativa independente por identidade.
+`SimilarityScoreDataset`, o calibrador detecta automaticamente as
+identidades injetadas pelo executor via `self.metadata`
+(`train_probe_identities` / `train_reference_identities`, V2.5) e
+escolhe o splitter:
 
-**Evolução proposta:** um componente upstream produzir partições por
-identidade e persistir IDs de partição junto ao dataset (e.g.
-`pair_cv_partition_id`); o calibrador então usar `PredefinedSplit`
-ou mecanismo equivalente, garantindo geração de pares
-exclusivamente dentro de cada partição. Até essa evolução, o
-$C_{\text{llr}}$ de cross-validation interno deve ser tratado como
-uma estimativa otimista em relação ao desempenho com folds
-agrupados, e a recomendação de bootstrap por identidade (§9.5)
-mantém-se necessária pra validação operacional.
+- **`StratifiedGroupKFold`** com `groups = probe_identity` quando
+  as identidades estão disponíveis (V2.8). O probe é disjunto entre
+  folds; pares Hp ficam totalmente disjuntos por identidade. Pares
+  Hd têm probe disjunto, mas a identidade de **referência** ainda
+  pode aparecer em múltiplos folds (cada par Hd carrega duas
+  identidades e o splitter aceita apenas uma label de grupo por
+  linha). O metadata registra `cv_grouping_level = "identity_probe"`,
+  `cv_identity_disjointness_verified = "partial"`.
+- **`StratifiedKFold`** quando as identidades não estão disponíveis
+  (caso raro: input dict sem identidades, ou executor anterior à V2.5).
+  Metadata registra `cv_grouping_level = "pair"`,
+  `cv_identity_disjointness_verified = false`.
+
+**Validação empírica V2.8.** No holdout BFW split B (pipeline PLDA
+SHRINK CROSS), a troca para `StratifiedGroupKFold` produziu o
+seguinte efeito na seleção interna de $C$ e no $C_{\text{llr}}$
+operacional:
+
+| Calibrador | V2.7 (par) | V2.8 (grouped) | Δ $C_{\text{llr}}$ |
+|---|---|---|---|
+| Linear puro | 0,04739 (C=0,001) | 0,04739 (C=0,001) | 0 % |
+| OFFSET ZERO (7 knots manuais) | 0,04234 (C=0,1) | **0,04126** (C=**0,01**) | **−2,6 %** |
+| AUTO 2 knots | 0,04654 (C=0,1) | 0,04654 (C=0,1) | 0 % |
+| BI GAUSS | 0,05965 | 0,05965 | 0 % (não usa GridSearch) |
+
+A OFFSET ZERO foi a única estratégia onde o ranking do CV mudou ao
+remover o leakage parcial — o splitter agrupado preferiu
+regularização mais forte (C=0,01) e essa escolha generalizou
+melhor para o holdout disjunto por identidade. Linear puro já
+estava em C extremamente regularizado; AUTO 2 knots aparentemente
+não dependia de correlações entre pares para o C ótimo. A
+divergência é evidência empírica direta da limitação do CV por par
+e justifica o splitter agrupado como default V2.8.
+
+**Limitação residual da V2.8.** O probe é disjunto entre folds,
+mas a identidade de referência dos pares Hd ainda pode cruzar — a
+versão purista (`PredefinedSplit` baseado em partições upstream
+das identidades, descartando pares Hd cross-grupo) é a próxima
+evolução proposta. Até lá, recomenda-se complementar o
+$C_{\text{llr}}$ interno com bootstrap por identidade (§9.5).
 
 ---
 
@@ -938,21 +966,26 @@ seleção descrita em §9.3:
 - `piecewise_cv_scoring_class_aggregation`: como Hp e Hd são
   agregados (`"equal_class_weight"` em `neg_cllr_balanced`;
   `"per_sample"` em `neg_log_loss`).
-- `cv_splitter_type`: `"StratifiedKFold"`.
+- `cv_splitter_type`: `"StratifiedGroupKFold"` (default V2.8 quando
+  identidades estão disponíveis) ou `"StratifiedKFold"` (fallback
+  quando o input não traz identidades, e.g. dict raw).
 - `cv_splitter_random_seed`: seed do splitter (42 fixo, garante
   reprodutibilidade).
-- `cv_fold_count`: número de folds efetivamente usado (pode ser
-  menor que `cv_folds` da config quando a classe minoritária tem
-  poucas amostras).
+- `cv_fold_count`: número de folds efetivamente usado. Pode ser
+  reduzido em relação a `cv_folds` da config quando: (a) a classe
+  minoritária tem poucas amostras (`StratifiedKFold`) ou (b) o
+  número de identidades únicas da classe minoritária é menor que
+  `cv_folds` (`StratifiedGroupKFold`).
 - `cv_grouping_level`: granularidade do agrupamento dos folds
-  (`"pair"` na implementação atual — cada linha do dataset é uma
-  observação independente para o splitter; futuras versões podem
-  expor `"identity"` quando partições upstream forem suportadas
-  via `PredefinedSplit`).
-- `cv_identity_disjointness_verified`: bool — `True` apenas
-  quando os folds são construídos por uma partição upstream com
-  disjunção de identidades comprovada. Atualmente `False` por
-  default (ver §4.2).
+  (`"identity_probe"` em V2.8 quando o splitter é
+  `StratifiedGroupKFold`; `"pair"` quando é `StratifiedKFold`).
+  Versões futuras podem expor `"identity_partition"` quando o
+  particionamento upstream com `PredefinedSplit` for suportado.
+- `cv_identity_disjointness_verified`: `"partial"` em V2.8 com
+  splitter grouped (probe disjunto entre folds; reference pode
+  cruzar nos pares Hd), `True` apenas quando os folds são
+  construídos por uma partição upstream com disjunção total de
+  identidades, ou `False` quando o splitter é por par (ver §4.2).
 
 Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
 quais foram descartados como inviáveis (sem ajuste post-hoc do
@@ -970,15 +1003,19 @@ variância alta nos knots entre folds sugere que a heurística é
 sensível ao split e seu valor operacional deve ser questionado.
 
 > **Ressalva metodológica importante.** Os diagnósticos `cv_*`
-> medem estabilidade entre folds do splitter configurado. Quando
-> `cv_splitter_type = "StratifiedKFold"` (caso atual,
-> `cv_grouping_level = "pair"` — ver §4.2 e §7.10), os folds são
-> formados por pares e podem compartilhar identidades. Portanto,
-> essas métricas não substituem bootstrap por identidade (§9.5) nem
-> CV com partições identitárias disjuntas, e medem **sensibilidade
-> a uma redistribuição aleatória de pares correlacionados**, não
-> estabilidade real diante da troca das identidades usadas no
-> ajuste.
+> medem estabilidade entre folds do splitter configurado. Em V2.8
+> com `cv_splitter_type = "StratifiedGroupKFold"` (default quando
+> identidades estão disponíveis, `cv_grouping_level =
+> "identity_probe"`), os folds são disjuntos por identidade do
+> probe — eliminando o leakage mais óbvio. Permanece uma cobertura
+> parcial: a identidade de **referência** dos pares Hd ainda pode
+> aparecer em múltiplos folds (cada par Hd carrega duas identidades
+> e o splitter aceita apenas uma label de grupo por linha). Em
+> fallback `cv_splitter_type = "StratifiedKFold"`
+> (`cv_grouping_level = "pair"`), os folds são formados por par e
+> podem compartilhar identidades inteiramente. Em ambos os casos,
+> essas métricas não substituem bootstrap por identidade (§9.5)
+> nem CV com partições identitárias totalmente disjuntas.
 
 Campos persistidos:
 
@@ -1084,8 +1121,9 @@ cross-domain continua válido com a ressalva acima.
 A tabela abaixo compara duas configurações de protocolo no mesmo
 pipeline PLDA SHRINK CROSS, holdout BFW. Os valores no segundo bloco
 (BFW split A → BFW split B) foram obtidos com a função objetivo
-balanceada `neg_cllr_balanced` (padrão V2.6, §9.3) e `c_grid =
-[0,001, 0,01, 0,1, 1,0, 10,0]`.
+balanceada `neg_cllr_balanced` (padrão V2.6, §9.3), `c_grid =
+[0,001, 0,01, 0,1, 1,0, 10,0]` e splitter agrupado por identidade
+do probe (`StratifiedGroupKFold`, padrão V2.8, §4.2).
 
 | Protocolo | Calibrador | $C_{\text{llr}}$ |
 |---|---|---|
@@ -1094,7 +1132,8 @@ balanceada `neg_cllr_balanced` (padrão V2.6, §9.3) e `c_grid =
 |  | AUTO 2 knots | 0,0631 |
 |  | BI GAUSS | 0,0509 |
 | Calibrador treinado em BFW split A (60%), holdout BFW split B (40%) — identidades disjuntas | Linear puro | **0,0474** |
-| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | **0,0465** |
+| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | 0,0465 |
+|  | 7 knots manuais (`[−15, −12, −9, −6, −3, 0, +6]`) | **0,0413** |
 |  | AUTO 2 knots | 0,0465 |
 |  | BI GAUSS | 0,0597 |
 
