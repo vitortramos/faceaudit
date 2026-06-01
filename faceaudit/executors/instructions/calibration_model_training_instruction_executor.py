@@ -98,6 +98,13 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
 
             scores, labels = self._extract_scores_and_labels(input_payload)
 
+            # Extrai identidades por par (probe/reference) quando o input
+            # é SimilarityScoreDataset — usado por calibradores piecewise
+            # para reportar segment_unique_identities_hp/hd no metadata.
+            train_probe_identities, train_reference_identities = (
+                self._extract_identities(input_payload)
+            )
+
             if instruction.uses_logistic_regression:
                 # Config embutida no DTO da instrução.
                 trained_model = self._train_logistic_regression_calibrator(
@@ -105,6 +112,8 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                     labels=labels,
                     config_payload=instruction.logreg_config,
                     context=context,
+                    train_probe_identities=train_probe_identities,
+                    train_reference_identities=train_reference_identities,
                 )
 
             elif instruction.calibration_model_type == CalibrationModelType.KDE:
@@ -397,19 +406,54 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
 
         return scores, labels
 
+    def _extract_identities(
+        self, payload,
+    ) -> tuple[Optional[list], Optional[list]]:
+        """Extrai listas de probe_identity e reference_identity por par.
+
+        Retorna `(None, None)` quando o payload não é `SimilarityScoreDataset`
+        ou não contém identidades (e.g. dict com só scores + labels).
+        Usado pelos calibradores piecewise para reportar
+        `segment_unique_identities_hp/hd` no metadata.
+        """
+        if not isinstance(payload, SimilarityScoreDataset):
+            return None, None
+        try:
+            probe_ids = [s.probe.identity for s in payload.items]
+            ref_ids = [s.reference.identity for s in payload.items]
+            return probe_ids, ref_ids
+        except Exception:
+            return None, None
+
     def _train_logistic_regression_calibrator(
         self,
         scores: np.ndarray,
         labels: np.ndarray,
         config_payload: LogisticRegressionCalibrationModelConfig,
         context: StrategyExecutionContextProtocol,
+        train_probe_identities: Optional[list] = None,
+        train_reference_identities: Optional[list] = None,
     ) -> LogisticRegressionCalibrationModel:
         """
         Instancia e treina um LogisticRegressionCalibrationModel, encaminhando
         os logs para o contexto de execução.
+
+        Quando `train_probe_identities` e `train_reference_identities` são
+        fornecidos (caso típico: input é `SimilarityScoreDataset`), são
+        injetados em `model.metadata` antes do `fit` para que o calibrador
+        reporte `segment_unique_identities_hp/hd` no metadata persistido.
         """
         model = LogisticRegressionCalibrationModel(config=config_payload)
+        if train_probe_identities is not None:
+            model.metadata["train_probe_identities"] = list(train_probe_identities)
+        if train_reference_identities is not None:
+            model.metadata["train_reference_identities"] = list(train_reference_identities)
         model.fit(scores=scores, labels=labels, logger_callback=context.log)
+        # Após fit, removemos as listas brutas — só os campos derivados
+        # (segment_unique_identities_*) permanecem persistidos. Evita
+        # inflar o pickle do calibrador com cópia integral das identidades.
+        model.metadata.pop("train_probe_identities", None)
+        model.metadata.pop("train_reference_identities", None)
         return model
 
     def _train_kde_calibrator(

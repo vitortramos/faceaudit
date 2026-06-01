@@ -176,23 +176,66 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             )
 
             cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
-            grid = GridSearchCV(
-                estimator=_make_pipeline(self.config.C),
-                param_grid={"logreg__C": list(self.config.c_grid)},
+
+            # Seleção de C sob restrição de monotonicidade.
+            # Antes (V2.4): GridSearchCV escolhia por CV score; só depois
+            # o fit final podia ser rejeitado por não-monotonicidade.
+            # Agora (V2.5): pra cada C ordenado por CV score, faz fit
+            # completo e checa monotonicidade. O primeiro C cuja curva é
+            # monotônica é o escolhido. Persiste lista completa de
+            # candidatos válidos e rejeitados pra auditoria.
+            selection = self._select_monotonic_C(
+                score_1d=score_1d,
+                labels=labels,
                 cv=cv,
-                scoring=scoring_str,
-                n_jobs=-1,
-                refit=True,
+                c_grid=list(self.config.c_grid),
+                scoring_str=scoring_str,
+                pwl_cfg=pwl_cfg,
+                make_pipeline=_make_pipeline,
+                logger_callback=logger_callback,
             )
-            grid.fit(score_1d, labels)
-            self._pipeline = grid.best_estimator_
-            self.best_C_ = float(
-                grid.best_params_.get("logreg__C", self.config.C)
+            self._pipeline = selection["selected_pipeline"]
+            self.best_C_ = selection["selected_C"]
+            # Persiste decisões da seleção pra auditoria (acessível antes
+            # do `_validate_monotonicity_and_persist_diagnostics` rodar).
+            self.metadata["piecewise_valid_c_values"] = selection["valid_C_values"]
+            self.metadata["piecewise_valid_c_cv_scores"] = (
+                selection["valid_C_cv_scores"]
             )
+            self.metadata["piecewise_invalid_c_values"] = selection["invalid_C_values"]
+            self.metadata["piecewise_invalid_c_reasons"] = (
+                selection["invalid_C_reasons"]
+            )
+            self.metadata["piecewise_selected_c"] = selection["selected_C"]
+            self.metadata["piecewise_selection_policy"] = (
+                "best_valid_candidate_by_cv_score"
+            )
+
             logger_callback(
-                f"[{self.name}] ✅ Melhor C: {self.best_C_} "
-                f"(score={grid.best_score_:.4f})."
+                f"[{self.name}] ✅ Melhor C válido (monotônico): "
+                f"{self.best_C_} (CV score={selection['cv_score_of_selected']:.4f}). "
+                f"Candidatos válidos: {len(selection['valid_C_values'])}; "
+                f"rejeitados por não-monotonicidade: "
+                f"{len(selection['invalid_C_values'])}."
             )
+
+            # CV diagnóstico: refit em cada fold do cv com C selecionado
+            # pra coletar s0/aux_coef/knots por fold. Persiste estabilidade
+            # da heurística (especialmente útil para AUTO_FROM_MIRRORED_MEDIANS).
+            try:
+                cv_diag = self._compute_cv_fold_diagnostics(
+                    score_1d=score_1d,
+                    labels=labels,
+                    cv=cv,
+                    c_value=self.best_C_,
+                    make_pipeline=_make_pipeline,
+                )
+                self.metadata.update(cv_diag)
+            except Exception as exc:
+                logger_callback(
+                    f"[{self.name}] ⚠️ Falha ao computar diagnósticos CV "
+                    f"({type(exc).__name__}: {exc})."
+                )
         else:
             from faceaudit.enums.knot_placement import KnotPlacement
             if pwl_cfg.knot_placement is KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS:
@@ -228,6 +271,282 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             train_scores=score_1d,
             train_labels=labels,
         )
+
+    # ─────────────────────── helpers internos ───────────────────────
+
+    @staticmethod
+    def _compute_pipeline_slopes(
+        pipeline: Pipeline,
+    ) -> Dict[str, Any]:
+        """Extrai slopes da pipeline já treinada (sem persistir, sem raise).
+
+        Retorna dict com:
+        - `beta_raw`: coeficientes em escala bruta (np.ndarray)
+        - `intercept_raw`: intercepto em escala bruta (float)
+        - `segment_slopes`: lista de inclinações por trecho (List[float])
+        - `is_monotonic_strict`: bool — todos os slopes > 1e-8
+        - `offending_indices`: lista de índices (0-based) com slope ≤ 1e-8
+        - `knot_offsets_raw`: lista de offsets em escala bruta (do transformer)
+        - `pwl_t`: referência ao PiecewiseLinearScoreTransformer
+
+        Usado por (a) `_fit_piecewise` no fluxo GridSearch pra filtrar
+        candidatos não-monotônicos durante a seleção de C, e (b)
+        `_validate_monotonicity_and_persist_diagnostics` pra persistir
+        os mesmos valores no fit final.
+        """
+        pwl_t = pipeline.named_steps["pwl"]
+        scaler = pipeline.named_steps["scaler"]
+        logreg = pipeline.named_steps["logreg"]
+
+        beta_std = logreg.coef_[0].astype(np.float64)
+        intercept_std = float(logreg.intercept_[0])
+        mu = scaler.mean_.astype(np.float64)
+        sigma = scaler.scale_.astype(np.float64)
+        beta_raw = beta_std / sigma
+        intercept_raw = intercept_std - float(np.sum(beta_std * mu / sigma))
+
+        offsets_sorted = list(pwl_t.knot_offsets_)
+        beta_z = float(beta_raw[0])
+        beta_hinge_per_knot = [float(b) for b in beta_raw[1:]]
+
+        segment_slopes: List[float] = [beta_z]
+        running = beta_z
+        for b in beta_hinge_per_knot:
+            running += b
+            segment_slopes.append(running)
+
+        _MIN_SLOPE = 1e-8
+        offending_indices = [
+            j for j, s in enumerate(segment_slopes) if s <= _MIN_SLOPE
+        ]
+        return {
+            "beta_raw": beta_raw,
+            "intercept_raw": intercept_raw,
+            "segment_slopes": segment_slopes,
+            "is_monotonic_strict": len(offending_indices) == 0,
+            "offending_indices": offending_indices,
+            "knot_offsets_raw": offsets_sorted,
+            "pwl_t": pwl_t,
+        }
+
+    def _select_monotonic_C(
+        self,
+        score_1d: np.ndarray,
+        labels: np.ndarray,
+        cv: StratifiedKFold,
+        c_grid: List[float],
+        scoring_str: str,
+        pwl_cfg: Any,
+        make_pipeline: Callable[[float], Pipeline],
+        logger_callback: Callable[[str], None],
+    ) -> Dict[str, Any]:
+        """Varredura de C com filtro de monotonicidade.
+
+        Para cada C em `c_grid` (ordenado pelo CV score desc), faz fit
+        completo do pipeline e checa monotonicidade. O primeiro C cuja
+        curva treinada é monotônica é selecionado. Persiste candidatos
+        válidos e inválidos pra auditoria.
+
+        Retorna dict com:
+        - `selected_pipeline`: Pipeline já treinada (best valid candidate)
+        - `selected_C`: float — C escolhido
+        - `valid_C_values`: List[float]
+        - `invalid_C_values`: List[float]
+        - `invalid_C_reasons`: List[str] (paralela a invalid_C_values)
+        - `cv_score_of_selected`: float
+        """
+        # Primeira fase: GridSearchCV(refit=False) pra obter scores CV
+        grid = GridSearchCV(
+            estimator=make_pipeline(c_grid[0]),
+            param_grid={"logreg__C": list(c_grid)},
+            cv=cv,
+            scoring=scoring_str,
+            n_jobs=-1,
+            refit=False,
+        )
+        grid.fit(score_1d, labels)
+        cv_scores = grid.cv_results_["mean_test_score"]
+        c_values_from_grid = [
+            float(p["logreg__C"]) for p in grid.cv_results_["params"]
+        ]
+        # Ordena C por CV score (decrescente — maior score = melhor)
+        ranked = sorted(
+            range(len(c_values_from_grid)),
+            key=lambda i: -float(cv_scores[i]),
+        )
+
+        # Segunda fase: pra cada candidato, fit completo + checa
+        # monotonicidade. Para no primeiro válido.
+        valid_C: List[float] = []
+        valid_C_cv_scores: List[float] = []
+        invalid_C: List[float] = []
+        invalid_C_reasons: List[str] = []
+        selected_pipeline: Optional[Pipeline] = None
+        selected_C: Optional[float] = None
+        selected_cv_score: Optional[float] = None
+
+        for idx in ranked:
+            c_val = c_values_from_grid[idx]
+            cv_score = float(cv_scores[idx])
+            pipe = make_pipeline(c_val)
+            try:
+                pipe.fit(score_1d, labels)
+            except Exception as exc:
+                invalid_C.append(c_val)
+                invalid_C_reasons.append(
+                    f"fit final falhou: {type(exc).__name__}: {exc}"
+                )
+                continue
+            slope_info = self._compute_pipeline_slopes(pipe)
+            if slope_info["is_monotonic_strict"]:
+                valid_C.append(c_val)
+                valid_C_cv_scores.append(cv_score)
+                if selected_pipeline is None:
+                    selected_pipeline = pipe
+                    selected_C = c_val
+                    selected_cv_score = cv_score
+            else:
+                offending = [j + 1 for j in slope_info["offending_indices"]]
+                slopes_disp = [
+                    round(s, 6) for s in slope_info["segment_slopes"]
+                ]
+                invalid_C.append(c_val)
+                invalid_C_reasons.append(
+                    f"slopes={slopes_disp}, trechos não-monotônicos "
+                    f"(slope ≤ 1e-8): {offending}"
+                )
+
+        if selected_pipeline is None:
+            # Nenhum candidato válido — erro detalhado com a lista
+            # de todos os C testados e seus motivos.
+            lines = [
+                f"[{self.name}] nenhum candidato no c_grid produziu "
+                f"curva piecewise-linear monotônica.",
+                f"  c_grid testado: {list(c_grid)}",
+                f"  candidatos rejeitados:",
+            ]
+            for c_val, reason in zip(invalid_C, invalid_C_reasons):
+                lines.append(f"    C={c_val}: {reason}")
+            lines.append(
+                "  Recomendação: reduzir c_grid pra valores menores "
+                "(regularização mais forte), reposicionar knots manualmente "
+                "pra regiões com contraste por classe, OU usar "
+                "knot_offsets=[0.0] (uma única dobra em s0)."
+            )
+            msg = "\n".join(lines)
+            if pwl_cfg.monotonicity_policy is MonotonicityPolicy.ERROR:
+                raise ValueError(msg)
+            else:
+                logger_callback(f"⚠️ WARNING: {msg}")
+                # Em WARNING, devolve o pipeline com melhor CV score
+                # mesmo não-monotônico — mantém comportamento legado.
+                best_idx = ranked[0]
+                c_val = c_values_from_grid[best_idx]
+                selected_pipeline = make_pipeline(c_val)
+                selected_pipeline.fit(score_1d, labels)
+                selected_C = c_val
+                selected_cv_score = float(cv_scores[best_idx])
+
+        return {
+            "selected_pipeline": selected_pipeline,
+            "selected_C": float(selected_C),
+            "valid_C_values": valid_C,
+            "valid_C_cv_scores": valid_C_cv_scores,
+            "invalid_C_values": invalid_C,
+            "invalid_C_reasons": invalid_C_reasons,
+            "cv_score_of_selected": float(selected_cv_score),
+        }
+
+    def _compute_cv_fold_diagnostics(
+        self,
+        score_1d: np.ndarray,
+        labels: np.ndarray,
+        cv: StratifiedKFold,
+        c_value: float,
+        make_pipeline: Callable[[float], Pipeline],
+    ) -> Dict[str, Any]:
+        """Roda cv.split com C selecionado e coleta s0/aux_coef/knots/slopes
+        por fold pra avaliar estabilidade da heurística (especialmente
+        relevante para `AUTO_FROM_MIRRORED_MEDIANS`).
+
+        Custo: `cv_folds` fits adicionais sobre o pipeline. Aceitável
+        porque já há cv_folds fits no GridSearch — duplica esse custo.
+        """
+        s0_per_fold: List[float] = []
+        aux_coef_per_fold: List[Optional[float]] = []
+        knots_absolute_per_fold: List[List[float]] = []
+        segment_slopes_per_fold: List[List[float]] = []
+
+        for train_idx, _ in cv.split(score_1d, labels):
+            try:
+                pipe = make_pipeline(c_value)
+                pipe.fit(score_1d[train_idx], labels[train_idx])
+                pwl_t = pipe.named_steps["pwl"]
+                s0_per_fold.append(float(pwl_t.hinge_anchor_s0_))
+                aux_coef_per_fold.append(
+                    None if pwl_t.aux_coef_ is None else float(pwl_t.aux_coef_)
+                )
+                knots_absolute_per_fold.append(list(pwl_t.knots_absolute_))
+                slope_info = self._compute_pipeline_slopes(pipe)
+                segment_slopes_per_fold.append(
+                    [float(s) for s in slope_info["segment_slopes"]]
+                )
+            except Exception:
+                # Se algum fold falhar, registra placeholder None.
+                s0_per_fold.append(float("nan"))
+                aux_coef_per_fold.append(None)
+                knots_absolute_per_fold.append([])
+                segment_slopes_per_fold.append([])
+
+        def _array_stats(values: List[float]):
+            arr = np.array(values, dtype=np.float64)
+            mask = np.isfinite(arr)
+            if not mask.any():
+                return None, None
+            return float(arr[mask].mean()), float(arr[mask].std(ddof=0))
+
+        s0_mean, s0_std = _array_stats(s0_per_fold)
+        aux_coef_finite = [v for v in aux_coef_per_fold if v is not None]
+        ac_mean, ac_std = _array_stats(aux_coef_finite) if aux_coef_finite else (None, None)
+
+        # Estatísticas por knot (média e std de cada knot ao longo dos folds).
+        n_knots_per_fold = [len(k) for k in knots_absolute_per_fold]
+        knot_means: List[Optional[float]] = []
+        knot_stds: List[Optional[float]] = []
+        if n_knots_per_fold and all(n == n_knots_per_fold[0] for n in n_knots_per_fold) and n_knots_per_fold[0] > 0:
+            n = n_knots_per_fold[0]
+            for j in range(n):
+                col = [k[j] for k in knots_absolute_per_fold]
+                m, s = _array_stats(col)
+                knot_means.append(m)
+                knot_stds.append(s)
+
+        # Estatísticas por segmento (média e std de cada slope ao longo dos folds).
+        n_segs_per_fold = [len(s) for s in segment_slopes_per_fold]
+        seg_means: List[Optional[float]] = []
+        seg_stds: List[Optional[float]] = []
+        if n_segs_per_fold and all(n == n_segs_per_fold[0] for n in n_segs_per_fold) and n_segs_per_fold[0] > 0:
+            n = n_segs_per_fold[0]
+            for r in range(n):
+                col = [s[r] for s in segment_slopes_per_fold]
+                m, s = _array_stats(col)
+                seg_means.append(m)
+                seg_stds.append(s)
+
+        return {
+            "cv_hinge_anchor_s0_values": s0_per_fold,
+            "cv_s0_mean": s0_mean,
+            "cv_s0_std": s0_std,
+            "cv_aux_coef_values": aux_coef_per_fold,
+            "cv_aux_coef_mean": ac_mean,
+            "cv_aux_coef_std": ac_std,
+            "cv_piecewise_knots_absolute_values": knots_absolute_per_fold,
+            "cv_knot_means": knot_means,
+            "cv_knot_stds": knot_stds,
+            "cv_segment_slopes_raw_values": segment_slopes_per_fold,
+            "cv_segment_slopes_mean": seg_means,
+            "cv_segment_slopes_std": seg_stds,
+        }
 
     def _validate_monotonicity_and_persist_diagnostics(
         self,
@@ -299,6 +618,42 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 segment_support.append((n_hp, n_hd))
         else:
             segment_support = [(None, None) for _ in segment_slopes]
+
+        # Contagem de identidades únicas por trecho (quando o executor
+        # forneceu probe/reference identities via self.metadata antes do
+        # fit). Pares são correlacionados por identidade — mesma face pode
+        # aparecer em vários pares. Identidades únicas é uma medida de
+        # suporte estatístico mais informativa que contagem de pares.
+        train_probe_ids = self.metadata.get("train_probe_identities")
+        train_reference_ids = self.metadata.get("train_reference_identities")
+        segment_unique_identities_hp: List[Optional[int]] = []
+        segment_unique_identities_hd: List[Optional[int]] = []
+        if (
+            train_scores is not None
+            and train_labels is not None
+            and train_probe_ids is not None
+            and train_reference_ids is not None
+            and len(train_probe_ids) == len(train_scores)
+            and len(train_reference_ids) == len(train_scores)
+        ):
+            probe_arr = np.asarray(train_probe_ids)
+            ref_arr = np.asarray(train_reference_ids)
+            for low, high in segment_bounds:
+                in_seg = (train_scores >= low) & (train_scores < high)
+                hp_mask = in_seg & (train_labels == 1)
+                hd_mask = in_seg & (train_labels == 0)
+                # Hp: probe_id == reference_id; só uma identidade por par.
+                hp_ids = set(probe_arr[hp_mask].tolist())
+                # Hd: probe ≠ reference; conta união das duas identidades.
+                hd_ids = (
+                    set(probe_arr[hd_mask].tolist())
+                    | set(ref_arr[hd_mask].tolist())
+                )
+                segment_unique_identities_hp.append(len(hp_ids))
+                segment_unique_identities_hd.append(len(hd_ids))
+        else:
+            segment_unique_identities_hp = [None for _ in segment_slopes]
+            segment_unique_identities_hd = [None for _ in segment_slopes]
 
         def _fmt_segment(j: int, slope: float) -> str:
             low, high = segment_bounds[j]
@@ -612,6 +967,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "segment_counts_hd": segment_counts_hd,
             "segment_fractions_total": segment_fractions_total,
             "segment_support_warnings": segment_support_warnings,
+            # Identidades únicas por trecho — None se executor não passou
+            # train_probe_identities/train_reference_identities via self.metadata.
+            "segment_unique_identities_hp": segment_unique_identities_hp,
+            "segment_unique_identities_hd": segment_unique_identities_hd,
 
             # === Ponto de cruzamento efetivo de log-LR = 0 ===
             "effective_log_lr_zero_crossing": effective_zero_crossing,
