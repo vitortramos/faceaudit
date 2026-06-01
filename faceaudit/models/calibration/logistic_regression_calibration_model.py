@@ -232,6 +232,16 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             self.metadata["cv_splitter_type"] = "StratifiedKFold"
             self.metadata["cv_splitter_random_seed"] = 42
             self.metadata["cv_fold_count"] = int(cv_folds)
+            # Limitação metodológica: o splitter atual estratifica POR PAR
+            # (cada linha é uma observação independente do ponto de vista do
+            # sklearn), mas pares biométricos compartilham identidades.
+            # Os flags abaixo documentam essa limitação — diagnósticos cv_*
+            # do §7.11 medem estabilidade sob redistribuição de pares, não
+            # estabilidade sob troca de identidades. Disjunção por
+            # identidade entre folds só seria garantida com PredefinedSplit
+            # baseado em partições upstream (ver §4.2 do doc).
+            self.metadata["cv_grouping_level"] = "pair"
+            self.metadata["cv_identity_disjointness_verified"] = False
 
             logger_callback(
                 f"[{self.name}] ✅ Melhor C válido (monotônico): "
@@ -297,7 +307,38 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
     # ─────────────────────── helpers internos ───────────────────────
 
     @staticmethod
-    def _neg_cllr_balanced_scorer(estimator, X, y) -> float:
+    def _estimator_prior_log_odds_correction(estimator) -> float:
+        """Calcula `log(π_eff / (1 − π_eff))` do estimador que precisa ser
+        subtraído de `decision_function` para obter log-LR direto.
+
+        Localiza o `LogisticRegression` dentro do estimator (que pode ser
+        a própria LogReg ou uma `sklearn.Pipeline` com etapa
+        `"logreg"`). Verifica `class_weight`:
+        - `"balanced"` sem `sample_weight` → prior efetivo = 0,5 → correção = 0.
+        - Qualquer outra configuração explícita: levanta `RuntimeError`
+          pedindo que o usuário derive a correção apropriada
+          manualmente. Mantém a interpretação `decision_function ≈
+          log-LR` matematicamente justificada sob a config esperada
+          (§1.3.1 do doc).
+        """
+        # Localiza a LogReg final
+        if hasattr(estimator, "named_steps") and "logreg" in estimator.named_steps:
+            logreg = estimator.named_steps["logreg"]
+        else:
+            logreg = estimator
+        cw = getattr(logreg, "class_weight", None)
+        if cw == "balanced":
+            return 0.0
+        raise RuntimeError(
+            f"_neg_cllr_balanced_scorer requer class_weight='balanced' "
+            f"e sem sample_weight para tratar decision_function como "
+            f"log-LR. Detectado class_weight={cw!r}. Para configurações "
+            f"diferentes, calcule prior_log_odds_correction explicitamente "
+            f"(ver §1.3.1 do doc) e ajuste o scorer."
+        )
+
+    @classmethod
+    def _neg_cllr_balanced_scorer(cls, estimator, X, y) -> float:
         """Scorer sklearn-compatible que retorna `-Cllr` balanceado por classe.
 
         Diferente do `neg_log_loss` do sklearn (média por amostra), esta
@@ -307,9 +348,16 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             Cllr = 0.5 · [ mean_{i ∈ Hp} log2(1 + exp(-ℓ_i))
                           + mean_{j ∈ Hd} log2(1 + exp(+ℓ_j)) ]
 
-        onde ℓ_k = decision_function(x_k). Equivalente ao Cllr de
-        Brümmer & du Preez (2006) calculado a partir do estimador
-        (não precisa de `predict_proba` + clipping).
+        onde ℓ_k = decision_function(x_k) − prior_log_odds_correction.
+        Equivalente ao Cllr de Brümmer & du Preez (2006) calculado a
+        partir do estimador (não precisa de `predict_proba` + clipping).
+
+        A subtração explícita da correção de prior (em vez de presumir
+        que é zero) torna o scorer **robusto a extensões futuras** do
+        calibrador — e.g. uso de `sample_weight`, importance sampling
+        ou `class_weight` customizado. Hoje, com a config padrão
+        (`class_weight="balanced"`, `sample_weight=None`), a correção é
+        identicamente zero (§1.3.1).
 
         Em datasets fortemente desbalanceados (N_Hd >> N_Hp), o
         `neg_log_loss` padrão fica dominado pela classe majoritária e
@@ -317,7 +365,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         calibrado para os genuínos difíceis. Esta versão balanceada
         evita esse viés. Retorna `-Cllr` (scorer maximiza).
         """
-        llr = np.asarray(estimator.decision_function(X), dtype=np.float64)
+        prior_correction = cls._estimator_prior_log_odds_correction(estimator)
+        llr = np.asarray(estimator.decision_function(X), dtype=np.float64) - prior_correction
         y_arr = np.asarray(y)
         hp = llr[y_arr == 1]
         hd = llr[y_arr == 0]
@@ -344,7 +393,12 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         """
         from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
         if scoring_enum is LogRegGridScoringMetric.NEG_CLLR_BALANCED:
-            return cls._neg_cllr_balanced_scorer
+            # `_neg_cllr_balanced_scorer` agora é classmethod; envelopa
+            # numa closure pra apresentar a assinatura `(estimator, X, y)`
+            # que o `GridSearchCV.scoring` espera.
+            def _scorer(estimator, X, y):
+                return cls._neg_cllr_balanced_scorer(estimator, X, y)
+            return _scorer
         if hasattr(scoring_enum, "value"):
             return scoring_enum.value
         return str(scoring_enum)
@@ -560,6 +614,9 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         aux_coef_per_fold: List[Optional[float]] = []
         knots_absolute_per_fold: List[List[float]] = []
         segment_slopes_per_fold: List[List[float]] = []
+        fold_is_monotonic_per_fold: List[bool] = []
+        fold_non_monotonic_indices_per_fold: List[List[int]] = []
+        fold_min_segment_slope_per_fold: List[float] = []
 
         for train_idx, _ in cv.split(score_1d, labels):
             try:
@@ -575,12 +632,27 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 segment_slopes_per_fold.append(
                     [float(s) for s in slope_info["segment_slopes"]]
                 )
+                # Diagnóstico de monotonicidade por fold: True se todos
+                # os slopes do fold são estritamente positivos.
+                fold_is_monotonic_per_fold.append(
+                    bool(slope_info["is_monotonic_strict"])
+                )
+                fold_non_monotonic_indices_per_fold.append(
+                    list(slope_info["offending_indices"])
+                )
+                fold_min_segment_slope_per_fold.append(
+                    float(min(slope_info["segment_slopes"]))
+                    if slope_info["segment_slopes"] else float("nan")
+                )
             except Exception:
                 # Se algum fold falhar, registra placeholder None.
                 s0_per_fold.append(float("nan"))
                 aux_coef_per_fold.append(None)
                 knots_absolute_per_fold.append([])
                 segment_slopes_per_fold.append([])
+                fold_is_monotonic_per_fold.append(False)
+                fold_non_monotonic_indices_per_fold.append([])
+                fold_min_segment_slope_per_fold.append(float("nan"))
 
         def _array_stats(values: List[float]):
             arr = np.array(values, dtype=np.float64)
@@ -630,6 +702,15 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             "cv_segment_slopes_raw_values": segment_slopes_per_fold,
             "cv_segment_slopes_mean": seg_means,
             "cv_segment_slopes_std": seg_stds,
+            # Diagnóstico de monotonicidade por fold — não bloqueia (a
+            # política de viabilidade fica restrita ao fit final, §9.3),
+            # mas permite detectar parametrização instável: um candidato
+            # pode ser monotônico no fit completo mas violar em alguns
+            # folds, sinalizando dependência da amostra.
+            "cv_fold_is_monotonic_values": fold_is_monotonic_per_fold,
+            "cv_fold_non_monotonic_indices": fold_non_monotonic_indices_per_fold,
+            "cv_fold_min_segment_slopes": fold_min_segment_slope_per_fold,
+            "cv_fold_monotonicity_recorded": True,
         }
 
     def _validate_monotonicity_and_persist_diagnostics(

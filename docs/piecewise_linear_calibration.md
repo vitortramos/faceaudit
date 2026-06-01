@@ -15,9 +15,6 @@ limitações conhecidas.
 
 Os elementos descritos neste documento estão presentes no código:
 
-- Princípio de avaliação contínua da força da evidência: score
-  contínuo → log-LR contínuo, sem etapa binária de classificação
-  (§1.4, Morrison et al. 2016).
 - Expansão de basis piecewise-linear interna ao calibrador, ativada
   via `CalibrationBasisMode.PIECEWISE_LINEAR`.
 - Estimação do ponto âncora $s_0$ por LogReg auxiliar univariado
@@ -39,16 +36,39 @@ Os elementos descritos neste documento estão presentes no código:
   log-LR = 0 por segmento.
 - Persistência de diagnósticos para auditoria (§7).
 
-### 0.2 O que é estabelecido vs. experimental
+### 0.2 Princípios metodológicos adotados
+
+Decisões de design que orientam o componente, antes de qualquer
+detalhe de implementação:
+
+- **Avaliação contínua da força da evidência.** Score contínuo →
+  log-LR contínuo, sem etapa binária de classificação match /
+  non-match (Morrison et al. 2016, §1.4 deste documento).
+- **Restrição de monotonicidade na escala bruta.** Score maior
+  deve corresponder a log-LR maior ou igual em todo o domínio
+  observado; violações são rejeitadas como inviáveis sob a política
+  default (§3.3, §9.3).
+- **Distinção entre LR bruta do modelo e LR reportável.** O
+  calibrador estima; a camada operacional decide o que reporta.
+  Tetos conservadores aplicados como desigualdade, nunca como
+  conclusão binária (§0.4).
+- **Fold-awareness sem leakage na estimação do âncora.** Cada fold
+  do GridSearchCV aprende seu próprio $s_0$ e knots, evitando
+  contaminação cruzada (§4.1).
+- **Disjunção por identidade entre treino e validação operacionais.**
+  Splits via `PAIRED_DATASET_SPLIT` em vez de `StratifiedKFold` por
+  par (§4.2).
+
+### 0.3 O que é estabelecido vs. experimental
 
 | Componente | Status |
 |---|---|
 | Calibração por regressão logística (linear) | Estabelecido na literatura forense (Brümmer & du Preez 2006, Morrison 2013). |
-| Expansão piecewise-linear como basis function | Estabelecido em estatística (Hastie, Tibshirani & Friedman 2009, §5.2). |
+| Expansão em funções de base lineares por trechos (*piecewise-linear basis expansion*) | Estabelecido em estatística (Hastie, Tibshirani & Friedman 2009, §5.2). |
 | Validação pós-fit de crescimento estrito por trecho | Política operacional implementada no FaceAudit. |
 | Heurística `AUTO_FROM_MIRRORED_MEDIANS` para posicionamento dos knots | Heurística experimental proposta no projeto. Não consta da literatura citada. Deve ser validada externamente no domínio de aplicação. |
 
-### 0.3 LR bruta do modelo vs. LR reportável
+### 0.4 LR bruta do modelo vs. LR reportável
 
 O calibrador piecewise produz um valor de log-LR bruto a partir do
 `decision_function` da regressão logística. Esse valor é a saída
@@ -64,13 +84,28 @@ enfatiza transparência, robustez e disponibilidade para auditoria da
 metodologia de atribuição do LR (ENFSI 2015).
 
 A política de reportabilidade pode aplicar tetos conservadores ao
-log-LR bruto (e.g. saturar valores acima de $+12$ ou abaixo de $-12$
-quando a validação só sustenta reportar até essa magnitude), mas
-**não deve** converter o resultado em conclusão binária do tipo
-"match/non-match". Essa segunda forma reintroduziria a dicotomização
-criticada por Morrison et al. (2016) — ver §1.4 e §5.1. Saturar
-mantendo escala contínua é compatível com a recomendação; reduzir a
-um par de categorias não é.
+log-LR bruto quando a validação não sustentar reportar magnitudes
+arbitrariamente grandes. **A forma correta de aplicar esses tetos é
+como desigualdade**, preservando informação sobre a direção e o
+limite empírico — não como substituição silenciosa por um valor
+pontual censurado:
+
+| Forma operacional | Aceitável? |
+|---|---|
+| `raw_model_log_lr = +21`, `reportable_display = "log-LR ≥ +12"` (ou equivalentemente "LR ≥ e¹² ≈ 162 000") | ✓ Compatível |
+| `raw_model_log_lr = +21`, `reportable_log_lr = +12` (substituição silenciosa) | ✗ Engana o consumidor sobre a magnitude estimada |
+| `raw_model_log_lr > 0` → "match" | ✗ Dicotomização criticada por Morrison et al. (2016) |
+
+A primeira forma é compatível com a §1.4: a evidência continua
+graduada (estima-se um **limite inferior** sustentado pela
+validação), apenas com a magnitude exata censurada. A segunda
+distorce a estimativa pontual ao apresentar o teto como se fosse o
+log-LR efetivo. A terceira reintroduz a dicotomização criticada.
+
+Recomenda-se persistir separadamente os campos `raw_model_log_lr`
+e (quando aplicável) `reportable_log_lr_lower_bound` /
+`reportable_log_lr_upper_bound`, com o consumidor da API
+escolhendo a forma de apresentação.
 
 ---
 
@@ -441,12 +476,26 @@ identidade, com `grouping_strategy = PRESERVE_LOOKALIKES` mantendo
 clusters de identidades parecidas no mesmo subset.
 
 Quando pares já estiverem materializados em um
-`SimilarityScoreDataset` antes do calibrador rodar, `cv_folds = 5`
-em `LogisticRegressionCalibrationModelConfig` cria folds **por par,
-sem agrupamento por identidade** — o $C_{\text{llr}}$ de
-cross-validation interno reportado nesse caso não é uma medida
-limpa. Para folds defensavelmente agrupados, o pipeline de
-construção dos pares deve garantir a propriedade upstream.
+`SimilarityScoreDataset` antes do calibrador rodar, o
+`StratifiedKFold` interno do `LogisticRegressionCalibrationModel`
+cria folds **por par, sem agrupamento por identidade**. O metadata
+do calibrador registra explicitamente essa limitação (`cv_grouping_level
+= "pair"`, `cv_identity_disjointness_verified = false` — §7.10). O
+holdout externo (e.g. `BFW split B`) pode ser disjunto por identidade
+e proteger a avaliação final, mas o CV interno (usado pra selecionar
+$C$ e medir estabilidade entre folds em §7.11) ainda pode explorar
+correlações entre pares que compartilham identidades — não constitui
+estimativa independente por identidade.
+
+**Evolução proposta:** um componente upstream produzir partições por
+identidade e persistir IDs de partição junto ao dataset (e.g.
+`pair_cv_partition_id`); o calibrador então usar `PredefinedSplit`
+ou mecanismo equivalente, garantindo geração de pares
+exclusivamente dentro de cada partição. Até essa evolução, o
+$C_{\text{llr}}$ de cross-validation interno deve ser tratado como
+uma estimativa otimista em relação ao desempenho com folds
+agrupados, e a recomendação de bootstrap por identidade (§9.5)
+mantém-se necessária pra validação operacional.
 
 ---
 
@@ -454,7 +503,7 @@ construção dos pares deve garantir a propriedade upstream.
 
 ### 5.1 O ponto âncora $s_0$
 
-A basis expansion é parametrizada pelo âncora $s_0$. Os knots
+A expansão piecewise-linear é parametrizada pelo âncora $s_0$. Os knots
 absolutos são $k_j = s_0 + \delta_j$. A escolha de $s_0$ define o que
 significa "centrar a expansão". Há dois modos.
 
@@ -531,8 +580,8 @@ Quem decide a posição dos knots.
 
 | Valor | Significado |
 |---|---|
-| `MANUAL` | Usuário escreve `knot_offsets` na configuração. |
-| `AUTO_FROM_MIRRORED_MEDIANS` (default em novos calibradores) | Transformer popula `knot_offsets` no fit usando a heurística experimental de §6.2. |
+| `MANUAL` | O usuário informa `knot_offsets`. **Padrão operacional em novos calibradores**: `knot_offsets=[0.0]` em `KnotScale.AUX_LOG_LR`, equivalente a uma única dobra em $s_0$. |
+| `AUTO_FROM_MIRRORED_MEDIANS` | Heurística experimental que posiciona dois knots a partir das medianas auxiliares refletidas em torno de log-LR = 0 (§6.2). Deve ser habilitada explicitamente. |
 
 Em `AUTO_FROM_MIRRORED_MEDIANS`, os campos `knot_offsets` e `knot_scale` do
 DTO são ignorados; o transformer determina ambos automaticamente. A
@@ -568,7 +617,9 @@ do log-LR. $s_0$ é a âncora estimada pelo calibrador auxiliar como
 ponto aproximado de evidência neutra; neste experimento, ela
 coincide aproximadamente com a região de transição entre os regimes
 predominantes de Hd e Hp (isto não é garantido matematicamente, mas
-é uma propriedade empírica frequente em scores PLDA). A linha
+foi observado neste experimento e é uma hipótese plausível a
+investigar em outros scores PLDA — não uma propriedade
+matematicamente garantida). A linha
 tracejada laranja é a calibração afim ótima a posteriori
 (`pós-afim: 0.893·logLR + 0.313`), com `slope ≈ 0.89 < 1` indicando
 ligeira sobreconfiança da curva piecewise. As barras vermelhas e
@@ -592,7 +643,7 @@ knots. Não consta da literatura citada. Deve ser tratada como
 **protocolo experimental** até que sua estabilidade seja demonstrada
 em validação externa representativa do domínio de aplicação.
 
-**Nome mais preciso.** A heurística não usa diretamente as medianas
+**Nomenclatura.** A heurística não usa diretamente as medianas
 log-LR auxiliares das classes — usa-as **refletidas em torno de
 log-LR = 0**:
 $\boldsymbol\delta = \mathrm{sorted}(\,[-\hat\ell_p, -\hat\ell_d]\,)$.
@@ -600,10 +651,12 @@ Em distribuições aproximadamente simétricas
 ($\hat\ell_d \approx -\hat\ell_p$), as medianas refletidas coincidem
 aproximadamente com as medianas observadas, e a distinção é
 cosmética; em distribuições assimétricas, o espelhamento é uma
-decisão de regularização não-trivial. Um nome mais preciso para a
-heurística seria `AUTO_FROM_MIRRORED_MEDIANS`. Em versões futuras do
-componente, recomenda-se renomear a entrada do enum (mantendo
-`AUTO_FROM_MEDIANS` como alias retroativo para JSONs existentes).
+decisão de regularização não-trivial. A partir da V2.6, o nome
+canônico do enum é `AUTO_FROM_MIRRORED_MEDIANS`. O valor legado
+`AUTO_FROM_MEDIANS` continua aceito como alias de entrada por
+`from_str()` para compatibilidade com JSONs e pickles anteriores;
+novos artefatos persistem o nome canônico e registram
+`knot_placement_protocol_version = "auto_from_mirrored_medians_v1"`.
 
 **Default operacional.** Desde a V2.4, o construtor
 `PiecewiseLinearCalibrationConfig` usa `KnotPlacement.MANUAL` com
@@ -888,6 +941,15 @@ seleção descrita em §9.3:
 - `cv_fold_count`: número de folds efetivamente usado (pode ser
   menor que `cv_folds` da config quando a classe minoritária tem
   poucas amostras).
+- `cv_grouping_level`: granularidade do agrupamento dos folds
+  (`"pair"` na implementação atual — cada linha do dataset é uma
+  observação independente para o splitter; futuras versões podem
+  expor `"identity"` quando partições upstream forem suportadas
+  via `PredefinedSplit`).
+- `cv_identity_disjointness_verified`: bool — `True` apenas
+  quando os folds são construídos por uma partição upstream com
+  disjunção de identidades comprovada. Atualmente `False` por
+  default (ver §4.2).
 
 Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
 quais foram descartados como inviáveis (sem ajuste post-hoc do
@@ -898,13 +960,26 @@ folds usados.
 
 Após a seleção de $C$, o calibrador roda `cv.split` adicional com o
 $C$ escolhido e coleta, em cada fold, $s_0$, $\alpha_{\text{aux}}$,
-knots absolutos e segment slopes — métricas que indicam a
-estabilidade da heurística sob variação de amostra. Especialmente
-relevante para `AUTO_FROM_MIRRORED_MEDIANS`: variância alta nos
-knots entre folds sugere que a heurística é sensível ao split e seu
-valor operacional deve ser questionado.
+knots absolutos, segment slopes e monotonicidade do trecho final —
+métricas que indicam a estabilidade da heurística sob variação de
+amostra. Especialmente relevante para `AUTO_FROM_MIRRORED_MEDIANS`:
+variância alta nos knots entre folds sugere que a heurística é
+sensível ao split e seu valor operacional deve ser questionado.
+
+> **Ressalva metodológica importante.** Os diagnósticos `cv_*`
+> medem estabilidade entre folds do splitter configurado. Quando
+> `cv_splitter_type = "StratifiedKFold"` (caso atual,
+> `cv_grouping_level = "pair"` — ver §4.2 e §7.10), os folds são
+> formados por pares e podem compartilhar identidades. Portanto,
+> essas métricas não substituem bootstrap por identidade (§9.5) nem
+> CV com partições identitárias disjuntas, e medem **sensibilidade
+> a uma redistribuição aleatória de pares correlacionados**, não
+> estabilidade real diante da troca das identidades usadas no
+> ajuste.
 
 Campos persistidos:
+
+**Estabilidade dos parâmetros:**
 
 - `cv_hinge_anchor_s0_values`: lista com $s_0$ de cada fold.
 - `cv_s0_mean`, `cv_s0_std`: média e desvio padrão entre folds.
@@ -917,6 +992,26 @@ Campos persistidos:
 - `cv_segment_slopes_raw_values`: slopes por fold (lista de listas).
 - `cv_segment_slopes_mean`, `cv_segment_slopes_std`: estatísticas
   por segmento ao longo dos folds.
+
+**Monotonicidade por fold (V2.7):**
+
+- `cv_fold_monotonicity_recorded`: bool (sempre `True` quando os
+  diagnósticos foram computados com sucesso) — sinaliza que a
+  política mínima ("monotonicidade do fit final") foi
+  complementada por verificação fold-a-fold.
+- `cv_fold_is_monotonic_values`: lista bool por fold — `True` se
+  todos os segment slopes do fold são estritamente positivos.
+- `cv_fold_non_monotonic_indices`: lista de listas — índices
+  (0-based) dos segmentos não-monotônicos em cada fold.
+- `cv_fold_min_segment_slopes`: lista — slope mínimo observado em
+  cada fold (útil pra quantificar a margem de monotonicidade).
+
+A política operacional atual exige monotonicidade **apenas no fit
+final** (§9.3), tratando os fields acima como diagnóstico de
+estabilidade. Em configuração pericial consolidada, pode-se
+endurecer a política exigindo `all(cv_fold_is_monotonic_values)`
+como pré-condição adicional para o candidato $C$ ser aceito —
+evolução proposta como modo opt-in.
 
 Custo: `cv_folds` fits adicionais sobre o pipeline (≈ duplica o
 custo do GridSearch padrão).
@@ -1030,9 +1125,13 @@ fixar 2 a 4 parâmetros e tolera amostras menores razoavelmente bem.
 O calibrador BI GAUSS implementado no FaceAudit é o algoritmo de
 **Morrison (2024) — Bi-Gaussianized calibration**: aplica uma
 calibração inicial por LogReg ou KDE (variantes principais do
-artigo), ou identidade (`NONE` — quando os scores de entrada já são
-log-LRs e dispensam a primeira calibração, e.g. saída direta de
-PLDA); estima a CDF empírica das duas classes com pesos
+artigo), ou identidade (`NONE` — adaptação do FaceAudit, aplicável
+quando os scores de entrada são tratados como log-LRs nominais sob
+o modelo gerador, como pode ocorrer com determinadas implementações
+de PLDA; mesmo nesses casos, a adequação empírica da escala deve
+ser avaliada no domínio operacional, pois mismatch, regularização e
+violações de gaussianidade podem justificar recalibração); estima a
+CDF empírica das duas classes com pesos
 $0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$; e mapeia o output via
 $F^{-1}(G(x))$ onde $F$ é a mistura paramétrica
 $0{,}5 \cdot \mathcal{N}(+\sigma^2/2, \sigma^2) + 0{,}5 \cdot
@@ -1112,9 +1211,11 @@ mantendo identidades emparelhadas. Parâmetros relevantes:
 - `split_ratio`: fração da identidade alocada para o subset A.
   Valores típicos: 0,5 a 0,7 dependendo do tamanho do dataset
   operacional.
-- `grouping_strategy = PRESERVE_LOOKALIKES`: mantém clusters de
-  identidades parecidas no mesmo subset, prevenindo leakage por
-  similaridade visual cross-identidade.
+- `grouping_strategy = PRESERVE_LOOKALIKES`: mantém clusters
+  previamente identificados de identidades visualmente semelhantes no
+  mesmo subset, **reduzindo o risco** de leakage por lookalikes
+  conhecidos. Não garante que todos os lookalikes reais tenham sido
+  encontrados nem elimina toda dependência visual cross-identidade.
 - `random_seed`: fixar para reprodutibilidade entre execuções.
 - `min_calibration_pairs`, `min_calibration_ids`, `min_samples_per_id`:
   pisos operacionais. Se o split não consegue gerar pares ou
