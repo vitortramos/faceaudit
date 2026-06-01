@@ -713,16 +713,21 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
         """Converte tipicidade → raridade conforme `score_type`.
 
         Inversão = True (default):
-        - TYPICALITY_PERCENTILE (0..100): normaliza para [0,1] e aplica
-          `1 − v01`. Label = `"1 - percentile_0_1"`.
+        - TYPICALITY_PERCENTILE: o `TYPICALITY_PAIR_SCORING` upstream já
+          normaliza o percentil para [0,1] (via
+          `get_percentiles(matrix)/100.0`), então a entrada aqui já
+          está em [0,1]. Aplica `1 − v` direto. Label =
+          `"1 - percentile_0_1"`. Dividir por 100 novamente neste passo
+          (como uma versão anterior fazia) produzia raridade saturada
+          em ~0.99 para todos os pares — bug histórico já corrigido.
         - MEAN_KNN_SIMILARITY ([-1,1]): `−v`. Label = `"−mean_knn_similarity"`.
         - LOG_DENSITY_KNN (ℝ): `−v`. Label = `"−log_density_knn"`.
 
-        Inversão = False: aplica só a normalização (caso percentil),
-        preservando o sinal — útil quando o usuário quer que o sinal
-        do coeficiente do LogReg multivariado refletir tipicidade
-        diretamente (não-cosmético no caso unilateral com offset, mas
-        permitido para auditoria).
+        Inversão = False: passthrough da tipicidade na escala em que
+        veio — útil quando o usuário quer que o sinal do coeficiente
+        do LogReg multivariado reflita tipicidade diretamente
+        (não-cosmético no caso unilateral com offset, mas permitido
+        para auditoria).
         """
         if score_type is TypicalityScoreType.TYPICALITY_PERCENTILE:
             # Bugfix: TYPICALITY_PAIR_SCORING já normaliza percentile pra [0,1]

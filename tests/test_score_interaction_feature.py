@@ -132,7 +132,9 @@ def _build_modifier_dataset(
     rng = np.random.default_rng(42)
     for idx, s in enumerate(base.items):
         if score_type is TypicalityScoreType.TYPICALITY_PERCENTILE:
-            val = float((idx % 100) + shift)  # 0..99 → escala 0..100
+            # Pipeline real (TYPICALITY_PAIR_SCORING) entrega percentil
+            # já normalizado em [0,1] — replicamos essa escala aqui.
+            val = float(((idx % 100) / 100.0) + shift)
         elif score_type is TypicalityScoreType.MEAN_KNN_SIMILARITY:
             val = float(rng.uniform(-0.5, 0.5))
         else:
@@ -435,9 +437,13 @@ def test_logreg_s0_config_override_records_C_in_metadata():
 # ─────────────────────── rarity conversion ─────────────────────
 
 
-def test_to_rarity_percentile_normalizes_to_0_1():
-    """v ∈ [0, 100] → v01 = v/100; rarity = 1 − v01."""
-    typicality = np.array([0.0, 50.0, 100.0], dtype=np.float64)
+def test_to_rarity_percentile_inverts_in_0_1():
+    """TYPICALITY_PAIR_SCORING já entrega percentil em [0,1] (divisão
+    por 100 ocorre upstream em `get_percentiles(matrix)/100.0`). O
+    executor recebe valores em [0,1] e aplica `1 − v` quando
+    `invert=True`. Dividir por 100 de novo aqui produziria raridade
+    saturada em ~0.99 — bug histórico já corrigido no executor."""
+    typicality = np.array([0.0, 0.5, 1.0], dtype=np.float64)
     rarity, label = ScoreInteractionFeatureInstructionExecutor._to_rarity(
         typicality, TypicalityScoreType.TYPICALITY_PERCENTILE, invert=True,
     )

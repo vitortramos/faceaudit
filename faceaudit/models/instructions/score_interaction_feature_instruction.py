@@ -128,10 +128,11 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
         default=True,
         metadata={"help": (
             "Quando True, converte tipicidade→raridade por `score_type` "
-            "do modifier (PERCENTILE: 1 − v/100; MEAN_KNN_SIM/"
-            "LOG_DENSITY: −v). Cosmético no caso bilateral, mas não "
-            "cosmético no unilateral quando o offset C≠0 (percentil) — "
-            "manter True por auditabilidade do sinal do coeficiente."
+            "do modifier (PERCENTILE: 1 − v, com v já em [0,1] vindo do "
+            "TYPICALITY_PAIR_SCORING; MEAN_KNN_SIM/LOG_DENSITY: −v). "
+            "Cosmético no caso bilateral, mas não cosmético no "
+            "unilateral quando o offset C≠0 (percentil) — manter True "
+            "por auditabilidade do sinal do coeficiente."
         )},
     )
 
