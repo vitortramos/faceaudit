@@ -51,10 +51,12 @@ detalhe de implementação:
 - **Avaliação contínua da força da evidência.** Score contínuo →
   log-LR contínuo, sem etapa binária de classificação match /
   non-match (Morrison et al. 2016, §1.4 deste documento).
-- **Restrição de monotonicidade na escala bruta.** Score maior
-  deve corresponder a log-LR maior ou igual em todo o domínio
-  observado; violações são rejeitadas como inviáveis sob a política
-  default (§3.3, §9.3).
+- **Restrição de monotonicidade na escala bruta.** Sob a política
+  default, a curva deve ser estritamente crescente em todos os
+  segmentos parametrizados, incluindo nas caudas extrapoladas
+  além do range observado; violações de monotonicidade
+  (slope ≤ 0 em qualquer trecho) são rejeitadas como inviáveis
+  (§3.3, §9.3).
 - **Distinção entre LR bruta do modelo e LR reportável.** O
   calibrador estima; a camada operacional decide o que reporta.
   Tetos conservadores aplicados como desigualdade, nunca como
@@ -480,7 +482,10 @@ pares**:
 No FaceAudit, a instrução `PAIRED_DATASET_SPLIT` (§8.4) implementa
 essa propriedade canonicamente: divide pares (frontal, lateral) por
 identidade, com `grouping_strategy = PRESERVE_LOOKALIKES` mantendo
-clusters de identidades parecidas no mesmo subset.
+clusters de identidades **previamente identificadas** como lookalikes
+no mesmo subset — reduzindo o risco associado a esses clusters
+conhecidos, sem garantir que todos os lookalikes reais tenham sido
+detectados.
 
 Quando pares já estiverem materializados em um
 `SimilarityScoreDataset`, o calibrador detecta automaticamente as
@@ -509,18 +514,23 @@ operacional:
 | Calibrador | V2.7 (par) | V2.8 (grouped) | Δ $C_{\text{llr}}$ |
 |---|---|---|---|
 | Linear puro | 0,04739 (C=0,001) | 0,04739 (C=0,001) | 0 % |
-| OFFSET ZERO (7 knots manuais) | 0,04234 (C=0,1) | **0,04126** (C=**0,01**) | **−2,6 %** |
+| MANUAL 7-KNOT (`[−15, −12, −9, −6, −3, 0, +6]`) | 0,04234 (C=0,1) | **0,04126** (C=**0,01**) | **−2,6 %** |
 | AUTO 2 knots | 0,04654 (C=0,1) | 0,04654 (C=0,1) | 0 % |
 | BI GAUSS | 0,05965 | 0,05965 | 0 % (não usa GridSearch) |
 
-A OFFSET ZERO foi a única estratégia onde o ranking do CV mudou ao
+A configuração MANUAL 7-KNOT foi a única onde o ranking do CV mudou ao
 remover o leakage parcial — o splitter agrupado preferiu
 regularização mais forte (C=0,01) e essa escolha generalizou
-melhor para o holdout disjunto por identidade. Linear puro já
-estava em C extremamente regularizado; AUTO 2 knots aparentemente
-não dependia de correlações entre pares para o C ótimo. A
-divergência é evidência empírica direta da limitação do CV por par
-e justifica o splitter agrupado como default V2.8.
+melhor para o holdout deste split específico. Linear puro já
+estava em C extremamente regularizado; AUTO 2 knots não dependeu
+de correlações entre pares no C ótimo deste experimento. O
+comportamento é consistente com a hipótese de que o CV por par
+superestimou a capacidade de generalização da configuração menos
+regularizada — porém a evidência repousa sobre um único split de
+holdout (BFW-B com 36 identidades de treino), e a robustez sob
+amostragem é discutida na §4.4. A adoção do splitter agrupado como
+default V2.8 é sustentada **provisoriamente** enquanto a evidência
+multi-split / bootstrap é consolidada em corpora maiores.
 
 **Limitação residual da V2.8.** O probe é disjunto entre folds,
 mas a identidade de referência dos pares Hd ainda pode cruzar —
@@ -558,53 +568,102 @@ pipeline PLDA SHRINK CROSS. Comparativo entre **PAIR**
 V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
 — V2.9):
 
-| Calibrador | PAIR ($C$, $C_{\text{llr}}$) | GROUPED ($C$, $C_{\text{llr}}$) | STRICT ($C$, $C_{\text{llr}}$) |
+| Calibrador | PAIR ($C$, $C_{\text{llr}}$) | GROUPED ($C$, $C_{\text{llr}}$) | STRICT V2.10 ($C$, $C_{\text{llr}}$) |
 |---|---|---|---|
-| Linear puro | 0,001 ; 0,0474 | 0,001 ; 0,0474 | 0,001 ; **0,0463** |
-| OFFSET ZERO 1 knot em $s_0$ | 10 ; 0,0465 | **0,1 ; 0,0434** | 1,0 ; 0,0436 |
-| AUTO 2 knots | 0,1 ; 0,0465 | 0,1 ; 0,0465 | 1,0 ; 0,0468 |
+| Linear puro | 0,001 ; 0,0474 | 0,001 ; 0,0474 | 0,001 ; 0,0474 |
+| 1-KNOT S0 | 10 ; 0,0465 | 0,1 ; **0,0434** | 0,1 ; **0,0434** |
+| AUTO 2 knots | 0,1 ; 0,0465 | 0,1 ; 0,0465 | 0,01 ; **0,0446** |
 
-> **Nota sobre comparação com a tabela §4.2**: a configuração
-> "OFFSET ZERO 7 knots manuais" da V2.8 (Cllr 0,04234 → 0,04126) é
-> um calibrador piecewise diferente do "OFFSET ZERO 1 knot em $s_0$"
-> da V2.9 (Cllr 0,0465 → 0,0434 → 0,0436). A tabela V2.9 acima
-> mostra o calibrador mais comum em laudo (1 knot em $s_0$, modelo
-> bilinear); a tabela V2.8 mostrou outra configuração com 7 knots
-> manuais. Os deltas relativos não devem ser combinados.
+> **Nota sobre comparação com a tabela §4.2**: o calibrador
+> **MANUAL 7-KNOT** da §4.2 V2.8 (Cllr 0,04234 → 0,04126, com knots em
+> `[−15, −12, −9, −6, −3, 0, +6]`) é uma configuração piecewise
+> distinta do **1-KNOT S0** desta tabela (Cllr 0,0465 → 0,0434 →
+> 0,0458, com knot único em $s_0$). A tabela V2.9 acima mostra o
+> calibrador mais simples e comum em laudo (modelo bilinear com uma
+> dobra); a tabela V2.8 mostrou uma configuração com sete knots
+> manuais escolhidos sobre o eixo bruto. Os deltas relativos das
+> duas tabelas **não devem ser combinados ou comparados
+> diretamente** — são objetos diferentes.
 
 A figura abaixo sobrepõe as três curvas de calibração (mesmo
 calibrador piecewise 1-knot em $s_0$, mesmo train set, mesmo
 holdout), variando apenas o splitter do CV interno:
 
-![Comparação V2.7 / V2.8 / V2.9 do calibrador piecewise 1-knot em $s_0$](images/pwl_splitter_comparison.png)
+![Comparação V2.7 / V2.8 / V2.10 do calibrador piecewise 1-knot em $s_0$](images/pwl_splitter_comparison.png)
 
-Leitura: as três curvas convergem na vizinhança de $s_0 \approx
--34{,}16$ e divergem nas caudas. PAIR (vermelho, $C=10$)
-selecionou regularização fraca e produziu slopes 0,214 / 0,266 —
-o efeito da expansão em $s_0$ é quase indistinguível de uma reta
-linear (a dobra ficou suave). GROUPED ($C=0{,}1$) e STRICT
-($C=1{,}0$) — ambas em regime mais regularizado — exibem a dobra
-explicitamente: slope esquerdo $\approx 0{,}17$, slope direito
-$\approx 0{,}30$. A coerência das curvas GROUPED e STRICT é o
-sinal empírico de que a configuração com leakage controlado
-($C \in [0{,}1, 1{,}0]$) é a regularização defensável; o PAIR foi
-para o extremo do grid porque o CV por par superestimou a
-generalização.
+Leitura: PAIR (vermelho, $C=10$) selecionou regularização fraca e
+produziu slopes 0,214 / 0,266 — o efeito da expansão em $s_0$ é
+quase indistinguível de uma reta linear (a dobra ficou suave).
+GROUPED e STRICT V2.10 chegaram **à mesma escolha de hiperparâmetro
+($C=0{,}1$)** e, como o refit final em ambos os modos é em todo o
+D_cal, produzem **curvas calibradas idênticas** (slopes 0,166 /
+0,290 — dobra evidente em $s_0$). No gráfico, as linhas GROUPED e
+STRICT se sobrepõem perfeitamente. A convergência dos dois modos
+de CV no mesmo $C$ neste split é **evidência exploratória**
+favorável à regularização intermediária; a robustez dessa
+conclusão é avaliada por bootstrap em §4.4 — onde a vantagem do
+GROUPED sobre o PAIR se mostra estatisticamente indistinguível.
 
 Leituras:
 
-- **Confirmação do efeito V2.8 em OFFSET ZERO**: PAIR enviesou para
-  $C=10$ (regularização fraca, possível de over-ajustar
-  correlações entre pares). GROUPED e STRICT concordam que esse
-  $C$ não generaliza — STRICT escolhe $C=1{,}0$ e GROUPED escolhe
-  $C=0{,}1$, ambos com holdout ≈0,043 (vs 0,047 de PAIR).
-- **Linear puro**: STRICT melhora marginalmente o holdout
-  (0,0463 vs 0,0474) sem mudar $C$. Diferença pequena consistente
-  com modelo de baixa flexibilidade (2 graus de liberdade).
-- **AUTO 2 knots**: STRICT degrada levemente (0,0468 vs 0,0465).
-  Hipótese: o subset purista é pequeno e os knots automáticos
-  (medianas espelhadas, §6.2) se deslocam para uma posição menos
-  representativa do domínio operacional cheio.
+- **Efeito V2.8 em 1-KNOT S0 neste split específico**: PAIR
+  selecionou $C=10$ (regularização fraca, exposta a over-ajustar
+  correlações entre pares). GROUPED e STRICT V2.10 chegaram ao
+  mesmo $C=0{,}1$ e mesmo Cllr 0,0434 — convergência completa após
+  o refit em D_cal cheio. **Este efeito não reproduziu sob
+  bootstrap por identidade (§4.4)** — a diferença observada vive
+  dentro da variabilidade amostral natural de 36 identidades.
+- **Linear puro**: holdout idêntico (0,0474) entre os três modos —
+  sem efeito mensurável da escolha do splitter, como esperado para
+  modelo bilinear de 2 graus de liberdade.
+- **AUTO 2 knots**: PAIR e GROUPED idênticos (0,0465); STRICT V2.10
+  seleciona $C$ mais regularizado ($0{,}01$) e produz holdout
+  0,0446 — ligeira melhoria. Hipótese: o CV estrito penaliza mais
+  knots agressivos do que o CV agrupado, empurrando para shrinkage
+  mais forte. Magnitude pequena, dentro do ruído amostral de §4.4.
+
+### 4.4 Análise de robustez por bootstrap de identidades
+
+Para avaliar se a vantagem do GROUPED sobre o PAIR observada em
+§4.2 / §4.3 reproduz sob amostragem, executamos um experimento de
+bootstrap por identidade com **30 réplicas**: em cada réplica,
+amostramos com reposição o conjunto de 36 identidades únicas do
+treino, restringimos os pares aos que têm ambas identidades na
+amostra, ajustamos o calibrador 1-KNOT S0 nos três modos (PAIR /
+GROUPED_PROBE / STRICT_IDENTITY V2.10) e avaliamos no holdout BFW-B
+fixo.
+
+| Modo | Mediana $C_{\text{llr}}$ | IC 95% | Win rate |
+|---|---|---|---|
+| PAIR | 0,0451 | [0,0435, 0,0715] | 18/30 (60,0 %) |
+| GROUPED_PROBE | 0,0447 | [0,0417, 0,0715] | 11/30 (36,7 %) |
+| STRICT_IDENTITY (V2.10) | 0,0450 | [0,0422, 0,0715] | 1/30 (3,3 %) |
+
+Diferenças par-a-par:
+
+- $\Delta C_{\text{llr}}$ (STRICT − GROUPED): mediana **+0,0000**,
+  IC95 **[−0,0016, +0,0033]** — cruza zero.
+- $\Delta C_{\text{llr}}$ (PAIR − GROUPED): mediana **+0,0000**,
+  IC95 **[−0,0013, +0,0033]** — cruza zero.
+
+**Leitura central.** Com $N_{\text{ids}}=36$ no domínio de
+calibração, os três modos de CV interno **não são empiricamente
+distinguíveis em mediana de $C_{\text{llr}}$**. A vantagem do
+GROUPED sobre o PAIR documentada na §4.2 (Cllr 0,0465 → 0,0434 em
+1-KNOT S0) é artefato do split específico avaliado e não sobrevive
+a bootstrap por identidade. PAIR venceu mais réplicas em
+contagem absoluta, mas todas as três tiveram pelo menos uma vitória
+e os ICs se sobrepõem amplamente.
+
+**Implicação metodológica.** Em corpora pequenos (≲ 50 identidades),
+a escolha do splitter do CV interno é dominada por variabilidade
+amostral; nenhuma das três opções pode ser reportada como
+sistematicamente superior. A justificativa para preferir GROUPED ou
+STRICT permanece **conceitual** (eliminar leakage que poderia
+distorcer a seleção de $C$ em corpora maiores), não estatística
+neste regime. A estabilidade da conclusão deve ser verificada em
+outros corpora e em outros seeds antes que GROUPED ou STRICT seja
+proposto como padrão definitivo.
 
 **Recomendação prática.**
 
@@ -1088,15 +1147,44 @@ seleção descrita em §9.3:
   splitter grouped (probe disjunto entre folds; reference pode
   cruzar nos pares Hd); `False` quando o splitter é por par
   (ver §4.2).
-- `cv_strict_n_kept_total` (V2.9, só em STRICT): número de pares
-  mantidos após o descarte de Hd cross-grupo.
-- `cv_strict_n_dropped_hd` (V2.9, só em STRICT): número de pares
-  Hd descartados por cruzarem grupos de identidades.
-- `cv_strict_n_unique_identities` (V2.9, só em STRICT): tamanho da
+- `cv_split_mode_requested` (V2.10): valor do enum
+  `LogRegGridSearchCVMode` requisitado pelo config
+  (`AUTO`/`PAIR`/`GROUPED_PROBE`/`STRICT_IDENTITY`).
+- `cv_split_mode_applied` (V2.10): valor do enum efetivamente usado
+  após resolução de fallback (e.g. AUTO → GROUPED_PROBE quando há
+  identidades; STRICT_IDENTITY → GROUPED_PROBE em input
+  multivariado).
+- `cv_split_mode_fallback_reason` (V2.10): descrição textual do
+  motivo do fallback, ou `None` se o modo aplicado bateu com o
+  requisitado.
+- `cv_strict_assignment_strategy` (V2.10, só em STRICT): estratégia
+  de atribuição de identidades a grupos —
+  `"balanced"` (LPT scheduling — default V2.10) ou `"round_robin"`
+  (legado V2.9).
+- `cv_strict_n_unique_identities` (V2.10, só em STRICT): tamanho da
   união (probe ∪ reference) particionada em $K$ grupos.
-- `cv_strict_n_identities_per_group` (V2.9, só em STRICT): vetor de
-  $K$ ints com a contagem de identidades por grupo (round-robin com
-  `random_state=42`).
+- `cv_strict_n_identities_per_group` (V2.10, só em STRICT): vetor
+  de $K$ ints com contagem de identidades por grupo.
+- `cv_strict_balance_group_loads` (V2.10 balanced, só em STRICT):
+  carga (somatório de aparições) por grupo após LPT scheduling.
+- `cv_strict_train_counts_by_fold`,
+  `cv_strict_test_counts_by_fold`,
+  `cv_strict_excluded_boundary_counts_by_fold`,
+  `cv_strict_train_retained_fraction_by_fold`,
+  `cv_strict_test_retained_fraction_by_fold`,
+  `cv_strict_train_hp_counts_by_fold`,
+  `cv_strict_train_hd_counts_by_fold`,
+  `cv_strict_test_hp_counts_by_fold`,
+  `cv_strict_test_hd_counts_by_fold` (V2.10, só em STRICT):
+  contagens dinâmicas por fold para auditoria.
+- `cv_strict_fold_health` (V2.10, só em STRICT): dict com
+  `thresholds`, `per_fold_status` ∈ {ok, warning, critical},
+  `per_fold_violations` (lista de strings descritivas por fold) e
+  `overall_status`. Critérios mínimos por fold:
+  ≥ 50 Hp e ≥ 50 Hd no train, ≥ 10 Hp e ≥ 10 Hd no test, boundary
+  excluído < 50% do total. Folds com qualquer contagem zero ficam
+  `critical`; abaixo dos mínimos mas não-zero ficam `warning`.
+  Critical loga 🚨, warning loga ⚠️ no logger_callback.
 
 Auditoria forense: o laudo pode citar quais $C$ foram avaliados,
 quais foram descartados como inviáveis (sem ajuste post-hoc do
@@ -1246,12 +1334,12 @@ do probe (`StratifiedGroupKFold`, padrão V2.8, §4.2).
 | Protocolo | Calibrador | $C_{\text{llr}}$ |
 |---|---|---|
 | Calibrador treinado em CFP, holdout BFW completo | Linear puro | 0,0631 |
-| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | 0,0662 |
+| (mesma configuração de pipeline e PLDA) | 1-KNOT S0 | 0,0662 |
 |  | AUTO 2 knots | 0,0631 |
 |  | BI GAUSS | 0,0509 |
 | Calibrador treinado em BFW split A (60%), holdout BFW split B (40%) — identidades disjuntas | Linear puro | **0,0474** |
-| (mesma configuração de pipeline e PLDA) | 1 knot em $s_0$ | 0,0465 |
-|  | 7 knots manuais (`[−15, −12, −9, −6, −3, 0, +6]`) | **0,0413** |
+| (mesma configuração de pipeline e PLDA) | 1-KNOT S0 | 0,0465 |
+|  | MANUAL 7-KNOT (`[−15, −12, −9, −6, −3, 0, +6]`) | **0,0413** |
 |  | AUTO 2 knots | 0,0465 |
 |  | BI GAUSS | 0,0597 |
 

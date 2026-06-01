@@ -6,6 +6,7 @@ from typing import List, Optional, Type, TypeVar
 
 from faceaudit.enums.calibrator_cv_split_mode import CalibratorCVSplitMode
 from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+from faceaudit.enums.logreg_gridsearch_cv_mode import LogRegGridSearchCVMode
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.models.calibration.piecewise_linear_calibration_config import (
     PiecewiseLinearCalibrationConfig,
@@ -54,6 +55,31 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
     cv_folds: int = field(
         default=5,
         metadata={"help": "Número de folds da cross-validation (StratifiedKFold) usada no GridSearch."}
+    )
+
+    gridsearch_cv_mode: LogRegGridSearchCVMode = field(
+        default=LogRegGridSearchCVMode.AUTO,
+        metadata={"help": (
+            "<html><b>Estratégia de partição dos folds do GridSearch "
+            "interno</b> (V2.10).<br/><br/>"
+            "<b>AUTO</b> (padrão) — escolhe GROUPED_PROBE quando há "
+            "identidades de probe disponíveis no metadata do calibrador "
+            "(injetadas pelo executor de calibração); cai em PAIR "
+            "caso contrário.<br/><br/>"
+            "<b>PAIR</b> — StratifiedKFold sem agrupamento. Cobertura "
+            "de disjunção: nenhuma. Otimista.<br/><br/>"
+            "<b>GROUPED_PROBE</b> — StratifiedGroupKFold por "
+            "probe_identity. Cobertura: parcial (probe disjunto, "
+            "reference pode cruzar). Default V2.8.<br/><br/>"
+            "<b>STRICT_IDENTITY</b> — splitter dinâmico "
+            "IdentityDisjointPairKFold com folds totalmente "
+            "disjuntos por identidade; pares Hd boundary excluídos só "
+            "no fold corrente. Cobertura: total. Refit final em todo "
+            "D_cal. Forense-defensável quando o conjunto de calibração "
+            "tem identidades suficientes (≳ 50 sugerido como heurística "
+            "exploratória — verificar contagens cv_*_counts_by_fold "
+            "no metadata).</html>"
+        )}
     )
 
     scoring: LogRegGridScoringMetric = field(
@@ -151,6 +177,10 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         # Normaliza enum vindo de string (caso from_dict externo)
         if not isinstance(self.cv_split_mode, CalibratorCVSplitMode):
             self.cv_split_mode = CalibratorCVSplitMode.from_str(self.cv_split_mode)
+        if not isinstance(self.gridsearch_cv_mode, LogRegGridSearchCVMode):
+            self.gridsearch_cv_mode = LogRegGridSearchCVMode.from_str(
+                self.gridsearch_cv_mode
+            )
         # Normaliza PiecewiseLinearCalibrationConfig vindo de dict
         if isinstance(self.piecewise_linear_config, dict):
             self.piecewise_linear_config = (
@@ -190,6 +220,11 @@ class LogisticRegressionCalibrationModelConfig(JSONSerializableMixin):
         if "cv_split_mode" in processed:
             processed["cv_split_mode"] = CalibratorCVSplitMode.from_str(
                 processed["cv_split_mode"]
+            )
+
+        if "gridsearch_cv_mode" in processed:
+            processed["gridsearch_cv_mode"] = LogRegGridSearchCVMode.from_str(
+                processed["gridsearch_cv_mode"]
             )
 
         if "piecewise_linear_config" in processed and isinstance(
