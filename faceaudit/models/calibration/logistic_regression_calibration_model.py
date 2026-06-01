@@ -1215,9 +1215,10 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                     f"minoritária tem {min_class_size} amostras."
                 )
 
-            # scoring é um LogRegGridScoringMetric enum — passar o .value
-            # ("neg_log_loss" ou "roc_auc") para o sklearn.
-            scoring_str = (
+            # Resolve scoring: NEG_CLLR_BALANCED → callable customizado
+            # (balanceado por classe). Demais → string nativa sklearn.
+            scoring_obj_linear = self._resolve_scoring(self.config.scoring)
+            scoring_label = (
                 self.config.scoring.value
                 if hasattr(self.config.scoring, "value")
                 else str(self.config.scoring)
@@ -1227,7 +1228,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"[{self.name}] 🧠 GridSearch LogReg "
                 f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | "
                 f"c_grid={self.config.c_grid} | cv={cv_folds} | "
-                f"scoring={scoring_str})..."
+                f"scoring={scoring_label})..."
             )
 
             cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
@@ -1235,7 +1236,7 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 estimator=self._build_estimator(self.config.C),
                 param_grid={"C": list(self.config.c_grid)},
                 cv=cv,
-                scoring=scoring_str,
+                scoring=scoring_obj_linear,
                 n_jobs=-1,
                 refit=True,
             )
