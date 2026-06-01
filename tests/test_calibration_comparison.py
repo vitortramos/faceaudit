@@ -17,15 +17,19 @@ import pytest
 from scipy import integrate
 
 from experiments.calibration._synthetic_calibration_helpers import (
+    LADDER_SCENARIOS,
+    PIECEWISE_KNOT_SCENARIOS,
     SCENARIOS,
     cllr_from_logLR,
     fit_eval,
     log_pdf_s_given_hd,
     log_pdf_s_given_hp,
     make_calibrators,
+    make_knot_ladder,
     oracle_cllr_population,
     oracle_log_lr,
     sample,
+    true_knots,
 )
 
 
@@ -432,6 +436,132 @@ def test_population_oracle_regret_is_non_negative_with_numeric_tolerance(scen):
         assert regret >= -1e-3, (
             f"{spec.name} em {scen}: regret_pop = {regret:.6f} < 0 "
             f"(falha de sanidade da integração)"
+        )
+
+
+# ──────────────── cenários multi-knot (F/G) + escada ─────────────────
+
+
+@pytest.mark.parametrize("scen", list(PIECEWISE_KNOT_SCENARIOS))
+def test_piecewise_truth_oracle_matches_density_ratio(scen):
+    """F/G: oráculo piecewise-linear casa a razão de densidades em precisão
+    de máquina (o oráculo já é parametrizado pelos knots/slopes verdadeiros)."""
+    s_hp, s_hd = sample(scen, 5000, seed=0)
+    union = np.concatenate([s_hp, s_hd])
+    lo, hi = np.quantile(union, [0.01, 0.99])
+    grid = np.linspace(lo, hi, 200)
+    by_ratio = log_pdf_s_given_hp(scen, grid) - log_pdf_s_given_hd(scen, grid)
+    by_formula = oracle_log_lr(scen, grid)
+    np.testing.assert_allclose(by_ratio, by_formula, atol=1e-10)
+
+
+@pytest.mark.parametrize("scen", list(PIECEWISE_KNOT_SCENARIOS))
+def test_piecewise_truth_oracle_recovers_segment_slopes(scen):
+    """A derivada do oráculo em pontos interiores de cada segmento deve
+    igualar os `segment_slopes` prescritos."""
+    knots = SCENARIOS[scen]["knots"]
+    slopes = SCENARIOS[scen]["segment_slopes"]
+    bounds = [-3.0] + list(knots) + [3.0]
+    mids = [(bounds[j] + bounds[j + 1]) / 2.0 for j in range(len(slopes))]
+    eps = 1e-5
+    for mid, expected in zip(mids, slopes):
+        deriv = (oracle_log_lr(scen, np.array([mid + eps]))[0]
+                 - oracle_log_lr(scen, np.array([mid - eps]))[0]) / (2 * eps)
+        assert abs(deriv - expected) < 1e-4, (
+            f"{scen} em s={mid}: derivada {deriv:.4f} ≠ slope esperado {expected}"
+        )
+
+
+@pytest.mark.parametrize("scen", list(PIECEWISE_KNOT_SCENARIOS))
+def test_piecewise_truth_population_mass_and_regret(scen):
+    """F/G: massas populacionais ≈ 1 e regret do oráculo ≥ −tol."""
+    cllr_oracle, health = oracle_cllr_population(scen)
+    assert abs(health["population_mass_hp"] - 1.0) < 1e-4
+    assert abs(health["population_mass_hd"] - 1.0) < 1e-4
+    seed = 0
+    s_cal_hp, s_cal_hd = sample(scen, N_CAL_FAST, seed=seed)
+    s_val_hp, s_val_hd = sample(scen, 2000, seed=seed + 10_000)
+    for spec in make_knot_ladder(scen):
+        r = fit_eval(spec, scen, seed, s_cal_hp, s_cal_hd, s_val_hp, s_val_hd, N_CAL_FAST)
+        if r.fit_status == "OK" and r.cllr_population is not None:
+            assert r.cllr_population - cllr_oracle >= -1e-3
+
+
+@pytest.mark.parametrize("scen", list(PIECEWISE_KNOT_SCENARIOS))
+def test_manual_true_knots_recovers_multi_knot_slopes(scen):
+    """A variante estrutural com knots verdadeiros recupera os segment_slopes
+    da verdade em F e G (não só slope crescente).
+
+    Usa N=20k (filosofia do cenário B: C alto + N grande): o segmento de
+    cauda extrema tem pouca massa de Hp e exige mais dados — a má estimação
+    desse segmento com N pequeno é o próprio problema de suporte que o estudo
+    de escada documenta.
+    """
+    N_struct = 20_000
+    expected = np.array(SCENARIOS[scen]["segment_slopes"])
+    recovered = []
+    for seed in SEEDS_FAST:
+        s_cal_hp, s_cal_hd = sample(scen, N_struct, seed=seed)
+        s_val_hp, s_val_hd = sample(scen, 2000, seed=seed + 10_000)
+        spec = next(s for s in make_knot_ladder(scen)
+                    if s.name == "MANUAL-TRUE-KNOTS")
+        r = fit_eval(spec, scen, seed, s_cal_hp, s_cal_hd, s_val_hp, s_val_hd, N_struct)
+        assert r.fit_status == "OK", r.fit_failure_reason
+        recovered.append(r.piecewise_segment_slopes_raw)
+    median_slopes = np.median(np.array(recovered), axis=0)
+    np.testing.assert_allclose(median_slopes, expected, rtol=0.15, atol=0.08)
+
+
+def test_ladder_true_knots_recovery_does_not_require_increasing_slopes():
+    """G tem slopes [0.4,0.9,1.4,0.8] — último < terceiro. A recuperação deve
+    funcionar mesmo com slopes não-monotonicamente crescentes (só positivos)."""
+    scen = "G_EXACT_THREE_KNOTS"
+    slopes = SCENARIOS[scen]["segment_slopes"]
+    assert slopes[-1] < slopes[-2], "cenário G deve ter último slope menor"
+    assert all(m > 0 for m in slopes), "todos os slopes devem ser positivos"
+    s_cal_hp, s_cal_hd = sample(scen, N_CAL_FAST, seed=0)
+    s_val_hp, s_val_hd = sample(scen, 2000, seed=10_000)
+    spec = next(s for s in make_knot_ladder(scen) if s.name == "MANUAL-TRUE-KNOTS")
+    r = fit_eval(spec, scen, 0, s_cal_hp, s_cal_hd, s_val_hp, s_val_hd, N_CAL_FAST)
+    assert r.fit_status == "OK"
+    # curva monotônica (todos slopes > 0) mesmo sem slopes crescentes
+    assert all(m > 0 for m in r.piecewise_segment_slopes_raw)
+
+
+def test_ladder_includes_expected_rungs():
+    """A escada deve conter LINEAR→1→2→3→5 KNOT, bigauss e (em B/F/G) o
+    diagnóstico estrutural MANUAL-TRUE-KNOTS."""
+    for scen in LADDER_SCENARIOS:
+        names = {s.name for s in make_knot_ladder(scen)}
+        assert {"LINEAR", "1-KNOT", "2-KNOT", "3-KNOT", "5-KNOT", "bigauss"} <= names
+        if true_knots(scen) is not None:
+            assert "MANUAL-TRUE-KNOTS" in names
+        else:
+            assert "MANUAL-TRUE-KNOTS" not in names
+
+
+def test_ladder_more_knots_not_materially_worse_than_linear_in_multiknot_truth():
+    """Em F/G (verdade multi-knot), 3-KNOT operacional não deve ser
+    materialmente pior que LINEAR (mediana sobre seeds)."""
+    for scen in ["F_EXACT_TWO_KNOTS", "G_EXACT_THREE_KNOTS"]:
+        cllr_oracle, _ = oracle_cllr_population(scen)
+        per_rung = {"LINEAR": [], "3-KNOT": []}
+        for seed in SEEDS_FAST:
+            s_cal_hp, s_cal_hd = sample(scen, N_CAL_FAST, seed=seed)
+            s_val_hp, s_val_hd = sample(scen, N_VAL_FAST, seed=seed + 10_000)
+            for spec in make_knot_ladder(scen):
+                if spec.name not in per_rung:
+                    continue
+                r = fit_eval(spec, scen, seed, s_cal_hp, s_cal_hd,
+                              s_val_hp, s_val_hd, N_CAL_FAST)
+                assert r.fit_status == "OK"
+                per_rung[spec.name].append(r.cllr_population)
+        # 3-KNOT mediano não pode ser pior que LINEAR + folga
+        med_linear = float(np.median(per_rung["LINEAR"]))
+        med_3knot = float(np.median(per_rung["3-KNOT"]))
+        assert med_3knot <= med_linear + 2e-3, (
+            f"{scen}: 3-KNOT ({med_3knot:.4f}) materialmente pior que "
+            f"LINEAR ({med_linear:.4f})"
         )
 
 
