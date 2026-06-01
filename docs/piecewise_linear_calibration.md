@@ -15,6 +15,9 @@ limitações conhecidas.
 
 Os elementos descritos neste documento estão presentes no código:
 
+- Princípio de avaliação contínua da força da evidência: score
+  contínuo → log-LR contínuo, sem etapa binária de classificação
+  (§1.4, Morrison et al. 2016).
 - Expansão de basis piecewise-linear interna ao calibrador, ativada
   via `CalibrationBasisMode.PIECEWISE_LINEAR`.
 - Estimação do ponto âncora $s_0$ por LogReg auxiliar univariado
@@ -59,6 +62,15 @@ componente piecewise não define essa política; ele se limita a
 produzir o estimador. A guideline ENFSI para relatórios avaliativos
 enfatiza transparência, robustez e disponibilidade para auditoria da
 metodologia de atribuição do LR (ENFSI 2015).
+
+A política de reportabilidade pode aplicar tetos conservadores ao
+log-LR bruto (e.g. saturar valores acima de $+12$ ou abaixo de $-12$
+quando a validação só sustenta reportar até essa magnitude), mas
+**não deve** converter o resultado em conclusão binária do tipo
+"match/non-match". Essa segunda forma reintroduziria a dicotomização
+criticada por Morrison et al. (2016) — ver §1.4 e §5.1. Saturar
+mantendo escala contínua é compatível com a recomendação; reduzir a
+um par de categorias não é.
 
 ---
 
@@ -160,6 +172,51 @@ metadata e recalcular `prior_log_odds_correction` de acordo.
 Configurações de `class_weight` diferentes (e.g. `class_weight=None`
 ou dicionário explícito) também exigem revisão dessa relação antes
 de tratar `decision_function` como log-LR direto.
+
+### 1.4 Avaliação contínua da força da evidência
+
+A escolha por mapear o score continuamente em log-LR — em vez de
+classificá-lo binariamente em "match" ou "non-match" — é uma
+decisão metodológica fundamentada e não um detalhe de implementação.
+Morrison et al. (2016), em comentário ao relatório do PCAST sobre
+métodos forenses de comparação de características, argumentam que
+procedimentos de duas etapas (decidir match/non-match e em seguida
+informar uma taxa de erro associada à decisão) são **inadequados**
+quando os métodos produzem dados continuamente valorados e sujeitos
+a variabilidade intrafonte.
+
+O argumento central é o **efeito de precipício** (cliff-edge effect)
+introduzido por um threshold operacional. Dado um corte arbitrário
+em $s = \tau$:
+
+- Pares com $s = \tau - \varepsilon$ recebem conclusão de não-match,
+  enquanto pares com $s = \tau + \varepsilon$ recebem conclusão de
+  match — apesar de seus scores serem praticamente indistinguíveis.
+- Pares com $s = \tau + \varepsilon$ e $s = \tau + (s_{\max} - \tau)$
+  recebem a mesma conclusão de match, apesar de o segundo carregar
+  evidência substancialmente mais forte.
+
+Em comparação facial, a variabilidade intrafonte (pose, iluminação,
+expressão, idade, sensor, condições de aquisição) introduz dispersão
+nos scores de pares Hp. Dicotomizar prematuramente esses scores
+descarta informação genuinamente discriminativa.
+
+A alternativa recomendada é converter cada score diretamente em uma
+estimativa graduada da força da evidência:
+
+$$
+\text{LR}(s) = \frac{p(s \mid H_p)}{p(s \mid H_d)} \quad\text{em escala contínua, para todo $s$ no domínio observado.}
+$$
+
+A arquitetura do FaceAudit é coerente com essa recomendação:
+embedding → score contínuo → calibrador contínuo → log-LR contínuo.
+Nenhum dos calibradores disponíveis (regressão logística linear,
+piecewise-linear, KDE, BiGaussianized) precisa declarar match ou
+non-match. A expansão piecewise-linear descrita neste documento
+preserva essa continuidade: os knots alteram **localmente** a
+inclinação da curva de calibração, mas não funcionam como
+thresholds classificatórios. Ver §5.1 para a distinção formal entre
+o âncora $s_0$ e um threshold de decisão.
 
 ---
 
@@ -429,6 +486,24 @@ O usuário fornece $s_0$ diretamente via
 externos já auditados ou aplicar regras de domínio explícitas. Não
 gera $\alpha_{\text{aux}}$ — escalas e modos que dependem dele ficam
 restritos.
+
+#### $s_0$ não é um threshold de decisão
+
+Por relevância forense (Morrison et al. 2016, §1.4), vale a
+distinção explícita entre os seguintes conceitos:
+
+| Conceito | Significado |
+|---|---|
+| **$s_0$** (âncora da expansão) | Posição de uma dobra numa função contínua. Acima e abaixo de $s_0$, o log-LR continua sendo definido continuamente. |
+| **Threshold binário** ($\tau$) | Corte que converte score em duas categorias (match / non-match). Descartado pelo FaceAudit por princípio. |
+| **log-LR $= 0$** | Ponto onde $\text{LR} = 1$; evidência neutra entre $H_p$ e $H_d$. Valor de referência interpretativa, **não** corte de decisão. |
+| **Threshold de EER** | Diagnóstico de desempenho discriminativo do modelo, usado em validação. Não usado para classificar resultados de caso. |
+| **Decisão judicial ou investigativa** | Camada operacional posterior, externa ao calibrador, dependente de prior odds, custos relativos e regras do domínio jurídico. |
+
+O calibrador produz um valor contínuo em qualquer ponto do domínio
+de score. O usuário e o consumidor da LR (e.g. perito, juiz)
+operam sobre esse valor graduado. A existência do âncora $s_0$ ou
+do cruzamento efetivo (§3.5) não restaura uma estrutura binária.
 
 ### 5.2 Escala dos offsets (`KnotScale`)
 
@@ -1373,6 +1448,16 @@ particionamento por identidade upstream).
   58(1), 47–58. Demonstra empiricamente que scores baseados apenas em
   similaridade ou diferença podem ser inadequados, enquanto scores
   que incorporam similaridade e tipicidade se comportam melhor.
+- **Morrison, G. S., Kaye, D. H., Balding, D. J., Taylor, D., Dawid,
+  P., Aitken, C. G. G., Gittelson, S., Zadora, G., Robertson, B.,
+  Willis, S., Pope, S., Neil, M., Martire, K. A., Hepler, A., Gill,
+  R. D., Jamieson, A., de Zoete, J., Ostrum, R. B., & Caliebe, A.
+  (2016).** *A comment on the PCAST report: Skip the "match"/"non-match"
+  stage.* Forensic Science International. <https://doi.org/10.1016/j.forsciint.2016.10.018>.
+  Carta científica argumentando que métodos forenses que produzem
+  dados continuamente valorados não devem ser submetidos a uma etapa
+  binária de classificação. Fundamenta a recomendação de mapear
+  scores diretamente em LR graduada. Referência conceitual da §1.4.
 - **Morrison, G. S. (2024).** *Bi-Gaussianized calibration of
   likelihood ratios.* Law, Probability and Risk, 23(1), mgae004.
   Apresenta o algoritmo Bi-Gaussianized adotado no
