@@ -32,6 +32,10 @@ Os elementos descritos neste documento estão presentes no código:
 - Splitter do CV agrupado por identidade do probe (`StratifiedGroupKFold`,
   default V2.8 quando o input tem identidades disponíveis). Fallback
   `StratifiedKFold` por par quando identidades ausentes (§4.2).
+- Splitter purista opt-in `PredefinedSplit_StrictByIdentity` (V2.9) —
+  particiona identidades em $K$ grupos disjuntos e descarta pares Hd
+  cross-grupo. Disjunção total entre folds, ao custo de descarte de
+  parte do conjunto de calibração (§4.3).
 - Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.11).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
@@ -557,8 +561,16 @@ V2.8) e **STRICT** (`PredefinedSplit` por partição de identidades
 | Calibrador | PAIR ($C$, $C_{\text{llr}}$) | GROUPED ($C$, $C_{\text{llr}}$) | STRICT ($C$, $C_{\text{llr}}$) |
 |---|---|---|---|
 | Linear puro | 0,001 ; 0,0474 | 0,001 ; 0,0474 | 0,001 ; **0,0463** |
-| OFFSET ZERO 1 knot | 10 ; 0,0465 | **0,1 ; 0,0434** | 1,0 ; 0,0436 |
+| OFFSET ZERO 1 knot em $s_0$ | 10 ; 0,0465 | **0,1 ; 0,0434** | 1,0 ; 0,0436 |
 | AUTO 2 knots | 0,1 ; 0,0465 | 0,1 ; 0,0465 | 1,0 ; 0,0468 |
+
+> **Nota sobre comparação com a tabela §4.2**: a configuração
+> "OFFSET ZERO 7 knots manuais" da V2.8 (Cllr 0,04234 → 0,04126) é
+> um calibrador piecewise diferente do "OFFSET ZERO 1 knot em $s_0$"
+> da V2.9 (Cllr 0,0465 → 0,0434 → 0,0436). A tabela V2.9 acima
+> mostra o calibrador mais comum em laudo (1 knot em $s_0$, modelo
+> bilinear); a tabela V2.8 mostrou outra configuração com 7 knots
+> manuais. Os deltas relativos não devem ser combinados.
 
 Leituras:
 
@@ -1083,19 +1095,26 @@ variância alta nos knots entre folds sugere que a heurística é
 sensível ao split e seu valor operacional deve ser questionado.
 
 > **Ressalva metodológica importante.** Os diagnósticos `cv_*`
-> medem estabilidade entre folds do splitter configurado. Em V2.8
-> com `cv_splitter_type = "StratifiedGroupKFold"` (default quando
-> identidades estão disponíveis, `cv_grouping_level =
-> "identity_probe"`), os folds são disjuntos por identidade do
-> probe — eliminando o leakage mais óbvio. Permanece uma cobertura
-> parcial: a identidade de **referência** dos pares Hd ainda pode
-> aparecer em múltiplos folds (cada par Hd carrega duas identidades
-> e o splitter aceita apenas uma label de grupo por linha). Em
-> fallback `cv_splitter_type = "StratifiedKFold"`
-> (`cv_grouping_level = "pair"`), os folds são formados por par e
-> podem compartilhar identidades inteiramente. Em ambos os casos,
-> essas métricas não substituem bootstrap por identidade (§9.5)
-> nem CV com partições identitárias totalmente disjuntas.
+> medem estabilidade entre folds do splitter configurado. Três
+> regimes são possíveis:
+>
+> - **V2.9 STRICT (opt-in)** — `cv_splitter_type =
+>   "PredefinedSplit_StrictByIdentity"`, `cv_grouping_level =
+>   "identity_partition"`, `cv_identity_disjointness_verified =
+>   True`. Identidades particionadas em $K$ grupos disjuntos e Hd
+>   cross-grupo descartado. Disjunção total verificada (§4.3).
+> - **V2.8 default** — `cv_splitter_type = "StratifiedGroupKFold"`,
+>   `cv_grouping_level = "identity_probe"`. Probe disjunto entre
+>   folds; a identidade de **referência** dos pares Hd pode ainda
+>   aparecer em múltiplos folds (cada par Hd carrega duas
+>   identidades e o splitter aceita apenas uma label de grupo por
+>   linha). Cobertura parcial.
+> - **V2.7 fallback** — `cv_splitter_type = "StratifiedKFold"`,
+>   `cv_grouping_level = "pair"`. Folds formados por par e podem
+>   compartilhar identidades inteiramente.
+>
+> Em todos os casos, essas métricas não substituem bootstrap por
+> identidade (§9.5).
 
 Campos persistidos:
 
