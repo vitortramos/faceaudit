@@ -21,9 +21,13 @@ Os elementos descritos neste documento estão presentes no código:
   fold-aware (`HingeAnchorMode.AUTO_LOGREG`) ou valor fixo (`MANUAL`).
 - Escala dos offsets em score bruto (`KnotScale.RAW`) ou em log-LR do
   calibrador auxiliar (`KnotScale.AUX_LOG_LR`).
-- Posicionamento manual (`KnotPlacement.MANUAL`) ou automático
-  experimental (`KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS`, antigo
-  `AUTO_FROM_MEDIANS`).
+- Posicionamento manual (`KnotPlacement.MANUAL`, default operacional)
+  ou automático experimental (`KnotPlacement.AUTO_FROM_MIRRORED_MEDIANS`,
+  antigo `AUTO_FROM_MEDIANS`).
+- Seleção de hiperparâmetro $C$ por `GridSearchCV` sob restrição de
+  monotonicidade — candidatos cuja curva final é não-monotônica são
+  descartados; selecionado o melhor $C$ entre os válidos por CV score.
+- Diagnósticos de estabilidade entre folds do CV (`cv_*` em §7.10).
 - Validação pós-fit de crescimento estrito por trecho, com política
   configurável (`MonotonicityPolicy.ERROR` ou `WARNING`).
 - Algoritmo geral para identificar o ponto de cruzamento efetivo de
@@ -521,16 +525,16 @@ heurística seria `AUTO_FROM_MIRRORED_MEDIANS`. Em versões futuras do
 componente, recomenda-se renomear a entrada do enum (mantendo
 `AUTO_FROM_MEDIANS` como alias retroativo para JSONs existentes).
 
-**Default operacional recomendado.** Apesar de o construtor
-`PiecewiseLinearCalibrationConfig` atualmente usar
-`KnotPlacement.AUTO_FROM_MEDIANS` como padrão para novos
-calibradores, a evidência empírica reunida neste documento (§6.2
-abaixo e §8) sugere que essa escolha **não é defensavelmente
-superior** à configuração mais simples e estabelecida
-(`KnotPlacement.MANUAL` com `knot_offsets=[0.0]` em
-`KnotScale.AUX_LOG_LR`). Para deployment operacional, a dobra única
-em $s_0$ deve ser preferida; `AUTO_FROM_MEDIANS` deve ser habilitada
-explicitamente como opt-in experimental.
+**Default operacional.** Desde a V2.4, o construtor
+`PiecewiseLinearCalibrationConfig` usa `KnotPlacement.MANUAL` com
+`knot_offsets=[0.0]` em `KnotScale.AUX_LOG_LR` como padrão — a
+configuração mais simples e estabelecida, equivalente a uma dobra
+única no ponto âncora $s_0$. A escolha refletiu a evidência empírica
+reunida neste documento (§6.2 abaixo e §8): no mesmo split, a dobra
+única produziu Cllr menor que `AUTO_FROM_MIRRORED_MEDIANS`. O modo
+automático deve ser habilitado explicitamente como **opt-in
+experimental** quando o usuário queira testá-lo num domínio
+específico.
 
 #### Definição
 
@@ -701,7 +705,10 @@ contrato de auditoria** do componente.
 ### 7.4 Knots e suporte
 
 - `piecewise_knot_scale`: `"RAW"` ou `"AUX_LOG_LR"`.
-- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MEDIANS"`.
+- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MEDIANS"`
+  (string serializada — o valor `AUTO_FROM_MEDIANS` é preservado
+  como tag retroativa mesmo após o rename do enum para
+  `AUTO_FROM_MIRRORED_MEDIANS` na V2.4).
 - `piecewise_knot_offsets_user`: offsets na escala do usuário.
 - `piecewise_knot_offsets_raw`: offsets em escala de score (sempre).
 - `piecewise_knots_absolute`: posições absolutas $k_j$ em escala de
@@ -718,6 +725,14 @@ contrato de auditoria** do componente.
   trecho.
 - `segment_support_warnings`: lista de avisos quando algum trecho
   tem suporte abaixo dos limiares operacionais.
+- `segment_unique_identities_hp`: número de identidades distintas
+  (probe_id) nos pares Hp do trecho. None quando o executor não
+  passa identidades (input não é `SimilarityScoreDataset`).
+- `segment_unique_identities_hd`: número de identidades distintas
+  (probe_id ∪ reference_id) nos pares Hd do trecho. Permite
+  detectar caudas com muitos pares mas poucas identidades
+  dominantes — medida de suporte estatístico mais robusta que a
+  contagem de pares.
 
 ### 7.5 Coeficientes
 
@@ -754,6 +769,54 @@ contrato de auditoria** do componente.
 
 - `pipeline_feature_names`: nomes descritivos das features expandidas
   (e.g. `["z=score-s0", "max(z, 0)", "max(z - +2.0000, 0)", ...]`).
+
+### 7.10 Seleção de $C$ sob restrição de monotonicidade (V2.5)
+
+Quando `use_gridsearch=True`, o calibrador persiste o resultado da
+seleção descrita em §9.3:
+
+- `piecewise_selected_c`: $C$ escolhido (melhor candidato válido por
+  CV score).
+- `piecewise_selection_policy`: identificador da política aplicada
+  (`"best_valid_candidate_by_cv_score"`).
+- `piecewise_valid_c_values`: lista de $C$ cuja curva final passou em
+  monotonicidade estrita.
+- `piecewise_valid_c_cv_scores`: CV scores correspondentes
+  (`neg_log_loss`), paralelos a `piecewise_valid_c_values`.
+- `piecewise_invalid_c_values`: lista de $C$ rejeitados.
+- `piecewise_invalid_c_reasons`: motivo textual por $C$ rejeitado
+  (inclui slopes computados e índices dos trechos ofensores),
+  paralelo a `piecewise_invalid_c_values`.
+
+Auditoria forense: o laudo pode citar quais $C$ foram avaliados e
+quais foram descartados como inviáveis sem ajuste post-hoc do grid.
+
+### 7.11 Estabilidade entre folds do CV (V2.5)
+
+Após a seleção de $C$, o calibrador roda `cv.split` adicional com o
+$C$ escolhido e coleta, em cada fold, $s_0$, $\alpha_{\text{aux}}$,
+knots absolutos e segment slopes — métricas que indicam a
+estabilidade da heurística sob variação de amostra. Especialmente
+relevante para `AUTO_FROM_MIRRORED_MEDIANS`: variância alta nos
+knots entre folds sugere que a heurística é sensível ao split e seu
+valor operacional deve ser questionado.
+
+Campos persistidos:
+
+- `cv_hinge_anchor_s0_values`: lista com $s_0$ de cada fold.
+- `cv_s0_mean`, `cv_s0_std`: média e desvio padrão entre folds.
+- `cv_aux_coef_values`, `cv_aux_coef_mean`, `cv_aux_coef_std`: idem
+  para $\alpha_{\text{aux}}$.
+- `cv_piecewise_knots_absolute_values`: lista de listas; cada
+  elemento são os knots absolutos do fold correspondente.
+- `cv_knot_means`, `cv_knot_stds`: estatísticas por knot ao longo
+  dos folds (índices alinhados aos knots).
+- `cv_segment_slopes_raw_values`: slopes por fold (lista de listas).
+- `cv_segment_slopes_mean`, `cv_segment_slopes_std`: estatísticas
+  por segmento ao longo dos folds.
+
+Custo: `cv_folds` fits adicionais sobre o pipeline (≈ duplica o
+custo do GridSearch padrão).
 
 ---
 
@@ -1008,28 +1071,31 @@ no trecho direito, o GridSearch escolheu `C = 100` e produziu
 $m_3 = -0{,}016$ (rejeição). Reduzindo o grid para `[0.01, 0.1]`, o
 mesmo dataset produziu `C = 0.1` e $m_3 = +0{,}319$ (monotônica).
 
-#### Monotonicidade como restrição de viabilidade
+#### Monotonicidade como restrição de viabilidade (implementado em V2.5)
 
 A solução acima — restringir manualmente o `c_grid` após observar a
 falha — é operacionalmente conveniente mas metodologicamente frágil:
-constitui um ajuste experimental orientado pelo resultado. O
-procedimento mais defensável é tratar **monotonicidade como
-restrição de viabilidade do modelo** durante a seleção de $C$:
+constitui um ajuste experimental orientado pelo resultado. Desde
+V2.5, o FaceAudit trata **monotonicidade como restrição de
+viabilidade do modelo** durante a seleção de $C$ via o método
+`_select_monotonic_C` do `LogisticRegressionCalibrationModel`. O
+fluxo é:
 
-1. definir `c_grid` *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
-2. ajustar cada candidato dentro do CV;
-3. **marcar como inválidos** os candidatos cujo fit final produz
-   curva não-monotônica;
-4. selecionar o melhor $C$ **entre os candidatos válidos** (e.g.
-   menor `neg_log_loss` CV);
-5. **persistir** quais candidatos foram descartados e por quê
-   (`piecewise_invalid_c_values`, `piecewise_invalid_c_reasons`,
-   `piecewise_valid_c_values`, `piecewise_selected_c`,
-   `piecewise_selection_policy = "best_valid_candidate"`);
-6. validar novamente a monotonicidade no fit final.
+1. `c_grid` é definido *a priori* (e.g. `[0.001, 0.01, 0.1, 1.0, 10.0]`);
+2. `GridSearchCV(refit=False)` calcula CV score (`neg_log_loss`)
+   de cada candidato;
+3. candidatos são iterados em ordem decrescente de CV score; para
+   cada um, é feito fit completo + verificação de monotonicidade;
+4. o **primeiro candidato** cuja curva final é estritamente
+   crescente em todos os trechos é selecionado;
+5. todos os candidatos avaliados (válidos e inválidos) são
+   persistidos no metadata para auditoria (§7.10);
+6. quando **nenhum candidato** produz curva monotônica, o calibrador
+   é rejeitado com erro listando cada $C$ testado e a violação
+   detectada.
 
 Esse procedimento converte a rejeição por não-monotonicidade num
-filtro automático, evita ajuste post-hoc do `c_grid`, e mantém
+filtro automático, elimina ajuste post-hoc do `c_grid`, e mantém
 auditabilidade — o laudo pode citar quais $C$ foram avaliados e
 quais foram descartados como inviáveis.
 
@@ -1037,11 +1103,6 @@ Recomendação geral: usar `c_grid` moderado a forte como default
 (`[0.001, 0.01, 0.1, 1.0]`). Valores de $C$ muito altos são
 defensáveis apenas em datasets com cobertura simétrica robusta por
 trecho.
-
-> **Status de implementação.** A versão atual do FaceAudit ainda
-> não filtra automaticamente candidatos não-monotônicos durante o
-> `GridSearchCV` — a rejeição acontece apenas no fit final. A
-> integração descrita acima é uma evolução proposta do componente.
 
 ### 9.4 Cllr_min e cal_loss como diagnósticos exploratórios
 
