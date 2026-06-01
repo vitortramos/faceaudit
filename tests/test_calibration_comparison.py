@@ -565,6 +565,90 @@ def test_ladder_more_knots_not_materially_worse_than_linear_in_multiknot_truth()
         )
 
 
+def test_admissibility_rejects_absent_class_and_extreme_slope():
+    """`_fit_admissibility` deve REJEITAR fits com classe ausente num segmento
+    ou slope de cauda além do limite, e marcar LINEAR como sempre admissível."""
+    from experiments.calibration.compare_calibration_synthetic import (
+        _fit_admissibility, MAX_ADMISSIBLE_ABS_SLOPE,
+    )
+
+    class _R:  # stub mínimo de FitEvalResult
+        def __init__(self, slopes, ch, cd, warns):
+            self.piecewise_segment_slopes_raw = slopes
+            self.segment_counts_hp = ch
+            self.segment_counts_hd = cd
+            self.segment_support_warnings = warns
+
+    # LINEAR (sem segmentos) → admissível
+    assert _fit_admissibility(_R(None, None, None, None))["admissibility"] == "ADMISSIBLE"
+    # classe ausente num segmento → rejeitado
+    r = _R([0.5, 1.0], [10, 0], [10, 5], [])
+    assert _fit_admissibility(r)["admissibility"] == "REJECTED"
+    # slope de cauda extremo → rejeitado
+    r = _R([0.5, MAX_ADMISSIBLE_ABS_SLOPE + 1.0], [50, 40], [50, 40], [])
+    assert _fit_admissibility(r)["admissibility"] == "REJECTED"
+    # suporte baixo (warning persistido) mas sem ausência/extremo → warning
+    r = _R([0.5, 1.0], [10, 8], [10, 7], ["trecho 2: suporte total (15) abaixo"])
+    assert _fit_admissibility(r)["admissibility"] == "WARNING"
+    # tudo ok → admissível
+    r = _R([0.5, 1.0], [500, 400], [500, 400], [])
+    assert _fit_admissibility(r)["admissibility"] == "ADMISSIBLE"
+
+
+def test_model_selection_prefers_simplest_within_epsilon():
+    """`_model_selection` deve escolher o candidato admissível mais simples
+    dentro de ε do melhor, distinguindo-o do menor-regret-numérico."""
+    import pandas as pd
+    from experiments.calibration.compare_calibration_synthetic import (
+        _model_selection, PARSIMONY_EPSILON,
+    )
+    # Cenário sintético: 1-KNOT já dentro de ε do melhor (3-KNOT), todos
+    # admissíveis → parcimonioso deve ser 1-KNOT, menor-numérico 3-KNOT.
+    rows = []
+    regrets = {"LINEAR": 0.010, "1-KNOT": 0.0015, "2-KNOT": 0.0018,
+               "3-KNOT": 0.0010, "5-KNOT": 0.0012}
+    nknots = {"LINEAR": 0, "1-KNOT": 1, "2-KNOT": 2, "3-KNOT": 3, "5-KNOT": 5}
+    for rung, reg in regrets.items():
+        for seed in range(5):
+            rows.append({
+                "evaluation_level": "population",
+                "scenario": "B_EXACT_ONE_KNOT", "seed": seed,
+                "ladder_rung": rung, "n_knots": nknots[rung],
+                "oracle_cllr_regret": reg, "admissibility": "ADMISSIBLE",
+                "max_abs_slope": 2.0,
+            })
+    sel = _model_selection(pd.DataFrame(rows))
+    assert PARSIMONY_EPSILON == 1e-3
+    chosen = sel[sel["parsimonious_choice"]]["rung"].tolist()
+    numeric = sel[sel["lowest_numeric_regret"]]["rung"].tolist()
+    # 1-KNOT (0.0015) está dentro de ε de 3-KNOT (0.0010)? 0.0015 ≤ 0.0010+0.001 ✓
+    assert chosen == ["1-KNOT"], chosen
+    assert numeric == ["3-KNOT"], numeric
+
+
+def test_model_selection_excludes_rungs_with_high_reject_rate():
+    """Rungs com >20% de fits REJECTED não devem ser escolhidos, mesmo com
+    menor regret numérico."""
+    import pandas as pd
+    from experiments.calibration.compare_calibration_synthetic import _model_selection
+    rows = []
+    for seed in range(10):
+        # 5-KNOT tem menor regret mas é rejeitado em 50% das seeds
+        rows.append({"evaluation_level": "population", "scenario": "G_EXACT_THREE_KNOTS",
+                     "seed": seed, "ladder_rung": "5-KNOT", "n_knots": 5,
+                     "oracle_cllr_regret": 0.0005,
+                     "admissibility": "REJECTED" if seed < 5 else "ADMISSIBLE",
+                     "max_abs_slope": 20.0})
+        rows.append({"evaluation_level": "population", "scenario": "G_EXACT_THREE_KNOTS",
+                     "seed": seed, "ladder_rung": "2-KNOT", "n_knots": 2,
+                     "oracle_cllr_regret": 0.0013, "admissibility": "ADMISSIBLE",
+                     "max_abs_slope": 1.5})
+    sel = _model_selection(pd.DataFrame(rows))
+    chosen = sel[sel["parsimonious_choice"]]["rung"].tolist()
+    assert chosen == ["2-KNOT"], chosen  # 5-KNOT excluído por rejeição
+    assert not bool(sel[sel["rung"] == "5-KNOT"]["usable"].iloc[0])
+
+
 # ───────────────────────────────── slow ───────────────────────────────
 
 
