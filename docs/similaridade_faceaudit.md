@@ -382,7 +382,8 @@ r_{\max} = \max\!\bigl(1,\ \min(D,\ C-1)\bigr).
 $$
 
 - `PLDAMode.FULL_RANK` → $r = r_{\max}$ (maior rank permitido pelos dados);
-- `PLDAMode.LOW_RANK` → $r = \max\!\bigl(1,\ \min(\texttt{latent\_dim},\ r_{\max})\bigr)$.
+- `PLDAMode.LOW_RANK` → $r = \max\!\bigl(1,\ \min(\ell,\ r_{\max})\bigr)$, onde
+  $\ell$ é o `latent_dim` configurado.
 
 Em `FULL_RANK`, o campo `latent_dim` é **ignorado em runtime** (a UI o exibe
 como read-only para sinalizar isso).
@@ -1071,9 +1072,12 @@ $$
 **Rank da variante SIMPLE:**
 
 $$
-r_{\max}=\max(1,\min(D,C-1)),\quad
-r=\begin{cases}r_{\max} & \text{FULL\_RANK}\\ \max(1,\min(\texttt{latent\_dim},r_{\max})) & \text{LOW\_RANK}\end{cases}
+r_{\max}=\max(1,\min(D,C-1)).
 $$
+
+FULL_RANK usa $r = r_{\max}$; LOW_RANK usa
+$r=\max\!\bigl(1,\min(\ell,r_{\max})\bigr)$, onde $\ell$ é o `latent_dim`
+configurado.
 
 ---
 
