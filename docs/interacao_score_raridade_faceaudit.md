@@ -46,6 +46,7 @@
 - [Apêndice E — Metadata do dataset de saída](#apêndice-e--metadata-do-dataset-de-saída)
 - [Apêndice F — Checklist de revisão documental](#apêndice-f--checklist-de-revisão-documental)
 - [Apêndice G — Checklist de validação operacional](#apêndice-g--checklist-de-validação-operacional)
+- [Apêndice H — Protocolo de dupla interação (probe × referência)](#apêndice-h--protocolo-de-dupla-interação-probe--referência)
 
 ---
 
@@ -783,3 +784,152 @@ Chaves persistidas em `SimilarityScoreDataset.metadata` (auditoria):
 - [ ] Com base PLDA, o A/B contra double-counting foi feito?
 - [ ] Se interpretabilidade importa, `center_rarity=True` e o modelo inclui o
       termo `HINGE_BASE`?
+
+---
+
+## Apêndice H — Protocolo de dupla interação (probe × referência)
+
+A feature de interação da §5 usa **uma** raridade combinada por par. Quando o
+caso é assimétrico (face questionada degradada vs documento limpo), pode-se
+querer que o modelo aprenda **separadamente** quanto confiar na raridade de cada
+papel. Isso se faz com **duas** features de interação — uma por papel — e a
+estrutura a jusante:
+
+$$
+\log\mathrm{LR}=\beta_0+\beta_s\,s+\beta_q\,x_q+\beta_r\,x_r,
+\qquad
+x_q=(s-s_0)\,\tilde r_q,\quad x_r=(s-s_0)\,\tilde r_r,
+$$
+
+onde $\tilde r_q = r_q - r_{0q}$ e $\tilde r_r = r_r - r_{0r}$ são as raridades
+de probe e referência (centradas, §H.2). O vetor de features é
+$[\,s,\ x_q,\ x_r\,]$.
+
+### H.1 Pipeline (só com instruções existentes)
+
+A arquitetura é construível hoje, sem código novo, via os combinadores
+unilaterais (`docs/tipicidade_pareada_faceaudit.md` §4.2):
+
+```text
+TYPICALITY_PAIR_SCORING (combiner=PROBE_ONLY,     score_type=TYPICALITY_PERCENTILE) → tipicidade_probe
+TYPICALITY_PAIR_SCORING (combiner=REFERENCE_ONLY, score_type=TYPICALITY_PERCENTILE) → tipicidade_reference
+
+SCORE_INTERACTION_FEATURE(base=cosseno, modifier=tipicidade_probe,     center_rarity=True, s0_mode=AUTO_LOGREG) → x_q
+SCORE_INTERACTION_FEATURE(base=cosseno, modifier=tipicidade_reference, center_rarity=True, s0_mode=AUTO_LOGREG) → x_r
+
+SCORE_VECTORIZATION(input_a=cosseno, input_b=x_q, extras=[x_r]) → [s, x_q, x_r]
+CALIBRATION_MODEL_TRAINING(LogReg multivariado, standardize_features=True)
+```
+
+Em cross-população (lateral × frontal), treine **dois** modelos de tipicidade
+e use o segundo no `reference_dataset` (`TYPICALITY_PAIR_SCORING`, §5). Com
+`TYPICALITY_PERCENTILE`, cada percentil é relativo à sua própria população, o
+que torna $r_q$ e $r_r$ comparáveis em $[0,1]$.
+
+### H.2 Refinamento 1 — $s_0$ comum, mas $r_0$ por papel
+
+- **$s_0$ é comum** às duas interações: ambas o estimam (`AUTO_LOGREG`) sobre o
+  **mesmo** cosseno base, com a mesma config auxiliar — logo $s_0$ é idêntico
+  por construção. (Um check defensivo $\lvert s_{0,q}-s_{0,r}\rvert \le
+  \text{tol}$ é redundante mas inofensivo.)
+- **$r_0$ é específico de cada papel.** As distribuições de raridade de probe e
+  referência diferem (condições assimétricas), então
+  $r_{0q}=\mathrm{mean}(r_q)$ e $r_{0r}=\mathrm{mean}(r_r)$ devem ser aprendidos
+  **separadamente**. O executor já faz isso: em `AUTO_LOGREG`, `_resolve_r0`
+  usa a média da raridade do **dataset atual**, então cada instância grava o seu.
+- **Em validação e casework**, cada interação deve herdar de **sua própria**
+  instância de calibração:
+  `inherit_s0_from_resource_id = x_q_cal` para a probe e `= x_r_cal` para a
+  referência. Como `r0` é lido do mesmo recurso que `s0` (`INHERIT`), apontar as
+  duas validações para a **mesma** instância aplicaria a média de raridade de um
+  papel ao outro — **erro a evitar**.
+
+### H.3 Refinamento 2 — monotonicidade condicional (gate pericial)
+
+A inclinação do log-LR em relação ao cosseno, com as raridades fixas, é:
+
+$$
+\frac{\partial \log\mathrm{LR}}{\partial s}
+=\beta_s+\beta_q\,\tilde r_q+\beta_r\,\tilde r_r \quad(\text{modo LINEAR, todo o range}).
+$$
+
+No modo `ONE_SIDED_POSITIVE`, a feature é zero para $s<s_0$, então abaixo de
+$s_0$ a inclinação é apenas $\beta_s$ (monótona se $\beta_s>0$) e a expressão
+acima vale só para $s>s_0$. **Esse é um motivo teórico — não jurídico — a favor
+de `ONE_SIDED_POSITIVE`**: ele garante monotonicidade na região de baixa
+similaridade; o `LINEAR` fica em risco em todo o range.
+
+**Problema:** com raridade centrada, $\tilde r_q$ e $\tilde r_r$ ficam
+**negativos** para faces comuns ($r>\mathrm{mean}$). Logo, mesmo com
+$\beta_s,\beta_q,\beta_r>0$, a inclinação pode ficar **negativa** para pares de
+faces comuns — "mantendo a raridade fixa, aumentar a similaridade reduziu o
+log-LR", indefensável.
+
+**Check barato e exato:** a inclinação é **linear** em $(\tilde r_q,\tilde r_r)$,
+então o mínimo está sempre num **canto** da caixa de raridade observada (ou da
+caixa operacional/teórica). Para percentil centrado, a caixa é
+$\tilde r \in [\,\mathrm{mean}(p)-1,\ \mathrm{mean}(p)\,]$. Avaliar os 4 cantos e
+exigir inclinação $\ge 0$ em todos. **Em modo pericial, rejeitar o modelo se
+houver inclinação condicional negativa na faixa operacional.**
+
+### H.4 Refinamento 3 — orientação na vetorização
+
+O `SCORE_INTERACTION_FEATURE` usa alinhamento **orientado**
+`(probe_hash, reference_hash)` para combinadores unilaterais, mas o
+`SCORE_VECTORIZATION` alinha **sempre** por chave simétrica
+`frozenset({probe_hash, reference_hash})`.
+
+- **Hoje é seguro por construção**: $x_q$ e $x_r$ são gerados reusando os samples
+  do **mesmo** cosseno âncora, herdando orientação idêntica; o `raw_score` já é o
+  valor correto e a chave só decide a linha (o par não-ordenado é único). A troca
+  $r_q\leftrightarrow r_r$ exigiria orientações **inconsistentes** entre as duas
+  fontes — o que não ocorre no fluxo canônico.
+- **Hardening recomendado** para uso operacional/auditável: a vetorização deve
+  detectar `alignment_orientation`, usar chave orientada quando algum input for
+  direcional, e persistir a orientação efetiva. Rastreado em
+  **issue #2** (`vitortramos/faceaudit`).
+
+### H.5 Refinamento 4 — matriz A/B e diagnósticos
+
+A escolha entre simétrico, bilateral e dupla interação é **empírica**, decidida
+em holdout externo (não no dataset do `AUTO_LOGREG`, §6.1):
+
+| ID | Features | Pergunta |
+|---|---|---|
+| M0 | $[s]$ | baseline |
+| M1 | $[s,\ h]$ | não-linearidade pura (hinge) |
+| M2 | $[s,\ h\cdot r_{\text{mean}}]$ | unilateral simétrica parcimoniosa |
+| M3 | $[s,\ h,\ h\cdot r_{\text{mean}}]$ | separa hinge de raridade |
+| M4 | $[s,\ (s-s_0)\,r_{\text{mean}}]$ | bilateral simétrica |
+| M5 | $[s,\ x_q,\ x_r]$ | bilateral com papéis separados |
+| M6 | $[s,\ h,\ h\,r_q,\ h\,r_r]$ | unilateral geral com papéis separados |
+| M7 | $[\mathrm{PLDA}]$ | baseline PLDA |
+| M8 | $[\mathrm{PLDA},\ x_q,\ x_r]$ | teste de redundância com PLDA |
+
+Comparação central: **M5 vs M4 vs M0** (a tipicidade ajuda? o bilateral ajuda?
+separar papéis agrega além da raridade média?). Sobre PLDA (M7 vs M8): com PLDA
+as interações externas podem ser **parcialmente redundantes** com a covariância
+between-class do backend — o efeito líquido se resolve por ablação externa; a
+LogReg regularizada pode simplesmente atribuir peso pequeno (não há conclusão
+automática de "dupla contagem").
+
+**Diagnósticos de colinearidade** (porque $x_q$ e $x_r$ partilham o fator
+$(s-s_0)$ e ficam correlacionados quando probe e referência têm raridade
+parecida): `standardize_features=True` melhora estabilidade numérica e
+regularização, mas **não** resolve identificabilidade. Persistir:
+$\mathrm{corr}(x_q,x_r)$, VIF por feature, número de condição da matriz,
+coeficientes por fold, desvio de $\beta_q,\beta_r$ entre folds, e bootstrap
+**por identidade** (não por par — pares compartilham faces). Se M5 não superar
+M4 externamente, o modelo simétrico é preferível por parcimônia.
+
+### H.6 Refinamento 5 — `LINEAR` vs `ONE_SIDED_POSITIVE`
+
+Ambos no A/B; decisão em holdout externo. Em empate, prefira
+`ONE_SIDED_POSITIVE` por duas razões **teóricas** (não jurídicas): (1) a
+justificativa probatória da raridade é mais forte para *matches* (probabilidade
+de coincidência) que para não-matches; (2) garante monotonicidade abaixo de
+$s_0$ (§H.3). Há ainda um risco prático: baixa similaridade pode vir de
+qualidade/pose/falha do embedding (não de incompatibilidade real), e a raridade
+nessa região pode estar contaminada pela qualidade — o que recomenda cautela com
+o `LINEAR` na região negativa. Use `LINEAR` se vencer materialmente **e** passar
+no gate de monotonicidade condicional.
