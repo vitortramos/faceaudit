@@ -320,6 +320,9 @@ class StrategyResourceLoaderService:
         # `score_vector_*`.
         is_casework_explicit = False
         is_score_vector_explicit = False
+        is_interaction_feature_explicit = False
+        score_kind_meta: Optional[str] = None
+        score_type_meta: Optional[str] = None
         sv_dim_meta = 0
         sv_sources_meta: list = []
         calib_coef_raw_meta: Optional[list] = None
@@ -360,6 +363,23 @@ class StrategyResourceLoaderService:
                         calib_intercept_raw_meta = float(intercept_raw_b.decode())
                 except Exception:
                     pass  # JSON corrompido → cai em fallback de interpolação
+            # Família de score (tipicidade / interaction feature) — tags que o
+            # SCORE_INTERACTION_FEATURE consulta para validar modifier/base.
+            sk_b = schema_meta.get(b"faceaudit:score_kind")
+            if sk_b is not None:
+                try:
+                    score_kind_meta = sk_b.decode()
+                except Exception:
+                    score_kind_meta = None
+            st_b = schema_meta.get(b"faceaudit:score_type")
+            if st_b is not None:
+                try:
+                    score_type_meta = st_b.decode()
+                except Exception:
+                    score_type_meta = None
+            is_interaction_feature_explicit = (
+                schema_meta.get(b"faceaudit:is_interaction_feature") == b"true"
+            )
         except Exception:
             pass  # parquet sem metadata, ou erro — cai na inferência
 
@@ -469,6 +489,14 @@ class StrategyResourceLoaderService:
         if calib_coef_raw_meta is not None and calib_intercept_raw_meta is not None:
             ds_metadata["calibrator_coef_raw"] = calib_coef_raw_meta
             ds_metadata["calibrator_intercept_raw"] = calib_intercept_raw_meta
+        # Família de score re-hidratada — sem isso o SCORE_INTERACTION_FEATURE
+        # rejeita um modifier de TYPICALITY_PAIR_SCORING carregado do disco.
+        if score_kind_meta:
+            ds_metadata["score_kind"] = score_kind_meta
+        if score_type_meta:
+            ds_metadata["score_type"] = score_type_meta
+        if is_interaction_feature_explicit:
+            ds_metadata["is_interaction_feature"] = True
 
         # Reconstrói o score_vector_matrix das colunas `score_vector_*`
         # quando o parquet veio do SCORE_VECTORIZATION. Vetorizado via
