@@ -270,6 +270,11 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
                 value_type="bool",
             ),
             ValueFieldSpec(
+                field_name="center_rarity",
+                label="Centralizar Raridade (Tukey: h × (rarity − r₀))",
+                value_type="bool",
+            ),
+            ValueFieldSpec(
                 field_name="is_casework",
                 label="Modo Casework (sem ground truth)",
                 value_type="bool",
