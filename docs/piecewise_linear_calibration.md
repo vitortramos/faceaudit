@@ -39,7 +39,23 @@ Os elementos descritos neste documento estão presentes no código:
   ficam excluídos apenas daquele fold. Refit final em todo
   $D_{\text{cal}}$ (§4.4). Mapeamento explícito identidade → fold
   persistido como `cv_strict_id_to_group_mapping` (V2.11.1) para
-  reprodução exata.
+  reprodução exata. **Suporte multivariado (V2.13)**: o splitter é
+  dimension-agnostic; a partir desta versão `STRICT_IDENTITY` é
+  aplicado nativamente também quando o calibrador recebe
+  $X \in \mathbb{R}^{N \times D}$ com $D > 1$ (fluxo
+  `SCORE_VECTORIZATION` com múltiplas features), sem cair em
+  fallback para `GROUPED_PROBE` (§4.4).
+- Standardização per-fold no branch linear (V2.13). Quando
+  `standardize_features=True` e $D > 1$, a `StandardScaler` é
+  embutida na `sklearn.Pipeline`
+  `[StandardScaler → LogisticRegression]` que serve de estimator
+  do `GridSearchCV`; μ/σ por feature são aprendidos por fold do
+  CV, sem leakage do test fold para o train fold. O refit final
+  em $D_{\text{cal}}$ completo popula
+  `self._feature_mean` / `self._feature_std` para inferência
+  consistente. Em 1D ou com `standardize_features=False`, nada
+  muda. Aplica-se ao branch piecewise-linear desde a V1 (a scaler
+  já estava dentro da pipeline `PWL → Scaler → LogReg` em §3.4).
 - Clusters de lookalikes como unidade atômica no LPT scheduling
   (V2.11.2): identidades de um cluster declarado em
   `metadata["lookalike_clusters"]` ficam no mesmo fold,
@@ -744,6 +760,45 @@ externa.
   `cv_split_mode_applied`, `cv_split_mode_fallback_reason` e
   `cv_strict_fold_health` no laudo permite justificar a escolha.
 
+**Suporte a entradas multivariadas (V2.13).** Até a V2.12, o branch
+linear do calibrador rejeitava `STRICT_IDENTITY` em entradas
+multivariadas (`X.shape[1] > 1`, fluxo típico de
+`SCORE_VECTORIZATION` alimentando o calibrador com múltiplas
+features) e caía em fallback automático para `GROUPED_PROBE` — o
+guarda foi posto por conservadorismo da V1 e não refletia uma
+limitação estrutural. O `IdentityDisjointPairKFold` opera apenas
+sobre `train_probe_identities` e `train_reference_identities`,
+sendo **dimension-agnostic em X**. A partir da V2.13, o guarda foi
+removido: estratégias forenses que combinam, por exemplo, score
+cosseno bruto com hinge $h_+(s)$ e interações com raridade
+$h_+(s) \cdot \tilde r_q$, $h_+(s) \cdot \tilde r_r$ podem ser
+calibradas sob disjunção identitária total. Os mesmos metadados
+(`cv_split_mode_applied = "STRICT_IDENTITY"`,
+`cv_identity_disjointness_level = "full"`,
+`cv_strict_*`) são persistidos no modo multivariado.
+
+**Standardização per-fold (V2.13).** Anteriormente, quando
+`standardize_features=True` em multivariada, a `StandardScaler`
+era aplicada **antes** do CV — $\mu_j, \sigma_j$ vinham do
+$D_{\text{cal}}$ completo, configurando leakage do test fold para
+o train fold (a magnitude do leakage é pequena para μ/σ estáveis,
+mas viola o princípio do CV). A partir da V2.13, a scaler vai
+**dentro** do `sklearn.Pipeline`
+`[StandardScaler → LogisticRegression]` que é usado como
+estimator do `GridSearchCV`. μ/σ são aprendidos por fold no CV;
+no refit final em $D_{\text{cal}}$ completo, a scaler é fitada
+sobre todo o conjunto e seus parâmetros são extraídos para
+`self._feature_mean` / `self._feature_std` — preservando o
+contrato de inferência (`_features_to_X` aplica os mesmos μ/σ em
+validação/casework). A modificação se aplica também ao branch
+`use_gridsearch=False`; em 1D ou com `standardize_features=False`,
+nada muda (μ/σ continuam `None`). O atributo `self.logreg`
+permanece apontando para o `LogisticRegression` interno (não para
+a Pipeline), preservando o contrato downstream que lê
+`calibrator.logreg.coef_` para a denormalização de coeficientes
+em escala bruta (executor `ScoreCalibrationInstructionExecutor`,
+§7.5).
+
 ### 4.5 Análise exploratória de robustez por bootstrap de identidades
 
 Para avaliar se a vantagem do GROUPED sobre o PAIR observada em
@@ -1305,8 +1360,9 @@ seleção descrita em §9.3:
   (`AUTO`/`PAIR`/`GROUPED_PROBE`/`STRICT_IDENTITY`).
 - `cv_split_mode_applied` (V2.10): valor do enum efetivamente usado
   após resolução de fallback (e.g. AUTO → GROUPED_PROBE quando há
-  identidades; STRICT_IDENTITY → GROUPED_PROBE em input
-  multivariado).
+  identidades). A partir da V2.13, STRICT_IDENTITY já não cai em
+  fallback por input multivariado — o `IdentityDisjointPairKFold` é
+  dimension-agnostic em X.
 - `cv_split_mode_fallback_reason` (V2.10): descrição textual do
   motivo do fallback, ou `None` se o modo aplicado bateu com o
   requisitado.
