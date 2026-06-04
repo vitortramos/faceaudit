@@ -211,7 +211,7 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
             ),
         ]
 
-        if self.interaction_mode is not ScoreInteractionMode.HINGE_BASE:
+        if self.interaction_mode.requires_modifier:
             specs.append(
                 ResourceFieldSpec(
                     "modifier_score_resource_id",
@@ -319,7 +319,7 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
         if self.base_score_resource_id:
             inputs.append(self.base_score_resource_id)
         if (
-            self.interaction_mode is not ScoreInteractionMode.HINGE_BASE
+            self.interaction_mode.requires_modifier
             and self.modifier_score_resource_id
         ):
             inputs.append(self.modifier_score_resource_id)
@@ -375,7 +375,7 @@ class ScoreInteractionFeatureInstruction(StrategyInstructionDefinition):
 
         rules: list = []
         if (
-            self.interaction_mode is not ScoreInteractionMode.HINGE_BASE
+            self.interaction_mode.requires_modifier
             and self.base_score_resource_id
             and self.modifier_score_resource_id
         ):

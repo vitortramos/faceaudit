@@ -34,6 +34,25 @@ class ScoreInteractionMode(Enum):
       definição de raridade (offset constante absorvido) e usada
       como controle no A/B para separar "ganho por não-linearidade
       simples" de "ganho específico por raridade".
+
+    - `ONE_SIDED_NEGATIVE` (V2.13): `max(s0 − base, 0) · rarity`.
+      Espelho do `ONE_SIDED_POSITIVE` para o lado abaixo de `s0`. A
+      raridade só modula evidência NEGATIVA — duas faces raras com
+      cosseno baixo viram evidência mais forte de origens distintas
+      que duas faces comuns com mesmo cosseno baixo. Pareada com
+      `ONE_SIDED_POSITIVE` no modelo bilateral
+      `[base, h_+, h_-, h_+·rarity, h_-·rarity]`. **Apenas
+      experimental**: a assertiva forense de que a raridade pode
+      reforçar evidência contra a mesma origem em corte ainda exige
+      validação adicional.
+
+    - `HINGE_BASE_NEGATIVE` (V2.13): `max(s0 − base, 0)` (ignora o
+      modificador). Espelho da `HINGE_BASE` para o lado negativo.
+      Feature-companheira para o modelo bilateral plenamente geral
+      `[base, h_+, h_-, h_+·rarity, h_-·rarity, h_-·rarity, ...]`
+      e controle estrutural análogo à HINGE_BASE para isolar a
+      contribuição da modulação bilateral por raridade da
+      contribuição da dobra bilateral em si.
     """
 
     ONE_SIDED_POSITIVE = (
@@ -63,6 +82,25 @@ class ScoreInteractionMode(Enum):
         "veio da não-linearidade hinge, não da raridade.",
     )
 
+    ONE_SIDED_NEGATIVE = (
+        "ONE_SIDED_NEGATIVE",
+        "Unilateral Negativo (experimental)",
+        "max(s0 − base, 0) · rarity. Espelho do ONE_SIDED_POSITIVE: "
+        "raridade só modula evidência NEGATIVA. Pareado com o positivo "
+        "no modelo bilateral [base, h_+, h_-, h_+·rarity, h_-·rarity]. "
+        "Apenas experimental — a defensibilidade de que raridade reforça "
+        "evidência contra mesma origem ainda exige validação.",
+    )
+
+    HINGE_BASE_NEGATIVE = (
+        "HINGE_BASE_NEGATIVE",
+        "Hinge Base Negativo (sem raridade)",
+        "max(s0 − base, 0). Espelho da HINGE_BASE: feature-companheira do "
+        "modelo bilateral plenamente geral. Controle estrutural para "
+        "isolar a contribuição da dobra bilateral em si da contribuição "
+        "da modulação bilateral por raridade.",
+    )
+
     def __new__(cls, value: str, label_pt: str, description: str):
         obj = object.__new__(cls)
         obj._value_ = value
@@ -80,10 +118,35 @@ class ScoreInteractionMode(Enum):
     def requires_modifier(self) -> bool:
         """True quando o modo de fato lê a coluna de raridade.
 
-        `HINGE_BASE` ignora o modifier; o validador relaxa a exigência
-        de `modifier_score_resource_id` nesse caso.
+        `HINGE_BASE` e `HINGE_BASE_NEGATIVE` ignoram o modifier; o
+        validador relaxa a exigência de `modifier_score_resource_id`
+        nesses casos.
         """
-        return self is not ScoreInteractionMode.HINGE_BASE
+        return self not in (
+            ScoreInteractionMode.HINGE_BASE,
+            ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+        )
+
+    @property
+    def is_negative_side(self) -> bool:
+        """True para os modos espelhados ao lado abaixo de `s_0`.
+
+        Usado pelo executor para decidir entre `max(base − s_0, 0)`
+        (positivo) e `max(s_0 − base, 0)` (negativo).
+        """
+        return self in (
+            ScoreInteractionMode.ONE_SIDED_NEGATIVE,
+            ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+        )
+
+    @property
+    def is_hinge_only(self) -> bool:
+        """True para `HINGE_BASE` e `HINGE_BASE_NEGATIVE` (sem
+        multiplicação pelo modifier)."""
+        return self in (
+            ScoreInteractionMode.HINGE_BASE,
+            ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+        )
 
     @classmethod
     def from_str(cls, value: str) -> "ScoreInteractionMode":

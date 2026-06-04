@@ -46,8 +46,12 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
     Executor da instrução SCORE_INTERACTION_FEATURE.
 
     Constrói a feature derivada `(base − s0)·rarity` (modos
-    LINEAR/ONE_SIDED_POSITIVE/HINGE_BASE) a partir de dois
-    `SimilarityScoreDataset` alinháveis por par. Resolve `s0` via
+    LINEAR / ONE_SIDED_POSITIVE / ONE_SIDED_NEGATIVE / HINGE_BASE /
+    HINGE_BASE_NEGATIVE) a partir de dois `SimilarityScoreDataset`
+    alinháveis por par. Os modos _NEGATIVE são espelhos exatos dos
+    positivos para a região abaixo de `s_0` (V2.13) — pareados com
+    seus homólogos positivos no modelo bilateral plenamente geral
+    `[base, h_+, h_-, h_+·rarity, h_-·rarity]`. Resolve `s0` via
     AUTO_LOGREG (calibrador auxiliar univariado), MANUAL ou INHERIT.
 
     A instrução é agnóstica à origem da raridade. O alinhamento usa
@@ -89,7 +93,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             self._reject_recursive_base(base_ds, instruction.base_score_resource_id)
 
             modifier_ds: Optional[SimilarityScoreDataset] = None
-            if instruction.interaction_mode is not ScoreInteractionMode.HINGE_BASE:
+            if instruction.interaction_mode.requires_modifier:
                 modifier_ds = self._fetch_dataset(
                     instruction.modifier_score_resource_id, context, "modifier",
                 )
@@ -203,6 +207,11 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
                 ScoreInteractionMode.HINGE_BASE,
             ):
                 fraction_hinge_active = fraction_above_s0
+            elif instruction.interaction_mode in (
+                ScoreInteractionMode.ONE_SIDED_NEGATIVE,
+                ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+            ):
+                fraction_hinge_active = 1.0 - fraction_above_s0  # ativo abaixo de s0
             else:
                 fraction_hinge_active = 1.0  # LINEAR sempre "ativo"
 
@@ -342,12 +351,12 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
                 "não encontrado no contexto."
             )
 
-        # Modifier obrigatório exceto em HINGE_BASE.
-        if instruction.interaction_mode is not ScoreInteractionMode.HINGE_BASE:
+        # Modifier obrigatório exceto em modos hinge-only (HINGE_BASE / HINGE_BASE_NEGATIVE).
+        if instruction.interaction_mode.requires_modifier:
             if not instruction.modifier_score_resource_id:
                 result.add_error(
                     "A instrução deve definir 'modifier_score_resource_id' "
-                    "(exceto em HINGE_BASE)."
+                    "(exceto em HINGE_BASE / HINGE_BASE_NEGATIVE)."
                 )
             elif not context.has_resource(instruction.modifier_score_resource_id):
                 result.add_error(
@@ -377,7 +386,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
 
         modifier_id = instruction.modifier_score_resource_id
         if (
-            instruction.interaction_mode is not ScoreInteractionMode.HINGE_BASE
+            instruction.interaction_mode.requires_modifier
             and modifier_id
             and context.has_resource(modifier_id)
         ):
@@ -876,7 +885,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
         centralização (r0 ficaria undefined em runtime).
 
         Quando `center_rarity=False`, retorna o dict com r0=None (no-op).
-        Idempotente para HINGE_BASE (onde rarity é None).
+        Idempotente para HINGE_BASE / HINGE_BASE_NEGATIVE (onde rarity é None).
         """
         if not instruction.center_rarity:
             return {
@@ -885,7 +894,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
                 "interaction_r0_source_resource_id": None,
             }
         if rarity_values is None:
-            # HINGE_BASE ignora rarity — centralização vira no-op.
+            # Modos hinge-only ignoram rarity — centralização vira no-op.
             return {
                 "interaction_r0": None,
                 "interaction_r0_mode": None,
@@ -951,8 +960,12 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
         rarity: Optional[np.ndarray],
         s0: float,
     ) -> np.ndarray:
+        # Hinges sem multiplicação por raridade
         if mode is ScoreInteractionMode.HINGE_BASE:
             return np.maximum(base_scores - s0, 0.0)
+        if mode is ScoreInteractionMode.HINGE_BASE_NEGATIVE:
+            return np.maximum(s0 - base_scores, 0.0)
+        # Modos que multiplicam por raridade exigem o modifier
         if rarity is None:
             raise ValueError(
                 f"Modo {mode.value} requer modifier (raridade) — "
@@ -962,6 +975,8 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             return (base_scores - s0) * rarity
         if mode is ScoreInteractionMode.ONE_SIDED_POSITIVE:
             return np.maximum(base_scores - s0, 0.0) * rarity
+        if mode is ScoreInteractionMode.ONE_SIDED_NEGATIVE:
+            return np.maximum(s0 - base_scores, 0.0) * rarity
         raise ValueError(f"interaction_mode não suportado: {mode}")
 
     @staticmethod

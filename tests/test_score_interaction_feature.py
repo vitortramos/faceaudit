@@ -550,6 +550,112 @@ def test_hinge_base_ignores_modifier():
     np.testing.assert_allclose(feat, [0.0, 0.0, 0.5])
 
 
+# ─────────────────────── V2.13 — variantes _NEGATIVE ─────────
+
+
+def test_hinge_base_negative_clamps_above_s0():
+    """h_-(s) = max(s0 − s, 0): >0 só abaixo de s0; ignora modifier."""
+    base_scores = np.array([0.0, 0.3, 0.5, 0.7, 1.0], dtype=np.float64)
+    feat = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+        base_scores,
+        rarity=None,
+        s0=0.5,
+    )
+    # max(0.5 - x, 0) → [0.5, 0.2, 0.0, 0.0, 0.0]
+    np.testing.assert_allclose(feat, [0.5, 0.2, 0.0, 0.0, 0.0])
+
+
+def test_one_sided_negative_clamps_above_s0():
+    """h_-(s)·rarity: ativo só abaixo de s0, multiplicado pela raridade."""
+    base_scores = np.array([0.1, 0.3, 0.5, 0.7], dtype=np.float64)
+    rarity = np.array([0.9, 0.8, 0.7, 0.6], dtype=np.float64)
+    feat = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.ONE_SIDED_NEGATIVE, base_scores, rarity, s0=0.4,
+    )
+    # max(0.4 - x, 0) · rarity → [0.3*0.9, 0.1*0.8, 0.0, 0.0]
+    np.testing.assert_allclose(feat, [0.27, 0.08, 0.0, 0.0])
+
+
+def test_hinge_sum_equals_abs_deviation():
+    """h_+(s) + h_-(s) = |s − s_0| em todo o domínio (identidade exata)."""
+    rng = np.random.default_rng(0)
+    base = rng.uniform(-0.5, 1.0, size=200)
+    s0 = 0.27
+    h_pos = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.HINGE_BASE, base, rarity=None, s0=s0,
+    )
+    h_neg = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.HINGE_BASE_NEGATIVE, base, rarity=None, s0=s0,
+    )
+    np.testing.assert_allclose(h_pos + h_neg, np.abs(base - s0), atol=1e-12)
+
+
+def test_one_sided_sum_equals_abs_deviation_times_rarity():
+    """os_+(s) + os_-(s) = |s − s_0|·rarity (identidade exata)."""
+    rng = np.random.default_rng(7)
+    n = 200
+    base = rng.uniform(-0.5, 1.0, size=n)
+    rarity = rng.uniform(0.0, 1.0, size=n)
+    s0 = 0.31
+    f_pos = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.ONE_SIDED_POSITIVE, base, rarity, s0,
+    )
+    f_neg = ScoreInteractionFeatureInstructionExecutor._build_feature(
+        ScoreInteractionMode.ONE_SIDED_NEGATIVE, base, rarity, s0,
+    )
+    np.testing.assert_allclose(f_pos + f_neg, np.abs(base - s0) * rarity, atol=1e-12)
+
+
+def test_negative_one_sided_requires_modifier():
+    """ONE_SIDED_NEGATIVE deve falhar com rarity=None."""
+    base = np.array([0.1, 0.5], dtype=np.float64)
+    with pytest.raises(ValueError, match="requer modifier"):
+        ScoreInteractionFeatureInstructionExecutor._build_feature(
+            ScoreInteractionMode.ONE_SIDED_NEGATIVE, base, rarity=None, s0=0.3,
+        )
+
+
+def test_enum_properties_for_negative_modes():
+    """Properties is_negative_side, is_hinge_only, requires_modifier."""
+    pos = ScoreInteractionMode.ONE_SIDED_POSITIVE
+    neg = ScoreInteractionMode.ONE_SIDED_NEGATIVE
+    hpos = ScoreInteractionMode.HINGE_BASE
+    hneg = ScoreInteractionMode.HINGE_BASE_NEGATIVE
+    lin = ScoreInteractionMode.LINEAR
+
+    # is_negative_side
+    assert not pos.is_negative_side
+    assert neg.is_negative_side
+    assert not hpos.is_negative_side
+    assert hneg.is_negative_side
+    assert not lin.is_negative_side
+
+    # is_hinge_only
+    assert not pos.is_hinge_only
+    assert not neg.is_hinge_only
+    assert hpos.is_hinge_only
+    assert hneg.is_hinge_only
+    assert not lin.is_hinge_only
+
+    # requires_modifier
+    assert pos.requires_modifier
+    assert neg.requires_modifier
+    assert not hpos.requires_modifier
+    assert not hneg.requires_modifier
+    assert lin.requires_modifier
+
+
+def test_enum_from_str_round_trip_for_negative():
+    for label in ("ONE_SIDED_NEGATIVE", "one_sided_negative", "ONE-SIDED-NEGATIVE",
+                  "HINGE_BASE_NEGATIVE", "hinge_base_negative"):
+        m = ScoreInteractionMode.from_str(label)
+        assert m in (
+            ScoreInteractionMode.ONE_SIDED_NEGATIVE,
+            ScoreInteractionMode.HINGE_BASE_NEGATIVE,
+        ), f"from_str({label!r}) mapped to {m!r}"
+
+
 # ─────────────────────── non-equivalence structural ─────────
 
 
