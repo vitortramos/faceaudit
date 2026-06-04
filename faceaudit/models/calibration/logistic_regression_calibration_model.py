@@ -1532,40 +1532,16 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"scoring={scoring_label})..."
             )
 
-            # Splitter resolvido pelo gridsearch_cv_mode (V2.10).
-            # STRICT_IDENTITY só faz sentido em 1D — fallback automático
-            # para GROUPED_PROBE/PAIR quando X é multivariado.
-            from faceaudit.enums.logreg_gridsearch_cv_mode import LogRegGridSearchCVMode
-            if (
-                self.config.gridsearch_cv_mode is LogRegGridSearchCVMode.STRICT_IDENTITY
-                and X.shape[1] > 1
-            ):
-                logger_callback(
-                    f"[{self.name}] ⚠️ STRICT_IDENTITY ignorado em input "
-                    f"multivariado (D={X.shape[1]}); fallback para GROUPED_PROBE."
-                )
-                # Força fallback temporário só pra essa resolução.
-                _saved_mode = self.config.gridsearch_cv_mode
-                object.__setattr__(self.config, "gridsearch_cv_mode", LogRegGridSearchCVMode.AUTO)
-                splitter_resolution = self._resolve_cv_splitter(
-                    n_rows=X.shape[0],
-                    labels=labels_arr,
-                    cv_folds=cv_folds,
-                    logger_callback=logger_callback,
-                )
-                object.__setattr__(self.config, "gridsearch_cv_mode", _saved_mode)
-                splitter_resolution["mode_requested"] = _saved_mode.value
-                splitter_resolution["fallback_reason"] = (
-                    "STRICT_IDENTITY requer score 1D; X multivariado "
-                    f"(D={X.shape[1]}) — usando GROUPED_PROBE/PAIR."
-                )
-            else:
-                splitter_resolution = self._resolve_cv_splitter(
-                    n_rows=X.shape[0],
-                    labels=labels_arr,
-                    cv_folds=cv_folds,
-                    logger_callback=logger_callback,
-                )
+            # Splitter resolvido pelo gridsearch_cv_mode (V2.10). A partir
+            # da V2.13 STRICT_IDENTITY é suportado também em multivariada:
+            # o IdentityDisjointPairKFold opera só sobre as identidades
+            # de probe/reference, é dimension-agnostic em X.
+            splitter_resolution = self._resolve_cv_splitter(
+                n_rows=X.shape[0],
+                labels=labels_arr,
+                cv_folds=cv_folds,
+                logger_callback=logger_callback,
+            )
             cv = splitter_resolution["cv"]
             cv_folds = splitter_resolution["cv_folds"]
             cv_groups = splitter_resolution["cv_groups"]
