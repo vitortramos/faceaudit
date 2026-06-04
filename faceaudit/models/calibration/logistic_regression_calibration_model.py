@@ -82,6 +82,53 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             max_iter=1000,
         )
 
+    def _build_linear_estimator(self, c_value: float, n_features: int):
+        """Constrói o estimator do branch linear (não-piecewise).
+
+        Embrulha LogReg em `sklearn.Pipeline` com `StandardScaler`
+        quando `standardize_features=True` e `n_features > 1` — assim
+        o scaling acontece DENTRO de cada fold do CV (sem leakage do
+        test fold para o train fold). Após o refit final, a scaler
+        carrega μ/σ do D_cal completo.
+
+        Retorna `(estimator, c_param_key)` onde `c_param_key` é a
+        chave usada no `param_grid` do GridSearchCV para `C`
+        (`"logreg__C"` quando wrapped, `"C"` caso contrário).
+        """
+        logreg = self._build_estimator(c_value)
+        if self.config.standardize_features and n_features > 1:
+            return (
+                Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("logreg", logreg),
+                ]),
+                "logreg__C",
+            )
+        return logreg, "C"
+
+    def _extract_scaler_state(self, fitted_estimator) -> None:
+        """Aponta `self.logreg` para o LogReg final e popula
+        `self._feature_mean` / `self._feature_std` a partir da
+        `StandardScaler` interna, se houver.
+
+        Caso o estimator não tenha scaler (D=1, ou
+        `standardize_features=False`), zera os atributos μ/σ —
+        `_features_to_X` no caminho de inferência detecta `None` e
+        pula a standardização.
+        """
+        if (
+            isinstance(fitted_estimator, Pipeline)
+            and "scaler" in fitted_estimator.named_steps
+        ):
+            scaler = fitted_estimator.named_steps["scaler"]
+            self._feature_mean = np.asarray(scaler.mean_, dtype=np.float64)
+            self._feature_std = np.asarray(scaler.scale_, dtype=np.float64)
+            self.logreg = fitted_estimator.named_steps["logreg"]
+        else:
+            self._feature_mean = None
+            self._feature_std = None
+            self.logreg = fitted_estimator
+
     # =========================================================================
     # PIECEWISE-LINEAR INTERNO (V1)
     # =========================================================================
@@ -1442,34 +1489,17 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
         else:
             raise ValueError("scores deve ser vetor 1D ou matriz (N, D).")
 
-        # Standardização opcional (só aplica quando D > 1 e config ativa).
-        # Aprende μ, σ por feature no treino e persiste pra aplicar
-        # exatamente os mesmos parâmetros em calibrate_scores (validação
-        # / casework). Sem isso, a L2 do sklearn penaliza pesos
-        # uniformemente, distorcendo features de escalas dispares.
+        # Standardização per-fold (V2.13): a partir desta versão a
+        # `StandardScaler` é embutida numa `sklearn.Pipeline` junto com
+        # o LogReg quando `standardize_features=True` e D > 1, para que
+        # μ/σ sejam aprendidos DENTRO de cada fold do CV (sem leakage
+        # do test fold para o train fold). Os atributos
+        # `_feature_mean` / `_feature_std` continuam sendo
+        # populados após o fit, mas extraídos da scaler treinada no
+        # refit final (sobre D_cal completo). Inferência continua
+        # usando `_features_to_X`.
         self._feature_mean = None
         self._feature_std = None
-        if self.config.standardize_features and X.shape[1] > 1:
-            self._feature_mean = X.mean(axis=0)
-            self._feature_std = X.std(axis=0, ddof=1)
-            # Defensivo: features constantes (std=0) viram divisão por
-            # zero. Substitui 1.0 — feature constante não contribui pra
-            # discriminação mesmo, então o peso aprendido pelo LogReg
-            # vai ser próximo de zero.
-            zero_std = self._feature_std == 0
-            if np.any(zero_std):
-                logger_callback(
-                    f"[{self.name}] ⚠️ {int(zero_std.sum())} feature(s) "
-                    "com std=0 no treino — substituindo por 1.0 (não "
-                    "contribuirão pra discriminação)."
-                )
-                self._feature_std = np.where(zero_std, 1.0, self._feature_std)
-            X = (X - self._feature_mean) / self._feature_std
-            logger_callback(
-                f"[{self.name}] 📐 Standardização ativa (D={X.shape[1]}). "
-                f"μ={self._feature_mean.round(4).tolist()}, "
-                f"σ={self._feature_std.round(4).tolist()}"
-            )
 
         if labels_arr.ndim != 1:
             raise ValueError("labels deve ser vetor 1D.")
@@ -1547,9 +1577,18 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             cv_groups = splitter_resolution["cv_groups"]
             splitter_label = splitter_resolution["splitter_label"]
 
+            base_estimator, c_param_key = self._build_linear_estimator(
+                self.config.C, n_features=X.shape[1]
+            )
+            if c_param_key == "logreg__C":
+                logger_callback(
+                    f"[{self.name}] 📐 Standardização per-fold ativa "
+                    f"(D={X.shape[1]}): StandardScaler dentro da Pipeline "
+                    "sklearn, μ/σ aprendidos por fold (sem leakage)."
+                )
             grid = GridSearchCV(
-                estimator=self._build_estimator(self.config.C),
-                param_grid={"C": list(self.config.c_grid)},
+                estimator=base_estimator,
+                param_grid={c_param_key: list(self.config.c_grid)},
                 cv=cv,
                 scoring=scoring_obj_linear,
                 n_jobs=-1,
@@ -1558,8 +1597,8 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
             grid.fit(X, labels_arr, groups=cv_groups)
 
             best_estimator = grid.best_estimator_
-            self.logreg = best_estimator
-            self.best_C_ = float(grid.best_params_.get("C", self.config.C))
+            self._extract_scaler_state(best_estimator)
+            self.best_C_ = float(grid.best_params_.get(c_param_key, self.config.C))
 
             # Auditoria do CV no branch linear puro (contrato análogo
             # ao branch piecewise — §7.10 do doc).
@@ -1622,7 +1661,11 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
                 f"[{self.name}] 🧠 Treinando calibrador LogReg "
                 f"(N={X.shape[0]} | Hp={n_hp} | Hd={n_hd} | C={self.config.C})..."
             )
-            self.logreg.fit(X, labels_arr)
+            base_estimator, _ = self._build_linear_estimator(
+                self.config.C, n_features=X.shape[1]
+            )
+            base_estimator.fit(X, labels_arr)
+            self._extract_scaler_state(base_estimator)
             self.best_C_ = float(self.config.C)
 
         self._is_fitted = True
