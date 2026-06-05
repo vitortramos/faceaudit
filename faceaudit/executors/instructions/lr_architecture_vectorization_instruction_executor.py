@@ -148,11 +148,13 @@ class LRArchitectureVectorizationInstructionExecutor(
                     f"Fase {phase.value} exige parameter_mode=INHERIT; "
                     f"recebido {mode.value}"
                 )
-        if mode == ArchitectureParameterMode.FIT_PER_FOLD:
-            return ValidationResult.critical(
-                "parameter_mode=FIT_PER_FOLD é reservado para v2 e não "
-                "está disponível na v1. Use FIT_FULL_CALIBRATION_LEGACY ou MANUAL."
-            )
+        # FIT_PER_FOLD habilitado no PR 3: o ajuste real por fold acontece
+        # dentro do CALIBRATION_MODEL_TRAINING via Pipeline+GridSearchCV.
+        # Esta instrução apenas marca o output como "defer to calibrator
+        # per-fold" — ela emite o LR_ARCHITECTURE_RAW_INPUT e um vetor
+        # placeholder construído com s₀/r̄ provisórios sobre todo D_cal
+        # para preservar o contrato (calibrador troca pelos valores
+        # corretos pós-CV).
 
         # base obrigatório
         if not instruction.base_score_resource_id:
@@ -678,8 +680,17 @@ class LRArchitectureVectorizationInstructionExecutor(
             )
             return state, None
 
-        # FIT_FULL_CALIBRATION_LEGACY
-        if mode == ArchitectureParameterMode.FIT_FULL_CALIBRATION_LEGACY:
+        # FIT_FULL_CALIBRATION_LEGACY (v1) e FIT_PER_FOLD (v2/PR 3).
+        # Ambos os modos exercem o mesmo cálculo provisório de s₀/r̄ aqui
+        # (sobre todo D_cal). A diferença é o fit_scope persistido no
+        # state e a flag `defer_to_calibrator_per_fold` no metadata do
+        # vetor produzido — o CALIBRATION_MODEL_TRAINING consome essa
+        # flag para trocar para o Pipeline+GridSearchCV com transformer,
+        # produzindo um state final ajustado por fold (PR 3).
+        if mode in (
+            ArchitectureParameterMode.FIT_FULL_CALIBRATION_LEGACY,
+            ArchitectureParameterMode.FIT_PER_FOLD,
+        ):
             return self._resolve_fit_full_legacy(
                 instr=instr, spec=spec, phase=phase,
                 base_scores=base_scores, same_person=same_person,
@@ -810,7 +821,11 @@ class LRArchitectureVectorizationInstructionExecutor(
             rarity_reference_model_resource_id=reference_meta.get("model_resource_id"),
             rarity_probe_model_fingerprint=probe_meta.get("model_fingerprint"),
             rarity_reference_model_fingerprint=reference_meta.get("model_fingerprint"),
-            fit_scope=ArchitectureFitScope.FULL_CALIBRATION_LEGACY,
+            fit_scope=(
+                ArchitectureFitScope.PER_FOLD_REFIT_FULL_CALIBRATION
+                if instr.parameter_mode == ArchitectureParameterMode.FIT_PER_FOLD
+                else ArchitectureFitScope.FULL_CALIBRATION_LEGACY
+            ),
             s0_resolution_method=s0_method,
             r0_probe_estimator=r0_probe_estimator,
             r0_reference_estimator=r0_reference_estimator,
@@ -822,7 +837,15 @@ class LRArchitectureVectorizationInstructionExecutor(
             s0_logreg_config=instr.s0_logreg_config_override,
             s0_fit_summary=s0_summary_dict,
         )
-        return state, None
+        # PR 3: em FIT_PER_FOLD, sinaliza ao CALIBRATION_MODEL_TRAINING
+        # downstream que deve assumir o ajuste por fold via Pipeline+
+        # GridSearchCV em vez de aceitar a matriz pré-vetorizada.
+        # O `vec_dataset_metadata_extra` é mesclado no metadata do
+        # SimilarityScoreDataset vetorizado emitido pelo executor.
+        extra: Optional[Dict[str, Any]] = None
+        if instr.parameter_mode == ArchitectureParameterMode.FIT_PER_FOLD:
+            extra = {"defer_to_calibrator_per_fold": True}
+        return state, extra
 
     # ─── Orientation/key mode derivation ─────────────────────────────────
 

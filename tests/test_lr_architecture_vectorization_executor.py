@@ -206,7 +206,14 @@ class TestPhaseGuards:
         assert not result.success
         assert any("parameter_mode=INHERIT" in e for e in result.errors)
 
-    def test_fit_per_fold_in_v1_raises(self):
+    def test_fit_per_fold_succeeds_and_marks_state(self):
+        """
+        PR 3: FIT_PER_FOLD agora é válido em PREPARATION. O executor emite
+        a matriz vetorizada com s₀/r̄ provisórios (sobre todo D_cal) +
+        sinaliza `defer_to_calibrator_per_fold=True` no metadata.
+        O CALIBRATION_MODEL_TRAINING consome esse flag para refazer o
+        fit por fold via Pipeline+GridSearchCV.
+        """
         base, rp, rr, _ = _build_dataset_with_pairs(150, 600)
         ctx = _mk_ctx(base, rp, rr).with_frame(InstructionExecutionFrame(
             phase=StrategyPhase.PREPARATION, instruction_index=0, strategy_id="s"))
@@ -216,8 +223,15 @@ class TestPhaseGuards:
         )
         ex = LRArchitectureVectorizationInstructionExecutor()
         result = ex.execute(instr, ctx)
-        assert not result.success
-        assert any("reservado para v2" in e or "FIT_PER_FOLD" in e for e in result.errors)
+        assert result.success, result.errors
+        ds = ctx.get_resource("out_vec").payload
+        # state marca PER_FOLD_REFIT_FULL_CALIBRATION
+        assert (
+            ds.metadata["architecture_state"]["fit_scope"]
+            == "PER_FOLD_REFIT_FULL_CALIBRATION"
+        )
+        # metadata sinaliza defer_to_calibrator_per_fold
+        assert ds.metadata.get("defer_to_calibrator_per_fold") is True
 
 
 class TestInheritReappliesState:

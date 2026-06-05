@@ -105,7 +105,26 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 self._extract_identities(input_payload)
             )
 
-            if instruction.uses_logistic_regression:
+            # PR 3: detecta input vetorizado com sinalização "defer_to_
+            # calibrator_per_fold" do LR_ARCHITECTURE_VECTORIZATION em modo
+            # FIT_PER_FOLD. Nesse caso, ignora a matriz pré-vetorizada e
+            # treina via Pipeline+GridSearchCV com transformer interno —
+            # s₀/r̄ aprendidos por fold, eliminando leakage residual.
+            input_meta = getattr(input_payload, "metadata", {}) or {}
+            per_fold_active = (
+                instruction.uses_logistic_regression
+                and bool(input_meta.get("defer_to_calibrator_per_fold"))
+                and input_meta.get("raw_input_resource_id")
+            )
+
+            if per_fold_active:
+                trained_model = self._train_logreg_per_fold_with_transformer(
+                    instruction=instruction,
+                    input_payload=input_payload,
+                    context=context,
+                )
+
+            elif instruction.uses_logistic_regression:
                 # Config embutida no DTO da instrução.
                 trained_model = self._train_logistic_regression_calibrator(
                     scores=scores,
@@ -472,6 +491,198 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
         # inflar o pickle do calibrador com cópia integral das identidades.
         model.metadata.pop("train_probe_identities", None)
         model.metadata.pop("train_reference_identities", None)
+        return model
+
+    def _train_logreg_per_fold_with_transformer(
+        self,
+        instruction,
+        input_payload,
+        context: StrategyExecutionContextProtocol,
+    ) -> LogisticRegressionCalibrationModel:
+        """
+        PR 3 — Treina LogReg com FIT_PER_FOLD via Pipeline sklearn.
+
+        Carrega o LR_ARCHITECTURE_RAW_INPUT referenciado pelo
+        `input_payload.metadata['raw_input_resource_id']`, constrói o
+        pipeline `[ArchitectureVectorizerTransformer → StandardScaler →
+        LogReg]`, roda `GridSearchCV(cv=IdentityDisjointPairKFold(...))`
+        com identidades disjuntas dos dois lados, e extrai o `state_`
+        final do transformer pós-refit em D_cal completo.
+
+        O state final é persistido no `model.metadata` para suportar
+        INHERIT em VALIDATION/CASEWORK — o LR_ARCHITECTURE_VECTORIZATION
+        de validação detecta o calibrador como fonte de architecture_state.
+        """
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import GridSearchCV
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        from faceaudit.enums.lr_calibration_architecture import (
+            LRCalibrationArchitecture,
+        )
+        from faceaudit.enums.pair_role_orientation import PairRoleOrientation
+        from faceaudit.services.architecture_vectorizer_transformer import (
+            ArchitectureVectorizerTransformer,
+        )
+        from faceaudit.services.identity_disjoint_pair_kfold import (
+            IdentityDisjointPairKFold,
+        )
+
+        meta = input_payload.metadata or {}
+        raw_resource_id = meta["raw_input_resource_id"]
+        context.ensure_payload(raw_resource_id)
+        raw_resource = context.get_resource(raw_resource_id)
+        if raw_resource is None or raw_resource.payload is None:
+            raise RuntimeError(
+                f"Recurso LR_ARCHITECTURE_RAW_INPUT ausente: {raw_resource_id}"
+            )
+        raw_payload = raw_resource.payload
+
+        if raw_payload.same_person is None:
+            raise RuntimeError(
+                "LR_ARCHITECTURE_RAW_INPUT sem same_person; FIT_PER_FOLD "
+                "exige rótulos para AUTO_LOGREG"
+            )
+        if (
+            raw_payload.probe_identity_ids is None
+            or raw_payload.reference_identity_ids is None
+        ):
+            raise RuntimeError(
+                "LR_ARCHITECTURE_RAW_INPUT sem identidades por par; "
+                "FIT_PER_FOLD exige PairIdentityMetadata para CV "
+                "identidade-disjunta"
+            )
+
+        # Resolve arquitetura herdada do metadata vetorizado
+        arch = LRCalibrationArchitecture.from_str(meta["lr_architecture"])
+
+        # Captura proveniência de tipicidade para o state final
+        state_dict = meta.get("architecture_state") or {}
+        probe_role_str = (
+            state_dict.get("pair_role_orientation")
+            or meta.get("pair_role_orientation")
+            or "PROBE_REFERENCE"
+        )
+        role_orientation = PairRoleOrientation.from_str(probe_role_str)
+
+        # Constrói pipeline
+        # s0_logreg_config foi persistido no state do vetorizador (LR_ARCH_VECT)
+        s0_cfg = state_dict.get("s0_logreg_config") or None
+
+        transformer = ArchitectureVectorizerTransformer(
+            architecture=arch,
+            schema=raw_payload.schema,
+            s0_logreg_config=s0_cfg,
+            base_score_kind=state_dict.get("base_score_kind") or "cosine",
+            pair_role_orientation=role_orientation,
+            rarity_probe_score_type=state_dict.get("rarity_probe_score_type"),
+            rarity_reference_score_type=state_dict.get("rarity_reference_score_type"),
+        )
+
+        cfg = instruction.logreg_config
+        c_grid = getattr(cfg, "c_grid", None) or [getattr(cfg, "C", 1.0)]
+        cv_folds = max(2, int(getattr(cfg, "cv_folds", 5) or 5))
+        solver = str(getattr(cfg, "solver", "liblinear") or "liblinear")
+        class_weight = getattr(cfg, "class_weight", "balanced") or "balanced"
+        max_iter = int(getattr(cfg, "max_iter", 1000) or 1000)
+
+        steps = [
+            ("arch_vec", transformer),
+            ("scaler", StandardScaler()),
+            ("logreg", LogisticRegression(
+                solver=solver, class_weight=class_weight, max_iter=max_iter,
+            )),
+        ]
+        pipe = Pipeline(steps)
+
+        # CV identidade-disjunta dos dois lados
+        splitter = IdentityDisjointPairKFold(
+            probe_identities=list(raw_payload.probe_identity_ids),
+            reference_identities=list(raw_payload.reference_identity_ids),
+            n_splits=cv_folds,
+            random_state=42,
+        )
+
+        X_raw = raw_payload.matrix  # (N, K) já em <f8
+        y = np.asarray(raw_payload.same_person, dtype=int)
+
+        self._log(
+            context,
+            f"  ↻ FIT_PER_FOLD: Pipeline[Transformer→Scaler→LogReg] em "
+            f"GridSearchCV(cv={cv_folds}, splitter=IdentityDisjointPairKFold) "
+            f"sobre {len(X_raw)} pares; C_grid={c_grid}",
+        )
+
+        grid = GridSearchCV(
+            estimator=pipe,
+            param_grid={"logreg__C": list(c_grid)},
+            cv=splitter,
+            scoring="neg_log_loss",
+            refit=True,
+            n_jobs=1,
+        )
+        grid.fit(np.asarray(X_raw), y)
+
+        # Após refit em todo D_cal, extrai os componentes finais
+        best_pipe = grid.best_estimator_
+        transformer_final: ArchitectureVectorizerTransformer = best_pipe.named_steps["arch_vec"]
+        scaler_final: StandardScaler = best_pipe.named_steps["scaler"]
+        logreg_final: LogisticRegression = best_pipe.named_steps["logreg"]
+
+        state_final = transformer_final.state_
+
+        # Empacota num LogisticRegressionCalibrationModel para preservar
+        # contrato downstream (SCORE_CALIBRATION consome este wrapper).
+        model = LogisticRegressionCalibrationModel(config=cfg)
+        model.logreg = logreg_final
+        model._is_fitted = True
+        model.best_C_ = float(grid.best_params_["logreg__C"])
+        model._feature_mean = np.asarray(scaler_final.mean_, dtype=np.float64)
+        model._feature_std = np.asarray(scaler_final.scale_, dtype=np.float64)
+
+        # Persiste fingerprints + state no metadata (consumidos por
+        # CalibrationModelMetadataService.bind_architecture_state e por
+        # LR_ARCHITECTURE_VECTORIZATION em modo INHERIT na validação)
+        model.metadata.update({
+            "vectorization_contract_fingerprint":
+                state_final.vectorization_contract_fingerprint,
+            "lr_architecture": state_final.architecture.value,
+            "lr_architecture_formula_version": state_final.formula_version,
+            "architecture_spec_fingerprint":
+                state_final.architecture_spec_fingerprint,
+            "architecture_state": state_final.to_dict(),
+            # Provenance do treino per-fold (PR 3)
+            "fit_per_fold": True,
+            "inner_cv_splitter": "IdentityDisjointPairKFold",
+            "inner_cv_fold_count": cv_folds,
+            "strict_identity_disjoint": True,
+            "final_refit_on_full_calibration": True,
+            "selected_C": model.best_C_,
+            # Coefs em escala bruta (consumidos pela auditoria de
+            # monotonicidade condicional — vide §10.5 do relatório)
+            "standardized_coefficients": logreg_final.coef_.ravel().tolist(),
+            "scaler_mean": model._feature_mean.tolist(),
+            "scaler_scale": model._feature_std.tolist(),
+            "raw_scale_coefficients": (
+                logreg_final.coef_.ravel() / model._feature_std
+            ).tolist(),
+            "raw_scale_intercept": float(
+                logreg_final.intercept_.ravel()[0]
+                - float(np.sum(
+                    logreg_final.coef_.ravel() * model._feature_mean
+                    / model._feature_std
+                ))
+            ),
+        })
+
+        self._log(
+            context,
+            f"  ✅ FIT_PER_FOLD concluído: C={model.best_C_}, "
+            f"s₀={state_final.s0:.4f}, r̄_F={state_final.r0_probe}, "
+            f"r̄_P={state_final.r0_reference}",
+        )
+
         return model
 
     def _train_kde_calibrator(
