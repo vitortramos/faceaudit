@@ -614,11 +614,20 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             f"sobre {len(X_raw)} pares; C_grid={c_grid}",
         )
 
+        # Mesma função objetivo do caminho legacy: NEG_CLLR_BALANCED por
+        # default (forense; equivalente a −Cllr balanceado por classe).
+        # Permite override via `instruction.logreg_config.scoring`. Sem
+        # isso, `neg_log_loss` ficaria dominado pela classe majoritária
+        # em datasets desbalanceados (Hd >> Hp) e selecionaria C subótimo.
+        from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+        scoring_enum = getattr(cfg, "scoring", None) or LogRegGridScoringMetric.NEG_CLLR_BALANCED
+        scoring_obj = LogisticRegressionCalibrationModel._resolve_scoring(scoring_enum)
+
         grid = GridSearchCV(
             estimator=pipe,
             param_grid={"logreg__C": list(c_grid)},
             cv=splitter,
-            scoring="neg_log_loss",
+            scoring=scoring_obj,
             refit=True,
             n_jobs=1,
         )
