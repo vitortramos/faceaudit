@@ -25,6 +25,7 @@ _INSTRUCTION_ICONS = {
     StrategyInstructionType.SCORE_CALIBRATION: "🎚️",
     StrategyInstructionType.SCORE_VECTORIZATION: "🧬",
     StrategyInstructionType.SCORE_INTERACTION_FEATURE: "🪢",
+    StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION: "🧩",
     StrategyInstructionType.STRATEGY_EVALUATION: "📈",
     StrategyInstructionType.CASEWORK_VISUALIZATION: "🎯",
 }

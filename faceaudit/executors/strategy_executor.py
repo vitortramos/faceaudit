@@ -545,22 +545,29 @@ class StrategyExecutor:
         context: StrategyExecutionContextProtocol,
         cancel_checker: Optional[Callable[[], bool]] = None,
     ) -> List[InstructionExecutionResult]:
+        from faceaudit.enums.strategy_phase import StrategyPhase
+        from faceaudit.models.strategy.instruction_execution_frame import (
+            InstructionExecutionFrame,
+        )
+
         results: List[InstructionExecutionResult] = []
 
         phases = [
-            ("Preparação", strategy_definition.preparation_instructions),
-            ("Validação", strategy_definition.validation_instructions),
-            ("Análise de Caso", strategy_definition.casework_instructions),
+            ("Preparação", StrategyPhase.PREPARATION, strategy_definition.preparation_instructions),
+            ("Validação", StrategyPhase.VALIDATION, strategy_definition.validation_instructions),
+            ("Análise de Caso", StrategyPhase.CASEWORK, strategy_definition.casework_instructions),
         ]
 
-        for phase_name, phase_instructions in phases:
+        strategy_id = getattr(strategy_definition, "strategy_id", "") or ""
+
+        for phase_name, phase_enum, phase_instructions in phases:
             if not phase_instructions:
                 continue
             self._log(
                 context,
                 f"📋 Fase: {phase_name} ({len(phase_instructions)} instruções)",
             )
-            for instruction in phase_instructions:
+            for instruction_index, instruction in enumerate(phase_instructions):
                 # Checkpoint de cancelamento ANTES de cada instrução.
                 # Granularidade é por-instrução: uma instrução longa em
                 # execução não é interrompida no meio, mas o usuário não
@@ -574,9 +581,22 @@ class StrategyExecutor:
                     raise StrategyCancelledError(
                         f"Cancelado pelo usuário antes de '{instruction.name}'."
                     )
+                # Cria frame para a instrução e injeta via with_frame.
+                # A view compartilha resources/artifacts com o contexto raiz —
+                # mutação via set_resource continua propagando.
+                frame = InstructionExecutionFrame(
+                    phase=phase_enum,
+                    instruction_index=instruction_index,
+                    strategy_id=strategy_id,
+                )
+                framed_ctx = (
+                    context.with_frame(frame)
+                    if hasattr(context, "with_frame") else context
+                )
+
                 # execute_single_instruction já chama _rehydrate_inputs_if_needed
                 # internamente — não precisa duplicar aqui.
-                result = self.execute_single_instruction(instruction, context)
+                result = self.execute_single_instruction(instruction, framed_ctx)
                 if not result.success:
                     raise RuntimeError(
                         f"Instrução falhou ({instruction.instruction_id}): {result.errors}"

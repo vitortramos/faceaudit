@@ -64,6 +64,9 @@ from faceaudit.executors.instructions.typicality_pair_scoring_instruction_execut
 from faceaudit.executors.instructions.score_interaction_feature_instruction_executor import (
     ScoreInteractionFeatureInstructionExecutor,
 )
+from faceaudit.executors.instructions.lr_architecture_vectorization_instruction_executor import (
+    LRArchitectureVectorizationInstructionExecutor,
+)
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
@@ -193,6 +196,11 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.SCORE_INTERACTION_FEATURE,
             ScoreInteractionFeatureInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION,
+            LRArchitectureVectorizationInstructionExecutor(),
         )
 
         return registry

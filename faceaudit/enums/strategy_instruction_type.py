@@ -192,6 +192,23 @@ class StrategyInstructionType(Enum):
         "valida `same_person` e família do modifier.",
     )
 
+    LR_ARCHITECTURE_VECTORIZATION = (
+        "LR_ARCHITECTURE_VECTORIZATION",
+        "LR Architecture Vectorization",
+        "Vetorização por Arquitetura LR",
+        "Instrução declarativa de alto nível que substitui o "
+        "encadeamento manual SCORE_INTERACTION_FEATURE×N + "
+        "SCORE_VECTORIZATION para uma das 9 arquiteturas de calibração "
+        "LR (COSINE_ONLY a BILATERAL_FULL_CENTERED D=7). O usuário "
+        "escolhe a arquitetura via enum e a instrução cuida da "
+        "construção interna (hinges, raridades centradas, vetorização) "
+        "e do binding do fingerprint para o calibrador. As instruções "
+        "SCORE_INTERACTION_FEATURE e SCORE_VECTORIZATION continuam "
+        "disponíveis para composições exóticas. Fase derivada do "
+        "InstructionExecutionFrame; bloqueia ajuste em VALIDATION/"
+        "CASEWORK exigindo parameter_mode=INHERIT.",
+    )
+
     def __new__(
         cls,
         value: str,

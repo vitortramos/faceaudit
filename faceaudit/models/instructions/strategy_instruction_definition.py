@@ -413,4 +413,10 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return ScoreInteractionFeatureInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION:
+            from faceaudit.models.instructions.lr_architecture_vectorization_instruction import (
+                LRArchitectureVectorizationInstruction,
+            )
+            return LRArchitectureVectorizationInstruction.from_dict(processed_data)
+
         return cls(**processed_data)

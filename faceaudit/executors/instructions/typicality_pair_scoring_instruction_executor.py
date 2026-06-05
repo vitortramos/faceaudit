@@ -414,6 +414,13 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
                 "combiner": instruction.combiner.to_str(),
                 "probe_dataset_name": dataset.name,
                 "is_casework": instruction.is_casework,
+                # PR 2: campos contratuais consumidos pelo
+                # validate_state_compatibility da nova instrução
+                # LR_ARCHITECTURE_VECTORIZATION. model_fingerprint fica
+                # None na v1 (state validate trata None como "sem
+                # informação", não falha).
+                "model_resource_id": instruction.typicality_model_probe_resource_id,
+                "model_fingerprint": None,
             },
         )
 
@@ -502,6 +509,16 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     instruction.typicality_model_reference_resource_id
                 ),
                 "is_casework": instruction.is_casework,
+                # PR 2: campos contratuais para a nova instrução
+                # LR_ARCHITECTURE_VECTORIZATION. Em cross, o modelo da
+                # raridade do lado consumido é determinado pelo combiner
+                # (PROBE_ONLY → probe; REFERENCE_ONLY → reference).
+                "model_resource_id": (
+                    instruction.typicality_model_reference_resource_id
+                    if instruction.combiner.to_str() == "REFERENCE_ONLY"
+                    else instruction.typicality_model_probe_resource_id
+                ),
+                "model_fingerprint": None,
             },
         )
 

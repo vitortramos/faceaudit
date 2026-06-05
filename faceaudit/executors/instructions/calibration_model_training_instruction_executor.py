@@ -178,6 +178,24 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 if model_ids is not None:
                     setattr(trained_model, "score_vector_model_ids", list(model_ids))
 
+            # PR 2: gate de capacidade multivariada do calibrador
+            input_dim = self._infer_input_dim(input_payload)
+            self._gate_calibrator_capacity(trained_model, input_dim)
+
+            # PR 2: binding do contract fingerprint para vincular
+            # dataset vetorizado ↔ calibrador (CalibrationModelMetadataService).
+            try:
+                from faceaudit.services.calibration_model_metadata_service import (
+                    CalibrationModelMetadataService,
+                )
+                if hasattr(trained_model, "metadata") and trained_model.metadata is not None:
+                    CalibrationModelMetadataService.bind_architecture_state(
+                        trained_model.metadata,
+                        getattr(input_payload, "metadata", {}) or {},
+                    )
+            except Exception as exc:  # bind é best-effort — não bloqueia treinar
+                self._log(context, f"  ⚠ binding fingerprint falhou: {exc}")
+
             output_resource_id = instruction.trained_calibration_model_resource_id
             trained_resource = StrategyResource(
                 resource_id=output_resource_id,
@@ -617,3 +635,52 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             return np.asarray(groups)
         except Exception:
             return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PR 2: Gate de capacidade multivariada
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _infer_input_dim(self, input_payload) -> int:
+        """Inferência mínima da dimensão do dataset de entrada.
+
+        Retorna 1 quando o payload é escalar (raw_score), ou D quando há
+        `score_vector_matrix` no metadata. Calibradores são treinados via
+        `fit(scores, labels)` com `scores` 1D em escalares ou 2D em vetor.
+        """
+        meta = getattr(input_payload, "metadata", {}) or {}
+        sv_dim = meta.get("score_vector_dim") or meta.get("score_vector_n_features")
+        if sv_dim:
+            try:
+                return int(sv_dim)
+            except Exception:
+                pass
+        matrix = meta.get("score_vector_matrix")
+        if matrix is not None:
+            try:
+                return int(matrix.shape[1])
+            except Exception:
+                pass
+        return 1
+
+    def _gate_calibrator_capacity(self, calibrator, input_dim: int) -> None:
+        """Levanta ValueError se o calibrador não aceita a dimensão atual.
+
+        Calibradores declaram `supports_score_vector` e `max_input_dim`
+        como class attributes (PR 2). Modelos antigos sem essas
+        declarações são tratados como `supports_score_vector=False,
+        max_input_dim=1` (escalar apenas) — compat conservador.
+        """
+        supports = getattr(calibrator, "supports_score_vector", False)
+        max_dim = getattr(calibrator, "max_input_dim", 1)
+        if input_dim > 1 and not supports:
+            raise ValueError(
+                f"Calibrador {type(calibrator).__name__} não suporta "
+                f"score vector (input_dim={input_dim}). Use LogReg para "
+                f"multivariado."
+            )
+        if max_dim is not None and input_dim > max_dim:
+            raise ValueError(
+                f"Calibrador {type(calibrator).__name__} aceita max_input_dim="
+                f"{max_dim}, mas dataset tem D={input_dim}. Use LogReg para "
+                f"D > 1."
+            )

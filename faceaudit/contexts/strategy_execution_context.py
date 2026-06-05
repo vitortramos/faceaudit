@@ -1,11 +1,13 @@
 # faceaudit/contexts/strategy_execution_context.py
 
 from __future__ import annotations
+import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.models.storage.strategy_artifact_reference import StrategyArtifactReference
+from faceaudit.models.strategy.instruction_execution_frame import InstructionExecutionFrame
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
 
@@ -52,6 +54,13 @@ class StrategyExecutionContext(JSONSerializableMixin):
     # (loader -> resource -> context -> loader).
     resource_loader: Any = None
     embedding_column: Optional[str] = None
+
+    # Frame de execução corrente — setado pelo StrategyExecutor antes de
+    # cada execute() via context.with_frame(frame). Não persistido no JSON
+    # (efêmero, varia por instrução). Imutável (`InstructionExecutionFrame`
+    # é frozen). Executores legados ignoram; o novo
+    # LR_ARCHITECTURE_VECTORIZATION fail-closes quando frame is None.
+    current_frame: Optional[InstructionExecutionFrame] = None
 
     # =========================================================================
     # RECURSOS
@@ -344,6 +353,30 @@ class StrategyExecutionContext(JSONSerializableMixin):
         return self.execution_metadata.get(key, default)
 
     # =========================================================================
+    # FRAME DE EXECUÇÃO (PR 2 — LR_ARCHITECTURE_VECTORIZATION)
+    # =========================================================================
+
+    def with_frame(self, frame: InstructionExecutionFrame) -> "StrategyExecutionContext":
+        """
+        Retorna uma view do contexto carregando `frame`.
+
+        Implementação compartilha os dicts mutáveis (resources, artifacts,
+        logs, metadata, _id_to_resource_id_index, log_listeners) — quaisquer
+        mudanças via `set_resource` etc. continuam visíveis para todas as
+        views. Apenas `current_frame` é específico desta view.
+
+        Esta semântica permite que o orquestrador crie uma view por
+        instrução sem fragmentar o estado global compartilhado, mantendo
+        a fase imutável dentro do escopo de uma `executor.execute(...)`.
+        """
+        return dataclasses.replace(self, current_frame=frame)
+
+    @property
+    def frame(self) -> Optional[InstructionExecutionFrame]:
+        """Alias legível de `current_frame` para o lado do executor."""
+        return self.current_frame
+
+    # =========================================================================
     # SERIALIZAÇÃO
     # =========================================================================
 
@@ -361,6 +394,7 @@ class StrategyExecutionContext(JSONSerializableMixin):
             "resource_loader",
             "embedding_column",
             "_id_to_resource_id_index",
+            "current_frame",
         ):
             data.pop(runtime_key, None)
         return data
@@ -403,6 +437,7 @@ class StrategyExecutionContext(JSONSerializableMixin):
             "embedding_column",
             "log_listeners",
             "_id_to_resource_id_index",
+            "current_frame",
         ):
             processed_data.pop(runtime_key, None)
 

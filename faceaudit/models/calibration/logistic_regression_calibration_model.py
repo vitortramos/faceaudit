@@ -42,6 +42,13 @@ class LogisticRegressionCalibrationModel(CalibrationModelProtocol):
 
     MODEL_VERSION = 3  # +pipeline (piecewise-linear interno) na V3
 
+    # PR 2: declaração explícita de capacidade multivariada para a
+    # nova instrução CALIBRATION_MODEL_TRAINING fazer gate de dim
+    # antes de treinar. LogReg aceita qualquer D (1, 2, 3, ..., 7 da
+    # BILATERAL cheia).
+    supports_score_vector: bool = True
+    max_input_dim: Optional[int] = None  # ilimitado
+
     def __init__(
         self,
         config: LogisticRegressionCalibrationModelConfig | None = None,

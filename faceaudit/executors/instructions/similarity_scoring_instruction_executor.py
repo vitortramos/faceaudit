@@ -347,6 +347,14 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                 "mode": "self_comparison",
                 "probe_dataset_name": dataset.name,
                 "similarity_model_name": getattr(model, "name", type(model).__name__),
+                # PR 2: campos contratuais consumidos pela nova
+                # instrução LR_ARCHITECTURE_VECTORIZATION para validar
+                # orientação e tipo de score base.
+                "score_kind": (
+                    "plda" if "plda" in type(model).__name__.lower() else "cosine"
+                ),
+                "pair_role_orientation": "NOT_APPLICABLE",  # auto-comp não distingue
+                "pair_key_mode": "UNORDERED",
             },
         )
 
@@ -425,6 +433,14 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                 "probe_dataset_name": probe_dataset.name,
                 "reference_dataset_name": reference_dataset.name,
                 "similarity_model_name": getattr(model, "name", type(model).__name__),
+                # PR 2: cross-comp DISTINGUE probe vs reference
+                # semanticamente — orientação default é PROBE_REFERENCE.
+                # Arquiteturas ordenadas (BILATERAL cheia etc.) consomem.
+                "score_kind": (
+                    "plda" if "plda" in type(model).__name__.lower() else "cosine"
+                ),
+                "pair_role_orientation": "PROBE_REFERENCE",
+                "pair_key_mode": "ORDERED",
             },
         )
 

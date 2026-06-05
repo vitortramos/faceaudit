@@ -78,6 +78,30 @@ class ScoreCalibrationInstructionExecutor(StrategyInstructionExecutorBase):
                 f"com {type(calibrator).__name__}…".replace(",", ".")
             )
 
+            # PR 2: validação do vínculo vetor↔calibrador via
+            # CalibrationModelMetadataService. Em STRICT (default), erros
+            # de mismatch de fingerprint bloqueiam a calibração. Calibradores
+            # legados sem fingerprint executam com warning informativo.
+            try:
+                from faceaudit.services.calibration_model_metadata_service import (
+                    CalibrationModelMetadataService,
+                )
+                ds_meta = getattr(score_dataset, "metadata", {}) or {}
+                cal_meta = getattr(calibrator, "metadata", {}) or {}
+                issues = CalibrationModelMetadataService.validate_compatibility(
+                    cal_meta, ds_meta,
+                )
+                for issue in issues:
+                    if issue.severity == "error":
+                        return self._failure_result(
+                            f"Incompatibilidade dataset↔calibrador "
+                            f"({issue.field}): {issue.message}"
+                        )
+                    elif issue.severity == "warning":
+                        self._log(context, f"  ⚠ {issue.message}")
+            except ImportError:
+                pass  # service não disponível — pula validação
+
             # Vetorização: scores e calibração em um único passe.
             # Para datasets produzidos por SCORE_VECTORIZATION, extraímos
             # a matriz (N, D) do vetor de scores em vez do raw_score escalar.

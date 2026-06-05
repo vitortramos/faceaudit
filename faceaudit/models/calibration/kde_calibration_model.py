@@ -45,6 +45,12 @@ class KDECalibrationModel(CalibrationModelProtocol):
 
     MODEL_VERSION = 3  # v3: + bw_gen_/bw_imp_ atributos diretos (CV factory)
 
+    # PR 2: KDE aceita score vector mas apenas univariado — implementação
+    # ajusta 2 KDEs sobre escala 1D após z-score. Tentar treinar com D > 1
+    # leva ao gate de dim do CALIBRATION_MODEL_TRAINING.
+    supports_score_vector: bool = True
+    max_input_dim: Optional[int] = 1
+
     def __init__(
         self,
         config: KDECalibrationModelConfig | None = None,

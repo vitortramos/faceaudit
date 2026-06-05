@@ -54,6 +54,14 @@ class StrategyResourceType(Enum):
     HUBNESS_REPORT = "HUBNESS_REPORT"
     HUBNESS_ABLATION_RESULT = "HUBNESS_ABLATION_RESULT"
 
+    # --- ARQUITETURA DE CALIBRAÇÃO LR ---
+    # Payload bruto (matriz raw + schema + pair_keys + identidades +
+    # fingerprints) emitido pela instrução LR_ARCHITECTURE_VECTORIZATION
+    # junto com o SIMILARITY_SCORES vetorizado. O payload bruto é
+    # necessário para o FIT_PER_FOLD da v2 (transformer sklearn não pode
+    # depender de carregar recursos do contexto durante .fit por fold).
+    LR_ARCHITECTURE_RAW_INPUT = "LR_ARCHITECTURE_RAW_INPUT"
+
     # --- OUTROS / APOIO ---
     DATASET_STATS = "DATASET_STATS"
     ARTIFACT = "ARTIFACT"
@@ -80,6 +88,7 @@ class StrategyResourceType(Enum):
             "CASEWORK_VISUALIZATION":   "Visualização Forense",
             "HUBNESS_REPORT":           "Relatório de Hubness",
             "HUBNESS_ABLATION_RESULT":  "Resultado de Ablação Hubness",
+            "LR_ARCHITECTURE_RAW_INPUT": "Payload Bruto LR (s, r_F, r_P)",
             "DATASET_STATS":            "Estatísticas do Dataset",
             "ARTIFACT":                 "Artefato",
             "UNKNOWN":                  "Desconhecido",
@@ -118,6 +127,7 @@ class StrategyResourceType(Enum):
             StrategyResourceType.SPLIT_CONFIG:              StrategyArtifactType.SPLIT_CONFIG,
             StrategyResourceType.HUBNESS_REPORT:            StrategyArtifactType.HUBNESS_REPORT,
             StrategyResourceType.HUBNESS_ABLATION_RESULT:   StrategyArtifactType.HUBNESS_ABLATION_RESULT,
+            StrategyResourceType.LR_ARCHITECTURE_RAW_INPUT: StrategyArtifactType.LR_ARCHITECTURE_RAW_INPUT,
         }
         return _map.get(self)
 
