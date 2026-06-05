@@ -676,11 +676,13 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             ),
         })
 
+        s0_str = f"{state_final.s0:.4f}" if state_final.s0 is not None else "—"
+        r0p_str = f"{state_final.r0_probe:.4f}" if state_final.r0_probe is not None else "—"
+        r0r_str = f"{state_final.r0_reference:.4f}" if state_final.r0_reference is not None else "—"
         self._log(
             context,
             f"  ✅ FIT_PER_FOLD concluído: C={model.best_C_}, "
-            f"s₀={state_final.s0:.4f}, r̄_F={state_final.r0_probe}, "
-            f"r̄_P={state_final.r0_reference}",
+            f"s₀={s0_str}, r̄_F={r0p_str}, r̄_P={r0r_str}",
         )
 
         return model
