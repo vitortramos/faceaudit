@@ -10,6 +10,19 @@
 > (branch `claude/read-claude-md-SgzIV`). Campos e algoritmo conferidos em
 > `faceaudit/executors/instructions/score_vectorization_instruction_executor.py`,
 > `faceaudit/models/instructions/score_vectorization_instruction.py`.
+>
+> **⚠️ V2.14 — alternativa declarativa para arquiteturas LR canônicas.**
+> A partir de V2.14, para as **9 arquiteturas LR forenses canônicas** (do
+> `COSINE_ONLY` puro à `BILATERAL_FULL_CENTERED` cheia), o substituto
+> ergonômico é a instrução `LR_ARCHITECTURE_VECTORIZATION` — uma única
+> instrução declarativa que dispensa o encadeamento manual
+> `SCORE_INTERACTION_FEATURE × N + SCORE_VECTORIZATION` e ainda corrige o
+> leakage residual de s₀/r̄ via `parameter_mode=FIT_PER_FOLD` (s₀/r̄
+> ajustados POR FOLD dentro do `GridSearchCV` do calibrador). Veja
+> §1.6 abaixo para a árvore de decisão completa. **O `SCORE_VECTORIZATION`
+> permanece como ferramenta geral** para fusões fora do registry (ex.:
+> empilhar score de qualidade + cosseno + PLDA arbitrariamente, ou compor
+> features que não derivam de raridade × similaridade).
 
 ---
 
@@ -17,6 +30,7 @@
 
 - [0. Apresentação](#0-apresentação)
 - [1. Onde a vetorização se encaixa](#1-onde-a-vetorização-se-encaixa)
+  - [1.6 `SCORE_VECTORIZATION` vs `LR_ARCHITECTURE_VECTORIZATION`](#16-score_vectorization-vs-lr_architecture_vectorization)
 - [2. Fundamentação — fusão score-level](#2-fundamentação--fusão-score-level)
 - [3. O que a instrução faz](#3-o-que-a-instrução-faz)
 - [4. O algoritmo de alinhamento](#4-o-algoritmo-de-alinhamento)
@@ -90,6 +104,36 @@ log-LR contínuo
 A vetorização é o passo que **prepara** as features multivariadas. O aprendizado
 dos pesos por sistema acontece **dentro do calibrador** a jusante — esta
 instrução não calibra nada.
+
+### 1.6 `SCORE_VECTORIZATION` vs `LR_ARCHITECTURE_VECTORIZATION`
+
+V2.14 introduziu uma instrução declarativa que cobre exatamente a fatia mais
+comum de uso da vetorização — empilhar score base (cosseno/PLDA) + features de
+interação derivadas da raridade — sem que o usuário precise reproduzir manualmente
+a aritmética de hinges, centragens e produtos. A escolha entre as duas é a
+seguinte:
+
+| Cenário | Instrução recomendada |
+|---|---|
+| Arquitetura LR do registry: `COSINE_ONLY`, `HINGE_ONLY`, `TWO_SIDED_HINGE_ONLY`, `ONE_SIDED_NON_CENTERED`, `ONE_SIDED_CENTERED`, `LINEAR_NON_CENTERED`, `LINEAR_CENTERED`, `HIERARCHICAL_CENTERED`, `BILATERAL_FULL_CENTERED` | **`LR_ARCHITECTURE_VECTORIZATION`** — uma instrução, integrado por construção com o registry de raridade e o calibrador (`vectorization_contract_fingerprint`). Suporta `FIT_PER_FOLD` (s₀/r̄ ajustados por fold) e `INHERIT` em VALIDATION/CASEWORK. |
+| Empilhar fontes heterogêneas fora do registry (ex.: cosseno + PLDA + qualidade FIQA, ou cosseno + PLDA + interação cross-pose customizada) | **`SCORE_VECTORIZATION`** (esta instrução). Continua sendo o caminho genérico para fusão score-level multivariada arbitrária. |
+| Híbrido: 1 arquitetura LR canônica + 1 feature extra fora do registry | Use `LR_ARCHITECTURE_VECTORIZATION` para produzir o sub-vetor canônico, depois `SCORE_VECTORIZATION` empilhando o output com a feature extra. |
+
+Diferença material (não apenas ergonômica): o caminho declarativo elimina o
+leakage residual conhecido do encadeamento manual. No fluxo
+`SCORE_INTERACTION_FEATURE + SCORE_VECTORIZATION`, `s₀` é estimado em
+`SCORE_INTERACTION_FEATURE` **antes** da CV do calibrador a jusante — vazamento
+sutil pra dentro do GridSearch. No fluxo declarativo com
+`parameter_mode=FIT_PER_FOLD`, o `CALIBRATION_MODEL_TRAINING` monta
+`Pipeline([ArchitectureVectorizerTransformer → StandardScaler → LogReg])` e o
+transformer **re-ajusta s₀/r̄ por fold** dentro do `GridSearchCV` — após
+`refit=True`, o state final reflete refit sobre D_cal completo. Documentado em
+detalhe na seção "Arquitetura LR declarativa" do `CLAUDE.md`.
+
+Compatibilidade: o encadeamento antigo continua válido sem migração obrigatória
+(preserva tolerância histórica via `legacy_transform_typicality`). Calibradores
+treinados pelo fluxo novo aplicam-se a datasets vetorizados pelo fluxo antigo
+somente com `compatibility_mode=LEGACY_PERMISSIVE` opt-in (warning visível).
 
 ---
 
@@ -207,6 +251,17 @@ aprendido para aquele sistema, respeitando a correlação entre eles.
 colunas estão em escalas muito diferentes (ex.: cosseno em $[-1,1]$ ×
 `log_density_knn` em escala real) — o LogReg fica mais estável e os coeficientes
 ficam comparáveis.
+
+> **Nota V2.14.** Quando o vetor vem de `LR_ARCHITECTURE_VECTORIZATION` com
+> `parameter_mode=FIT_PER_FOLD`, o `CALIBRATION_MODEL_TRAINING` detecta a flag
+> `defer_to_calibrator_per_fold` no metadata do dataset e despacha para um
+> caminho separado — monta `Pipeline([ArchitectureVectorizerTransformer →
+> StandardScaler → LogReg])` dentro de `GridSearchCV(cv=IdentityDisjointPairKFold(
+> probe_identities=..., reference_identities=...))` e ajusta s₀/r̄ POR FOLD
+> a partir do `LR_ARCHITECTURE_RAW_INPUT` cru referenciado pelo dataset
+> vetorizado. O caminho legacy descrito nesta seção (LogReg simples sobre
+> `score_vector_matrix`) permanece como default para datasets emitidos por
+> `SCORE_VECTORIZATION` ou pelo modo `FIT_FULL_CALIBRATION_LEGACY`.
 
 ---
 
@@ -336,6 +391,10 @@ O primeiro input. Define a ordem dos pares e doa o `raw_score` escalar do output
   - `docs/calibracao_faceaudit.md` — calibrador multivariado que consome a matriz.
   - `docs/interacao_score_raridade_faceaudit.md` — produz a feature de interação.
   - Docstring de `score_vectorization_instruction_executor.py`.
+  - `CLAUDE.md` (seção "Arquitetura LR declarativa") — alternativa V2.14
+    `LR_ARCHITECTURE_VECTORIZATION` com `FIT_PER_FOLD` para arquiteturas LR
+    canônicas; ver também `faceaudit/services/architecture_vectorizer_
+    transformer.py` e `tests/test_per_fold_transformer.py`.
 
 ---
 
