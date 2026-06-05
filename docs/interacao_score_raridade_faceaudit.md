@@ -14,6 +14,26 @@
 > `faceaudit/models/calibration/logreg_s0_config.py`,
 > `faceaudit/enums/score_interaction_mode.py`,
 > `faceaudit/enums/s0_mode.py`.
+>
+> **⚠️ V2.14 — substituto declarativo para as arquiteturas LR canônicas.**
+> A partir de V2.14, a forma recomendada de montar uma das 9 arquiteturas LR
+> forenses canônicas (`COSINE_ONLY` → `BILATERAL_FULL_CENTERED`) é a instrução
+> única **`LR_ARCHITECTURE_VECTORIZATION`**, que dispensa o encadeamento
+> manual `SCORE_INTERACTION_FEATURE × N + SCORE_VECTORIZATION` e adiciona o
+> modo `parameter_mode=FIT_PER_FOLD` — s₀ e r̄ ajustados POR FOLD dentro do
+> `GridSearchCV` do calibrador via `Pipeline + ArchitectureVectorizerTransformer`,
+> eliminando o leakage residual de s₀ (que neste fluxo é estimado em
+> `SCORE_INTERACTION_FEATURE` ANTES da CV do calibrador a jusante — ver §6.3
+> e §12 abaixo). **Esta documentação permanece canônica** para os fundamentos
+> forenses (modos de interação, inversão typicality→rarity, centralização Tukey,
+> protocolo de congelamento de s₀, double-counting com PLDA) — todos eles foram
+> herdados pela nova instrução declarativa e continuam aplicáveis em sua
+> semântica. `SCORE_INTERACTION_FEATURE` segue **funcional** e válido para:
+> (i) compor features de raridade fora do registry; (ii) reproduzir estratégias
+> antigas sem migração; (iii) construir uma feature isolada para empilhamento
+> ad-hoc no `SCORE_VECTORIZATION`. Veja `CLAUDE.md` (seção "Arquitetura LR
+> declarativa") e `docs/vetorizacao_scores_faceaudit.md` (§1.6) para a árvore
+> de decisão entre os dois caminhos.
 
 ---
 

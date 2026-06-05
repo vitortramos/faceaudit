@@ -148,6 +148,34 @@ e (quando aplicável) `reportable_log_lr_lower_bound` /
 `reportable_log_lr_upper_bound`, com o consumidor da API
 escolhendo a forma de apresentação.
 
+### 0.5 Relação com `LR_ARCHITECTURE_VECTORIZATION` (V2.14)
+
+A V2.14 introduziu uma instrução declarativa irmã —
+`LR_ARCHITECTURE_VECTORIZATION` — que aplica o mesmo padrão arquitetural
+descrito aqui (sklearn `Pipeline` envolvendo um transformer fold-aware
+seguido de `StandardScaler` + `LogisticRegression`, com `GridSearchCV`
+sobre `c_grid`) mas para um **escopo distinto**: as 9 arquiteturas
+LR forenses canônicas que envolvem score base + raridade (do
+`COSINE_ONLY` ao `BILATERAL_FULL_CENTERED`). As duas integrações são
+ortogonais e podem coexistir:
+
+| Componente | Domínio | Transformer aprendido por fold | Output dim |
+|---|---|---|---|
+| `PiecewiseLinearScoreTransformer` (este doc) | calibração não-linear de **um** score 1D em log-LR via dobras hinge | $s_0$ (âncora da dobra) | 1D → $K+1$ features |
+| `ArchitectureVectorizerTransformer` (V2.14) | montagem de features de **interação** score × raridade declarativa | $s_0$ (evidência neutra) + $\bar r_F$, $\bar r_P$ (centragem) | $(N, K)$ raw → $(N, D)$ vetorizado |
+
+Ambos compartilham os mesmos princípios de implementação: fit fold-aware
+no `Pipeline.fit` para eliminar leakage, `StandardScaler` per-fold sem
+vazamento, refit final em $D_{\text{cal}}$ completo via
+`GridSearchCV(refit=True)`, splitter `IdentityDisjointPairKFold` quando
+identidades disponíveis. A escolha entre os dois caminhos é por
+escopo do problema, não competitiva — em particular, a piecewise-linear
+permanece a forma canônica de **lidar com não-linearidade local em um
+único score**, enquanto a `LR_ARCHITECTURE_VECTORIZATION` cobre o
+**casamento explícito de raridade e similaridade**. Documentado em
+`CLAUDE.md` (seção "Arquitetura LR declarativa") e
+`docs/calibracao_faceaudit.md` §4.1.9.
+
 ---
 
 ## 1. Fundamento forense

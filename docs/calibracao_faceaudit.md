@@ -89,6 +89,7 @@ metodológica, manutenção interna e evidência empírica, consulte:
 | `docs/piecewise_linear_calibration.md` | comportamento interno da expansão piecewise-linear, parâmetros, regras de implementação, validações específicas | especificação interna |
 | `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md` | fundamentação forense, função hinge, âncora e escalas, escolha de knots, risco de cherry-picking, parcimônia, benchmark sintético, estudo de caso, protocolo operacional, perguntas críticas previsíveis | aprofundamento técnico-forense da piecewise-linear |
 | `experiments/calibration/RELATORIO_comparacao_calibradores.md` | comparação empírica, cenários sintéticos com oráculo conhecido, limitações observadas | evidência experimental |
+| `docs/vetorizacao_scores_faceaudit.md` (§1.6) + `CLAUDE.md` (seção "Arquitetura LR declarativa") | árvore de decisão `SCORE_VECTORIZATION` × `LR_ARCHITECTURE_VECTORIZATION` (V2.14) e descrição do modo `parameter_mode=FIT_PER_FOLD` consumido por este calibrador | substituto declarativo para arquiteturas LR canônicas + caminho per-fold do LogReg |
 
 Quando a piecewise-linear for tratada aqui, será apenas em nível resumido,
 remetendo ao relatório integrado para o aprofundamento.
@@ -570,6 +571,43 @@ para o uso operacional:
 | `gridsearch_cv_mode` | `AUTO` | particionamento dos folds (§4.1.7) |
 | `scoring` | `NEG_CLLR_BALANCED` | métrica do GridSearch (§4.1.6) |
 | `piecewise_linear_config` | `mode=NONE` | expansão piecewise (§4.2); desativada por padrão |
+
+#### 4.1.9 Caminho per-fold para arquiteturas LR (V2.14)
+
+Quando o dataset vetorizado vem de `LR_ARCHITECTURE_VECTORIZATION` com
+`parameter_mode=FIT_PER_FOLD`, o `CALIBRATION_MODEL_TRAINING` detecta a flag
+`defer_to_calibrator_per_fold=True` no metadata e usa um caminho separado:
+
+- Carrega o `LR_ARCHITECTURE_RAW_INPUT` cru (matriz `<f8` C-contiguous read-only
+  com colunas `[base, r_F, r_P]`) referenciado pelo dataset vetorizado.
+- Constrói `Pipeline([ArchitectureVectorizerTransformer → StandardScaler →
+  LogisticRegression])` e roda `GridSearchCV(cv=IdentityDisjointPairKFold(
+  probe_identities=..., reference_identities=...))` sobre `c_grid`. O
+  splitter aplica disjunção de identidades nos DOIS lados do par (§4.1.7
+  `STRICT_IDENTITY`).
+- O transformer ajusta s₀ via AUTO_LOGREG e r̄_F/r̄_P como média **APENAS
+  sobre o `X_train` do fold** — eliminando o leakage residual do fluxo legado
+  `FIT_FULL_CALIBRATION_LEGACY` (em que s₀/r̄ são estimados sobre todo D_cal
+  ANTES da CV do calibrador).
+- Após `refit=True`, o `best_estimator_.named_steps["arch_vec"].state_`
+  reflete refit em D_cal completo. O state é desempacotado num
+  `LogisticRegressionCalibrationModel` que preserva o contrato downstream
+  (coeficientes acessíveis via `logreg.coef_`, scaler embutido populando
+  `_feature_mean`/`_feature_std`, `best_C_` exposto).
+- Metadata persistido: `selected_C`, `inner_cv_splitter=
+  IdentityDisjointPairKFold`, `inner_cv_fold_count`,
+  `strict_identity_disjoint=True`, `fit_per_fold=True`,
+  `final_refit_on_full_calibration=True`, `architecture_state` (consumível por
+  `INHERIT` em VALIDATION/CASEWORK), `standardized_coefficients`,
+  `raw_scale_coefficients`, `raw_scale_intercept`, `vectorization_contract_
+  fingerprint`.
+
+Não-mudanças: para datasets que vêm de `SCORE_VECTORIZATION` puro ou de
+`LR_ARCHITECTURE_VECTORIZATION` em `FIT_FULL_CALIBRATION_LEGACY`, o caminho
+descrito em §4.1.1–§4.1.8 permanece — LogReg simples sobre a matriz
+`score_vector_matrix` com os mesmos splitters do `gridsearch_cv_mode`.
+Documentado em escopo em `CLAUDE.md` (seção "Arquitetura LR declarativa") e
+nos testes `tests/test_per_fold_transformer.py`.
 
 ### 4.2 Expansão piecewise-linear monotônica
 
