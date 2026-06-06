@@ -49,6 +49,9 @@ class LRFeatureBuildContext:
         arquitetura não consome raridade do respectivo lado.
       - `rarity_probe_centered`, `rarity_reference_centered`: r - r̄.
         None se centering_mode == NONE ou se o lado não é consumido.
+      - `rarity_single_raw`, `rarity_single_centered`: family ONE_FACE
+        (V2.14.1) — análogos a `rarity_probe_*` mas para a face única.
+        None quando a arquitetura não pertence a ONE_FACE.
     """
 
     base: np.ndarray
@@ -60,6 +63,8 @@ class LRFeatureBuildContext:
     rarity_reference_raw: Optional[np.ndarray]
     rarity_probe_centered: Optional[np.ndarray]
     rarity_reference_centered: Optional[np.ndarray]
+    rarity_single_raw: Optional[np.ndarray] = None
+    rarity_single_centered: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -283,7 +288,86 @@ def _deriv_lin_x_rp_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Registry — fonte única de verdade dos 13 termos
+# Termos ONE_FACE (V2.14.1) — usam r̃/r de UMA face única
+# ─────────────────────────────────────────────────────────────────────
+
+
+# H_POS_TIMES_SINGLE_RARITY: φ = h⁺·r; ∂φ/∂s = 1{s>s₀}·r
+def _build_hp_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    assert ctx.hinge_positive is not None and ctx.rarity_single_raw is not None
+    return (ctx.hinge_positive * ctx.rarity_single_raw).astype(np.float64, copy=True)
+
+
+def _deriv_hp_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return (ctx.base > ctx.s0).astype(np.float64) * ctx.rarity_single_raw
+
+
+def _left_slope_hp_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return np.zeros_like(ctx.base, dtype=np.float64)
+
+
+def _right_slope_hp_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return ctx.rarity_single_raw.astype(np.float64, copy=True)
+
+
+# H_POS_TIMES_SINGLE_RARITY_CENTERED: φ = h⁺·r̃
+def _build_hp_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    assert ctx.hinge_positive is not None and ctx.rarity_single_centered is not None
+    return (ctx.hinge_positive * ctx.rarity_single_centered).astype(np.float64, copy=True)
+
+
+def _deriv_hp_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return (ctx.base > ctx.s0).astype(np.float64) * ctx.rarity_single_centered
+
+
+def _left_slope_hp_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return np.zeros_like(ctx.base, dtype=np.float64)
+
+
+def _right_slope_hp_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return ctx.rarity_single_centered.astype(np.float64, copy=True)
+
+
+# H_NEG_TIMES_SINGLE_RARITY_CENTERED: φ = h⁻·r̃
+def _build_hn_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    assert ctx.hinge_negative is not None and ctx.rarity_single_centered is not None
+    return (ctx.hinge_negative * ctx.rarity_single_centered).astype(np.float64, copy=True)
+
+
+def _deriv_hn_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return -(ctx.base < ctx.s0).astype(np.float64) * ctx.rarity_single_centered
+
+
+def _left_slope_hn_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return -ctx.rarity_single_centered.astype(np.float64, copy=True)
+
+
+def _right_slope_hn_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return np.zeros_like(ctx.base, dtype=np.float64)
+
+
+# LINEAR_TIMES_SINGLE_RARITY: φ = (s − s₀)·r; ∂φ/∂s = r
+def _build_lin_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    assert ctx.delta is not None and ctx.rarity_single_raw is not None
+    return (ctx.delta * ctx.rarity_single_raw).astype(np.float64, copy=True)
+
+
+def _deriv_lin_x_rs_raw(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return ctx.rarity_single_raw.astype(np.float64, copy=True)
+
+
+# LINEAR_TIMES_SINGLE_RARITY_CENTERED: φ = (s − s₀)·r̃
+def _build_lin_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    assert ctx.delta is not None and ctx.rarity_single_centered is not None
+    return (ctx.delta * ctx.rarity_single_centered).astype(np.float64, copy=True)
+
+
+def _deriv_lin_x_rs_ctd(ctx: LRFeatureBuildContext) -> np.ndarray:
+    return ctx.rarity_single_centered.astype(np.float64, copy=True)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Registry — fonte única de verdade dos 18 termos (13 originais + 5 ONE_FACE)
 # ─────────────────────────────────────────────────────────────────────
 
 LR_FEATURE_TERM_SPECS: Mapping[LRFeatureTerm, LRFeatureTermSpec] = {
@@ -392,6 +476,48 @@ LR_FEATURE_TERM_SPECS: Mapping[LRFeatureTerm, LRFeatureTermSpec] = {
         formula_version="1.0",
         build_fn=_build_lin_x_rp_ctd,
         derivative_wrt_base_fn=_deriv_lin_x_rp_ctd,
+        handles_kink_at_s0=False,
+    ),
+    # ─── Família ONE_FACE (V2.14.1) ──────────────────────────────────────
+    LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY: LRFeatureTermSpec(
+        term=LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY,
+        formula_version="1.0",
+        build_fn=_build_hp_x_rs_raw,
+        derivative_wrt_base_fn=_deriv_hp_x_rs_raw,
+        handles_kink_at_s0=True,
+        left_slope_at_s0_fn=_left_slope_hp_x_rs_raw,
+        right_slope_at_s0_fn=_right_slope_hp_x_rs_raw,
+    ),
+    LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY_CENTERED: LRFeatureTermSpec(
+        term=LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY_CENTERED,
+        formula_version="1.0",
+        build_fn=_build_hp_x_rs_ctd,
+        derivative_wrt_base_fn=_deriv_hp_x_rs_ctd,
+        handles_kink_at_s0=True,
+        left_slope_at_s0_fn=_left_slope_hp_x_rs_ctd,
+        right_slope_at_s0_fn=_right_slope_hp_x_rs_ctd,
+    ),
+    LRFeatureTerm.H_NEG_TIMES_SINGLE_RARITY_CENTERED: LRFeatureTermSpec(
+        term=LRFeatureTerm.H_NEG_TIMES_SINGLE_RARITY_CENTERED,
+        formula_version="1.0",
+        build_fn=_build_hn_x_rs_ctd,
+        derivative_wrt_base_fn=_deriv_hn_x_rs_ctd,
+        handles_kink_at_s0=True,
+        left_slope_at_s0_fn=_left_slope_hn_x_rs_ctd,
+        right_slope_at_s0_fn=_right_slope_hn_x_rs_ctd,
+    ),
+    LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY: LRFeatureTermSpec(
+        term=LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY,
+        formula_version="1.0",
+        build_fn=_build_lin_x_rs_raw,
+        derivative_wrt_base_fn=_deriv_lin_x_rs_raw,
+        handles_kink_at_s0=False,
+    ),
+    LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY_CENTERED: LRFeatureTermSpec(
+        term=LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY_CENTERED,
+        formula_version="1.0",
+        build_fn=_build_lin_x_rs_ctd,
+        derivative_wrt_base_fn=_deriv_lin_x_rs_ctd,
         handles_kink_at_s0=False,
     ),
 }

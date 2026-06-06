@@ -578,6 +578,7 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             pair_role_orientation=role_orientation,
             rarity_probe_score_type=state_dict.get("rarity_probe_score_type"),
             rarity_reference_score_type=state_dict.get("rarity_reference_score_type"),
+            rarity_single_score_type=state_dict.get("rarity_single_score_type"),
         )
 
         cfg = instruction.logreg_config

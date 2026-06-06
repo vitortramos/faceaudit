@@ -360,6 +360,91 @@ class TestOrientationPolicy:
         assert result.success, result.errors
 
 
+class TestOneFaceExecutor:
+    """ONE_FACE family integration smoke (V2.14.1)."""
+
+    def test_one_face_bilateral_full_centered_succeeds(self):
+        base, rp, rr, _ = _build_dataset_with_pairs(150, 600)
+        # ONE_FACE não precisa pair_role_orientation
+        base.metadata = {"score_kind": "cosine"}
+        # Setup context com apenas base + um único rarity dataset
+        ctx = StrategyExecutionContext()
+        ctx.set_resource(StrategyResource(
+            resource_id="base", name="B",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=base))
+        ctx.set_resource(StrategyResource(
+            resource_id="r_single", name="RS",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=rp))
+        ctx = ctx.with_frame(InstructionExecutionFrame(
+            phase=StrategyPhase.PREPARATION, instruction_index=0, strategy_id="s"))
+        instr = LRArchitectureVectorizationInstruction(
+            instruction_id="ix", name="Test",
+            instruction_type=StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION,
+            architecture=LRCalibrationArchitecture.BILATERAL_FULL_CENTERED_ONE_FACE,
+            parameter_mode=ArchitectureParameterMode.FIT_FULL_CALIBRATION_LEGACY,
+            base_score_resource_id="base",
+            rarity_resource_id="r_single",
+            output_resource_id="out_vec",
+            output_raw_input_resource_id="out_raw",
+        )
+        ex = LRArchitectureVectorizationInstructionExecutor()
+        result = ex.execute(instr, ctx)
+        assert result.success, result.errors
+        out_ds = ctx.get_resource("out_vec").payload
+        assert out_ds.metadata["score_vector_dim"] == 5
+        assert out_ds.metadata["architecture_state"]["r0_single"] is not None
+        assert out_ds.metadata["architecture_state"]["r0_probe"] is None
+
+    def test_one_face_with_rarity_probe_fails(self):
+        """ONE_FACE + rarity_probe → erro."""
+        base, rp, rr, _ = _build_dataset_with_pairs(150, 600)
+        base.metadata = {"score_kind": "cosine"}
+        ctx = StrategyExecutionContext()
+        ctx.set_resource(StrategyResource(
+            resource_id="base", name="B",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=base))
+        ctx.set_resource(StrategyResource(
+            resource_id="r_single", name="RS",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=rp))
+        ctx.set_resource(StrategyResource(
+            resource_id="rp", name="P",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=rp))
+        ctx = ctx.with_frame(InstructionExecutionFrame(
+            phase=StrategyPhase.PREPARATION, instruction_index=0, strategy_id="s"))
+        instr = LRArchitectureVectorizationInstruction(
+            instruction_id="ix", name="Test",
+            instruction_type=StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION,
+            architecture=LRCalibrationArchitecture.HIERARCHICAL_CENTERED_ONE_FACE,
+            parameter_mode=ArchitectureParameterMode.FIT_FULL_CALIBRATION_LEGACY,
+            base_score_resource_id="base",
+            rarity_resource_id="r_single",
+            rarity_probe_resource_id="rp",  # ilegal
+            output_resource_id="out_vec",
+        )
+        ex = LRArchitectureVectorizationInstructionExecutor()
+        result = ex.execute(instr, ctx)
+        assert not result.success
+        assert any("ONE_FACE" in e and "rarity_probe" in e for e in result.errors)
+
+    def test_two_face_with_rarity_single_fails(self):
+        """Two-face + rarity_resource_id → erro."""
+        base, rp, rr, _ = _build_dataset_with_pairs(150, 600)
+        ctx = _mk_ctx(base, rp, rr)
+        ctx.set_resource(StrategyResource(
+            resource_id="r_single", name="RS",
+            resource_type=StrategyResourceType.SIMILARITY_SCORES, payload=rp))
+        ctx = ctx.with_frame(InstructionExecutionFrame(
+            phase=StrategyPhase.PREPARATION, instruction_index=0, strategy_id="s"))
+        instr = _mk_instr(
+            LRCalibrationArchitecture.BILATERAL_FULL_CENTERED,
+            rarity_resource_id="r_single",  # ilegal em two-face
+        )
+        ex = LRArchitectureVectorizationInstructionExecutor()
+        result = ex.execute(instr, ctx)
+        assert not result.success
+        assert any("ONE_FACE" in e for e in result.errors)
+
+
 class TestEquivalenceAgainstDirectBuilder:
     """
     O executor produz a mesma matriz que `ArchitectureFeatureBuilder.build`

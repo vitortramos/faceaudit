@@ -89,6 +89,16 @@ class LRArchitectureVectorizationInstruction(StrategyInstructionDefinition):
             "Obrigatório apenas para arquiteturas que consomem r_P."
         )},
     )
+    rarity_resource_id: Optional[str] = field(
+        default=None,
+        metadata={"help": (
+            "SIMILARITY_SCORES com a tipicidade da face única — usado apenas "
+            "em arquiteturas ONE_FACE (HIERARCHICAL_CENTERED_ONE_FACE, "
+            "BILATERAL_FULL_CENTERED_ONE_FACE, ONE_SIDED_*_ONE_FACE, "
+            "LINEAR_*_ONE_FACE). Quando preenchido, rarity_probe_resource_id "
+            "e rarity_reference_resource_id devem estar vazios."
+        )},
+    )
 
     # ── Arquitetura + parâmetros ────────────────────────────────────────
     architecture: LRCalibrationArchitecture = field(
@@ -174,6 +184,10 @@ class LRArchitectureVectorizationInstruction(StrategyInstructionDefinition):
                 "Tipicidade do reference (r_P)", IN,
             ),
             ResourceFieldSpec(
+                "rarity_resource_id",
+                "Tipicidade da face única (ONE_FACE)", IN,
+            ),
+            ResourceFieldSpec(
                 "inherit_architecture_state_from_resource_id",
                 "Recurso de origem do state (INHERIT)", OUT_SCORES,
             ),
@@ -244,10 +258,14 @@ class LRArchitectureVectorizationInstruction(StrategyInstructionDefinition):
         if spec is None:
             return hidden  # estado inicial; nada a esconder ainda
 
+        requires_single = getattr(spec, "requires_typicality_single", False)
+
         if not spec.requires_typicality_probe:
             hidden.add("rarity_probe_resource_id")
         if not spec.requires_typicality_reference:
             hidden.add("rarity_reference_resource_id")
+        if not requires_single:
+            hidden.add("rarity_resource_id")
 
         if self.parameter_mode != ArchitectureParameterMode.MANUAL:
             hidden.update({
@@ -257,10 +275,18 @@ class LRArchitectureVectorizationInstruction(StrategyInstructionDefinition):
             # MANUAL: esconde os manuais não aplicáveis à arquitetura
             if not spec.requires_s0:
                 hidden.add("manual_s0")
+            # ONE_FACE não usa manual_r0_probe/reference (usa manual_r0_probe
+            # como manual_r0_single via override do executor)
             if not spec.requires_typicality_probe or spec.centering_mode.value == "NONE":
                 hidden.add("manual_r0_probe")
             if not spec.requires_typicality_reference or spec.centering_mode.value == "NONE":
                 hidden.add("manual_r0_reference")
+            # ONE_FACE reusa o slot manual_r0_probe semanticamente — UI ainda
+            # esconde porque o spec não exige probe; mostraremos manual_r0_probe
+            # quando ONE_FACE+MEAN, com label override seria ideal mas aqui
+            # vamos simplesmente expor manual_r0_probe como manual_r0_single
+            if requires_single and spec.centering_mode.value == "MEAN":
+                hidden.discard("manual_r0_probe")
 
         if self.parameter_mode != ArchitectureParameterMode.INHERIT:
             hidden.add("inherit_architecture_state_from_resource_id")
@@ -283,6 +309,7 @@ class LRArchitectureVectorizationInstruction(StrategyInstructionDefinition):
             self.base_score_resource_id,
             self.rarity_probe_resource_id,
             self.rarity_reference_resource_id,
+            self.rarity_resource_id,
             self.inherit_architecture_state_from_resource_id,
         ):
             if rid and rid not in inputs:

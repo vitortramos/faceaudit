@@ -46,6 +46,8 @@ class LRArchitectureSpec:
     requires_s0: bool
     requires_ordered_pair_roles: bool
     formula_version: str
+    # V2.14.1 — família ONE_FACE
+    requires_typicality_single: bool = False
 
     @property
     def feature_names(self) -> Tuple[str, ...]:
@@ -55,6 +57,11 @@ class LRArchitectureSpec:
     @property
     def output_dim(self) -> int:
         return len(self.feature_terms)
+
+    @property
+    def is_one_face(self) -> bool:
+        """True para arquiteturas da família ONE_FACE (V2.14.1)."""
+        return self.requires_typicality_single
 
     def fingerprint(self) -> str:
         """
@@ -73,6 +80,7 @@ class LRArchitectureSpec:
             "centering_mode": self.centering_mode.value,
             "requires_typicality_probe": bool(self.requires_typicality_probe),
             "requires_typicality_reference": bool(self.requires_typicality_reference),
+            "requires_typicality_single": bool(self.requires_typicality_single),
             "requires_s0": bool(self.requires_s0),
             "requires_ordered_pair_roles": bool(self.requires_ordered_pair_roles),
             "formula_version": self.formula_version,
@@ -204,6 +212,98 @@ LR_ARCHITECTURE_SPECS: Mapping[LRCalibrationArchitecture, LRArchitectureSpec] = 
         requires_typicality_reference=True,
         requires_s0=True,
         requires_ordered_pair_roles=True,
+        formula_version="1.0",
+    ),
+    # ── Família ONE_FACE (V2.14.1) ───────────────────────────────────────
+    # Variantes que consomem raridade apenas de UMA face única.
+    # `requires_ordered_pair_roles=False` porque não há "lado" a distinguir
+    # quando apenas uma face contribui com tipicidade.
+    LRCalibrationArchitecture.ONE_SIDED_NON_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.ONE_SIDED_NON_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.H_POS_TIMES_SINGLE_RARITY,
+        ),
+        centering_mode=_C.NONE,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
+        formula_version="1.0",
+    ),
+    LRCalibrationArchitecture.ONE_SIDED_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.ONE_SIDED_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.H_POS_TIMES_SINGLE_RARITY_CENTERED,
+        ),
+        centering_mode=_C.MEAN,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
+        formula_version="1.0",
+    ),
+    LRCalibrationArchitecture.LINEAR_NON_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.LINEAR_NON_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.LINEAR_TIMES_SINGLE_RARITY,
+        ),
+        centering_mode=_C.NONE,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
+        formula_version="1.0",
+    ),
+    LRCalibrationArchitecture.LINEAR_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.LINEAR_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.LINEAR_TIMES_SINGLE_RARITY_CENTERED,
+        ),
+        centering_mode=_C.MEAN,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
+        formula_version="1.0",
+    ),
+    LRCalibrationArchitecture.HIERARCHICAL_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.HIERARCHICAL_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.HINGE_POSITIVE,
+            _T.H_POS_TIMES_SINGLE_RARITY_CENTERED,
+        ),
+        centering_mode=_C.MEAN,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
+        formula_version="1.0",
+    ),
+    LRCalibrationArchitecture.BILATERAL_FULL_CENTERED_ONE_FACE: LRArchitectureSpec(
+        architecture=LRCalibrationArchitecture.BILATERAL_FULL_CENTERED_ONE_FACE,
+        feature_terms=(
+            _T.BASE_SCORE,
+            _T.HINGE_POSITIVE,
+            _T.HINGE_NEGATIVE,
+            _T.H_POS_TIMES_SINGLE_RARITY_CENTERED,
+            _T.H_NEG_TIMES_SINGLE_RARITY_CENTERED,
+        ),
+        centering_mode=_C.MEAN,
+        requires_typicality_probe=False,
+        requires_typicality_reference=False,
+        requires_typicality_single=True,
+        requires_s0=True,
+        requires_ordered_pair_roles=False,
         formula_version="1.0",
     ),
 }

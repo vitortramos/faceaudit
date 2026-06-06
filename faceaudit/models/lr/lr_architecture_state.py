@@ -114,6 +114,17 @@ class LRArchitectureState:
     s0_logreg_config: Optional[Dict[str, Any]] = field(default=None)
     s0_fit_summary: Optional[Dict[str, Any]] = field(default=None)
 
+    # ── ONE_FACE (V2.14.1) — None em arquiteturas non-ONE_FACE ──
+    r0_single: Optional[float] = field(default=None)
+    r0_single_estimator: Optional[str] = field(default=None)
+    rarity_single_score_type: Optional[str] = field(default=None)
+    rarity_single_transform_id: Optional[str] = field(default=None)
+    rarity_single_transform_formula_version: Optional[str] = field(default=None)
+    rarity_single_transform_fingerprint: Optional[str] = field(default=None)
+    rarity_single_combiner: Optional[str] = field(default=None)
+    rarity_single_model_resource_id: Optional[str] = field(default=None)
+    rarity_single_model_fingerprint: Optional[str] = field(default=None)
+
     # ── Fingerprints (preenchidos pela factory) ──
     vectorization_contract_fingerprint: str = ""
     provenance_record_fingerprint: str = ""
@@ -129,6 +140,7 @@ class LRArchitectureState:
             self.s0 is not None
             or self.r0_probe is not None
             or self.r0_reference is not None
+            or self.r0_single is not None
         )
         return (
             self.fit_scope == ArchitectureFitScope.FULL_CALIBRATION_LEGACY
@@ -144,6 +156,7 @@ class LRArchitectureState:
             "s0": self.s0,
             "r0_probe": self.r0_probe,
             "r0_reference": self.r0_reference,
+            "r0_single": self.r0_single,
             "feature_terms": [t.value for t in self.feature_terms],
             "feature_names": list(self.feature_names),
             "output_dim": self.output_dim,
@@ -153,22 +166,30 @@ class LRArchitectureState:
             "pair_key_mode": self.pair_key_mode.value,
             "rarity_probe_score_type": self.rarity_probe_score_type,
             "rarity_reference_score_type": self.rarity_reference_score_type,
+            "rarity_single_score_type": self.rarity_single_score_type,
             "rarity_probe_transform_id": self.rarity_probe_transform_id,
             "rarity_reference_transform_id": self.rarity_reference_transform_id,
+            "rarity_single_transform_id": self.rarity_single_transform_id,
             "rarity_probe_transform_formula_version": self.rarity_probe_transform_formula_version,
             "rarity_reference_transform_formula_version": self.rarity_reference_transform_formula_version,
+            "rarity_single_transform_formula_version": self.rarity_single_transform_formula_version,
             "rarity_probe_transform_fingerprint": self.rarity_probe_transform_fingerprint,
             "rarity_reference_transform_fingerprint": self.rarity_reference_transform_fingerprint,
+            "rarity_single_transform_fingerprint": self.rarity_single_transform_fingerprint,
             "rarity_probe_combiner": self.rarity_probe_combiner,
             "rarity_reference_combiner": self.rarity_reference_combiner,
+            "rarity_single_combiner": self.rarity_single_combiner,
             "rarity_probe_model_resource_id": self.rarity_probe_model_resource_id,
             "rarity_reference_model_resource_id": self.rarity_reference_model_resource_id,
+            "rarity_single_model_resource_id": self.rarity_single_model_resource_id,
             "rarity_probe_model_fingerprint": self.rarity_probe_model_fingerprint,
             "rarity_reference_model_fingerprint": self.rarity_reference_model_fingerprint,
+            "rarity_single_model_fingerprint": self.rarity_single_model_fingerprint,
             "fit_scope": self.fit_scope.value,
             "s0_resolution_method": self.s0_resolution_method.value,
             "r0_probe_estimator": self.r0_probe_estimator,
             "r0_reference_estimator": self.r0_reference_estimator,
+            "r0_single_estimator": self.r0_single_estimator,
             "fitted_on_resource_id": self.fitted_on_resource_id,
             "fitted_on_resource_fingerprint": self.fitted_on_resource_fingerprint,
             "n_fitted_pairs": self.n_fitted_pairs,
@@ -232,6 +253,11 @@ class LRArchitectureStateFactory:
         Calcula `vectorization_contract_fingerprint` — cobre tudo que
         altera a matriz, semântica e proveniência dos scores.
         Explicitamente NÃO inclui IDs de recurso, contagens, fit_summary.
+
+        ONE_FACE (V2.14.1): inclui r0_single + campos rarity_single_* na
+        proveniência. Para arquiteturas não-ONE_FACE, todos esses ficam
+        None — mantém compat com state legado (None é serializado
+        consistentemente).
         """
         payload = {
             "architecture": state_partial["architecture"],
@@ -242,21 +268,28 @@ class LRArchitectureStateFactory:
             "s0_hex": hexify_float(state_partial["s0"]),
             "r0_probe_hex": hexify_float(state_partial["r0_probe"]),
             "r0_reference_hex": hexify_float(state_partial["r0_reference"]),
+            "r0_single_hex": hexify_float(state_partial.get("r0_single")),
             "base_score_kind": state_partial["base_score_kind"],
             "pair_role_orientation": state_partial["pair_role_orientation"],
             # Tipicidade — só campos contratuais (não inclui resource_id)
             "rarity_probe_score_type": state_partial["rarity_probe_score_type"],
             "rarity_reference_score_type": state_partial["rarity_reference_score_type"],
+            "rarity_single_score_type": state_partial.get("rarity_single_score_type"),
             "rarity_probe_transform_id": state_partial["rarity_probe_transform_id"],
             "rarity_reference_transform_id": state_partial["rarity_reference_transform_id"],
+            "rarity_single_transform_id": state_partial.get("rarity_single_transform_id"),
             "rarity_probe_transform_formula_version": state_partial["rarity_probe_transform_formula_version"],
             "rarity_reference_transform_formula_version": state_partial["rarity_reference_transform_formula_version"],
+            "rarity_single_transform_formula_version": state_partial.get("rarity_single_transform_formula_version"),
             "rarity_probe_transform_fingerprint": state_partial["rarity_probe_transform_fingerprint"],
             "rarity_reference_transform_fingerprint": state_partial["rarity_reference_transform_fingerprint"],
+            "rarity_single_transform_fingerprint": state_partial.get("rarity_single_transform_fingerprint"),
             "rarity_probe_combiner": state_partial["rarity_probe_combiner"],
             "rarity_reference_combiner": state_partial["rarity_reference_combiner"],
+            "rarity_single_combiner": state_partial.get("rarity_single_combiner"),
             "rarity_probe_model_fingerprint": state_partial["rarity_probe_model_fingerprint"],
             "rarity_reference_model_fingerprint": state_partial["rarity_reference_model_fingerprint"],
+            "rarity_single_model_fingerprint": state_partial.get("rarity_single_model_fingerprint"),
         }
         return hash_canonical_payload(payload)
 
@@ -268,6 +301,7 @@ class LRArchitectureStateFactory:
             "s0_resolution_method": state_partial["s0_resolution_method"],
             "r0_probe_estimator": state_partial["r0_probe_estimator"],
             "r0_reference_estimator": state_partial["r0_reference_estimator"],
+            "r0_single_estimator": state_partial.get("r0_single_estimator"),
             "fitted_on_resource_id": state_partial["fitted_on_resource_id"],
             "fitted_on_resource_fingerprint": state_partial["fitted_on_resource_fingerprint"],
             "n_fitted_pairs": state_partial["n_fitted_pairs"],
@@ -276,6 +310,7 @@ class LRArchitectureStateFactory:
             "fitted_dataset_pair_key_order_hash": state_partial["fitted_dataset_pair_key_order_hash"],
             "rarity_probe_model_resource_id": state_partial["rarity_probe_model_resource_id"],
             "rarity_reference_model_resource_id": state_partial["rarity_reference_model_resource_id"],
+            "rarity_single_model_resource_id": state_partial.get("rarity_single_model_resource_id"),
             "s0_logreg_config": _normalize_dict_recursive(state_partial["s0_logreg_config"]),
             "s0_fit_summary": _normalize_dict_recursive(state_partial["s0_fit_summary"]),
         }
@@ -289,27 +324,36 @@ class LRArchitectureStateFactory:
         s0: Optional[float] = None,
         r0_probe: Optional[float] = None,
         r0_reference: Optional[float] = None,
+        r0_single: Optional[float] = None,
         base_score_kind: str = "cosine",
         pair_role_orientation: PairRoleOrientation = PairRoleOrientation.NOT_APPLICABLE,
         pair_key_mode: PairKeyMode = PairKeyMode.ORDERED,
         rarity_probe_score_type: Optional[str] = None,
         rarity_reference_score_type: Optional[str] = None,
+        rarity_single_score_type: Optional[str] = None,
         rarity_probe_transform_id: Optional[str] = None,
         rarity_reference_transform_id: Optional[str] = None,
+        rarity_single_transform_id: Optional[str] = None,
         rarity_probe_transform_formula_version: Optional[str] = None,
         rarity_reference_transform_formula_version: Optional[str] = None,
+        rarity_single_transform_formula_version: Optional[str] = None,
         rarity_probe_transform_fingerprint: Optional[str] = None,
         rarity_reference_transform_fingerprint: Optional[str] = None,
+        rarity_single_transform_fingerprint: Optional[str] = None,
         rarity_probe_combiner: Optional[str] = None,
         rarity_reference_combiner: Optional[str] = None,
+        rarity_single_combiner: Optional[str] = None,
         rarity_probe_model_resource_id: Optional[str] = None,
         rarity_reference_model_resource_id: Optional[str] = None,
+        rarity_single_model_resource_id: Optional[str] = None,
         rarity_probe_model_fingerprint: Optional[str] = None,
         rarity_reference_model_fingerprint: Optional[str] = None,
+        rarity_single_model_fingerprint: Optional[str] = None,
         fit_scope: ArchitectureFitScope = ArchitectureFitScope.NOT_APPLICABLE,
         s0_resolution_method: S0ResolutionMethod = S0ResolutionMethod.NOT_APPLICABLE,
         r0_probe_estimator: Optional[str] = None,
         r0_reference_estimator: Optional[str] = None,
+        r0_single_estimator: Optional[str] = None,
         fitted_on_resource_id: Optional[str] = None,
         fitted_on_resource_fingerprint: Optional[str] = None,
         n_fitted_pairs: Optional[int] = None,
@@ -328,9 +372,10 @@ class LRArchitectureStateFactory:
           permite construir state vazio antes do fit).
         - pair_role_orientation = NOT_APPLICABLE em arquitetura ordenada,
           ou vice-versa.
+        - ONE_FACE: r0_single + family flag inconsistentes.
         """
         cls._validate_against_spec(
-            spec, s0, r0_probe, r0_reference,
+            spec, s0, r0_probe, r0_reference, r0_single,
             pair_role_orientation, fit_scope,
         )
 
@@ -341,6 +386,7 @@ class LRArchitectureStateFactory:
             "s0": s0,
             "r0_probe": r0_probe,
             "r0_reference": r0_reference,
+            "r0_single": r0_single,
             "feature_terms": [t.value for t in spec.feature_terms],
             "centering_mode": spec.centering_mode.value,
             "base_score_kind": base_score_kind,
@@ -348,22 +394,30 @@ class LRArchitectureStateFactory:
             "pair_key_mode": pair_key_mode.value,
             "rarity_probe_score_type": rarity_probe_score_type,
             "rarity_reference_score_type": rarity_reference_score_type,
+            "rarity_single_score_type": rarity_single_score_type,
             "rarity_probe_transform_id": rarity_probe_transform_id,
             "rarity_reference_transform_id": rarity_reference_transform_id,
+            "rarity_single_transform_id": rarity_single_transform_id,
             "rarity_probe_transform_formula_version": rarity_probe_transform_formula_version,
             "rarity_reference_transform_formula_version": rarity_reference_transform_formula_version,
+            "rarity_single_transform_formula_version": rarity_single_transform_formula_version,
             "rarity_probe_transform_fingerprint": rarity_probe_transform_fingerprint,
             "rarity_reference_transform_fingerprint": rarity_reference_transform_fingerprint,
+            "rarity_single_transform_fingerprint": rarity_single_transform_fingerprint,
             "rarity_probe_combiner": rarity_probe_combiner,
             "rarity_reference_combiner": rarity_reference_combiner,
+            "rarity_single_combiner": rarity_single_combiner,
             "rarity_probe_model_resource_id": rarity_probe_model_resource_id,
             "rarity_reference_model_resource_id": rarity_reference_model_resource_id,
+            "rarity_single_model_resource_id": rarity_single_model_resource_id,
             "rarity_probe_model_fingerprint": rarity_probe_model_fingerprint,
             "rarity_reference_model_fingerprint": rarity_reference_model_fingerprint,
+            "rarity_single_model_fingerprint": rarity_single_model_fingerprint,
             "fit_scope": fit_scope.value,
             "s0_resolution_method": s0_resolution_method.value,
             "r0_probe_estimator": r0_probe_estimator,
             "r0_reference_estimator": r0_reference_estimator,
+            "r0_single_estimator": r0_single_estimator,
             "fitted_on_resource_id": fitted_on_resource_id,
             "fitted_on_resource_fingerprint": fitted_on_resource_fingerprint,
             "n_fitted_pairs": n_fitted_pairs,
@@ -417,6 +471,16 @@ class LRArchitectureStateFactory:
             fitted_dataset_pair_key_order_hash=fitted_dataset_pair_key_order_hash,
             s0_logreg_config=s0_logreg_config,
             s0_fit_summary=s0_fit_summary,
+            # ONE_FACE (V2.14.1)
+            r0_single=r0_single,
+            r0_single_estimator=r0_single_estimator,
+            rarity_single_score_type=rarity_single_score_type,
+            rarity_single_transform_id=rarity_single_transform_id,
+            rarity_single_transform_formula_version=rarity_single_transform_formula_version,
+            rarity_single_transform_fingerprint=rarity_single_transform_fingerprint,
+            rarity_single_combiner=rarity_single_combiner,
+            rarity_single_model_resource_id=rarity_single_model_resource_id,
+            rarity_single_model_fingerprint=rarity_single_model_fingerprint,
             vectorization_contract_fingerprint=contract_fp,
             provenance_record_fingerprint=provenance_fp,
         )
@@ -427,15 +491,16 @@ class LRArchitectureStateFactory:
         s0: Optional[float],
         r0_probe: Optional[float],
         r0_reference: Optional[float],
+        r0_single: Optional[float],
         pair_role_orientation: PairRoleOrientation,
         fit_scope: ArchitectureFitScope,
     ) -> None:
+        requires_single = getattr(spec, "requires_typicality_single", False)
         if spec.centering_mode == RarityCenteringMode.NONE:
-            if r0_probe is not None or r0_reference is not None:
+            if r0_probe is not None or r0_reference is not None or r0_single is not None:
                 raise ValueError(
                     f"Arquitetura {spec.architecture.value} usa centering=NONE; "
-                    f"r0_probe e r0_reference devem ser None "
-                    f"(recebido r0_probe={r0_probe}, r0_reference={r0_reference})"
+                    f"r0_probe/r0_reference/r0_single devem ser None"
                 )
         elif spec.centering_mode == RarityCenteringMode.MEAN:
             # Quando há ajuste, r0_* devem estar presentes para os lados consumidos.
@@ -450,6 +515,26 @@ class LRArchitectureStateFactory:
                         f"Arquitetura {spec.architecture.value} centra raridade e "
                         f"consome r_P; r0_reference é obrigatório quando fit_scope != NOT_APPLICABLE"
                     )
+                if requires_single and r0_single is None:
+                    raise ValueError(
+                        f"Arquitetura {spec.architecture.value} centra raridade e "
+                        f"consome r (single); r0_single é obrigatório quando "
+                        f"fit_scope != NOT_APPLICABLE"
+                    )
+
+        # ONE_FACE: rejeita combinações cruzadas
+        if requires_single:
+            if r0_probe is not None or r0_reference is not None:
+                raise ValueError(
+                    f"Arquitetura ONE_FACE {spec.architecture.value} não aceita "
+                    f"r0_probe ou r0_reference; use r0_single"
+                )
+        else:
+            if r0_single is not None:
+                raise ValueError(
+                    f"Arquitetura {spec.architecture.value} não é ONE_FACE; "
+                    f"r0_single deve ser None"
+                )
 
         if spec.requires_s0 and s0 is None and fit_scope != ArchitectureFitScope.NOT_APPLICABLE:
             raise ValueError(
@@ -501,6 +586,7 @@ class LRArchitectureStateFactory:
             "s0": data.get("s0"),
             "r0_probe": data.get("r0_probe"),
             "r0_reference": data.get("r0_reference"),
+            "r0_single": data.get("r0_single"),
             "feature_terms": [t.value for t in feature_terms],
             "centering_mode": centering.value,
             "base_score_kind": data["base_score_kind"],
@@ -508,22 +594,30 @@ class LRArchitectureStateFactory:
             "pair_key_mode": key_mode.value,
             "rarity_probe_score_type": data.get("rarity_probe_score_type"),
             "rarity_reference_score_type": data.get("rarity_reference_score_type"),
+            "rarity_single_score_type": data.get("rarity_single_score_type"),
             "rarity_probe_transform_id": data.get("rarity_probe_transform_id"),
             "rarity_reference_transform_id": data.get("rarity_reference_transform_id"),
+            "rarity_single_transform_id": data.get("rarity_single_transform_id"),
             "rarity_probe_transform_formula_version": data.get("rarity_probe_transform_formula_version"),
             "rarity_reference_transform_formula_version": data.get("rarity_reference_transform_formula_version"),
+            "rarity_single_transform_formula_version": data.get("rarity_single_transform_formula_version"),
             "rarity_probe_transform_fingerprint": data.get("rarity_probe_transform_fingerprint"),
             "rarity_reference_transform_fingerprint": data.get("rarity_reference_transform_fingerprint"),
+            "rarity_single_transform_fingerprint": data.get("rarity_single_transform_fingerprint"),
             "rarity_probe_combiner": data.get("rarity_probe_combiner"),
             "rarity_reference_combiner": data.get("rarity_reference_combiner"),
+            "rarity_single_combiner": data.get("rarity_single_combiner"),
             "rarity_probe_model_resource_id": data.get("rarity_probe_model_resource_id"),
             "rarity_reference_model_resource_id": data.get("rarity_reference_model_resource_id"),
+            "rarity_single_model_resource_id": data.get("rarity_single_model_resource_id"),
             "rarity_probe_model_fingerprint": data.get("rarity_probe_model_fingerprint"),
             "rarity_reference_model_fingerprint": data.get("rarity_reference_model_fingerprint"),
+            "rarity_single_model_fingerprint": data.get("rarity_single_model_fingerprint"),
             "fit_scope": fit_scope.value,
             "s0_resolution_method": s0_method.value,
             "r0_probe_estimator": data.get("r0_probe_estimator"),
             "r0_reference_estimator": data.get("r0_reference_estimator"),
+            "r0_single_estimator": data.get("r0_single_estimator"),
             "fitted_on_resource_id": data.get("fitted_on_resource_id"),
             "fitted_on_resource_fingerprint": data.get("fitted_on_resource_fingerprint"),
             "n_fitted_pairs": data.get("n_fitted_pairs"),
@@ -600,6 +694,16 @@ class LRArchitectureStateFactory:
             fitted_dataset_pair_key_order_hash=data.get("fitted_dataset_pair_key_order_hash"),
             s0_logreg_config=data.get("s0_logreg_config"),
             s0_fit_summary=data.get("s0_fit_summary"),
+            # ONE_FACE (V2.14.1)
+            r0_single=data.get("r0_single"),
+            r0_single_estimator=data.get("r0_single_estimator"),
+            rarity_single_score_type=data.get("rarity_single_score_type"),
+            rarity_single_transform_id=data.get("rarity_single_transform_id"),
+            rarity_single_transform_formula_version=data.get("rarity_single_transform_formula_version"),
+            rarity_single_transform_fingerprint=data.get("rarity_single_transform_fingerprint"),
+            rarity_single_combiner=data.get("rarity_single_combiner"),
+            rarity_single_model_resource_id=data.get("rarity_single_model_resource_id"),
+            rarity_single_model_fingerprint=data.get("rarity_single_model_fingerprint"),
             vectorization_contract_fingerprint=stored_contract_fp or expected_contract_fp,
             provenance_record_fingerprint=stored_provenance_fp or expected_provenance_fp,
         )

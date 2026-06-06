@@ -110,6 +110,7 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
         pair_role_orientation: PairRoleOrientation = PairRoleOrientation.PROBE_REFERENCE,
         rarity_probe_score_type: Optional[str] = None,
         rarity_reference_score_type: Optional[str] = None,
+        rarity_single_score_type: Optional[str] = None,
     ):
         self.architecture = architecture
         self.schema = schema
@@ -118,6 +119,7 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
         self.pair_role_orientation = pair_role_orientation
         self.rarity_probe_score_type = rarity_probe_score_type
         self.rarity_reference_score_type = rarity_reference_score_type
+        self.rarity_single_score_type = rarity_single_score_type
 
     # ── sklearn protocol ────────────────────────────────────────────────
 
@@ -147,6 +149,7 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
             )
 
         spec = LR_ARCHITECTURE_SPECS[self.architecture]
+        requires_single = getattr(spec, "requires_typicality_single", False)
 
         base_scores = X_arr[:, self.schema.base_score_column]
         rarity_probe = (
@@ -157,6 +160,11 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
         rarity_reference = (
             X_arr[:, self.schema.rarity_reference_column]
             if self.schema.rarity_reference_column is not None
+            else None
+        )
+        rarity_single = (
+            X_arr[:, self.schema.rarity_single_column]
+            if self.schema.rarity_single_column is not None
             else None
         )
 
@@ -189,11 +197,13 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
             s0_fit_summary = summary.to_dict_hex()
             s0_resolution_method = S0ResolutionMethod.AUTO_LOGREG
 
-        # ── r̄_F, r̄_P ──
+        # ── r̄_F, r̄_P, r̄_single ──
         r0_probe = None
         r0_reference = None
+        r0_single = None
         r0_probe_estimator = None
         r0_reference_estimator = None
+        r0_single_estimator = None
         if spec.centering_mode.value == "MEAN":
             if spec.requires_typicality_probe:
                 if rarity_probe is None:
@@ -211,6 +221,14 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
                     )
                 r0_reference = float(rarity_reference.mean())
                 r0_reference_estimator = "MEAN"
+            if requires_single:
+                if rarity_single is None:
+                    raise ValueError(
+                        "Arquitetura ONE_FACE usa centragem MEAN, mas "
+                        "schema não declara rarity_single_column"
+                    )
+                r0_single = float(rarity_single.mean())
+                r0_single_estimator = "MEAN"
 
         # ── contagens (provenance) ──
         if y is not None:
@@ -227,6 +245,7 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
             s0=s0_value,
             r0_probe=r0_probe,
             r0_reference=r0_reference,
+            r0_single=r0_single,
             base_score_kind=self.base_score_kind,
             pair_role_orientation=(
                 self.pair_role_orientation
@@ -235,10 +254,12 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
             ),
             rarity_probe_score_type=self.rarity_probe_score_type,
             rarity_reference_score_type=self.rarity_reference_score_type,
+            rarity_single_score_type=self.rarity_single_score_type,
             fit_scope=ArchitectureFitScope.PER_FOLD_REFIT_FULL_CALIBRATION,
             s0_resolution_method=s0_resolution_method,
             r0_probe_estimator=r0_probe_estimator,
             r0_reference_estimator=r0_reference_estimator,
+            r0_single_estimator=r0_single_estimator,
             n_fitted_pairs=len(X_arr),
             n_fitted_genuine_pairs=n_genuine,
             n_fitted_impostor_pairs=n_impostor,
@@ -278,8 +299,14 @@ class ArchitectureVectorizerTransformer(BaseEstimator, TransformerMixin):
             if self.schema.rarity_reference_column is not None
             else None
         )
+        rarity_single = (
+            X_arr[:, self.schema.rarity_single_column]
+            if self.schema.rarity_single_column is not None
+            else None
+        )
         return _builder.build(
             spec, self.state_, base_scores, rarity_probe, rarity_reference,
+            rarity_single,
         )
 
     def get_feature_names_out(

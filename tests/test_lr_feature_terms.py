@@ -44,8 +44,9 @@ def ctx() -> LRFeatureBuildContext:
 
 class TestRegistryCoverage:
     def test_all_terms_registered(self):
+        # V2.14.1: 18 termos (13 originais + 5 ONE_FACE).
         assert set(LR_FEATURE_TERM_SPECS.keys()) == set(LRFeatureTerm)
-        assert len(LR_FEATURE_TERM_SPECS) == 13
+        assert len(LR_FEATURE_TERM_SPECS) == 18
 
     def test_get_term_spec_raises_on_unknown(self):
         # Sem KeyError customizado — KeyError nativo do dict
@@ -167,6 +168,9 @@ class TestAnalyticalVsNumerical:
         r_F = np.array([0.3, 0.5, 0.7], dtype=np.float64)
         r_P = np.array([0.6, 0.4, 0.2], dtype=np.float64)
 
+        # ONE_FACE (V2.14.1): reusa r_F como r_single para o teste
+        r_S = r_F
+
         def make_ctx(b):
             if spec.term.requires_s0:
                 delta = b - s0
@@ -181,6 +185,8 @@ class TestAnalyticalVsNumerical:
                 rarity_reference_raw=r_P if spec.term.consumes_rarity_reference else None,
                 rarity_probe_centered=(r_F - 0.5) if (spec.term.consumes_rarity_probe and spec.term.is_centered) else None,
                 rarity_reference_centered=(r_P - 0.4) if (spec.term.consumes_rarity_reference and spec.term.is_centered) else None,
+                rarity_single_raw=r_S if spec.term.consumes_rarity_single else None,
+                rarity_single_centered=(r_S - 0.5) if (spec.term.consumes_rarity_single and spec.term.is_centered) else None,
             )
 
         eps = 1e-6

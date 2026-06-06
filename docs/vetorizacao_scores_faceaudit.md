@@ -23,6 +23,16 @@
 > permanece como ferramenta geral** para fusões fora do registry (ex.:
 > empilhar score de qualidade + cosseno + PLDA arbitrariamente, ou compor
 > features que não derivam de raridade × similaridade).
+>
+> **⚠️ V2.14.1 — família ONE_FACE.** O registry foi estendido com **6
+> variantes ONE_FACE** das 6 arquiteturas com tipicidade — usam apenas
+> UMA face de raridade (`rarity_resource_id`) em vez de probe + reference
+> (`rarity_probe_resource_id` + `rarity_reference_resource_id`).
+> Útil em casework forense onde só uma face é questionada, ou quando a
+> tipicidade de um dos lados é considerada ruidosa demais (e.g. M_P em
+> cross-pose com base escassa). Total: 15 arquiteturas. As variantes
+> ONE_FACE são `requires_ordered_pair_roles=False` por design — não há
+> "lado" a distinguir quando apenas uma face contribui com tipicidade.
 
 ---
 

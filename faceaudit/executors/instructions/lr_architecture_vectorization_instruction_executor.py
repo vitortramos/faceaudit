@@ -56,6 +56,7 @@ from faceaudit.models.instructions.strategy_instruction_definition import (
 from faceaudit.models.lr.lr_architecture_raw_feature_schema import (
     LRArchitectureRawFeatureSchema,
     schema_for_base_and_rarities,
+    schema_for_base_and_single_rarity,
     schema_for_base_only,
 )
 from faceaudit.models.lr.lr_architecture_raw_input_payload import (
@@ -162,6 +163,8 @@ class LRArchitectureVectorizationInstructionExecutor(
                 "base_score_resource_id é obrigatório"
             )
 
+        requires_single = getattr(spec, "requires_typicality_single", False)
+
         # tipicidade exigida pela arquitetura?
         if spec.requires_typicality_probe and not instruction.rarity_probe_resource_id:
             return ValidationResult.critical(
@@ -173,6 +176,30 @@ class LRArchitectureVectorizationInstructionExecutor(
                 f"Arquitetura {spec.architecture.value} exige "
                 "rarity_reference_resource_id"
             )
+
+        # ONE_FACE (V2.14.1): rarity_resource_id obrigatório; probe/reference proibidos
+        if requires_single:
+            if not instruction.rarity_resource_id:
+                return ValidationResult.critical(
+                    f"Arquitetura ONE_FACE {spec.architecture.value} exige "
+                    "rarity_resource_id (face única)"
+                )
+            if instruction.rarity_probe_resource_id:
+                return ValidationResult.critical(
+                    f"Arquitetura ONE_FACE {spec.architecture.value} não aceita "
+                    "rarity_probe_resource_id"
+                )
+            if instruction.rarity_reference_resource_id:
+                return ValidationResult.critical(
+                    f"Arquitetura ONE_FACE {spec.architecture.value} não aceita "
+                    "rarity_reference_resource_id"
+                )
+        else:
+            if instruction.rarity_resource_id:
+                return ValidationResult.critical(
+                    f"Arquitetura {spec.architecture.value} não é ONE_FACE; "
+                    "rarity_resource_id só é aceito em arquiteturas ONE_FACE"
+                )
 
         # MANUAL: validação per-arquitetura
         if mode == ArchitectureParameterMode.MANUAL:
@@ -198,6 +225,17 @@ class LRArchitectureVectorizationInstructionExecutor(
                 return ValidationResult.critical(
                     f"parameter_mode=MANUAL: manual_r0_reference é obrigatório "
                     f"para {spec.architecture.value} (centering=MEAN)"
+                )
+            # ONE_FACE: manual_r0_probe usado semanticamente como manual_r0_single
+            if (
+                requires_single
+                and spec.centering_mode.value == "MEAN"
+                and instruction.manual_r0_probe is None
+            ):
+                return ValidationResult.critical(
+                    f"parameter_mode=MANUAL: manual_r0_probe (usado como "
+                    f"r̄ da face única em ONE_FACE) é obrigatório para "
+                    f"{spec.architecture.value} (centering=MEAN)"
                 )
 
         # INHERIT requer recurso
@@ -266,6 +304,12 @@ class LRArchitectureVectorizationInstructionExecutor(
         rarity_reference_ds = self._load_optional_payload(
             context, instr.rarity_reference_resource_id
         )
+        # ONE_FACE (V2.14.1)
+        rarity_single_ds = self._load_optional_payload(
+            context, instr.rarity_resource_id
+        )
+
+        requires_single = getattr(spec, "requires_typicality_single", False)
 
         if spec.requires_typicality_probe and rarity_probe_ds is None:
             return InstructionExecutionResult.failure(
@@ -281,15 +325,24 @@ class LRArchitectureVectorizationInstructionExecutor(
                     "mas o recurso não foi encontrado/hidratado"
                 ]
             )
+        if requires_single and rarity_single_ds is None:
+            return InstructionExecutionResult.failure(
+                errors=[
+                    f"Arquitetura ONE_FACE {spec.architecture.value} exige "
+                    "rarity (face única), mas o recurso não foi encontrado/hidratado"
+                ]
+            )
 
         # Alinhamento
         try:
             (
                 base_scores, rarity_probe_raw, rarity_reference_raw,
+                rarity_single_raw,
                 pair_keys, same_person, probe_ids, reference_ids,
-                probe_rarity_meta, reference_rarity_meta,
+                probe_rarity_meta, reference_rarity_meta, single_rarity_meta,
             ) = self._align_inputs(
-                base_ds, rarity_probe_ds, rarity_reference_ds, spec,
+                base_ds, rarity_probe_ds, rarity_reference_ds, rarity_single_ds,
+                spec,
             )
         except ValueError as exc:
             return InstructionExecutionResult.failure(errors=[str(exc)])
@@ -301,9 +354,11 @@ class LRArchitectureVectorizationInstructionExecutor(
                 base_scores=base_scores, same_person=same_person,
                 rarity_probe_raw=rarity_probe_raw,
                 rarity_reference_raw=rarity_reference_raw,
+                rarity_single_raw=rarity_single_raw,
                 base_ds_meta=base_ds.metadata,
                 probe_rarity_meta=probe_rarity_meta,
                 reference_rarity_meta=reference_rarity_meta,
+                single_rarity_meta=single_rarity_meta,
                 pair_keys=pair_keys,
             )
         except (S0ResolutionError, StateIntegrityError, ValueError) as exc:
@@ -313,6 +368,7 @@ class LRArchitectureVectorizationInstructionExecutor(
         matrix = builder.build(
             spec, state, base_scores,
             rarity_probe_raw, rarity_reference_raw,
+            rarity_single_raw,
         )
 
         # Fingerprints da matriz
@@ -327,7 +383,8 @@ class LRArchitectureVectorizationInstructionExecutor(
         # Construir payload bruto (canonicalizado + read-only)
         schema = self._build_raw_input_schema(spec)
         raw_matrix = self._stack_raw_matrix(
-            base_scores, rarity_probe_raw, rarity_reference_raw, schema,
+            base_scores, rarity_probe_raw, rarity_reference_raw,
+            rarity_single_raw, schema,
         )
         raw_payload = LRArchitectureRawInputPayloadFactory.create(
             matrix=raw_matrix,
@@ -352,6 +409,7 @@ class LRArchitectureVectorizationInstructionExecutor(
                 instr.base_score_resource_id,
                 instr.rarity_probe_resource_id,
                 instr.rarity_reference_resource_id,
+                instr.rarity_resource_id,
             ])),
             # Identidade da arquitetura
             "lr_architecture": spec.architecture.value,
@@ -446,13 +504,15 @@ class LRArchitectureVectorizationInstructionExecutor(
         base_ds: SimilarityScoreDataset,
         rarity_probe_ds: Optional[SimilarityScoreDataset],
         rarity_reference_ds: Optional[SimilarityScoreDataset],
+        rarity_single_ds: Optional[SimilarityScoreDataset],
         spec,
     ) -> Tuple[
         np.ndarray, Optional[np.ndarray], Optional[np.ndarray],
+        Optional[np.ndarray],
         Tuple[Tuple[str, str], ...],
         Optional[np.ndarray],
         Tuple[str, ...], Tuple[str, ...],
-        Dict[str, Any], Dict[str, Any],
+        Dict[str, Any], Dict[str, Any], Dict[str, Any],
     ]:
         """
         Constrói arrays alinhados pela ordem de `base_ds.items`. Para
@@ -465,6 +525,7 @@ class LRArchitectureVectorizationInstructionExecutor(
           - same_person (bool array) quando disponível em todos os items
           - probe_ids, reference_ids (tuplas)
           - metadata "incoming" para uso na validação de compat (state INHERIT)
+          - rarity_single_raw + single_meta para a família ONE_FACE
         """
         n = len(base_ds.items)
         if n == 0:
@@ -503,6 +564,9 @@ class LRArchitectureVectorizationInstructionExecutor(
         rarity_reference_raw = self._extract_canonical_rarity(
             rarity_reference_ds, pair_keys, side="reference",
         ) if rarity_reference_ds is not None else None
+        rarity_single_raw = self._extract_canonical_rarity(
+            rarity_single_ds, pair_keys, side="single",
+        ) if rarity_single_ds is not None else None
 
         # Metadata "incoming" — usado em validate_state_compatibility
         base_meta = {
@@ -520,12 +584,17 @@ class LRArchitectureVectorizationInstructionExecutor(
             self._collect_rarity_meta(rarity_reference_ds)
             if rarity_reference_ds is not None else {}
         )
+        single_meta = (
+            self._collect_rarity_meta(rarity_single_ds)
+            if rarity_single_ds is not None else {}
+        )
 
         return (
             base_scores, rarity_probe_raw, rarity_reference_raw,
+            rarity_single_raw,
             tuple(pair_keys), same_person_arr,
             tuple(probe_ids), tuple(reference_ids),
-            probe_meta, reference_meta,
+            probe_meta, reference_meta, single_meta,
         )
 
     def _extract_canonical_rarity(
@@ -614,9 +683,11 @@ class LRArchitectureVectorizationInstructionExecutor(
         same_person: Optional[np.ndarray],
         rarity_probe_raw: Optional[np.ndarray],
         rarity_reference_raw: Optional[np.ndarray],
+        rarity_single_raw: Optional[np.ndarray],
         base_ds_meta: Dict[str, Any],
         probe_rarity_meta: Dict[str, Any],
         reference_rarity_meta: Dict[str, Any],
+        single_rarity_meta: Dict[str, Any],
         pair_keys: Tuple[Tuple[str, str], ...],
     ) -> Tuple[LRArchitectureState, Optional[Dict[str, Any]]]:
         mode = instr.parameter_mode
@@ -631,6 +702,7 @@ class LRArchitectureVectorizationInstructionExecutor(
             base_ds_meta.get("score_kind") or base_ds_meta.get("base_score_kind")
             or "cosine"
         )
+        requires_single = getattr(spec, "requires_typicality_single", False)
 
         if mode == ArchitectureParameterMode.INHERIT:
             return self._resolve_inherit(
@@ -641,9 +713,14 @@ class LRArchitectureVectorizationInstructionExecutor(
                 },
                 probe_meta_for_compat=probe_rarity_meta,
                 reference_meta_for_compat=reference_rarity_meta,
+                single_meta_for_compat=single_rarity_meta,
             )
 
         if mode == ArchitectureParameterMode.MANUAL:
+            # ONE_FACE: reusa manual_r0_probe semanticamente como r̄ single
+            r0_single_val = None
+            if requires_single and spec.centering_mode.value == "MEAN":
+                r0_single_val = instr.manual_r0_probe
             state = LRArchitectureStateFactory.create(
                 spec=spec,
                 s0=instr.manual_s0 if spec.requires_s0 else None,
@@ -657,19 +734,25 @@ class LRArchitectureVectorizationInstructionExecutor(
                     if (spec.centering_mode.value == "MEAN" and spec.requires_typicality_reference)
                     else None
                 ),
+                r0_single=r0_single_val,
                 base_score_kind=base_score_kind,
                 pair_role_orientation=role_orientation,
                 pair_key_mode=pair_key_mode,
                 rarity_probe_score_type=probe_rarity_meta.get("score_type"),
                 rarity_reference_score_type=reference_rarity_meta.get("score_type"),
+                rarity_single_score_type=single_rarity_meta.get("score_type"),
                 rarity_probe_transform_id=probe_rarity_meta.get("transform_id"),
                 rarity_reference_transform_id=reference_rarity_meta.get("transform_id"),
+                rarity_single_transform_id=single_rarity_meta.get("transform_id"),
                 rarity_probe_combiner=probe_rarity_meta.get("combiner"),
                 rarity_reference_combiner=reference_rarity_meta.get("combiner"),
+                rarity_single_combiner=single_rarity_meta.get("combiner"),
                 rarity_probe_model_resource_id=probe_rarity_meta.get("model_resource_id"),
                 rarity_reference_model_resource_id=reference_rarity_meta.get("model_resource_id"),
+                rarity_single_model_resource_id=single_rarity_meta.get("model_resource_id"),
                 rarity_probe_model_fingerprint=probe_rarity_meta.get("model_fingerprint"),
                 rarity_reference_model_fingerprint=reference_rarity_meta.get("model_fingerprint"),
+                rarity_single_model_fingerprint=single_rarity_meta.get("model_fingerprint"),
                 fit_scope=ArchitectureFitScope.MANUAL,
                 s0_resolution_method=(
                     S0ResolutionMethod.MANUAL if spec.requires_s0
@@ -677,16 +760,11 @@ class LRArchitectureVectorizationInstructionExecutor(
                 ),
                 r0_probe_estimator=None,
                 r0_reference_estimator=None,
+                r0_single_estimator=None,
             )
             return state, None
 
         # FIT_FULL_CALIBRATION_LEGACY (v1) e FIT_PER_FOLD (v2/PR 3).
-        # Ambos os modos exercem o mesmo cálculo provisório de s₀/r̄ aqui
-        # (sobre todo D_cal). A diferença é o fit_scope persistido no
-        # state e a flag `defer_to_calibrator_per_fold` no metadata do
-        # vetor produzido — o CALIBRATION_MODEL_TRAINING consome essa
-        # flag para trocar para o Pipeline+GridSearchCV com transformer,
-        # produzindo um state final ajustado por fold (PR 3).
         if mode in (
             ArchitectureParameterMode.FIT_FULL_CALIBRATION_LEGACY,
             ArchitectureParameterMode.FIT_PER_FOLD,
@@ -696,11 +774,13 @@ class LRArchitectureVectorizationInstructionExecutor(
                 base_scores=base_scores, same_person=same_person,
                 rarity_probe_raw=rarity_probe_raw,
                 rarity_reference_raw=rarity_reference_raw,
+                rarity_single_raw=rarity_single_raw,
                 base_score_kind=base_score_kind,
                 role_orientation=role_orientation,
                 pair_key_mode=pair_key_mode,
                 probe_meta=probe_rarity_meta,
                 reference_meta=reference_rarity_meta,
+                single_meta=single_rarity_meta,
                 fitted_on_resource_id=instr.base_score_resource_id,
                 pair_keys=pair_keys,
             )
@@ -715,6 +795,7 @@ class LRArchitectureVectorizationInstructionExecutor(
         base_meta_for_compat: Dict[str, Any],
         probe_meta_for_compat: Dict[str, Any],
         reference_meta_for_compat: Dict[str, Any],
+        single_meta_for_compat: Optional[Dict[str, Any]] = None,
     ) -> Tuple[LRArchitectureState, Optional[Dict[str, Any]]]:
         rid = instr.inherit_architecture_state_from_resource_id
         context.ensure_payload(rid)
@@ -738,6 +819,7 @@ class LRArchitectureVectorizationInstructionExecutor(
             incoming_base_meta=base_meta_for_compat,
             incoming_rarity_probe_meta=probe_meta_for_compat or None,
             incoming_rarity_reference_meta=reference_meta_for_compat or None,
+            incoming_rarity_single_meta=single_meta_for_compat or None,
         )
         errors = [i for i in issues if i.severity == "error"]
         if errors:
@@ -755,14 +837,17 @@ class LRArchitectureVectorizationInstructionExecutor(
         same_person: Optional[np.ndarray],
         rarity_probe_raw: Optional[np.ndarray],
         rarity_reference_raw: Optional[np.ndarray],
+        rarity_single_raw: Optional[np.ndarray],
         base_score_kind: str,
         role_orientation: PairRoleOrientation,
         pair_key_mode: PairKeyMode,
         probe_meta: Dict[str, Any],
         reference_meta: Dict[str, Any],
+        single_meta: Dict[str, Any],
         fitted_on_resource_id: Optional[str],
         pair_keys: Tuple[Tuple[str, str], ...],
     ) -> Tuple[LRArchitectureState, Optional[Dict[str, Any]]]:
+        requires_single = getattr(spec, "requires_typicality_single", False)
         # s0
         s0_value = None
         s0_summary_dict: Optional[Dict[str, Any]] = None
@@ -790,8 +875,10 @@ class LRArchitectureVectorizationInstructionExecutor(
         # r0 (apenas se centering=MEAN)
         r0_probe = None
         r0_reference = None
+        r0_single = None
         r0_probe_estimator = None
         r0_reference_estimator = None
+        r0_single_estimator = None
         if spec.centering_mode.value == "MEAN":
             if spec.requires_typicality_probe and rarity_probe_raw is not None:
                 r0_probe = float(rarity_probe_raw.mean())
@@ -799,6 +886,9 @@ class LRArchitectureVectorizationInstructionExecutor(
             if spec.requires_typicality_reference and rarity_reference_raw is not None:
                 r0_reference = float(rarity_reference_raw.mean())
                 r0_reference_estimator = "MEAN"
+            if requires_single and rarity_single_raw is not None:
+                r0_single = float(rarity_single_raw.mean())
+                r0_single_estimator = "MEAN"
 
         n_gen = int(same_person.sum()) if same_person is not None else None
         n_imp = int((~same_person).sum()) if same_person is not None else None
@@ -808,19 +898,25 @@ class LRArchitectureVectorizationInstructionExecutor(
             s0=s0_value,
             r0_probe=r0_probe,
             r0_reference=r0_reference,
+            r0_single=r0_single,
             base_score_kind=base_score_kind,
             pair_role_orientation=role_orientation,
             pair_key_mode=pair_key_mode,
             rarity_probe_score_type=probe_meta.get("score_type"),
             rarity_reference_score_type=reference_meta.get("score_type"),
+            rarity_single_score_type=single_meta.get("score_type"),
             rarity_probe_transform_id=probe_meta.get("transform_id"),
             rarity_reference_transform_id=reference_meta.get("transform_id"),
+            rarity_single_transform_id=single_meta.get("transform_id"),
             rarity_probe_combiner=probe_meta.get("combiner"),
             rarity_reference_combiner=reference_meta.get("combiner"),
+            rarity_single_combiner=single_meta.get("combiner"),
             rarity_probe_model_resource_id=probe_meta.get("model_resource_id"),
             rarity_reference_model_resource_id=reference_meta.get("model_resource_id"),
+            rarity_single_model_resource_id=single_meta.get("model_resource_id"),
             rarity_probe_model_fingerprint=probe_meta.get("model_fingerprint"),
             rarity_reference_model_fingerprint=reference_meta.get("model_fingerprint"),
+            rarity_single_model_fingerprint=single_meta.get("model_fingerprint"),
             fit_scope=(
                 ArchitectureFitScope.PER_FOLD_REFIT_FULL_CALIBRATION
                 if instr.parameter_mode == ArchitectureParameterMode.FIT_PER_FOLD
@@ -829,6 +925,7 @@ class LRArchitectureVectorizationInstructionExecutor(
             s0_resolution_method=s0_method,
             r0_probe_estimator=r0_probe_estimator,
             r0_reference_estimator=r0_reference_estimator,
+            r0_single_estimator=r0_single_estimator,
             fitted_on_resource_id=fitted_on_resource_id,
             n_fitted_pairs=len(base_scores),
             n_fitted_genuine_pairs=n_gen,
@@ -918,6 +1015,8 @@ class LRArchitectureVectorizationInstructionExecutor(
 
     @staticmethod
     def _build_raw_input_schema(spec) -> LRArchitectureRawFeatureSchema:
+        if getattr(spec, "requires_typicality_single", False):
+            return schema_for_base_and_single_rarity()
         if not spec.requires_typicality_probe and not spec.requires_typicality_reference:
             return schema_for_base_only()
         return schema_for_base_and_rarities()
@@ -927,9 +1026,20 @@ class LRArchitectureVectorizationInstructionExecutor(
         base: np.ndarray,
         rarity_probe: Optional[np.ndarray],
         rarity_reference: Optional[np.ndarray],
+        rarity_single: Optional[np.ndarray],
         schema: LRArchitectureRawFeatureSchema,
     ) -> np.ndarray:
         n = base.shape[0]
+        # ONE_FACE (V2.14.1): layout [base, rarity_single]
+        if schema.rarity_single_column is not None:
+            if rarity_single is None:
+                raise ValueError(
+                    "schema é ONE_FACE mas rarity_single não foi fornecido"
+                )
+            return np.column_stack([
+                base.astype(np.float64),
+                rarity_single.astype(np.float64),
+            ]).astype(np.float64)
         if schema.rarity_probe_column is None and schema.rarity_reference_column is None:
             return base.reshape(-1, 1).astype(np.float64)
         # Layout fixo: [base, rarity_probe, rarity_reference]

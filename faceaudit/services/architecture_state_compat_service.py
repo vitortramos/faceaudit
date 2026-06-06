@@ -40,6 +40,7 @@ def validate_state_compatibility(
     incoming_base_meta: Optional[Mapping[str, Any]] = None,
     incoming_rarity_probe_meta: Optional[Mapping[str, Any]] = None,
     incoming_rarity_reference_meta: Optional[Mapping[str, Any]] = None,
+    incoming_rarity_single_meta: Optional[Mapping[str, Any]] = None,
 ) -> List[CompatibilityIssue]:
     """
     Compara state herdado vs contexto atual em 20+ campos críticos.
@@ -173,6 +174,29 @@ def validate_state_compatibility(
                 state.rarity_reference_combiner,
                 state.rarity_reference_model_fingerprint,
                 incoming_rarity_reference_meta,
+            )
+
+    # ── ONE_FACE (V2.14.1): proveniência da tipicidade (face única) ──
+    if getattr(spec, "requires_typicality_single", False):
+        if incoming_rarity_single_meta is None:
+            issues.append(CompatibilityIssue(
+                field="rarity_single_meta",
+                expected="metadata presente",
+                actual=None,
+                severity="error",
+                message="Arquitetura ONE_FACE exige rarity_single mas o metadata "
+                        "do recurso de entrada está ausente",
+            ))
+        else:
+            _check_rarity_side(
+                issues, "single",
+                state.rarity_single_score_type,
+                state.rarity_single_transform_id,
+                state.rarity_single_transform_formula_version,
+                state.rarity_single_transform_fingerprint,
+                state.rarity_single_combiner,
+                state.rarity_single_model_fingerprint,
+                incoming_rarity_single_meta,
             )
 
     # ── 24: centering coerente ──

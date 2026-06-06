@@ -35,6 +35,10 @@ class _StateLike(Protocol):
     O state real (`LRArchitectureState`) implementa este protocolo;
     testes podem usar mocks/stubs simples (e.g., SimpleNamespace) sem
     construir o state completo.
+
+    Para a família ONE_FACE (V2.14.1), `r0_single` é lido do mesmo
+    objeto. Quando o state real não expõe o campo (legado), o builder
+    cai em `r0_probe` por compat semântica.
     """
 
     s0: Optional[float]
@@ -48,8 +52,15 @@ def _build_context(
     base: np.ndarray,
     rarity_probe: Optional[np.ndarray],
     rarity_reference: Optional[np.ndarray],
+    rarity_single: Optional[np.ndarray] = None,
 ) -> LRFeatureBuildContext:
-    """Pré-calcula arrays comuns (delta, hinges, raridades centradas)."""
+    """Pré-calcula arrays comuns (delta, hinges, raridades centradas).
+
+    Aceita `rarity_single` para a família ONE_FACE (V2.14.1). Mutuamente
+    exclusivo com `rarity_probe`/`rarity_reference` por construção do
+    spec — quando `spec.requires_typicality_single=True`, as outras flags
+    são False (verificado nos testes do registry).
+    """
     base_f64 = base.astype(np.float64, copy=False)
 
     if spec.requires_s0:
@@ -107,6 +118,29 @@ def _build_context(
         rarity_reference_raw = None
         rarity_reference_centered = None
 
+    # ── ONE_FACE (V2.14.1) ──
+    rarity_single_raw = None
+    rarity_single_centered = None
+    if getattr(spec, "requires_typicality_single", False):
+        if rarity_single is None:
+            raise ValueError(
+                f"Arquitetura {spec.architecture.value} exige rarity_single, "
+                "mas o array não foi fornecido"
+            )
+        rarity_single_raw = rarity_single.astype(np.float64, copy=False)
+        if spec.centering_mode.value == "MEAN":
+            # State pode ter `r0_single` (preferencial) ou reusar `r0_probe`
+            # como armazenamento (compat com state factory legado).
+            r0_single = getattr(state, "r0_single", None)
+            if r0_single is None:
+                r0_single = state.r0_probe
+            if r0_single is None:
+                raise ValueError(
+                    f"Arquitetura {spec.architecture.value} centra raridade, "
+                    "mas state.r0_single (ou r0_probe legado) é None"
+                )
+            rarity_single_centered = rarity_single_raw - float(r0_single)
+
     return LRFeatureBuildContext(
         base=base_f64,
         s0=s0_val,
@@ -117,6 +151,8 @@ def _build_context(
         rarity_reference_raw=rarity_reference_raw,
         rarity_probe_centered=rarity_probe_centered,
         rarity_reference_centered=rarity_reference_centered,
+        rarity_single_raw=rarity_single_raw,
+        rarity_single_centered=rarity_single_centered,
     )
 
 
@@ -126,6 +162,7 @@ def build(
     base: np.ndarray,
     rarity_probe: Optional[np.ndarray] = None,
     rarity_reference: Optional[np.ndarray] = None,
+    rarity_single: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Constrói a matriz (N, D) com `spec.output_dim` colunas na ordem dos
@@ -134,7 +171,8 @@ def build(
     `base` é o array (N,) de scores cosseno brutos. `rarity_probe` e
     `rarity_reference` são as raridades canônicas (saída do
     `RarityTransformRegistry.to_rarity`), passadas apenas quando a
-    arquitetura as exige.
+    arquitetura as exige. `rarity_single` é usado para a família
+    ONE_FACE (V2.14.1).
 
     Levanta `ValueError` quando falta um input requerido pela arquitetura,
     ou quando o state não carrega o parâmetro ajustado correspondente.
@@ -150,8 +188,14 @@ def build(
         raise ValueError(
             f"rarity_reference shape {rarity_reference.shape} != base shape ({n},)"
         )
+    if rarity_single is not None and rarity_single.shape != (n,):
+        raise ValueError(
+            f"rarity_single shape {rarity_single.shape} != base shape ({n},)"
+        )
 
-    ctx = _build_context(spec, state, base, rarity_probe, rarity_reference)
+    ctx = _build_context(
+        spec, state, base, rarity_probe, rarity_reference, rarity_single,
+    )
 
     columns = [
         LR_FEATURE_TERM_SPECS[term].build_fn(ctx)
@@ -172,6 +216,7 @@ def derivative_matrix_wrt_base(
     base: np.ndarray,
     rarity_probe: Optional[np.ndarray] = None,
     rarity_reference: Optional[np.ndarray] = None,
+    rarity_single: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Matriz (N, D) com ∂φ_j/∂s por par. Cada coluna j corresponde a
@@ -182,7 +227,9 @@ def derivative_matrix_wrt_base(
     consulte `LRFeatureTermSpec.left_slope_at_s0_fn` /
     `LRFeatureTermSpec.right_slope_at_s0_fn` diretamente.
     """
-    ctx = _build_context(spec, state, base, rarity_probe, rarity_reference)
+    ctx = _build_context(
+        spec, state, base, rarity_probe, rarity_reference, rarity_single,
+    )
     columns = [
         LR_FEATURE_TERM_SPECS[term].derivative_wrt_base_fn(ctx)
         for term in spec.feature_terms

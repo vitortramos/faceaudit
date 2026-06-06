@@ -101,6 +101,37 @@ class LRFeatureTerm(Enum):
         "Interação linear bilateral (s − s₀)·r̃_P com centragem.",
     )
 
+    # ─── Termos ONE_FACE (V2.14.1) ───────────────────────────────────────
+    # Consomem raridade de UMA face única (`r_single`). Espelham os termos
+    # two-face — `_SINGLE` em vez de `_PROBE/_REFERENCE`.
+    H_POS_TIMES_SINGLE_RARITY = (
+        "H_POS_TIMES_SINGLE_RARITY",
+        "h⁺·r (face única, não centrada)",
+        "Interação h⁺(s)·r para a família ONE_FACE, sem centragem.",
+    )
+    H_POS_TIMES_SINGLE_RARITY_CENTERED = (
+        "H_POS_TIMES_SINGLE_RARITY_CENTERED",
+        "h⁺·(r − r̄)",
+        "Interação h⁺(s)·r̃ para a família ONE_FACE com centragem MEAN.",
+    )
+    H_NEG_TIMES_SINGLE_RARITY_CENTERED = (
+        "H_NEG_TIMES_SINGLE_RARITY_CENTERED",
+        "h⁻·(r − r̄)",
+        "Interação h⁻(s)·r̃ para a família ONE_FACE com centragem MEAN.",
+    )
+    LINEAR_TIMES_SINGLE_RARITY = (
+        "LINEAR_TIMES_SINGLE_RARITY",
+        "(s − s₀)·r (face única)",
+        "Interação linear bilateral (s − s₀)·r para a família ONE_FACE, "
+        "sem centragem.",
+    )
+    LINEAR_TIMES_SINGLE_RARITY_CENTERED = (
+        "LINEAR_TIMES_SINGLE_RARITY_CENTERED",
+        "(s − s₀)·(r − r̄)",
+        "Interação linear bilateral (s − s₀)·r̃ para a família ONE_FACE "
+        "com centragem MEAN.",
+    )
+
     def __new__(cls, value: str, label_pt: str, description: str):
         obj = object.__new__(cls)
         obj._value_ = value
@@ -144,6 +175,11 @@ class LRFeatureTerm(Enum):
         return "RARITY_REFERENCE" in self.value
 
     @property
+    def consumes_rarity_single(self) -> bool:
+        """True se o termo usa r (face única, família ONE_FACE)."""
+        return "SINGLE_RARITY" in self.value
+
+    @property
     def consumes_hinge_positive(self) -> bool:
         """True se o termo combina h⁺ (e portanto requer s₀)."""
         return self in (
@@ -152,6 +188,8 @@ class LRFeatureTerm(Enum):
             LRFeatureTerm.HINGE_POSITIVE_X_RARITY_REFERENCE_RAW,
             LRFeatureTerm.HINGE_POSITIVE_X_RARITY_PROBE_CENTERED_MEAN,
             LRFeatureTerm.HINGE_POSITIVE_X_RARITY_REFERENCE_CENTERED_MEAN,
+            LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY,
+            LRFeatureTerm.H_POS_TIMES_SINGLE_RARITY_CENTERED,
         )
 
     @property
@@ -161,6 +199,7 @@ class LRFeatureTerm(Enum):
             LRFeatureTerm.HINGE_NEGATIVE,
             LRFeatureTerm.HINGE_NEGATIVE_X_RARITY_PROBE_CENTERED_MEAN,
             LRFeatureTerm.HINGE_NEGATIVE_X_RARITY_REFERENCE_CENTERED_MEAN,
+            LRFeatureTerm.H_NEG_TIMES_SINGLE_RARITY_CENTERED,
         )
 
     @property
@@ -171,6 +210,8 @@ class LRFeatureTerm(Enum):
             LRFeatureTerm.LINEAR_X_RARITY_REFERENCE_RAW,
             LRFeatureTerm.LINEAR_X_RARITY_PROBE_CENTERED_MEAN,
             LRFeatureTerm.LINEAR_X_RARITY_REFERENCE_CENTERED_MEAN,
+            LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY,
+            LRFeatureTerm.LINEAR_TIMES_SINGLE_RARITY_CENTERED,
         )
 
     @property
@@ -185,7 +226,8 @@ class LRFeatureTerm(Enum):
     @property
     def is_centered(self) -> bool:
         """True se o termo aplica centragem r̃ = r − r̄."""
-        return "CENTERED_MEAN" in self.value
+        # Termos two-face usam sufixo CENTERED_MEAN; ONE_FACE usa CENTERED
+        return "CENTERED_MEAN" in self.value or self.value.endswith("_CENTERED")
 
     @property
     def has_kink_at_s0(self) -> bool:

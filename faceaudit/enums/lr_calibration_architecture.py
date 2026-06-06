@@ -91,6 +91,49 @@ class LRCalibrationArchitecture(Enum):
         "Centragem MEAN aplicada às interações.",
     )
 
+    # ─── Família ONE_FACE ────────────────────────────────────────────────
+    # Variantes das 6 arquiteturas com tipicidade que usam apenas UMA face
+    # (em vez de probe+reference). Úteis em casework forense onde só uma
+    # face é questionada, ou quando a tipicidade de um dos lados é
+    # considerada ruidosa demais (e.g. M_P em cross-pose com base escassa).
+    ONE_SIDED_NON_CENTERED_ONE_FACE = (
+        "ONE_SIDED_NON_CENTERED_ONE_FACE",
+        "One-sided não-centrada one-face [s, h⁺·r]",
+        "Variante one-face de ONE_SIDED_NON_CENTERED. Raridade da face "
+        "única modula evidência positiva sem centragem. Usa apenas r "
+        "(uma face), não r_F e r_P.",
+    )
+    ONE_SIDED_CENTERED_ONE_FACE = (
+        "ONE_SIDED_CENTERED_ONE_FACE",
+        "One-sided centrada one-face [s, h⁺·r̃]",
+        "Variante one-face de ONE_SIDED_CENTERED. Centra raridade por "
+        "r̃ = r − r̄. Apenas uma face contribui com tipicidade.",
+    )
+    LINEAR_NON_CENTERED_ONE_FACE = (
+        "LINEAR_NON_CENTERED_ONE_FACE",
+        "Linear não-centrada one-face [s, (s−s₀)·r]",
+        "Variante one-face de LINEAR_NON_CENTERED. Raridade da face "
+        "única modula em todo o range de s, sem hinge.",
+    )
+    LINEAR_CENTERED_ONE_FACE = (
+        "LINEAR_CENTERED_ONE_FACE",
+        "Linear centrada one-face [s, (s−s₀)·r̃]",
+        "Variante one-face de LINEAR_CENTERED. Linear com centragem MEAN, "
+        "apenas uma face.",
+    )
+    HIERARCHICAL_CENTERED_ONE_FACE = (
+        "HIERARCHICAL_CENTERED_ONE_FACE",
+        "Hierárquica centrada one-face [s, h⁺, h⁺·r̃]",
+        "Variante one-face de HIERARCHICAL_CENTERED. Inclui h⁺ como "
+        "feature explícita + 1 interação centrada (face única).",
+    )
+    BILATERAL_FULL_CENTERED_ONE_FACE = (
+        "BILATERAL_FULL_CENTERED_ONE_FACE",
+        "Bilateral cheia centrada one-face (D=5)",
+        "Variante one-face de BILATERAL_FULL_CENTERED: [s, h⁺, h⁻, "
+        "h⁺·r̃, h⁻·r̃]. Raridade da face única modula ambos os lados de s₀.",
+    )
+
     def __new__(cls, value: str, label_pt: str, description: str):
         obj = object.__new__(cls)
         obj._value_ = value

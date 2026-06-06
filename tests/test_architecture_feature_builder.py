@@ -23,23 +23,25 @@ from faceaudit.services import architecture_feature_builder as builder
 
 
 def _make_state(arch: LRCalibrationArchitecture):
-    """Constrói um state-like com s0 e r0_* baseados no spec."""
+    """Constrói um state-like com s0, r0_* e r0_single baseados no spec."""
     spec = LR_ARCHITECTURE_SPECS[arch]
     return SimpleNamespace(
         s0=0.25 if spec.requires_s0 else None,
         r0_probe=0.5 if (spec.requires_typicality_probe and spec.centering_mode.value == "MEAN") else None,
         r0_reference=0.48 if (spec.requires_typicality_reference and spec.centering_mode.value == "MEAN") else None,
+        r0_single=0.5 if (getattr(spec, "requires_typicality_single", False) and spec.centering_mode.value == "MEAN") else None,
     )
 
 
 def _inputs(arch: LRCalibrationArchitecture, n: int = 10):
-    """Gera (base, r_F, r_P) consistentes com o que a arquitetura consome."""
+    """Gera (base, r_F, r_P, r_S) consistentes com o que a arquitetura consome."""
     spec = LR_ARCHITECTURE_SPECS[arch]
     rng = np.random.RandomState(42)
     base = rng.uniform(-0.2, 0.8, n).astype(np.float64)
     r_F = rng.uniform(0.0, 1.0, n).astype(np.float64) if spec.requires_typicality_probe else None
     r_P = rng.uniform(0.0, 1.0, n).astype(np.float64) if spec.requires_typicality_reference else None
-    return base, r_F, r_P
+    r_S = rng.uniform(0.0, 1.0, n).astype(np.float64) if getattr(spec, "requires_typicality_single", False) else None
+    return base, r_F, r_P, r_S
 
 
 class TestOutputShape:
@@ -47,8 +49,8 @@ class TestOutputShape:
     def test_build_returns_correct_shape(self, arch):
         spec = LR_ARCHITECTURE_SPECS[arch]
         state = _make_state(arch)
-        base, r_F, r_P = _inputs(arch, n=15)
-        X = builder.build(spec, state, base, r_F, r_P)
+        base, r_F, r_P, r_S = _inputs(arch, n=15)
+        X = builder.build(spec, state, base, r_F, r_P, r_S)
         assert X.shape == (15, spec.output_dim)
         assert X.dtype == np.float64
 
@@ -56,8 +58,8 @@ class TestOutputShape:
     def test_derivative_returns_correct_shape(self, arch):
         spec = LR_ARCHITECTURE_SPECS[arch]
         state = _make_state(arch)
-        base, r_F, r_P = _inputs(arch, n=15)
-        D = builder.derivative_matrix_wrt_base(spec, state, base, r_F, r_P)
+        base, r_F, r_P, r_S = _inputs(arch, n=15)
+        D = builder.derivative_matrix_wrt_base(spec, state, base, r_F, r_P, r_S)
         assert D.shape == (15, spec.output_dim)
         assert D.dtype == np.float64
 
@@ -88,13 +90,17 @@ class TestNumericalVsAnalytical:
             r_P = rng.uniform(0.1, 0.9, 10)
         else:
             r_P = None
+        if getattr(spec, "requires_typicality_single", False):
+            r_S = rng.uniform(0.1, 0.9, 10)
+        else:
+            r_S = None
 
         eps = 1e-6
-        X_plus = builder.build(spec, state, base + eps, r_F, r_P)
-        X_minus = builder.build(spec, state, base - eps, r_F, r_P)
+        X_plus = builder.build(spec, state, base + eps, r_F, r_P, r_S)
+        X_minus = builder.build(spec, state, base - eps, r_F, r_P, r_S)
         D_num = (X_plus - X_minus) / (2 * eps)
 
-        D_analytic = builder.derivative_matrix_wrt_base(spec, state, base, r_F, r_P)
+        D_analytic = builder.derivative_matrix_wrt_base(spec, state, base, r_F, r_P, r_S)
 
         np.testing.assert_allclose(
             D_num, D_analytic, atol=1e-5,

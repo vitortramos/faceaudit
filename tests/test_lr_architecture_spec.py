@@ -25,28 +25,38 @@ from faceaudit.models.lr.lr_architecture_spec import (
 
 
 # Tabela canônica vinda do plano. Cada linha: (arquitetura, D, centering,
-# requires_s0, requires_typ_probe, requires_typ_ref, requires_ordered).
+# requires_s0, requires_typ_probe, requires_typ_ref, requires_ordered,
+# requires_typ_single).
+# Default requires_typ_single = False (somente ONE_FACE preenche True).
 CANONICAL_TABLE = [
-    ("COSINE_ONLY", 1, "NONE", False, False, False, False),
-    ("HINGE_ONLY", 2, "NONE", True, False, False, False),
-    ("TWO_SIDED_HINGE_ONLY", 3, "NONE", True, False, False, False),
-    ("ONE_SIDED_NON_CENTERED", 3, "NONE", True, True, True, True),
-    ("ONE_SIDED_CENTERED", 3, "MEAN", True, True, True, True),
-    ("LINEAR_NON_CENTERED", 3, "NONE", True, True, True, True),
-    ("LINEAR_CENTERED", 3, "MEAN", True, True, True, True),
-    ("HIERARCHICAL_CENTERED", 4, "MEAN", True, True, True, True),
-    ("BILATERAL_FULL_CENTERED", 7, "MEAN", True, True, True, True),
+    ("COSINE_ONLY", 1, "NONE", False, False, False, False, False),
+    ("HINGE_ONLY", 2, "NONE", True, False, False, False, False),
+    ("TWO_SIDED_HINGE_ONLY", 3, "NONE", True, False, False, False, False),
+    ("ONE_SIDED_NON_CENTERED", 3, "NONE", True, True, True, True, False),
+    ("ONE_SIDED_CENTERED", 3, "MEAN", True, True, True, True, False),
+    ("LINEAR_NON_CENTERED", 3, "NONE", True, True, True, True, False),
+    ("LINEAR_CENTERED", 3, "MEAN", True, True, True, True, False),
+    ("HIERARCHICAL_CENTERED", 4, "MEAN", True, True, True, True, False),
+    ("BILATERAL_FULL_CENTERED", 7, "MEAN", True, True, True, True, False),
+    # ── Família ONE_FACE (V2.14.1) ───────────────────────────────────────
+    ("ONE_SIDED_NON_CENTERED_ONE_FACE", 2, "NONE", True, False, False, False, True),
+    ("ONE_SIDED_CENTERED_ONE_FACE", 2, "MEAN", True, False, False, False, True),
+    ("LINEAR_NON_CENTERED_ONE_FACE", 2, "NONE", True, False, False, False, True),
+    ("LINEAR_CENTERED_ONE_FACE", 2, "MEAN", True, False, False, False, True),
+    ("HIERARCHICAL_CENTERED_ONE_FACE", 3, "MEAN", True, False, False, False, True),
+    ("BILATERAL_FULL_CENTERED_ONE_FACE", 5, "MEAN", True, False, False, False, True),
 ]
 
 
 class TestRegistryCoverage:
     def test_all_9_architectures_registered(self):
+        # V2.14.1: 15 arquiteturas total (9 originais + 6 ONE_FACE).
         assert set(LR_ARCHITECTURE_SPECS.keys()) == set(LRCalibrationArchitecture)
-        assert len(LR_ARCHITECTURE_SPECS) == 9
+        assert len(LR_ARCHITECTURE_SPECS) == 15
 
     @pytest.mark.parametrize("row", CANONICAL_TABLE, ids=lambda r: r[0])
     def test_canonical_properties(self, row):
-        name, d, centering, req_s0, req_tp, req_tr, req_ord = row
+        name, d, centering, req_s0, req_tp, req_tr, req_ord, req_ts = row
         arch = LRCalibrationArchitecture[name]
         spec = get_architecture_spec(arch)
         assert spec.output_dim == d
@@ -55,6 +65,7 @@ class TestRegistryCoverage:
         assert spec.requires_typicality_probe == req_tp
         assert spec.requires_typicality_reference == req_tr
         assert spec.requires_ordered_pair_roles == req_ord
+        assert spec.requires_typicality_single == req_ts
 
 
 class TestFeatureNames:
