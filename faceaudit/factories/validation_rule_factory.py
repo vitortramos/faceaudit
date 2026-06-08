@@ -334,6 +334,25 @@ class ValidationRuleFactory:
                 ),
             )
 
+        if rule_type == ValidationRuleType.CONDITIONAL_MONOTONICITY:
+            from faceaudit.validation_rules.conditional_monotonicity_rule import (
+                ConditionalMonotonicityRule,
+            )
+            return ConditionalMonotonicityRule(
+                rule_id=rule_id,
+                calibrator_resource_id=ValidationRuleFactory._req_str(
+                    params, "calibrator_resource_id", rule_type
+                ),
+                numerical_epsilon=float(params.get("numerical_epsilon", 1e-12)),
+                operational_min_slope=(
+                    float(params["operational_min_slope"])
+                    if params.get("operational_min_slope") is not None else None
+                ),
+                box_quantile_low=float(params.get("box_quantile_low", 0.05)),
+                box_quantile_high=float(params.get("box_quantile_high", 0.95)),
+                dataset_resource_id_override=params.get("dataset_resource_id_override"),
+            )
+
         raise ValueError(
             f"ValidationRuleFactory: tipo de regra não suportado: {rule_type}."
         )

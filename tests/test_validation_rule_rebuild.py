@@ -80,19 +80,37 @@ def test_calibration_training_rebuilds_input_params_on_change():
         input_resource_id="scores_v1",
         trained_calibration_model_resource_id="cal_v1",
     )
-    assert len(instr.validation_rule_configs) == 2
-    for cfg in instr.validation_rule_configs:
+    # 3 defaults para LogReg + output definido: MIN_CALIBRATION_PAIRS,
+    # SCORE_CALIBRATION_STATE (ambos sobre scores), CONDITIONAL_MONOTONICITY
+    # (sobre calibrador). CONDITIONAL_MONOTONICITY foi adicionado na V1 da
+    # regra de monotonicidade condicional.
+    assert len(instr.validation_rule_configs) == 3
+    scores_based = [c for c in instr.validation_rule_configs
+                    if "scores_resource_id" in c.params]
+    monotonicity = [c for c in instr.validation_rule_configs
+                    if c.rule_type == ValidationRuleType.CONDITIONAL_MONOTONICITY]
+    assert len(scores_based) == 2
+    assert len(monotonicity) == 1
+    for cfg in scores_based:
         assert cfg.params["scores_resource_id"] == "scores_v1"
+    assert monotonicity[0].params["calibrator_resource_id"] == "cal_v1"
 
     instr.input_resource_id = "scores_v2"
     instr._sync_declared_io()
 
-    assert len(instr.validation_rule_configs) == 2
-    for cfg in instr.validation_rule_configs:
+    assert len(instr.validation_rule_configs) == 3
+    scores_based = [c for c in instr.validation_rule_configs
+                    if "scores_resource_id" in c.params]
+    monotonicity = [c for c in instr.validation_rule_configs
+                    if c.rule_type == ValidationRuleType.CONDITIONAL_MONOTONICITY]
+    for cfg in scores_based:
         assert cfg.params["scores_resource_id"] == "scores_v2", \
             f"Regra {cfg.rule_type} ainda aponta pro scores antigo"
+    # CONDITIONAL_MONOTONICITY não depende do input — aponta pro calibrador
+    assert monotonicity[0].params["calibrator_resource_id"] == "cal_v1"
     print("[OK] CALIBRATION_MODEL_TRAINING: params (MIN_CALIBRATION_PAIRS + "
-          "SCORE_CALIBRATION_STATE) acompanham mudanca do input.")
+          "SCORE_CALIBRATION_STATE + CONDITIONAL_MONOTONICITY) acompanham "
+          "mudanca do input.")
 
 
 def test_dataset_split_rebuilds_rules_on_mode_change():

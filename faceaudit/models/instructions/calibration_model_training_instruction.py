@@ -155,6 +155,10 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
           com poucos pares genuínos ou impostores.
         - SCORE_CALIBRATION_STATE(RAW) — evita treino sobre log-LR já
           calibrado, que produziria modelo distorcido.
+        - CONDITIONAL_MONOTONICITY — gate forense: ∂log_LR/∂s > 0 em
+          observed_rows + central_box (V1: apenas para LogReg, que persiste
+          architecture_state quando treinado via LR_ARCHITECTURE_VECTORIZATION
+          em FIT_PER_FOLD).
         """
         if self.validation_rules_user_managed:
             return
@@ -167,7 +171,7 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         if not self.input_resource_id:
             return
 
-        self.validation_rule_configs = [
+        defaults = [
             ValidationRuleConfig(
                 rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
                 params={"scores_resource_id": self.input_resource_id},
@@ -180,6 +184,20 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
                 },
             ),
         ]
+
+        # CONDITIONAL_MONOTONICITY: V1 cobre apenas LogReg. KDE e
+        # BI_GAUSSIANIZED não persistem architecture_state.
+        if self.uses_logistic_regression and self.trained_calibration_model_resource_id:
+            defaults.append(
+                ValidationRuleConfig(
+                    rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+                    params={
+                        "calibrator_resource_id": self.trained_calibration_model_resource_id,
+                    },
+                )
+            )
+
+        self.validation_rule_configs = defaults
 
     @property
     def uses_logistic_regression(self) -> bool:
