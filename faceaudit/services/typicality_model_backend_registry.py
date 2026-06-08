@@ -125,7 +125,7 @@ def _register_default_backends() -> None:
             potential_score_types=frozenset({
                 TypicalityScoreType.MEAN_KNN_SIMILARITY,
                 TypicalityScoreType.TYPICALITY_PERCENTILE,
-                TypicalityScoreType.LOG_DENSITY_KNN,
+                TypicalityScoreType.LOG_DENSITY_ESTIMATE,
             }),
             badge="STABLE",
             label_pt=TypicalityModelType.KNN.label_pt,
@@ -141,7 +141,7 @@ def _register_default_backends() -> None:
             model_class=MoVMFTypicalityModel,
             potential_score_types=frozenset({
                 TypicalityScoreType.TYPICALITY_PERCENTILE,
-                TypicalityScoreType.LOG_DENSITY_KNN,
+                TypicalityScoreType.LOG_DENSITY_ESTIMATE,
             }),
             badge="EXPERIMENTAL",
             label_pt=TypicalityModelType.MOVMF.label_pt,

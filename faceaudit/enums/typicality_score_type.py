@@ -8,28 +8,36 @@ from typing import List, Tuple
 
 class TypicalityScoreType(Enum):
     """
-    Qual das três métricas do KNNTypicalityModel é usada como score
-    individual por face antes de combinar via TypicalityCombiner.
+    Qual das métricas de tipicidade é usada como score individual por
+    face antes de combinar via TypicalityCombiner.
 
-    - MEAN_KNN_SIMILARITY: T_k bruto, em [-1, 1]. Intuitivo, mas a escala
-      depende da concentração da população — não é diretamente comparável
-      entre populações de referência distintas.
+    Compartilhada entre k-NN e MoVMF (PR 3 unificou nomes):
 
-    - TYPICALITY_PERCENTILE: rank empírico, normalizado em [0, 1].
-      Comparável entre populações (sempre 0..1). Recomendado para
-      vetorização com cosseno, porque tem escala consistente e é
-      defensável em corte como estatística não-paramétrica.
+    - **MEAN_KNN_SIMILARITY**: T_k bruto, em [-1, 1]. Específico ao k-NN
+      (k vizinhos mais próximos esférico). Sem análogo paramétrico
+      direto no MoVMF.
 
-    - LOG_DENSITY_KNN: estimador de Loftsgaarden-Quesenberry esférico.
-      Escala real, pode ser muito negativo em D=512 (proporcional a
-      -(d-1)·log θ_k). Indicado para LR generativo direto. Para
-      vetorização junto com cosseno, considere padronizar antes do
-      LogReg via `StandardScaler` (não implementado aqui).
+    - **TYPICALITY_PERCENTILE**: rank empírico, escalado 0..100 pelo
+      modelo (pair scoring divide por 100 para [0,1]). Universal entre
+      backends. A base do percentil é declarada pelo modelo via
+      `TypicalityPercentileBasis` (k-NN default: T_k; MoVMF default:
+      log-densidade) e propagada no `TypicalityScoreBatch.percentile_basis_score_type`.
+
+    - **LOG_DENSITY_ESTIMATE** (renomeado de `LOG_DENSITY_KNN` no PR 3):
+      estimativa de log-densidade. No k-NN é Loftsgaarden-Quesenberry
+      esférico (proporcional a -(d-1)·log θ_k); no MoVMF é
+      log-likelihood da mistura. **As escalas absolutas diferem entre
+      backends** — o nome `ESTIMATE` reconhece isso.
+
+    Migração de JSONs antigos (V2.14) com `score_type=LOG_DENSITY_KNN`
+    via `LegacyStrategyMigrationService` (não pelo `from_str` direto).
     """
 
     MEAN_KNN_SIMILARITY = ("MEAN_KNN_SIMILARITY", "Similaridade média kNN")
     TYPICALITY_PERCENTILE = ("TYPICALITY_PERCENTILE", "Percentil de tipicidade")
-    LOG_DENSITY_KNN = ("LOG_DENSITY_KNN", "Log-densidade kNN")
+    LOG_DENSITY_ESTIMATE = (
+        "LOG_DENSITY_ESTIMATE", "Log-densidade estimada (k-NN ou MoVMF)"
+    )
 
     def __new__(cls, value: str, label_pt: str):
         # Pattern canônico de Enum com valor composto — ver

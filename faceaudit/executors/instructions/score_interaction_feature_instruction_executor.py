@@ -412,7 +412,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
                             "TYPICALITY_PAIR_SCORING (metadata "
                             "`score_kind=typicality_pair` ou `score_type` "
                             "∈ {TYPICALITY_PERCENTILE, MEAN_KNN_SIMILARITY, "
-                            "LOG_DENSITY_KNN})."
+                            "LOG_DENSITY_ESTIMATE})."
                         )
 
         # MANUAL / INHERIT validations.
@@ -543,7 +543,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             f"Modifier '{modifier_id}' não é de família tipicidade. "
             "Esperado output de TYPICALITY_PAIR_SCORING "
             "(metadata `score_kind=typicality_pair` ou `score_type` em "
-            "{TYPICALITY_PERCENTILE, MEAN_KNN_SIMILARITY, LOG_DENSITY_KNN})."
+            "{TYPICALITY_PERCENTILE, MEAN_KNN_SIMILARITY, LOG_DENSITY_ESTIMATE})."
         )
 
     @staticmethod
@@ -730,7 +730,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
           (como uma versão anterior fazia) produzia raridade saturada
           em ~0.99 para todos os pares — bug histórico já corrigido.
         - MEAN_KNN_SIMILARITY ([-1,1]): `−v`. Label = `"−mean_knn_similarity"`.
-        - LOG_DENSITY_KNN (ℝ): `−v`. Label = `"−log_density_knn"`.
+        - LOG_DENSITY_ESTIMATE (ℝ): `−v`. Label = `"−log_density_estimate"`.
 
         Inversão = False: passthrough da tipicidade na escala em que
         veio — útil quando o usuário quer que o sinal do coeficiente
@@ -754,7 +754,7 @@ class ScoreInteractionFeatureInstructionExecutor(StrategyInstructionExecutorBase
             if invert:
                 return -arr, "−mean_knn_similarity"
             return arr, "mean_knn_similarity"
-        if score_type is TypicalityScoreType.LOG_DENSITY_KNN:
+        if score_type is TypicalityScoreType.LOG_DENSITY_ESTIMATE:
             arr = typicality.astype(np.float64)
             if invert:
                 return -arr, "−log_density_knn"

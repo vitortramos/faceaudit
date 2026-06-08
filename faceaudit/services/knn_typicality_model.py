@@ -422,7 +422,7 @@ class KNNTypicalityModel:
         return frozenset({
             TypicalityScoreType.MEAN_KNN_SIMILARITY,
             TypicalityScoreType.TYPICALITY_PERCENTILE,
-            TypicalityScoreType.LOG_DENSITY_KNN,
+            TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         })
 
     @property
@@ -489,7 +489,7 @@ class KNNTypicalityModel:
             return "MEAN_KNN_SIMILARITY_SPHERICAL"
         if t == TypicalityScoreType.TYPICALITY_PERCENTILE:
             return "PERCENTILE_OF_MEAN_KNN_SIMILARITY"
-        if t == TypicalityScoreType.LOG_DENSITY_KNN:
+        if t == TypicalityScoreType.LOG_DENSITY_ESTIMATE:
             return "LOG_DENSITY_ESTIMATE_LQ_SPHERICAL"
         raise ValueError(f"score_type sem semantics id: {t}")
 
@@ -527,7 +527,7 @@ class KNNTypicalityModel:
             percentile_basis = TypicalityScoreType.MEAN_KNN_SIMILARITY
             # Fingerprint da CDF de referência (loo_mean_knn_sorted).
             ref_dist_fp = self._reference_score_distribution_fingerprint()
-        elif score_type == TypicalityScoreType.LOG_DENSITY_KNN:
+        elif score_type == TypicalityScoreType.LOG_DENSITY_ESTIMATE:
             arr = np.array([i.log_density_knn for i in infos], dtype=np.float64)
             percentile_basis = None
             ref_dist_fp = None

@@ -215,8 +215,8 @@ class TestRarityReferenceDivergence:
     ):
         base, rp, _ = matching_incoming
         rr_bad = {
-            "score_type": "LOG_DENSITY_KNN",
-            "transform_id": "NEGATE_LOG_DENSITY_KNN",
+            "score_type": "LOG_DENSITY_ESTIMATE",
+            "transform_id": "NEGATE_LOG_DENSITY_ESTIMATE",
             "combiner": "REFERENCE_ONLY",
         }
         issues = validate_state_compatibility(

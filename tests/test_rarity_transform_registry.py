@@ -48,7 +48,7 @@ class TestCanonicalRegistrations:
         assert ids == {
             "ONE_MINUS_PERCENTILE_0_1",
             "NEGATE_MEAN_KNN_SIMILARITY",
-            "NEGATE_LOG_DENSITY_KNN",
+            "NEGATE_LOG_DENSITY_ESTIMATE",
         }
 
     def test_one_minus_percentile(self):
@@ -65,9 +65,9 @@ class TestCanonicalRegistrations:
 
     def test_negate_log_density(self):
         v = np.array([-100.0, -50.0, 0.0])
-        r, tid = to_canonical_rarity(v, TypicalityScoreType.LOG_DENSITY_KNN)
+        r, tid = to_canonical_rarity(v, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
         np.testing.assert_array_equal(r, np.array([100.0, 50.0, 0.0]))
-        assert tid == "NEGATE_LOG_DENSITY_KNN"
+        assert tid == "NEGATE_LOG_DENSITY_ESTIMATE"
 
 
 class TestValidations:

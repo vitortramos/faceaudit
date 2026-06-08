@@ -161,7 +161,7 @@ def test_score_batch_basis_cleared_when_not_percentile():
         embedding_dim=8,
         score_type=TypicalityScoreType.MEAN_KNN_SIMILARITY,
         score_semantics_id="X",
-        percentile_basis_score_type=TypicalityScoreType.LOG_DENSITY_KNN,
+        percentile_basis_score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         reference_score_distribution_fingerprint="abc",
         model_type=TypicalityModelType.KNN,
     )
@@ -213,7 +213,7 @@ def test_knn_enabled_score_types_after_fit(trained_knn):
     assert m.enabled_score_types == frozenset({
         TypicalityScoreType.MEAN_KNN_SIMILARITY,
         TypicalityScoreType.TYPICALITY_PERCENTILE,
-        TypicalityScoreType.LOG_DENSITY_KNN,
+        TypicalityScoreType.LOG_DENSITY_ESTIMATE,
     })
 
 
@@ -222,7 +222,7 @@ def test_movmf_enabled_score_types_after_fit(trained_movmf):
     # MoVMF não suporta MEAN_KNN_SIMILARITY
     assert m.enabled_score_types == frozenset({
         TypicalityScoreType.TYPICALITY_PERCENTILE,
-        TypicalityScoreType.LOG_DENSITY_KNN,
+        TypicalityScoreType.LOG_DENSITY_ESTIMATE,
     })
 
 
@@ -250,7 +250,7 @@ def test_knn_compute_scores_percentile_has_basis(trained_knn):
 
 def test_movmf_compute_scores_log_density(trained_movmf):
     m, X = trained_movmf
-    b = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
+    b = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
     assert b.score_semantics_id == "LOG_LIKELIHOOD_MOVMF"
     assert b.model_type == TypicalityModelType.MOVMF
 
@@ -259,7 +259,7 @@ def test_movmf_compute_scores_percentile_has_basis(trained_movmf):
     m, X = trained_movmf
     b = m.compute_scores(X, TypicalityScoreType.TYPICALITY_PERCENTILE)
     assert b.score_semantics_id == "PERCENTILE_OF_LOG_LIKELIHOOD_MOVMF"
-    assert b.percentile_basis_score_type == TypicalityScoreType.LOG_DENSITY_KNN
+    assert b.percentile_basis_score_type == TypicalityScoreType.LOG_DENSITY_ESTIMATE
     assert b.reference_score_distribution_fingerprint is not None
 
 
@@ -274,7 +274,7 @@ def test_movmf_rejects_mean_knn_similarity(trained_movmf):
 
 def test_knn_compute_scores_immutable(trained_knn):
     m, X = trained_knn
-    b = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
+    b = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
     with pytest.raises(ValueError):
         b.scores[0] = 999.0
 
@@ -377,8 +377,8 @@ def test_factory_round_trip_knn(trained_knn):
     m2 = TypicalityModelFactory.from_dict(envelope)
     assert isinstance(m2, KNNTypicalityModel)
 
-    b1 = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
-    b2 = m2.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
+    b1 = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
+    b2 = m2.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
     np.testing.assert_allclose(b1.scores, b2.scores)
     assert b1.batch_fingerprint == b2.batch_fingerprint
 
@@ -391,8 +391,8 @@ def test_factory_round_trip_movmf(trained_movmf):
     m2 = TypicalityModelFactory.from_dict(envelope)
     assert isinstance(m2, MoVMFTypicalityModel)
 
-    b1 = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
-    b2 = m2.compute_scores(X, TypicalityScoreType.LOG_DENSITY_KNN)
+    b1 = m.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
+    b2 = m2.compute_scores(X, TypicalityScoreType.LOG_DENSITY_ESTIMATE)
     np.testing.assert_allclose(b1.scores, b2.scores)
 
 

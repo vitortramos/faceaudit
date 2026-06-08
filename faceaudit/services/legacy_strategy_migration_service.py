@@ -17,7 +17,9 @@ Princípios do plano aprovado:
    loader → `LegacyStrategyVersionRejected`. Útil para validação formal
    externa onde toda migração deve passar pela ferramenta explícita.
 
-Cenários cobertos em PR 2:
+Cenários cobertos:
+
+PR 2:
 - `instruction_type = "KNN_TYPICALITY_MODEL_TRAINING"` →
   `instruction_type = "TYPICALITY_MODEL_TRAINING"` com
   `typicality_model_type = "KNN"` e config k-NN preenchido literalmente.
@@ -26,9 +28,12 @@ Cenários cobertos em PR 2:
 - `reference_mode = "PER_IDENTITY"` → `population_weighting_mode =
   "IDENTITY_CENTROIDS"`.
 
-PR 3 acrescenta:
+PR 3:
 - `score_type = "LOG_DENSITY_KNN"` → `score_type = "LOG_DENSITY_ESTIMATE"`
-  em instruções `TYPICALITY_PAIR_SCORING`.
+  em instruções `TYPICALITY_PAIR_SCORING` e `SCORE_INTERACTION_FEATURE`.
+- `transform_id = "NEGATE_LOG_DENSITY_KNN"` →
+  `"NEGATE_LOG_DENSITY_ESTIMATE"` em metadata de raridade persistido
+  dentro de `architecture_state`.
 """
 
 from __future__ import annotations
@@ -134,6 +139,17 @@ class LegacyStrategyMigrationService:
                         "new": "TYPICALITY_MODEL_TRAINING",
                         "typicality_model_type": "KNN",
                     })
+                # PR 3: score_type legado `LOG_DENSITY_KNN` em
+                # TYPICALITY_PAIR_SCORING / SCORE_INTERACTION_FEATURE.
+                if instr.get("score_type") == "LOG_DENSITY_KNN":
+                    plan.add_legacy_signal("LOG_DENSITY_KNN_score_type")
+                    plan.add_step({
+                        "kind": "score_type_rename",
+                        "phase": phase_key,
+                        "index": idx,
+                        "old": "LOG_DENSITY_KNN",
+                        "new": "LOG_DENSITY_ESTIMATE",
+                    })
         return plan
 
     # ────────────────────────────────────────────────────────────────
@@ -160,19 +176,23 @@ class LegacyStrategyMigrationService:
         converted = json.loads(json.dumps(data))  # deep copy via JSON
 
         for step in plan.steps:
-            if step["kind"] == "instruction_type_rename":
-                phase = converted.get(step["phase"])
-                if not isinstance(phase, list):
-                    continue
-                idx = step["index"]
-                if idx >= len(phase):
-                    continue
-                instr = phase[idx]
-                if not isinstance(instr, dict):
-                    continue
+            kind = step["kind"]
+            phase = converted.get(step["phase"])
+            if not isinstance(phase, list):
+                continue
+            idx = step["index"]
+            if idx >= len(phase):
+                continue
+            instr = phase[idx]
+            if not isinstance(instr, dict):
+                continue
+
+            if kind == "instruction_type_rename":
                 LegacyStrategyMigrationService._migrate_knn_typicality_training(
                     instr, step,
                 )
+            elif kind == "score_type_rename":
+                instr["score_type"] = step["new"]
 
         return converted
 

@@ -682,11 +682,11 @@ class MoVMFTypicalityModel:
     #
     # MoVMF habilita o subset universal de score types (sem
     # `MEAN_KNN_SIMILARITY`, que é uma noção local do k-NN sem análogo
-    # paramétrico aqui). PR 3 renomeará `LOG_DENSITY_KNN` →
-    # `LOG_DENSITY_ESTIMATE` no enum — para o MoVMF a semântica é
-    # log-likelihood da mistura; o `score_semantics_id` no batch deixa
-    # isso explícito (`LOG_LIKELIHOOD_MOVMF` vs
-    # `LOG_DENSITY_ESTIMATE_LQ_SPHERICAL` do k-NN).
+    # paramétrico aqui). O `score_semantics_id` no batch deixa explícita
+    # a diferença matemática entre os dois backends que compartilham o
+    # mesmo enum value `LOG_DENSITY_ESTIMATE`:
+    # `LOG_LIKELIHOOD_MOVMF` (mistura paramétrica) vs
+    # `LOG_DENSITY_ESTIMATE_LQ_SPHERICAL` (Loftsgaarden-Quesenberry k-NN).
 
     @property
     def model_type(self) -> TypicalityModelType:
@@ -697,11 +697,11 @@ class MoVMFTypicalityModel:
         if not self.is_fitted():
             return frozenset()
         # MoVMF: TYPICALITY_PERCENTILE (sobre log-likelihood) +
-        # LOG_DENSITY_KNN (interpretado como log-densidade qualquer; será
-        # `LOG_DENSITY_ESTIMATE` após o rename do enum no PR 3).
+        # LOG_DENSITY_ESTIMATE (universal — semantics_id distingue
+        # log_likelihood paramétrico de L-Q esférico não-paramétrico).
         return frozenset({
             TypicalityScoreType.TYPICALITY_PERCENTILE,
-            TypicalityScoreType.LOG_DENSITY_KNN,
+            TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         })
 
     @property
@@ -769,7 +769,7 @@ class MoVMFTypicalityModel:
 
     @staticmethod
     def _score_semantics_id_for(t: TypicalityScoreType) -> str:
-        if t == TypicalityScoreType.LOG_DENSITY_KNN:
+        if t == TypicalityScoreType.LOG_DENSITY_ESTIMATE:
             return "LOG_LIKELIHOOD_MOVMF"
         if t == TypicalityScoreType.TYPICALITY_PERCENTILE:
             return "PERCENTILE_OF_LOG_LIKELIHOOD_MOVMF"
@@ -792,7 +792,7 @@ class MoVMFTypicalityModel:
                 model_type=self.model_type,
             )
 
-        if score_type == TypicalityScoreType.LOG_DENSITY_KNN:
+        if score_type == TypicalityScoreType.LOG_DENSITY_ESTIMATE:
             arr = self.score_samples(embeddings)
             percentile_basis = None
             ref_dist_fp = None
@@ -800,7 +800,7 @@ class MoVMFTypicalityModel:
             arr = self.get_percentiles(embeddings, extrapolate=True)
             # Base do percentil MoVMF: log-likelihood. Em PR 3 isso vira
             # LOG_DENSITY_ESTIMATE (mesma identidade enum, nome novo).
-            percentile_basis = TypicalityScoreType.LOG_DENSITY_KNN
+            percentile_basis = TypicalityScoreType.LOG_DENSITY_ESTIMATE
             ref_dist_fp = self._reference_score_distribution_fingerprint()
         else:
             raise ValueError(f"score_type não esperado: {score_type}")

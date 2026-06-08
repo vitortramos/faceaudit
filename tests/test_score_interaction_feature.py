@@ -463,7 +463,7 @@ def test_to_rarity_mean_knn_similarity_uses_minus_v():
 def test_to_rarity_log_density_uses_minus_v():
     typicality = np.array([-150.0, -100.0, -50.0], dtype=np.float64)
     rarity, label = ScoreInteractionFeatureInstructionExecutor._to_rarity(
-        typicality, TypicalityScoreType.LOG_DENSITY_KNN, invert=True,
+        typicality, TypicalityScoreType.LOG_DENSITY_ESTIMATE, invert=True,
     )
     np.testing.assert_allclose(rarity, [150.0, 100.0, 50.0])
     assert label == "−log_density_knn"

@@ -8,7 +8,7 @@ essa convenção:
 
   - TYPICALITY_PERCENTILE (v ∈ [0,1]): r = 1 − v.
   - MEAN_KNN_SIMILARITY (v ∈ [-1,1]): r = −v.
-  - LOG_DENSITY_KNN (v ∈ ℝ): r = −v.
+  - LOG_DENSITY_ESTIMATE (v ∈ ℝ): r = −v.
 
 Extensibilidade: o registry aceita `register(spec, override=False)`.
 Novas tipicidades (MoVMF, etc.) registram um `RarityTransformSpec`
@@ -202,12 +202,12 @@ class RarityTransformRegistry:
                 max_input=1.0,
                 higher_means_rarer=True,
             )
-        if TypicalityScoreType.LOG_DENSITY_KNN not in cls._registry:
-            cls._registry[TypicalityScoreType.LOG_DENSITY_KNN] = RarityTransformSpec(
-                score_type=TypicalityScoreType.LOG_DENSITY_KNN,
-                transform_id="NEGATE_LOG_DENSITY_KNN",
+        if TypicalityScoreType.LOG_DENSITY_ESTIMATE not in cls._registry:
+            cls._registry[TypicalityScoreType.LOG_DENSITY_ESTIMATE] = RarityTransformSpec(
+                score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+                transform_id="NEGATE_LOG_DENSITY_ESTIMATE",
                 formula_version="1.0",
-                transform_label="−log-densidade kNN",
+                transform_label="−log-densidade estimada",
                 fn=lambda v: -v,
                 min_input=None,
                 max_input=None,
@@ -252,8 +252,8 @@ def legacy_transform_typicality(
         if invert:
             return -arr, "-mean_knn_similarity"
         return arr, "mean_knn_similarity"
-    if score_type is TypicalityScoreType.LOG_DENSITY_KNN:
+    if score_type is TypicalityScoreType.LOG_DENSITY_ESTIMATE:
         if invert:
-            return -arr, "-log_density_knn"
-        return arr, "log_density_knn"
+            return -arr, "-log_density_estimate"
+        return arr, "log_density_estimate"
     raise ValueError(f"score_type desconhecido em legacy_transform_typicality: {score_type}")
