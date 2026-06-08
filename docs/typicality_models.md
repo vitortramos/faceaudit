@@ -83,7 +83,7 @@ harmonizado entre k-NN e MoVMF.
 | Modo | k-NN | MoVMF | Defensibilidade |
 |---|---|---|---|
 | `FACE_LEVEL_RAW` | Cada face é um ponto da referência. | EM sobre todas as faces; identidades com mais fotos pesam mais. | Vulnerável a desbalanceamento de coleta. |
-| `INVERSE_IDENTITY_FREQUENCY` | Vizinhos contribuem com peso `1/n_faces(identidade)`; CDF de referência também ponderada. | EM ponderado: cada face entra na E/M-step com peso `1/n_faces(identidade)`. | Iguala identidades preservando diversidade intra-identidade. |
+| `INVERSE_IDENTITY_FREQUENCY` (PR 5) | Vizinhos contribuem com peso `1/n_faces(identidade)`; CDF de referência também ponderada. | EM ponderado: cada face entra na M-step com peso `1/n_faces(identidade)`; `n_k = Σ_i w_i · r_ik`. | Iguala identidades preservando diversidade intra-identidade. |
 | `IDENTITY_CENTROIDS` | Referência tem 1 centróide L2-renormalizado por identidade. | EM treinado sobre centróides. | Default forense; robusto. |
 
 ### 4.1 Semântica matemática do `INVERSE_IDENTITY_FREQUENCY` no k-NN
@@ -115,11 +115,10 @@ modo `FACE_LEVEL_RAW` isso degenera para o `1/k` tradicional.
 - `weighted_T_k_formula_id = "INV_ID_FREQ_v1"` (auditoria, entra no
   `model_contract_fingerprint`).
 
-> **Aviso de status (V2.15)**: `INVERSE_IDENTITY_FREQUENCY` ainda **não
-> está implementado** em PR 4 — o serviço levanta
-> `NotImplementedError` com mensagem apontando esta seção. A
-> especificação está fixada para evitar reinterpretação no momento da
-> implementação. Próxima iteração materializa.
+> **Status (V2.15 / PR 5)**: `INVERSE_IDENTITY_FREQUENCY` **implementado**
+> em ambos os backends. Persiste `reference_score_weights` no estado e
+> `weighted_T_k_formula_id = "INV_ID_FREQ_v1"` no
+> `model_contract_fingerprint` para auditoria.
 
 ### 4.2 Semântica no MoVMF
 

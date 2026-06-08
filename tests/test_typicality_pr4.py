@@ -125,14 +125,15 @@ def test_movmf_identity_centroids_reduces_sample_count(reference_population):
     assert m.sample_count == 20
 
 
-def test_movmf_inverse_identity_frequency_not_implemented(reference_population):
+def test_movmf_inverse_identity_frequency_now_implemented(reference_population):
+    """PR 5 implementou. O modelo treina sem NotImplementedError."""
     X, ids = reference_population
     m = MoVMFTypicalityModel(
         n_components=1, random_state=0,
         population_weighting_mode=PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY,
     )
-    with pytest.raises(NotImplementedError, match="docs/typicality_models.md"):
-        m.fit(X, identity_ids=ids)
+    m.fit(X, identity_ids=ids)
+    assert m.is_fitted()
 
 
 # ─────────────────────────────────────────────────────────────────────

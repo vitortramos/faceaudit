@@ -79,6 +79,19 @@ class _KNNRefState:
     # ou shape original em PER_FACE.
     n_input_faces: int
     n_singleton_identities: int  # só relevante em PER_IDENTITY
+    # PR 5: pesos por face de referência (INVERSE_IDENTITY_FREQUENCY).
+    # Quando None, modo legado (FACE_LEVEL_RAW/IDENTITY_CENTROIDS).
+    # Quando definido, paralelo a `reference` e a `loo_mean_knn_sorted_weights`.
+    reference_score_weights: Optional[np.ndarray] = None
+    # Pesos correspondentes à `loo_mean_knn_sorted` (mesma ordenação).
+    loo_mean_knn_sorted_weights: Optional[np.ndarray] = None
+    # CDF empírica ponderada (cumsum normalizada de
+    # `loo_mean_knn_sorted_weights`). Quando None, usa cumsum
+    # uniforme = (1..N)/N.
+    loo_cdf: Optional[np.ndarray] = None
+    # ID estável da fórmula (`INV_ID_FREQ_v1`), entra no contract
+    # fingerprint para auditoria.
+    weighted_T_k_formula_id: Optional[str] = None
 
 
 class KNNTypicalityModel:
@@ -102,6 +115,10 @@ class KNNTypicalityModel:
         # PR 4
         unit_norm_policy=None,
         unit_norm_tolerance: float = 1e-4,
+        # PR 5: ponderação populacional. Quando None, deriva de
+        # `reference_mode` (PER_FACE → FACE_LEVEL_RAW; PER_IDENTITY →
+        # IDENTITY_CENTROIDS).
+        population_weighting_mode=None,
     ):
         if k < 1:
             raise ValueError("k deve ser >= 1.")
@@ -126,6 +143,22 @@ class KNNTypicalityModel:
             else unit_norm_policy
         )
         self.unit_norm_tolerance = float(unit_norm_tolerance)
+
+        # PR 5: PopulationWeightingMode. Quando None, deriva do
+        # reference_mode para preservar compat.
+        from faceaudit.enums.population_weighting_mode import (
+            PopulationWeightingMode,
+        )
+        if population_weighting_mode is None:
+            if self.reference_mode is TypicalityReferenceMode.PER_IDENTITY:
+                population_weighting_mode = PopulationWeightingMode.IDENTITY_CENTROIDS
+            else:
+                population_weighting_mode = PopulationWeightingMode.FACE_LEVEL_RAW
+        self.population_weighting_mode = (
+            PopulationWeightingMode.from_str(population_weighting_mode)
+            if not isinstance(population_weighting_mode, PopulationWeightingMode)
+            else population_weighting_mode
+        )
 
         # Estado pós-fit. None até `fit()` ser chamado.
         self._state: Optional[_KNNRefState] = None
@@ -166,11 +199,18 @@ class KNNTypicalityModel:
         x_raw = self._validate_and_normalize_2d(embeddings)
         n_input, d = x_raw.shape
 
-        if self.reference_mode is TypicalityReferenceMode.PER_IDENTITY:
+        # PR 5: dispatch via PopulationWeightingMode.
+        from faceaudit.enums.population_weighting_mode import (
+            PopulationWeightingMode,
+        )
+
+        weights_per_face: Optional[np.ndarray] = None
+
+        if self.population_weighting_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
             if identities is None:
                 raise ValueError(
-                    "reference_mode=PER_IDENTITY exige `identities` "
-                    "paralelo a `embeddings`."
+                    "PopulationWeightingMode.IDENTITY_CENTROIDS exige "
+                    "`identities`/`identity_ids` paralelo a `embeddings`."
                 )
             if len(identities) != n_input:
                 raise ValueError(
@@ -178,7 +218,29 @@ class KNNTypicalityModel:
                     f"len(embeddings)={n_input}."
                 )
             reference, n_singletons = self._aggregate_by_identity(x_raw, identities)
+        elif self.population_weighting_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+            if identities is None:
+                raise ValueError(
+                    "PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY exige "
+                    "`identities`/`identity_ids` paralelo a `embeddings`."
+                )
+            if len(identities) != n_input:
+                raise ValueError(
+                    f"len(identities)={len(identities)} difere de "
+                    f"len(embeddings)={n_input}."
+                )
+            reference = x_raw.copy()
+            n_singletons = 0
+            # w_i = 1/n_id_i (faces de identidades raras pesam mais).
+            ids_arr = np.asarray(identities)
+            unique_ids, inverse_idx, id_counts = np.unique(
+                ids_arr, return_inverse=True, return_counts=True,
+            )
+            weights_per_face = (1.0 / id_counts[inverse_idx]).astype(np.float64)
+            self._n_input_faces_inv = int(n_input)
+            self._n_identities_inv = int(unique_ids.shape[0])
         else:
+            # FACE_LEVEL_RAW
             reference = x_raw.copy()
             n_singletons = 0
 
@@ -186,7 +248,7 @@ class KNNTypicalityModel:
         if n_ref < self.k + 1:
             raise ValueError(
                 f"k+1 ({self.k + 1}) pontos de referência são necessários para LOO. "
-                f"Obtidos: {n_ref} (modo={self.reference_mode.to_str()})."
+                f"Obtidos: {n_ref} (modo={self.population_weighting_mode.to_str()})."
             )
 
         # Similaridade N_ref × N_ref. Exclui self via diagonal = -inf.
@@ -195,7 +257,15 @@ class KNNTypicalityModel:
 
         top_k_idx = np.argpartition(-sims, self.k - 1, axis=1)[:, : self.k]
         top_k_sim = np.take_along_axis(sims, top_k_idx, axis=1)
-        loo_T_k = top_k_sim.mean(axis=1).astype(np.float64)
+
+        if weights_per_face is not None:
+            # T_k ponderado: w_j_renormalizado = w_j / Σ w_k_vizinhos
+            top_k_w = weights_per_face[top_k_idx]                 # (N, k)
+            row_w_sum = top_k_w.sum(axis=1, keepdims=True)        # (N, 1)
+            renormalized = top_k_w / np.maximum(row_w_sum, self.eps)
+            loo_T_k = (top_k_sim * renormalized).sum(axis=1).astype(np.float64)
+        else:
+            loo_T_k = top_k_sim.mean(axis=1).astype(np.float64)
 
         if not np.all(np.isfinite(loo_T_k)):
             raise RuntimeError(
@@ -203,12 +273,34 @@ class KNNTypicalityModel:
                 "referência tem pontos degenerados (norma zero)."
             )
 
-        loo_sorted = np.sort(loo_T_k)
-        ood_threshold = (
-            float(np.quantile(loo_sorted, self.ood_quantile))
-            if self.ood_quantile > 0.0
-            else float(-np.inf)
-        )
+        if weights_per_face is not None:
+            # CDF ponderada: ordena T_k, alinha pesos, e cumsum normalizado.
+            order = np.argsort(loo_T_k)
+            loo_sorted = loo_T_k[order]
+            sorted_weights = weights_per_face[order]
+            total_w = sorted_weights.sum()
+            cdf = np.cumsum(sorted_weights) / total_w
+            # Threshold OOD via quantil ponderado (busca onde cdf >= q)
+            if self.ood_quantile > 0.0:
+                idx = int(np.searchsorted(cdf, self.ood_quantile, side="left"))
+                idx = min(max(idx, 0), len(loo_sorted) - 1)
+                ood_threshold = float(loo_sorted[idx])
+            else:
+                ood_threshold = float(-np.inf)
+            reference_score_weights = weights_per_face
+            loo_sorted_weights = sorted_weights
+            formula_id = "INV_ID_FREQ_v1"
+        else:
+            loo_sorted = np.sort(loo_T_k)
+            ood_threshold = (
+                float(np.quantile(loo_sorted, self.ood_quantile))
+                if self.ood_quantile > 0.0
+                else float(-np.inf)
+            )
+            cdf = None
+            reference_score_weights = None
+            loo_sorted_weights = None
+            formula_id = None
 
         self._state = _KNNRefState(
             reference=reference.astype(np.float32),
@@ -219,6 +311,10 @@ class KNNTypicalityModel:
             reference_mode=self.reference_mode,
             n_input_faces=int(n_input),
             n_singleton_identities=int(n_singletons),
+            reference_score_weights=reference_score_weights,
+            loo_mean_knn_sorted_weights=loo_sorted_weights,
+            loo_cdf=cdf,
+            weighted_T_k_formula_id=formula_id,
         )
         return self
 
@@ -267,22 +363,44 @@ class KNNTypicalityModel:
     # =========================================================================
 
     def to_dict(self) -> dict:
-        """Exporta o modelo treinado para um dict JSON-serializável."""
+        """Exporta o modelo treinado para um dict JSON-serializável.
+
+        PR 5: campos `reference_score_weights`/`loo_cdf`/
+        `weighted_T_k_formula_id` persistem quando
+        `INVERSE_IDENTITY_FREQUENCY` está ativo.
+        """
         self._ensure_fitted()
         st = self._state
         assert st is not None
         return {
-            "format_version": 2,
+            "format_version": 3,
             "hyperparameters": {
                 "k": self.k,
                 "ood_quantile": self.ood_quantile,
                 "reference_mode": self.reference_mode.to_str(),
                 "model_name": self.model_name,
                 "eps": self.eps,
+                # PR 4 + PR 5
+                "unit_norm_policy": self.unit_norm_policy.to_str(),
+                "unit_norm_tolerance": self.unit_norm_tolerance,
+                "population_weighting_mode":
+                    self.population_weighting_mode.to_str(),
             },
             "learned_state": {
                 "reference": st.reference.tolist(),
                 "loo_mean_knn_sorted": st.loo_mean_knn_sorted.tolist(),
+                "loo_mean_knn_sorted_weights": (
+                    st.loo_mean_knn_sorted_weights.tolist()
+                    if st.loo_mean_knn_sorted_weights is not None else None
+                ),
+                "loo_cdf": (
+                    st.loo_cdf.tolist() if st.loo_cdf is not None else None
+                ),
+                "reference_score_weights": (
+                    st.reference_score_weights.tolist()
+                    if st.reference_score_weights is not None else None
+                ),
+                "weighted_T_k_formula_id": st.weighted_T_k_formula_id,
                 "ood_threshold": st.ood_threshold,
                 "k": st.k,
                 "dim": st.dim,
@@ -295,7 +413,7 @@ class KNNTypicalityModel:
     @classmethod
     def from_dict(cls, data: dict) -> "KNNTypicalityModel":
         version = data.get("format_version", 1)
-        if version not in (1, 2):
+        if version not in (1, 2, 3):
             raise ValueError(f"Versão de formato não suportada: {version}")
 
         hp = dict(data["hyperparameters"])
@@ -307,6 +425,19 @@ class KNNTypicalityModel:
             hp.pop("population_label", None)
             hp.setdefault("reference_mode", TypicalityReferenceMode.PER_FACE.to_str())
 
+        # Migração v2 → v3 (PR 4/5): defaults V2.14
+        if version <= 2:
+            hp.setdefault("unit_norm_policy", "NORMALIZE_SILENTLY")
+            hp.setdefault("unit_norm_tolerance", 1e-4)
+            # PR 5 ainda não existia: derive de reference_mode
+            ref_mode_str = hp.get(
+                "reference_mode", TypicalityReferenceMode.PER_IDENTITY.to_str()
+            )
+            if ref_mode_str.upper() == "PER_FACE":
+                hp.setdefault("population_weighting_mode", "FACE_LEVEL_RAW")
+            else:
+                hp.setdefault("population_weighting_mode", "IDENTITY_CENTROIDS")
+
         model = cls(
             k=int(hp["k"]),
             ood_quantile=float(hp["ood_quantile"]),
@@ -315,6 +446,9 @@ class KNNTypicalityModel:
             ),
             model_name=hp.get("model_name", "KNNTypicalityModel"),
             eps=float(hp.get("eps", 1e-12)),
+            unit_norm_policy=hp.get("unit_norm_policy"),
+            unit_norm_tolerance=float(hp.get("unit_norm_tolerance", 1e-4)),
+            population_weighting_mode=hp.get("population_weighting_mode"),
         )
 
         ls = data["learned_state"]
@@ -340,6 +474,23 @@ class KNNTypicalityModel:
             ls.get("reference_mode", TypicalityReferenceMode.PER_FACE.to_str())
         )
 
+        # PR 5: estado opcional dos pesos.
+        weights_raw = ls.get("reference_score_weights")
+        ref_weights = (
+            np.asarray(weights_raw, dtype=np.float64)
+            if weights_raw is not None else None
+        )
+        sorted_weights_raw = ls.get("loo_mean_knn_sorted_weights")
+        sorted_weights = (
+            np.asarray(sorted_weights_raw, dtype=np.float64)
+            if sorted_weights_raw is not None else None
+        )
+        cdf_raw = ls.get("loo_cdf")
+        cdf = (
+            np.asarray(cdf_raw, dtype=np.float64)
+            if cdf_raw is not None else None
+        )
+
         model._state = _KNNRefState(
             reference=reference,
             loo_mean_knn_sorted=loo,
@@ -349,6 +500,10 @@ class KNNTypicalityModel:
             reference_mode=state_mode,
             n_input_faces=int(ls.get("n_input_faces", reference.shape[0])),
             n_singleton_identities=int(ls.get("n_singleton_identities", 0)),
+            reference_score_weights=ref_weights,
+            loo_mean_knn_sorted_weights=sorted_weights,
+            loo_cdf=cdf,
+            weighted_T_k_formula_id=ls.get("weighted_T_k_formula_id"),
         )
         return model
 
@@ -494,6 +649,9 @@ class KNNTypicalityModel:
             f"ood_quantile={self.ood_quantile:.17g}",
             # PR 4
             f"unit_norm_policy={self.unit_norm_policy.to_str()}",
+            # PR 5
+            f"population_weighting_mode={self.population_weighting_mode.to_str()}",
+            f"weighted_T_k_formula_id={st.weighted_T_k_formula_id or 'none'}",
         ]
         h = hashlib.sha256()
         h.update("\n".join(contract_parts).encode("utf-8"))
@@ -685,20 +843,53 @@ class KNNTypicalityModel:
         kp = min(self.k + 1, n)
         top_idx = np.argpartition(-sims, kp - 1)[:kp]
         top_sim = sims[top_idx]
-        top_sim = np.sort(top_sim)[::-1]  # desc
+
+        # Preserva ordem desc para alinhar com pesos. Ordena por cosseno
+        # decrescente (e mantém os índices originais para o lookup de
+        # pesos no modo ponderado).
+        desc_order = np.argsort(-top_sim)
+        top_sim = top_sim[desc_order]
+        top_idx_desc = top_idx[desc_order]
 
         if top_sim[0] > 1.0 - 1e-6 and kp > self.k:
             top_sim = top_sim[1 : self.k + 1]
+            top_idx_desc = top_idx_desc[1 : self.k + 1]
         else:
             top_sim = top_sim[: self.k]
+            top_idx_desc = top_idx_desc[: self.k]
 
-        T_k = float(np.mean(top_sim))
+        # PR 5: T_k ponderado quando reference_score_weights estiver definido.
+        if st.reference_score_weights is not None:
+            top_w = np.asarray(
+                st.reference_score_weights, dtype=np.float64
+            )[top_idx_desc]
+            row_w_sum = float(top_w.sum())
+            renormalized = top_w / max(row_w_sum, self.eps)
+            T_k = float(np.sum(top_sim * renormalized))
+        else:
+            T_k = float(np.mean(top_sim))
         theta_k = float(np.arccos(np.clip(top_sim[-1], -1.0, 1.0)))
 
-        rank = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="left"))
-        rank_right = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="right"))
-        mid_rank = 0.5 * (rank + rank_right)
-        percentile = 100.0 * mid_rank / len(st.loo_mean_knn_sorted)
+        # PR 5: percentile via CDF ponderada quando disponível.
+        if st.loo_cdf is not None:
+            # rank(T_k) = cdf empírica avaliada em T_k.
+            # Usa busca por valor + média entre side="left" e side="right"
+            # para empatar (mid_rank ponderado).
+            sorted_T = st.loo_mean_knn_sorted
+            cdf = st.loo_cdf
+            left = int(np.searchsorted(sorted_T, T_k, side="left"))
+            right = int(np.searchsorted(sorted_T, T_k, side="right"))
+            # cdf[left-1] é a fração acumulada de pesos com valor < T_k;
+            # cdf[right-1] é a fração com valor ≤ T_k. mid-rank pondera
+            # os dois.
+            left_cdf = cdf[left - 1] if left > 0 else 0.0
+            right_cdf = cdf[right - 1] if right > 0 else 0.0
+            percentile = 100.0 * 0.5 * (left_cdf + right_cdf)
+        else:
+            rank = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="left"))
+            rank_right = float(np.searchsorted(st.loo_mean_knn_sorted, T_k, side="right"))
+            mid_rank = 0.5 * (rank + rank_right)
+            percentile = 100.0 * mid_rank / len(st.loo_mean_knn_sorted)
 
         d = st.dim
         theta_safe = max(theta_k, 1e-12)

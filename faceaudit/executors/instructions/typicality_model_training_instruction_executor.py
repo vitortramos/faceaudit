@@ -261,22 +261,15 @@ class TypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
         from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
 
         if isinstance(cfg, KNNTypicalityModelConfig):
-            # Mapeia PopulationWeightingMode → TypicalityReferenceMode (legado)
-            #   IDENTITY_CENTROIDS → PER_IDENTITY
-            #   FACE_LEVEL_RAW → PER_FACE
-            #   INVERSE_IDENTITY_FREQUENCY → PR 4 (em PR 2 fail-fast)
+            # PR 5: k-NN aceita PopulationWeightingMode diretamente.
+            # `reference_mode` derivado para compat com getters legados.
             mode = cfg.population_weighting_mode
             if mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
                 legacy_mode = TypicalityReferenceMode.PER_IDENTITY
-            elif mode == PopulationWeightingMode.FACE_LEVEL_RAW:
-                legacy_mode = TypicalityReferenceMode.PER_FACE
             else:
-                raise NotImplementedError(
-                    "PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY "
-                    "no k-NN entra em PR 4 (documentação matemática + "
-                    "implementação). Use IDENTITY_CENTROIDS ou "
-                    "FACE_LEVEL_RAW em PR 2."
-                )
+                # FACE_LEVEL_RAW e INVERSE_IDENTITY_FREQUENCY usam
+                # referência face-level; PER_FACE no enum legado.
+                legacy_mode = TypicalityReferenceMode.PER_FACE
 
             def factory():
                 return KNNTypicalityModel(
@@ -286,6 +279,8 @@ class TypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                     # PR 4
                     unit_norm_policy=cfg.unit_norm_policy,
                     unit_norm_tolerance=cfg.unit_norm_tolerance,
+                    # PR 5
+                    population_weighting_mode=cfg.population_weighting_mode,
                 )
             return factory
 

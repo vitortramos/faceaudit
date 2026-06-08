@@ -200,6 +200,11 @@ class MoVMFTypicalityModel:
         # PR 4: estado de balanceamento populacional
         self._n_input_faces: Optional[int] = None
         self._n_singleton_identities: Optional[int] = None
+        # PR 5: estado do INVERSE_IDENTITY_FREQUENCY
+        self._n_identities_inv_idfreq: Optional[int] = None
+        self._pending_sample_weights: Optional[np.ndarray] = None
+        self._train_log_likelihoods_weights: Optional[np.ndarray] = None
+        self._train_log_likelihoods_cdf: Optional[np.ndarray] = None
 
     # =========================================================================
     # COMPATIBILIDADE COM A API ANTIGA
@@ -563,12 +568,26 @@ class MoVMFTypicalityModel:
                 )
             x_raw = self._aggregate_by_identity(x_raw, identity_ids)
         elif self.population_weighting_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
-            raise NotImplementedError(
-                "PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY no MoVMF "
-                "está documentado em `docs/typicality_models.md` §4.2 e "
-                "será implementado em iteração futura. Use IDENTITY_CENTROIDS "
-                "(forense recomendado) ou FACE_LEVEL_RAW por enquanto."
+            # PR 5: EM ponderado. `sample_weights[i] = 1 / n_id_i`.
+            if identity_ids is None:
+                raise ValueError(
+                    "PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY exige "
+                    "`identity_ids` paralelo a `embeddings`."
+                )
+            if len(identity_ids) != x_raw.shape[0]:
+                raise ValueError(
+                    f"len(identity_ids)={len(identity_ids)} difere de "
+                    f"N_embeddings={x_raw.shape[0]}."
+                )
+            ids_arr = np.asarray(identity_ids)
+            unique_ids, inverse_idx, id_counts = np.unique(
+                ids_arr, return_inverse=True, return_counts=True,
             )
+            sample_weights = (1.0 / id_counts[inverse_idx]).astype(np.float64)
+            self._n_input_faces = int(x_raw.shape[0])
+            self._n_identities_inv_idfreq = int(unique_ids.shape[0])
+            # Anexa pesos para o resto do fit usar
+            self._pending_sample_weights = sample_weights
 
         n_samples, dim = x_raw.shape
         if self.n_components > n_samples:
@@ -579,13 +598,19 @@ class MoVMFTypicalityModel:
         self._compute_reference_point(x_raw)
         x = self._apply_transform(x_raw)
 
+        # PR 5: pega pesos pendentes (de INVERSE_IDENTITY_FREQUENCY)
+        sample_weights = getattr(self, "_pending_sample_weights", None)
+        if sample_weights is not None:
+            # Limpa para não vazar para outros fits
+            self._pending_sample_weights = None
+
         if self.n_components == 1:
-            self._fit_single_component(x)
+            self._fit_single_component(x, sample_weights=sample_weights)
             self._n_iter_ = 1
             self._converged_ = True
             self._n_init_used = 1
         else:
-            self._fit_mixture_em_with_restarts(x)
+            self._fit_mixture_em_with_restarts(x, sample_weights=sample_weights)
 
         # Score do treino + estatísticas de referência
         train_ll = self.score_samples(x_raw)
@@ -594,15 +619,41 @@ class MoVMFTypicalityModel:
                 "Instabilidade: log-likelihoods de treino não são todos finitos."
             )
 
-        self._train_log_likelihoods = np.sort(train_ll.astype(np.float64))
-        self._train_avg_log_likelihood = float(np.mean(train_ll))
-
-        if self.ood_quantile > 0.0:
-            self._ood_log_likelihood_threshold = float(
-                np.quantile(self._train_log_likelihoods, self.ood_quantile)
+        # PR 5: CDF e avg_ll ponderados quando INVERSE_IDENTITY_FREQUENCY
+        if sample_weights is not None:
+            # Ordena por LL e alinha pesos
+            order = np.argsort(train_ll)
+            self._train_log_likelihoods = train_ll[order].astype(np.float64)
+            sorted_w = sample_weights[order]
+            self._train_log_likelihoods_weights = sorted_w
+            self._train_log_likelihoods_cdf = np.cumsum(sorted_w) / sorted_w.sum()
+            # avg_ll ponderado
+            self._train_avg_log_likelihood = float(
+                np.sum(sample_weights * train_ll) / sample_weights.sum()
             )
+            if self.ood_quantile > 0.0:
+                # Threshold via quantil ponderado
+                idx = int(np.searchsorted(
+                    self._train_log_likelihoods_cdf, self.ood_quantile, side="left"
+                ))
+                idx = min(max(idx, 0), len(self._train_log_likelihoods) - 1)
+                self._ood_log_likelihood_threshold = float(
+                    self._train_log_likelihoods[idx]
+                )
+            else:
+                self._ood_log_likelihood_threshold = None
         else:
-            self._ood_log_likelihood_threshold = None
+            self._train_log_likelihoods = np.sort(train_ll.astype(np.float64))
+            self._train_log_likelihoods_weights = None
+            self._train_log_likelihoods_cdf = None
+            self._train_avg_log_likelihood = float(np.mean(train_ll))
+
+            if self.ood_quantile > 0.0:
+                self._ood_log_likelihood_threshold = float(
+                    np.quantile(self._train_log_likelihoods, self.ood_quantile)
+                )
+            else:
+                self._ood_log_likelihood_threshold = None
 
         return self
 
@@ -1064,9 +1115,17 @@ class MoVMFTypicalityModel:
     # FIT INTERNO: SINGLE COMPONENT
     # =========================================================================
 
-    def _fit_single_component(self, x: np.ndarray) -> None:
+    def _fit_single_component(
+        self, x: np.ndarray, *, sample_weights: Optional[np.ndarray] = None,
+    ) -> None:
         n_samples, dim = x.shape
-        resultant = np.sum(x, axis=0)
+        if sample_weights is not None:
+            # Resultante e r_bar ponderados
+            resultant = (sample_weights[:, None] * x).sum(axis=0)
+            total_w = float(sample_weights.sum())
+        else:
+            resultant = np.sum(x, axis=0)
+            total_w = float(n_samples)
         resultant_norm = np.linalg.norm(resultant)
 
         if resultant_norm < self.eps or not np.isfinite(resultant_norm):
@@ -1075,7 +1134,7 @@ class MoVMFTypicalityModel:
             r_bar = 0.0
         else:
             mu = resultant / resultant_norm
-            r_bar = float(resultant_norm / n_samples)
+            r_bar = float(resultant_norm / max(total_w, self.eps))
 
         kappa = self._estimate_kappa_robust(r_bar=r_bar, dim=dim)
         self._params = _MoVMFParams(
@@ -1091,13 +1150,18 @@ class MoVMFTypicalityModel:
     # FIT INTERNO: EM COM RESTARTS
     # =========================================================================
 
-    def _fit_mixture_em_with_restarts(self, x: np.ndarray) -> None:
+    def _fit_mixture_em_with_restarts(
+        self, x: np.ndarray, *,
+        sample_weights: Optional[np.ndarray] = None,
+    ) -> None:
         """Roda n_init EMs e mantém o melhor (maior log-likelihood final)."""
         best: Optional[Tuple[float, _MoVMFParams, int, bool]] = None
         for init_idx in range(self.n_init):
             seed = self.random_state + init_idx
             try:
-                params, n_iter, converged, avg_ll = self._fit_mixture_em_once(x, seed=seed)
+                params, n_iter, converged, avg_ll = self._fit_mixture_em_once(
+                    x, seed=seed, sample_weights=sample_weights,
+                )
             except Exception:  # noqa: BLE001
                 # Esta inicialização falhou; tenta próxima.
                 continue
@@ -1116,7 +1180,8 @@ class MoVMFTypicalityModel:
         self._n_init_used = self.n_init
 
     def _fit_mixture_em_once(
-        self, x: np.ndarray, *, seed: int
+        self, x: np.ndarray, *, seed: int,
+        sample_weights: Optional[np.ndarray] = None,
     ) -> Tuple[_MoVMFParams, int, bool, float]:
         """Uma execução completa de EM. Retorna (params, n_iter, converged, avg_ll)."""
         rng = np.random.default_rng(seed)
@@ -1130,6 +1195,10 @@ class MoVMFTypicalityModel:
         converged = False
         n_iter_done = 0
         avg_ll = -np.inf
+        total_w = (
+            float(sample_weights.sum()) if sample_weights is not None
+            else float(n_samples)
+        )
 
         for it in range(1, self.max_iter + 1):
             # ---- E-step ----
@@ -1145,7 +1214,11 @@ class MoVMFTypicalityModel:
             if not np.all(np.isfinite(responsibilities)):
                 raise RuntimeError("EM (E-step): responsibilities não finitos.")
 
-            avg_ll = float(np.mean(log_px))
+            # avg_ll ponderado em INVERSE_IDENTITY_FREQUENCY
+            if sample_weights is not None:
+                avg_ll = float(np.sum(sample_weights * log_px) / total_w)
+            else:
+                avg_ll = float(np.mean(log_px))
             if not np.isfinite(avg_ll):
                 raise RuntimeError("EM (E-step): avg_ll não finito.")
 
@@ -1161,7 +1234,8 @@ class MoVMFTypicalityModel:
 
             # ---- M-step ----
             mus, kappas, weights = self._em_m_step(
-                x, responsibilities, mus, kappas, weights, rng
+                x, responsibilities, mus, kappas, weights, rng,
+                sample_weights=sample_weights,
             )
             n_iter_done = it
 
@@ -1202,28 +1276,42 @@ class MoVMFTypicalityModel:
         kappas: np.ndarray,
         weights: np.ndarray,
         rng: np.random.Generator,
+        *,
+        sample_weights: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         M-step com handling de componentes mortos via split do componente
         mais massivo (preserva entropia da mistura).
+
+        PR 5: quando `sample_weights` é fornecido, EM ponderado:
+        `n_k = Σ_i w_i · r_ik` (em vez de `Σ_i r_ik`).
         """
         n_samples, dim = x.shape
         k = mus.shape[0]
 
-        nk = responsibilities.sum(axis=0)  # (K,)
+        if sample_weights is not None:
+            # Responsibilities ponderadas: r_ponderado[i,k] = w_i * r_ik
+            r_w = responsibilities * sample_weights[:, None]      # (N, K)
+            nk = r_w.sum(axis=0)                                  # (K,)
+            total_w = float(sample_weights.sum())
+            denom_w = max(total_w, self.eps)
+        else:
+            r_w = responsibilities
+            nk = responsibilities.sum(axis=0)
+            denom_w = float(n_samples)
 
         # Componentes vivos vs mortos
         alive = nk > self.eps
 
-        # Pesos preliminares
-        new_weights = np.where(alive, nk / n_samples, 0.0)
+        # Pesos preliminares: π_k = n_k / Σ w_i (ou n_samples).
+        new_weights = np.where(alive, nk / denom_w, 0.0)
 
         # Mus e r_bars vetorizados — por componente
         new_mus = np.zeros((k, dim), dtype=np.float64)
         r_bars = np.zeros(k, dtype=np.float64)
 
-        # responsibilities.T @ x  -> (K, D)
-        resultants = responsibilities.T @ x  # (K, D)
+        # r_w.T @ x  -> (K, D)
+        resultants = r_w.T @ x  # (K, D)
         resultant_norms = np.linalg.norm(resultants, axis=1)  # (K,)
 
         for j in range(k):

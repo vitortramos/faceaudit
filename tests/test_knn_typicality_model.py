@@ -114,7 +114,7 @@ def test_fit_per_identity_requires_identities():
     m = KNNTypicalityModel(
         k=10, reference_mode=TypicalityReferenceMode.PER_IDENTITY,
     )
-    with pytest.raises(ValueError, match="PER_IDENTITY exige"):
+    with pytest.raises(ValueError, match="IDENTITY_CENTROIDS exige"):
         m.fit(X)
 
 
@@ -327,7 +327,8 @@ def test_to_dict_v2_roundtrip_per_identity():
     ).fit(embs, identities=ids)
 
     data = m1.to_dict()
-    assert data["format_version"] == 2
+    # PR 5: format_version 3 (PR 4 era 2)
+    assert data["format_version"] == 3
     assert data["hyperparameters"]["reference_mode"] == "PER_IDENTITY"
 
     m2 = KNNTypicalityModel.from_dict(data)
