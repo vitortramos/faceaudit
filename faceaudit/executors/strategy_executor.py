@@ -422,25 +422,30 @@ class StrategyExecutor:
                     resource.resource_type
                     == StrategyResourceType.TRAINED_TYPICALITY_MODEL
                 ):
-                    # KNNTypicalityModel treinado → PNG da distribuição LOO
-                    # de T_k. Mesmo padrão dos demais — gera headless via
-                    # FigureCanvasAgg, painel inline mostra via QPixmap
-                    # sem reconstruir matplotlib vivo.
-                    from faceaudit.services.knn_typicality_model import (
-                        KNNTypicalityModel,
+                    # Modelo de tipicidade treinado (k-NN ou MoVMF) → PNG
+                    # da distribuição de referência. Dispatch polimórfico
+                    # via TypicalityScoringModelProtocol (model_type +
+                    # is_fitted) — k-NN renderiza T_k LOO, MoVMF renderiza
+                    # log-likelihood do treino. Mesmo padrão dos demais:
+                    # gera headless via FigureCanvasAgg, painel inline
+                    # mostra via QPixmap.
+                    from faceaudit.protocols.typicality_scoring_model_protocol import (
+                        TypicalityScoringModelProtocol,
                     )
                     from faceaudit.models.typicality_distribution_plot import (
                         render_typicality_distribution_png,
                         typicality_distribution_png_path,
                     )
-                    if isinstance(resource.payload, KNNTypicalityModel):
+                    payload = resource.payload
+                    if (
+                        isinstance(payload, TypicalityScoringModelProtocol)
+                        and getattr(payload, "is_fitted", lambda: False)()
+                    ):
                         png_path = typicality_distribution_png_path(
                             project_root, strategy_id, resource.resource_id,
                             strategy_name=strategy_name,
                         )
-                        render_typicality_distribution_png(
-                            resource.payload, png_path,
-                        )
+                        render_typicality_distribution_png(payload, png_path)
                 elif (
                     resource.resource_type
                     == StrategyResourceType.VALIDATION_RESULT

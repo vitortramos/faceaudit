@@ -663,6 +663,24 @@ class MoVMFTypicalityModel:
     def has_percentile_reference(self) -> bool:
         return self._train_log_likelihoods is not None
 
+    @property
+    def reference_log_likelihoods(self) -> Optional[np.ndarray]:
+        """Cópia das log-verossimilhanças de treino (já ordenadas crescentes
+        pelo `fit`). Análogo a `KNNTypicalityModel.loo_distribution` —
+        diagnóstico da distribuição de referência sob `H_d`. Retorna None
+        antes do fit ou quando o modelo não persistiu o vetor."""
+        if self._train_log_likelihoods is None:
+            return None
+        return self._train_log_likelihoods.copy()
+
+    @property
+    def ood_threshold(self) -> Optional[float]:
+        """Limiar OOD em log-verossimilhança (`q_ood`-ésimo percentil da
+        distribuição de referência). Alias unificado com
+        `KNNTypicalityModel.ood_threshold` para consumo polimórfico
+        (plot helper, exposição de diagnóstico)."""
+        return self._ood_log_likelihood_threshold
+
     def score_samples(self, embeddings: ArrayLike) -> np.ndarray:
         """Log-likelihood total da mistura (vetorizado)."""
         _, x_transformed = self._prepare_inference_matrix(embeddings)
