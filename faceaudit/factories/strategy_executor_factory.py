@@ -55,8 +55,8 @@ from faceaudit.executors.instructions.hubness_ablation_instruction_executor impo
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
 )
-from faceaudit.executors.instructions.knn_typicality_model_training_instruction_executor import (
-    KNNTypicalityModelTrainingInstructionExecutor,
+from faceaudit.executors.instructions.typicality_model_training_instruction_executor import (
+    TypicalityModelTrainingInstructionExecutor,
 )
 from faceaudit.executors.instructions.typicality_pair_scoring_instruction_executor import (
     TypicalityPairScoringInstructionExecutor,
@@ -184,8 +184,8 @@ class StrategyExecutorFactory:
         )
 
         registry.register(
-            StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
-            KNNTypicalityModelTrainingInstructionExecutor(),
+            StrategyInstructionType.TYPICALITY_MODEL_TRAINING,
+            TypicalityModelTrainingInstructionExecutor(),
         )
 
         registry.register(

@@ -106,8 +106,15 @@ def _register_default_backends() -> None:
     """Popula o registry com os backends que vivem no projeto.
 
     Chamado uma vez por `__init__` do módulo do registry — idempotente
-    via `register`.
+    via `register`. `config_class` é plugado em PR 2; `trainer` é
+    plugado em PR 4 (o executor unificado faz dispatch inline em PR 2).
     """
+    from faceaudit.models.typicality.knn_typicality_model_config import (
+        KNNTypicalityModelConfig,
+    )
+    from faceaudit.models.typicality.movmf_typicality_model_config import (
+        MoVMFTypicalityModelConfig,
+    )
     from faceaudit.services.knn_typicality_model import KNNTypicalityModel
     from faceaudit.services.movmf_typicality_model import MoVMFTypicalityModel
 
@@ -123,8 +130,8 @@ def _register_default_backends() -> None:
             badge="STABLE",
             label_pt=TypicalityModelType.KNN.label_pt,
             description=TypicalityModelType.KNN.description,
-            config_class=None,   # PR 2
-            trainer=None,        # PR 2
+            config_class=KNNTypicalityModelConfig,
+            trainer=None,        # PR 4
         )
     )
 
@@ -139,8 +146,8 @@ def _register_default_backends() -> None:
             badge="EXPERIMENTAL",
             label_pt=TypicalityModelType.MOVMF.label_pt,
             description=TypicalityModelType.MOVMF.description,
-            config_class=None,   # PR 2
-            trainer=None,        # PR 2
+            config_class=MoVMFTypicalityModelConfig,
+            trainer=None,        # PR 4
         )
     )
 

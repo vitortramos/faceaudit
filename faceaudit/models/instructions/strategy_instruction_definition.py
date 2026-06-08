@@ -395,11 +395,11 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return HubnessAblationInstruction.from_dict(processed_data)
 
-        if instruction_type == StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING:
-            from faceaudit.models.instructions.knn_typicality_model_training_instruction import (
-                KNNTypicalityModelTrainingInstruction,
+        if instruction_type == StrategyInstructionType.TYPICALITY_MODEL_TRAINING:
+            from faceaudit.models.instructions.typicality_model_training_instruction import (
+                TypicalityModelTrainingInstruction,
             )
-            return KNNTypicalityModelTrainingInstruction.from_dict(processed_data)
+            return TypicalityModelTrainingInstruction.from_dict(processed_data)
 
         if instruction_type == StrategyInstructionType.TYPICALITY_PAIR_SCORING:
             from faceaudit.models.instructions.typicality_pair_scoring_instruction import (

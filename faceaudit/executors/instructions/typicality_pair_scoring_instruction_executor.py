@@ -9,8 +9,8 @@ import numpy as np
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.enums.typicality_combiner import TypicalityCombiner
 from faceaudit.enums.typicality_score_type import TypicalityScoreType
-from faceaudit.executors.instructions.knn_typicality_model_training_instruction_executor import (
-    KNNTypicalityModelTrainingInstructionExecutor,
+from faceaudit.executors.instructions.typicality_model_training_instruction_executor import (
+    TypicalityModelTrainingInstructionExecutor,
 )
 from faceaudit.executors.instructions.strategy_instruction_executor_base import (
     StrategyInstructionExecutorBase,
@@ -352,7 +352,7 @@ class TypicalityPairScoringInstructionExecutor(StrategyInstructionExecutorBase):
         2D via .matrix; embedding_column é validado pela regra
         EMBEDDING_DIM_MATCHES_MODEL."""
         matrix, _ = (
-            KNNTypicalityModelTrainingInstructionExecutor
+            TypicalityModelTrainingInstructionExecutor
             ._extract_embeddings_and_identities(
                 dataset, embedding_column, need_identities=False,
             )

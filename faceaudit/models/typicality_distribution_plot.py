@@ -10,7 +10,7 @@ plot helpers (`distribution_plot.py`, `casework_visualization_plot.py`,
   - `render_typicality_distribution_png(model, target_path)` — wrapper
     headless usando `FigureCanvasAgg`, gravado pelo
     `StrategyExecutor.persist_produced_resource` após cada execução de
-    `KNN_TYPICALITY_MODEL_TRAINING`.
+    `TYPICALITY_MODEL_TRAINING`.
   - `typicality_distribution_png_path(...)` — convenção de path estável,
     usada tanto na escrita (executor) quanto na leitura (painel inline).
 

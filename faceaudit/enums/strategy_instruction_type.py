@@ -149,14 +149,15 @@ class StrategyInstructionType(Enum):
         "O(N²) em N subsets.",
     )
 
-    KNN_TYPICALITY_MODEL_TRAINING = (
-        "KNN_TYPICALITY_MODEL_TRAINING",
-        "kNN Typicality Model Training",
-        "Treinar Modelo de Tipicidade (kNN)",
-        "Treina um modelo de tipicidade não-paramétrico baseado em k-NN esférico "
-        "a partir de um dataset de referência da subpopulação relevante (já "
-        "estratificada). Persiste a referência inteira como modelo e pré-computa "
-        "a CDF empírica leave-one-out de T_k pra inferência de percentile.",
+    TYPICALITY_MODEL_TRAINING = (
+        "TYPICALITY_MODEL_TRAINING",
+        "Typicality Model Training",
+        "Treinar Modelo de Tipicidade",
+        "Treina um modelo de tipicidade (k-NN não-paramétrico ou MoVMF "
+        "paramétrico EXPERIMENTAL) a partir de um dataset de referência "
+        "da subpopulação relevante. Backend escolhido via "
+        "typicality_model_type; hiperparâmetros embutidos no "
+        "typicality_model_config polimórfico.",
     )
 
     TYPICALITY_PAIR_SCORING = (

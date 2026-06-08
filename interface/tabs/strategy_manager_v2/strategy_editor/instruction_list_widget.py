@@ -37,7 +37,7 @@ _TRAINING_ONLY_TYPES = {
     StrategyInstructionType.PIPELINE_TRAINING,
     StrategyInstructionType.SIMILARITY_MODEL_TRAINING,
     StrategyInstructionType.CALIBRATION_MODEL_TRAINING,
-    StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
+    StrategyInstructionType.TYPICALITY_MODEL_TRAINING,
 }
 
 # Instruções exclusivas da fase Validação. Não devem aparecer em

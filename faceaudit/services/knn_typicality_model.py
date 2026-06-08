@@ -125,6 +125,7 @@ class KNNTypicalityModel:
         embeddings: ArrayLike,
         *,
         identities: Optional[Sequence[str]] = None,
+        identity_ids: Optional[Sequence[str]] = None,
     ) -> "KNNTypicalityModel":
         """
         Armazena a referência (faces ou centroides por identidade) e
@@ -136,7 +137,18 @@ class KNNTypicalityModel:
             identities: sequência paralela a embeddings com o rótulo de
                 identidade de cada face. Obrigatório em PER_IDENTITY,
                 ignorado em PER_FACE.
+            identity_ids: alias canônico de `identities` definido pelo
+                `FittableTypicalityModelProtocol` (PR 1b). Quando
+                fornecido sem `identities`, é usado como tal. Erro
+                quando ambos forem fornecidos com valores divergentes.
         """
+        if identity_ids is not None and identities is not None and identity_ids != identities:
+            raise ValueError(
+                "KNNTypicalityModel.fit recebeu `identities` e "
+                "`identity_ids` divergentes — use apenas um dos dois."
+            )
+        if identities is None and identity_ids is not None:
+            identities = identity_ids
         x_raw = self._validate_and_normalize_2d(embeddings)
         n_input, d = x_raw.shape
 

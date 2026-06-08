@@ -4605,17 +4605,17 @@ class StrategyManagerV2Controller(QtCore.QObject):
     ) -> None:
         """
         Abre o TypicalityDistributionViewerDialog a partir do modelo treinado
-        produzido por KNN_TYPICALITY_MODEL_TRAINING. Mesmo padrão de fetch
+        produzido por TYPICALITY_MODEL_TRAINING. Mesmo padrão de fetch
         dos demais viewers — contexto vivo primeiro, hidrata do disco como
         fallback.
         """
-        from faceaudit.models.instructions.knn_typicality_model_training_instruction import (
-            KNNTypicalityModelTrainingInstruction,
+        from faceaudit.models.instructions.typicality_model_training_instruction import (
+            TypicalityModelTrainingInstruction,
         )
 
         if not self._project or not self._current_definition:
             return
-        if not isinstance(instruction, KNNTypicalityModelTrainingInstruction):
+        if not isinstance(instruction, TypicalityModelTrainingInstruction):
             return
 
         result_id = instruction.trained_typicality_model_resource_id
