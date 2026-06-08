@@ -397,7 +397,8 @@ class ValidationRuleFactory:
                 f"Regra {rule_type.value}: 'reportable_box' deve ser dict "
                 f"(recebeu {type(raw).__name__})."
             )
-        allowed = {"r_probe", "r_reference", "r_single"}
+        # Chaves de raridade (LR_ARCH_VEC) + score bruto (piecewise V1.5)
+        allowed = {"r_probe", "r_reference", "r_single", "s", "base_score"}
         parsed: dict = {}
         for key, val in raw.items():
             if key not in allowed:

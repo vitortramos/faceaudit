@@ -305,9 +305,19 @@ Modelos calibrados antes da implementação da regra não terão metadata de aud
 
 ### V1.5 — estabilidade e compatibilidade ampla
 
+**Component A — `PiecewiseLinearDerivativeProvider`** ✅ IMPLEMENTADO
+
+- Cobre `LogisticRegressionCalibrationModel` com `piecewise_linear_config.mode = PIECEWISE_LINEAR` (calibradores piecewise legado de score 1D, com K knots arbitrários).
+- Não exige `architecture_state` nem fingerprint matching — todos os diagnósticos necessários já são persistidos pelo próprio calibrador no `_assert_monotonic_after_fit`: `piecewise_knots_absolute`, `segment_slopes_raw`, `hinge_anchor_s0`.
+- Constrói `MonotonicityRegionResult` por segmento (K+1 segmentos para K knots) com `slope_value` constante por região.
+- Aceita `reportable_box["s"]` ou `["base_score"]` (V2) — chave nova adicionada ao parser da factory; cantos da intersecção entre cada segmento e a caixa; segmentos sem intersecção são pulados (não auditados naquela caixa).
+- Observed_scores opcionais via `dataset_resource_id_override` — piecewise legado tipicamente não persiste `training_raw_input_resource_id`, então o fluxo continua funcional sem ele.
+- Dispatch automático na regra via campos do metadata: `architecture_state` presente → `LRArchitectureDerivativeProvider`; `piecewise_enabled=True` (sem `architecture_state`) → `PiecewiseLinearDerivativeProvider`.
+- Testes: 11 testes V1.5 (`monotonic_returns_correct_segments`, `detects_violation_via_min_slope`, `reportable_box_with_intersection`, `accepts_base_score_alias`, `raises_on_knots_slopes_mismatch`, `raises_when_metadata_missing_fields`, `dispatches_to_piecewise_when_enabled`, `piecewise_non_monotonic_is_critical`, `piecewise_reportable_box_violation_is_critical`, `piecewise_reportable_box_outside_violation_is_ok`, `without_architecture_state_and_without_piecewise_errors`).
+
+**Components B–D** (não bloqueantes para uso do provider piecewise):
 - Auditoria por fold com cache validado por fingerprint
-- `PiecewiseLinearDerivativeProvider` (piecewise legado com K knots arbitrários)
-- Diagnóstico completo de suporte por segmento
+- Diagnóstico completo de suporte por segmento (já parcialmente coberto pelo `segment_counts_*` que o calibrador persiste)
 - Política expandida para modelos legados
 
 ### V2 — endurecimento operacional

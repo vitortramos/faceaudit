@@ -111,14 +111,21 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
             return result
         calibrator_metadata = dict(calibrator.metadata or {})
 
-        # 2. Verificar presença de architecture_state (V1: só LR_ARCH_VEC)
-        if "architecture_state" not in calibrator_metadata:
+        # 2. Dispatch: LR_ARCH_VEC vs piecewise legado
+        is_lr_arch_vec = "architecture_state" in calibrator_metadata
+        is_piecewise = bool(calibrator_metadata.get("piecewise_enabled"))
+        if not is_lr_arch_vec and not is_piecewise:
             result.add_error(
-                f"[{self.rule_id}] Calibrador sem 'architecture_state' — V1 "
-                "da regra cobre apenas arquiteturas de "
-                "LR_ARCHITECTURE_VECTORIZATION. Piecewise legado entra em V1.5."
+                f"[{self.rule_id}] Calibrador sem 'architecture_state' nem "
+                "'piecewise_enabled' — regra cobre LR_ARCHITECTURE_VECTORIZATION "
+                "(V1) ou LogReg piecewise-linear (V1.5)."
             )
             return result
+        if is_piecewise and not is_lr_arch_vec:
+            return self._validate_piecewise(
+                result=result, calibrator=calibrator,
+                calibrator_metadata=calibrator_metadata, context=context,
+            )
 
         # 3. Resolver raw_input_resource_id (proveniência do calibrador)
         if self._dataset_resource_id_override is not None:
@@ -290,6 +297,107 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
             )
 
         # 8. Persistir metadata no calibrador
+        try:
+            self._persist_audit_metadata(calibrator, audit_metadata)
+        except Exception as e:
+            result.add_warning(
+                f"[{self.rule_id}] Falha ao persistir audit metadata: "
+                f"{type(e).__name__}: {e}"
+            )
+
+        return result
+
+    # =========================================================================
+    # Piecewise-linear branch (V1.5)
+    # =========================================================================
+
+    def _validate_piecewise(
+        self,
+        *,
+        result: ValidationResult,
+        calibrator: Any,
+        calibrator_metadata: dict,
+        context: StrategyExecutionContextProtocol,
+    ) -> ValidationResult:
+        """Auditoria piecewise univariada.
+
+        Não exige `architecture_state` nem fingerprint matching — todos os
+        diagnósticos necessários (`piecewise_knots_absolute`,
+        `segment_slopes_raw`) já são persistidos pelo calibrador no fit.
+        Observed_rows vêm opcionalmente do dataset (override) se fornecido.
+        """
+        from faceaudit.services.piecewise_linear_derivative_provider import (
+            PiecewiseLinearDerivativeProvider,
+        )
+
+        # Tenta hidratar observed_rows do override (se fornecido).
+        # Piecewise legado tipicamente não persiste training_raw_input_resource_id
+        # → fluxo legado roda sem essa informação (regiões ainda avaliadas via
+        # slope_value constante).
+        raw_input_payload = None
+        raw_input_resource_id = self._dataset_resource_id_override
+        if raw_input_resource_id and context.has_resource(raw_input_resource_id):
+            res = context.ensure_payload(raw_input_resource_id)
+            raw_input_payload = res.payload if res else None
+
+        provider = PiecewiseLinearDerivativeProvider()
+        try:
+            regions = provider.evaluate_regions(
+                calibrator_metadata=calibrator_metadata,
+                raw_input_payload=raw_input_payload,
+                box_quantile_low=self._box_quantile_low,
+                box_quantile_high=self._box_quantile_high,
+                reportable_box=self._reportable_box,
+            )
+        except Exception as e:
+            result.add_error(
+                f"[{self.rule_id}] Falha piecewise: {type(e).__name__}: {e}"
+            )
+            return result
+
+        audit_metadata = self._build_audit_metadata(
+            regions=regions, spec_id="PIECEWISE_LINEAR_UNIVARIATE",
+            raw_input_resource_id=raw_input_resource_id or "(piecewise: scores from calibrator metadata)",
+            expected_fp=None,
+        )
+        audit_metadata["provider"] = "PiecewiseLinearDerivativeProvider"
+
+        # Política — mesma lógica de LR_ARCH_VEC mas observed = slope_value
+        # constante do segmento.
+        min_obs, worst_obs = self._global_min_observed(regions)
+        min_box, worst_box = self._global_min_central_box(regions)
+        min_rep, worst_rep = self._global_min_reportable_box(regions)
+
+        if min_obs is not None and min_obs <= self._numerical_epsilon:
+            audit_metadata["audit_status"] = "CRITICAL"
+            result.add_error(
+                f"[{self.rule_id}] Piecewise NÃO monotônico: "
+                f"min_segment_slope = {min_obs:.6g} (segmento: {worst_obs})."
+            )
+        elif min_rep is not None and min_rep <= self._numerical_epsilon:
+            audit_metadata["audit_status"] = "CRITICAL"
+            result.add_error(
+                f"[{self.rule_id}] Piecewise VIOLA monotonicidade em "
+                f"reportable_box: min_slope = {min_rep:.6g} "
+                f"(segmento: {worst_rep})."
+            )
+        elif min_box is not None and min_box <= self._numerical_epsilon:
+            audit_metadata["audit_status"] = "WARNING"
+            result.add_warning(
+                f"[{self.rule_id}] Slope ≤ 0 em segmento dentro do central_box: "
+                f"{min_box:.6g} (segmento: {worst_box})."
+            )
+        elif (self._operational_min_slope is not None
+              and min_obs is not None
+              and min_obs < self._operational_min_slope):
+            audit_metadata["audit_status"] = "WARNING"
+            result.add_warning(
+                f"[{self.rule_id}] Slope mínimo piecewise {min_obs:.6g} < "
+                f"operational_min_slope {self._operational_min_slope:.6g}."
+            )
+        else:
+            audit_metadata["audit_status"] = "OK"
+
         try:
             self._persist_audit_metadata(calibrator, audit_metadata)
         except Exception as e:
