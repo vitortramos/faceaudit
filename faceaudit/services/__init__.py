@@ -14,8 +14,11 @@ from .serfiq_service import SERFIQService
 from .trajectory_plotter_service import TrajectoryPlotterService
 from .validation_math_service import ValidationMathService
 from .plda_split_service import PLDASplitService
-from .typicality_model import TypicalityModel
+from .movmf_typicality_model import MoVMFTypicalityModel
 from .knn_typicality_model import KNNTypicalityModel
+
+# Compat: nome antigo continua importável até V2.16
+TypicalityModel = MoVMFTypicalityModel
 from .hubness_analysis_service import HubnessAnalysisService
 from .hubness_plot_service import HubnessPlotService
 
@@ -37,7 +40,8 @@ __all__ = [
     "TrajectoryPlotterService",
     "ValidationMathService",
     "PLDASplitService",
-    "TypicalityModel",
+    "MoVMFTypicalityModel",
+    "TypicalityModel",  # alias deprecado
     "KNNTypicalityModel",
     "HubnessAnalysisService",
     "HubnessPlotService",
