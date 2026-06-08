@@ -45,7 +45,15 @@ from typing import Optional, Iterable, Union, Tuple, List, Literal
 import numpy as np
 from scipy.special import ive, logsumexp
 
+from faceaudit.enums.typicality_model_type import TypicalityModelType
+from faceaudit.enums.typicality_score_type import TypicalityScoreType
 from faceaudit.models.typicality_info import TypicalityInfo
+from faceaudit.models.typicality.typicality_model_summary import (
+    TypicalityModelSummary,
+)
+from faceaudit.models.typicality.typicality_score_batch import (
+    TypicalityScoreBatch,
+)
 
 
 ArrayLike = Union[np.ndarray, Iterable[float], Iterable[Iterable[float]]]
@@ -667,6 +675,204 @@ class MoVMFTypicalityModel:
                 )
             )
         return infos
+
+    # =========================================================================
+    # TypicalityScoringModelProtocol (PR 1b)
+    # =========================================================================
+    #
+    # MoVMF habilita o subset universal de score types (sem
+    # `MEAN_KNN_SIMILARITY`, que é uma noção local do k-NN sem análogo
+    # paramétrico aqui). PR 3 renomeará `LOG_DENSITY_KNN` →
+    # `LOG_DENSITY_ESTIMATE` no enum — para o MoVMF a semântica é
+    # log-likelihood da mistura; o `score_semantics_id` no batch deixa
+    # isso explícito (`LOG_LIKELIHOOD_MOVMF` vs
+    # `LOG_DENSITY_ESTIMATE_LQ_SPHERICAL` do k-NN).
+
+    @property
+    def model_type(self) -> TypicalityModelType:
+        return TypicalityModelType.MOVMF
+
+    @property
+    def enabled_score_types(self) -> frozenset[TypicalityScoreType]:
+        if not self.is_fitted():
+            return frozenset()
+        # MoVMF: TYPICALITY_PERCENTILE (sobre log-likelihood) +
+        # LOG_DENSITY_KNN (interpretado como log-densidade qualquer; será
+        # `LOG_DENSITY_ESTIMATE` após o rename do enum no PR 3).
+        return frozenset({
+            TypicalityScoreType.TYPICALITY_PERCENTILE,
+            TypicalityScoreType.LOG_DENSITY_KNN,
+        })
+
+    @property
+    def embedding_dim(self) -> int:
+        self._ensure_fitted()
+        return int(self._params.dim)  # type: ignore[union-attr]
+
+    @property
+    def sample_count(self) -> int:
+        self._ensure_fitted()
+        return int(self._params.sample_count)  # type: ignore[union-attr]
+
+    @property
+    def model_state_fingerprint(self) -> str:
+        """SHA-256 do estado numérico (mus + kappas + weights + CDF +
+        threshold + reference_point).
+
+        **Não canoniza ordem dos componentes** — PR 4 adiciona ordenação
+        por peso/kappa/μ-hash para preservar invariância à permutação.
+        Em PR 1b, modelos com componentes em ordem diferente geram
+        fingerprints distintos.
+        """
+        self._ensure_fitted()
+        import hashlib
+        p = self._params
+        assert p is not None
+        h = hashlib.sha256()
+        h.update(np.ascontiguousarray(p.mus, dtype=np.float64).tobytes(order="C"))
+        h.update(np.ascontiguousarray(p.kappas, dtype=np.float64).tobytes(order="C"))
+        h.update(np.ascontiguousarray(p.weights, dtype=np.float64).tobytes(order="C"))
+        if self._train_log_likelihoods is not None:
+            h.update(
+                np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64).tobytes(order="C")
+            )
+        ood = self._ood_log_likelihood_threshold
+        h.update(f"ood={ood!r}".encode("utf-8"))
+        if self._reference_point is not None:
+            h.update(
+                np.ascontiguousarray(self._reference_point, dtype=np.float64).tobytes(order="C")
+            )
+        h.update(f"K={p.n_components};D={p.dim};N={p.sample_count}".encode("utf-8"))
+        return h.hexdigest()
+
+    @property
+    def model_contract_fingerprint(self) -> str:
+        """SHA-256 do contrato semântico (sem o estado bruto)."""
+        self._ensure_fitted()
+        import hashlib
+        p = self._params
+        assert p is not None
+        semantics_ids = sorted([
+            self._score_semantics_id_for(t) for t in self.enabled_score_types
+        ])
+        contract_parts = [
+            f"model_type={TypicalityModelType.MOVMF.to_str()}",
+            f"semantics_ids={','.join(semantics_ids)}",
+            f"centering={self.centering}",
+            f"n_components_fitted={p.n_components}",
+            f"dim={p.dim}",
+            f"ood_quantile={self.ood_quantile:.17g}",
+        ]
+        h = hashlib.sha256()
+        h.update("\n".join(contract_parts).encode("utf-8"))
+        return h.hexdigest()
+
+    @staticmethod
+    def _score_semantics_id_for(t: TypicalityScoreType) -> str:
+        if t == TypicalityScoreType.LOG_DENSITY_KNN:
+            return "LOG_LIKELIHOOD_MOVMF"
+        if t == TypicalityScoreType.TYPICALITY_PERCENTILE:
+            return "PERCENTILE_OF_LOG_LIKELIHOOD_MOVMF"
+        raise ValueError(f"score_type sem semantics id para MoVMF: {t}")
+
+    def compute_scores(
+        self,
+        embeddings: ArrayLike,
+        score_type: TypicalityScoreType,
+    ) -> TypicalityScoreBatch:
+        from faceaudit.protocols.typicality_scoring_model_protocol import (
+            UnsupportedTypicalityScoreTypeError,
+        )
+
+        self._ensure_fitted()
+        if score_type not in self.enabled_score_types:
+            raise UnsupportedTypicalityScoreTypeError(
+                requested=score_type,
+                enabled=self.enabled_score_types,
+                model_type=self.model_type,
+            )
+
+        if score_type == TypicalityScoreType.LOG_DENSITY_KNN:
+            arr = self.score_samples(embeddings)
+            percentile_basis = None
+            ref_dist_fp = None
+        elif score_type == TypicalityScoreType.TYPICALITY_PERCENTILE:
+            arr = self.get_percentiles(embeddings, extrapolate=True)
+            # Base do percentil MoVMF: log-likelihood. Em PR 3 isso vira
+            # LOG_DENSITY_ESTIMATE (mesma identidade enum, nome novo).
+            percentile_basis = TypicalityScoreType.LOG_DENSITY_KNN
+            ref_dist_fp = self._reference_score_distribution_fingerprint()
+        else:
+            raise ValueError(f"score_type não esperado: {score_type}")
+
+        return TypicalityScoreBatch(
+            scores=np.asarray(arr, dtype=np.float64),
+            n=int(arr.shape[0]),
+            embedding_dim=self.embedding_dim,
+            score_type=score_type,
+            score_semantics_id=self._score_semantics_id_for(score_type),
+            percentile_basis_score_type=percentile_basis,
+            reference_score_distribution_fingerprint=ref_dist_fp,
+            model_type=self.model_type,
+            model_state_fingerprint=self.model_state_fingerprint,
+            model_contract_fingerprint=self.model_contract_fingerprint,
+        )
+
+    def _reference_score_distribution_fingerprint(self) -> str:
+        import hashlib
+        self._ensure_fitted()
+        if self._train_log_likelihoods is None:
+            return ""
+        loo = np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64)
+        return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
+
+    def summary_protocol(self) -> TypicalityModelSummary:
+        """Implementação do `summary()` do protocolo.
+
+        Coexistente com o método `summary()` legado que retorna dict.
+        PR 2 unifica para um único `summary()`.
+        """
+        self._ensure_fitted()
+        p = self._params
+        assert p is not None
+
+        warnings_list: list[str] = []
+        health = "OK"
+        if self._converged_ is False:
+            warnings_list.append("MoVMF não convergiu no EM final")
+            health = "WARNING"
+        degenerate = self.get_degenerate_components(weight_threshold=1e-3)
+        if degenerate:
+            warnings_list.append(
+                f"{len(degenerate)} componente(s) degenerado(s): {degenerate}"
+            )
+            health = "WARNING"
+
+        return TypicalityModelSummary(
+            model_type=TypicalityModelType.MOVMF,
+            model_name=self.model_name,
+            embedding_dim=int(p.dim),
+            sample_count=int(p.sample_count),
+            enabled_score_types=tuple(
+                sorted(self.enabled_score_types, key=lambda t: t.value)
+            ),
+            health_status=health,
+            warnings=tuple(warnings_list),
+            backend_details={
+                "n_components": int(p.n_components),
+                "centering": self.centering,
+                "weights": p.weights.tolist(),
+                "kappas": p.kappas.tolist(),
+                "converged": self._converged_,
+                "n_iter": self._n_iter_,
+                "n_init_used": self._n_init_used,
+                "avg_train_log_likelihood": self._train_avg_log_likelihood,
+                "aic": self.aic_,
+                "bic": self.bic_,
+                "ood_quantile": float(self.ood_quantile),
+                "ood_log_likelihood_threshold": self._ood_log_likelihood_threshold,
+            },
+        )
 
     # =========================================================================
     # ACESSO READ-ONLY

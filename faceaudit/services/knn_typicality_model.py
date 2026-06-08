@@ -51,8 +51,16 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from faceaudit.enums.typicality_model_type import TypicalityModelType
 from faceaudit.enums.typicality_reference_mode import TypicalityReferenceMode
+from faceaudit.enums.typicality_score_type import TypicalityScoreType
 from faceaudit.models.knn_typicality_info import KNNTypicalityInfo
+from faceaudit.models.typicality.typicality_model_summary import (
+    TypicalityModelSummary,
+)
+from faceaudit.models.typicality.typicality_score_batch import (
+    TypicalityScoreBatch,
+)
 
 
 ArrayLike = Union[np.ndarray, Iterable[float], Iterable[Iterable[float]]]
@@ -380,6 +388,202 @@ class KNNTypicalityModel:
         if self._state is None:
             return None
         return self._state.loo_mean_knn_sorted.copy()
+
+    # =========================================================================
+    # TypicalityScoringModelProtocol (PR 1b)
+    # =========================================================================
+
+    @property
+    def model_type(self) -> TypicalityModelType:
+        return TypicalityModelType.KNN
+
+    @property
+    def enabled_score_types(self) -> frozenset[TypicalityScoreType]:
+        """Quais score types esta instância está pronta para produzir.
+
+        k-NN treinado disponibiliza os três: T_k bruto, percentil
+        empírico (sobre T_k) e log-densidade L-Q esférica. Antes do `fit`,
+        nenhum.
+        """
+        if not self.is_fitted():
+            return frozenset()
+        return frozenset({
+            TypicalityScoreType.MEAN_KNN_SIMILARITY,
+            TypicalityScoreType.TYPICALITY_PERCENTILE,
+            TypicalityScoreType.LOG_DENSITY_KNN,
+        })
+
+    @property
+    def embedding_dim(self) -> int:
+        self._ensure_fitted()
+        return int(self._state.dim)  # type: ignore[union-attr]
+
+    @property
+    def sample_count(self) -> int:
+        self._ensure_fitted()
+        return int(self._state.reference.shape[0])  # type: ignore[union-attr]
+
+    @property
+    def model_state_fingerprint(self) -> str:
+        """SHA-256 do estado numérico (reference matrix + CDF LOO + threshold).
+
+        Recalculado sob demanda; não é cacheado (consistente com
+        movmf/PLDA fingerprints existentes em outros pontos do projeto).
+        """
+        self._ensure_fitted()
+        import hashlib
+        st = self._state
+        assert st is not None
+        h = hashlib.sha256()
+        # Referência canonicaliza para float32 C-contígua (formato persistido)
+        ref = np.ascontiguousarray(st.reference, dtype=np.float32)
+        h.update(ref.tobytes(order="C"))
+        loo = np.ascontiguousarray(st.loo_mean_knn_sorted, dtype=np.float64)
+        h.update(loo.tobytes(order="C"))
+        h.update(f"{st.ood_threshold:.17g}".encode("utf-8"))
+        h.update(f"k={st.k};dim={st.dim};rmode={st.reference_mode.to_str()}".encode("utf-8"))
+        return h.hexdigest()
+
+    @property
+    def model_contract_fingerprint(self) -> str:
+        """SHA-256 do contrato semântico (sem o estado bruto).
+
+        Inclui o tipo do modelo, score_semantics_ids habilitados,
+        reference_mode, k, ood_quantile. Excluímos `eps` e `model_name`
+        porque são cosmeticamente relevantes mas não mudam a matemática.
+        """
+        self._ensure_fitted()
+        import hashlib
+        st = self._state
+        assert st is not None
+        semantics_ids = sorted([
+            self._score_semantics_id_for(t) for t in self.enabled_score_types
+        ])
+        contract_parts = [
+            f"model_type={TypicalityModelType.KNN.to_str()}",
+            f"semantics_ids={','.join(semantics_ids)}",
+            f"reference_mode={st.reference_mode.to_str()}",
+            f"k={st.k}",
+            f"dim={st.dim}",
+            f"ood_quantile={self.ood_quantile:.17g}",
+        ]
+        h = hashlib.sha256()
+        h.update("\n".join(contract_parts).encode("utf-8"))
+        return h.hexdigest()
+
+    @staticmethod
+    def _score_semantics_id_for(t: TypicalityScoreType) -> str:
+        if t == TypicalityScoreType.MEAN_KNN_SIMILARITY:
+            return "MEAN_KNN_SIMILARITY_SPHERICAL"
+        if t == TypicalityScoreType.TYPICALITY_PERCENTILE:
+            return "PERCENTILE_OF_MEAN_KNN_SIMILARITY"
+        if t == TypicalityScoreType.LOG_DENSITY_KNN:
+            return "LOG_DENSITY_ESTIMATE_LQ_SPHERICAL"
+        raise ValueError(f"score_type sem semantics id: {t}")
+
+    def compute_scores(
+        self,
+        embeddings: ArrayLike,
+        score_type: TypicalityScoreType,
+    ) -> TypicalityScoreBatch:
+        """Aplica o k-NN aos embeddings e retorna o batch tipado.
+
+        Levanta `UnsupportedTypicalityScoreTypeError` se o score_type não
+        estiver em `enabled_score_types`.
+        """
+        from faceaudit.protocols.typicality_scoring_model_protocol import (
+            UnsupportedTypicalityScoreTypeError,
+        )
+
+        self._ensure_fitted()
+        if score_type not in self.enabled_score_types:
+            raise UnsupportedTypicalityScoreTypeError(
+                requested=score_type,
+                enabled=self.enabled_score_types,
+                model_type=self.model_type,
+            )
+
+        infos = self.get_typicality_infos(embeddings, include_top_k=False)
+        if score_type == TypicalityScoreType.MEAN_KNN_SIMILARITY:
+            arr = np.array([i.mean_knn_similarity for i in infos], dtype=np.float64)
+            percentile_basis = None
+            ref_dist_fp = None
+        elif score_type == TypicalityScoreType.TYPICALITY_PERCENTILE:
+            arr = np.array([i.typicality_percentile for i in infos], dtype=np.float64)
+            # Base histórica do k-NN: o percentil é sobre MEAN_KNN_SIMILARITY
+            # (LOO T_k da referência).
+            percentile_basis = TypicalityScoreType.MEAN_KNN_SIMILARITY
+            # Fingerprint da CDF de referência (loo_mean_knn_sorted).
+            ref_dist_fp = self._reference_score_distribution_fingerprint()
+        elif score_type == TypicalityScoreType.LOG_DENSITY_KNN:
+            arr = np.array([i.log_density_knn for i in infos], dtype=np.float64)
+            percentile_basis = None
+            ref_dist_fp = None
+        else:
+            raise ValueError(f"score_type desconhecido: {score_type}")
+
+        return TypicalityScoreBatch(
+            scores=arr,
+            n=int(arr.shape[0]),
+            embedding_dim=self.embedding_dim,
+            score_type=score_type,
+            score_semantics_id=self._score_semantics_id_for(score_type),
+            percentile_basis_score_type=percentile_basis,
+            reference_score_distribution_fingerprint=ref_dist_fp,
+            model_type=self.model_type,
+            model_state_fingerprint=self.model_state_fingerprint,
+            model_contract_fingerprint=self.model_contract_fingerprint,
+        )
+
+    def _reference_score_distribution_fingerprint(self) -> str:
+        """SHA-256 da CDF empírica usada como referência para percentiles."""
+        import hashlib
+        self._ensure_fitted()
+        st = self._state
+        assert st is not None
+        loo = np.ascontiguousarray(st.loo_mean_knn_sorted, dtype=np.float64)
+        return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
+
+    def summary_protocol(self) -> TypicalityModelSummary:
+        """Implementação do `summary()` do protocolo.
+
+        Nome distinto do método legado `summary()` (que retorna dict) para
+        não quebrar consumidores existentes. PR 2 unifica para `summary()`.
+        """
+        self._ensure_fitted()
+        st = self._state
+        assert st is not None
+        loo = st.loo_mean_knn_sorted
+
+        warnings_list: list[str] = []
+        health = "OK"
+        if st.n_singleton_identities > 0 and st.reference_mode is TypicalityReferenceMode.PER_IDENTITY:
+            warnings_list.append(
+                f"{st.n_singleton_identities} identidades singleton (centroide == face única)"
+            )
+
+        return TypicalityModelSummary(
+            model_type=TypicalityModelType.KNN,
+            model_name=self.model_name,
+            embedding_dim=int(st.dim),
+            sample_count=int(st.reference.shape[0]),
+            enabled_score_types=tuple(sorted(self.enabled_score_types, key=lambda t: t.value)),
+            health_status=health,
+            warnings=tuple(warnings_list),
+            backend_details={
+                "k": int(st.k),
+                "reference_mode": st.reference_mode.to_str(),
+                "ood_quantile": float(self.ood_quantile),
+                "ood_threshold": float(st.ood_threshold),
+                "n_input_faces": int(st.n_input_faces),
+                "n_singleton_identities": int(st.n_singleton_identities),
+                "loo_T_k_min": float(loo[0]),
+                "loo_T_k_max": float(loo[-1]),
+                "loo_T_k_median": float(np.median(loo)),
+                "loo_T_k_mean": float(np.mean(loo)),
+                "loo_T_k_std": float(np.std(loo)),
+            },
+        )
 
     # =========================================================================
     # AGREGAÇÃO POR IDENTIDADE
