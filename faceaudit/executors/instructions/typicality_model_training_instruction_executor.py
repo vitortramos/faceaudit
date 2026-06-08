@@ -283,19 +283,16 @@ class TypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                     k=cfg.k,
                     ood_quantile=cfg.ood_quantile,
                     reference_mode=legacy_mode,
+                    # PR 4
+                    unit_norm_policy=cfg.unit_norm_policy,
+                    unit_norm_tolerance=cfg.unit_norm_tolerance,
                 )
             return factory
 
         if isinstance(cfg, MoVMFTypicalityModelConfig):
-            if cfg.population_weighting_mode != PopulationWeightingMode.FACE_LEVEL_RAW:
-                # MoVMF + IDENTITY_CENTROIDS/INVERSE_IDENTITY_FREQUENCY
-                # entra em PR 4.
-                raise NotImplementedError(
-                    "PopulationWeightingMode != FACE_LEVEL_RAW no MoVMF "
-                    "exige PR 4 (endurecimento experimental). Use "
-                    "FACE_LEVEL_RAW em PR 2 ou troque para o backend "
-                    "k-NN."
-                )
+            # PR 4: MoVMF agora suporta IDENTITY_CENTROIDS + UnitNormPolicy.
+            # INVERSE_IDENTITY_FREQUENCY ainda levanta NotImplementedError
+            # do próprio MoVMFTypicalityModel.fit, com referência ao doc.
 
             def factory():
                 return MoVMFTypicalityModel(
@@ -311,6 +308,10 @@ class TypicalityModelTrainingInstructionExecutor(StrategyInstructionExecutorBase
                     min_kappa=cfg.min_kappa,
                     max_kappa=cfg.max_kappa,
                     ood_quantile=cfg.ood_quantile,
+                    # PR 4
+                    unit_norm_policy=cfg.unit_norm_policy,
+                    unit_norm_tolerance=cfg.unit_norm_tolerance,
+                    population_weighting_mode=cfg.population_weighting_mode,
                 )
             return factory
 

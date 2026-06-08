@@ -99,6 +99,9 @@ class KNNTypicalityModel:
         reference_mode: TypicalityReferenceMode = TypicalityReferenceMode.PER_IDENTITY,
         model_name: str = "KNNTypicalityModel",
         eps: float = 1e-12,
+        # PR 4
+        unit_norm_policy=None,
+        unit_norm_tolerance: float = 1e-4,
     ):
         if k < 1:
             raise ValueError("k deve ser >= 1.")
@@ -112,6 +115,17 @@ class KNNTypicalityModel:
             else reference_mode
         self.model_name = model_name
         self.eps = float(eps)
+        # PR 4: política UnitNormPolicy. Default conserva comportamento
+        # histórico (NORMALIZE_SILENTLY).
+        from faceaudit.enums.unit_norm_policy import UnitNormPolicy
+        if unit_norm_policy is None:
+            unit_norm_policy = UnitNormPolicy.NORMALIZE_SILENTLY
+        self.unit_norm_policy = (
+            UnitNormPolicy.from_str(unit_norm_policy)
+            if not isinstance(unit_norm_policy, UnitNormPolicy)
+            else unit_norm_policy
+        )
+        self.unit_norm_tolerance = float(unit_norm_tolerance)
 
         # Estado pós-fit. None até `fit()` ser chamado.
         self._state: Optional[_KNNRefState] = None
@@ -478,6 +492,8 @@ class KNNTypicalityModel:
             f"k={st.k}",
             f"dim={st.dim}",
             f"ood_quantile={self.ood_quantile:.17g}",
+            # PR 4
+            f"unit_norm_policy={self.unit_norm_policy.to_str()}",
         ]
         h = hashlib.sha256()
         h.update("\n".join(contract_parts).encode("utf-8"))
@@ -720,11 +736,14 @@ class KNNTypicalityModel:
             x = x.reshape(1, -1)
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
-        norms = np.linalg.norm(x, axis=1, keepdims=True)
-        out = x / np.maximum(norms, self.eps)
-        if not np.all(np.isfinite(out)):
-            raise RuntimeError("Renormalização gerou valores não finitos.")
-        return out
+        # PR 4: aplica UnitNormPolicy
+        from faceaudit.services.unit_norm_validator import (
+            apply_unit_norm_policy,
+        )
+        return apply_unit_norm_policy(
+            x, policy=self.unit_norm_policy,
+            tolerance=self.unit_norm_tolerance, eps=self.eps,
+        )
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:
         x = np.asarray(embedding, dtype=np.float64)
@@ -734,5 +753,11 @@ class KNNTypicalityModel:
             x = x[0]
         if x.ndim != 1:
             raise ValueError("Formato esperado: vetor 1D.")
-        norm = max(float(np.linalg.norm(x)), self.eps)
-        return x / norm
+        # PR 4: aplica UnitNormPolicy via batch de tamanho 1
+        from faceaudit.services.unit_norm_validator import (
+            apply_unit_norm_policy,
+        )
+        return apply_unit_norm_policy(
+            x.reshape(1, -1), policy=self.unit_norm_policy,
+            tolerance=self.unit_norm_tolerance, eps=self.eps,
+        )[0]

@@ -40,19 +40,24 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Iterable, Union, Tuple, List, Literal
+from typing import Optional, Iterable, Sequence, Union, Tuple, List, Literal
 
 import numpy as np
 from scipy.special import ive, logsumexp
 
+from faceaudit.enums.population_weighting_mode import PopulationWeightingMode
 from faceaudit.enums.typicality_model_type import TypicalityModelType
 from faceaudit.enums.typicality_score_type import TypicalityScoreType
+from faceaudit.enums.unit_norm_policy import UnitNormPolicy
 from faceaudit.models.typicality_info import TypicalityInfo
 from faceaudit.models.typicality.typicality_model_summary import (
     TypicalityModelSummary,
 )
 from faceaudit.models.typicality.typicality_score_batch import (
     TypicalityScoreBatch,
+)
+from faceaudit.services.unit_norm_validator import (
+    apply_unit_norm_policy,
 )
 
 
@@ -109,6 +114,12 @@ class MoVMFTypicalityModel:
         min_kappa: float = 1e-6,
         max_kappa: float = 1e4,
         ood_quantile: float = 0.001,
+        # PR 4: endurecimento experimental
+        unit_norm_policy: UnitNormPolicy = UnitNormPolicy.NORMALIZE_SILENTLY,
+        unit_norm_tolerance: float = 1e-4,
+        population_weighting_mode: PopulationWeightingMode = (
+            PopulationWeightingMode.FACE_LEVEL_RAW
+        ),
         # Backwards-compat (deprecated):
         center_embeddings: Optional[bool] = None,
     ):
@@ -164,6 +175,18 @@ class MoVMFTypicalityModel:
         self.min_kappa = float(min_kappa)
         self.max_kappa = float(max_kappa)
         self.ood_quantile = float(ood_quantile)
+        # PR 4
+        self.unit_norm_policy = (
+            UnitNormPolicy.from_str(unit_norm_policy)
+            if not isinstance(unit_norm_policy, UnitNormPolicy)
+            else unit_norm_policy
+        )
+        self.unit_norm_tolerance = float(unit_norm_tolerance)
+        self.population_weighting_mode = (
+            PopulationWeightingMode.from_str(population_weighting_mode)
+            if not isinstance(population_weighting_mode, PopulationWeightingMode)
+            else population_weighting_mode
+        )
 
         # Estado interno pós-treino
         self._params: Optional[_MoVMFParams] = None
@@ -174,6 +197,9 @@ class MoVMFTypicalityModel:
         self._converged_: Optional[bool] = None
         self._ood_log_likelihood_threshold: Optional[float] = None
         self._n_init_used: Optional[int] = None
+        # PR 4: estado de balanceamento populacional
+        self._n_input_faces: Optional[int] = None
+        self._n_singleton_identities: Optional[int] = None
 
     # =========================================================================
     # COMPATIBILIDADE COM A API ANTIGA
@@ -329,12 +355,18 @@ class MoVMFTypicalityModel:
     # =========================================================================
 
     def to_dict(self) -> dict:
-        """Exporta estado e hiperparâmetros para JSON."""
+        """Exporta estado e hiperparâmetros para JSON.
+
+        PR 4: componentes ordenados canonicamente (peso ↓ κ ↓ hash_μ)
+        antes da serialização → modelos matematicamente equivalentes
+        têm `to_dict()` byte-by-byte equivalente.
+        """
         if not self.is_fitted():
             raise RuntimeError("Não é possível exportar um modelo não treinado.")
         assert self._params is not None
+        order = self._canonical_component_order()
         return {
-            "format_version": 2,
+            "format_version": 3,
             "hyperparameters": {
                 "population_label": self.population_label,
                 "model_name": self.model_name,
@@ -350,11 +382,16 @@ class MoVMFTypicalityModel:
                 "min_kappa": self.min_kappa,
                 "max_kappa": self.max_kappa,
                 "ood_quantile": self.ood_quantile,
+                # PR 4
+                "unit_norm_policy": self.unit_norm_policy.to_str(),
+                "unit_norm_tolerance": self.unit_norm_tolerance,
+                "population_weighting_mode":
+                    self.population_weighting_mode.to_str(),
             },
             "learned_params": {
-                "mus": self._params.mus.tolist(),
-                "kappas": self._params.kappas.tolist(),
-                "weights": self._params.weights.tolist(),
+                "mus": self._params.mus[order].tolist(),
+                "kappas": self._params.kappas[order].tolist(),
+                "weights": self._params.weights[order].tolist(),
                 "dim": self._params.dim,
                 "sample_count": self._params.sample_count,
                 "n_components": self._params.n_components,
@@ -382,11 +419,11 @@ class MoVMFTypicalityModel:
     def from_dict(cls, data: dict) -> "MoVMFTypicalityModel":
         """
         Reconstrói modelo a partir de dict gerado por to_dict().
-        Aceita format_version 1 (legacy) e 2 (atual).
+        Aceita format_version 1, 2, 3.
         Valida invariantes geométricos e numéricos.
         """
         version = data.get("format_version", 1)
-        if version not in (1, 2):
+        if version not in (1, 2, 3):
             raise ValueError(f"Versão de formato não suportada: {version}")
 
         hp = dict(data["hyperparameters"])
@@ -399,6 +436,13 @@ class MoVMFTypicalityModel:
             hp.setdefault("convergence_patience", 3)
             hp.setdefault("n_init", 1)
             hp.setdefault("ood_quantile", 0.001)
+
+        # Migração v2 -> v3 (PR 4): defaults dos novos campos
+        # reproduzem comportamento V2.14.
+        if version <= 2:
+            hp.setdefault("unit_norm_policy", "NORMALIZE_SILENTLY")
+            hp.setdefault("unit_norm_tolerance", 1e-4)
+            hp.setdefault("population_weighting_mode", "FACE_LEVEL_RAW")
 
         # Construtor não deve emitir warnings de deprecação ao desserializar
         with warnings.catch_warnings():
@@ -479,19 +523,53 @@ class MoVMFTypicalityModel:
     # API PÚBLICA DE TREINO E INFERÊNCIA
     # =========================================================================
 
-    def fit(self, embeddings: ArrayLike) -> "MoVMFTypicalityModel":
+    def fit(
+        self,
+        embeddings: ArrayLike,
+        *,
+        identity_ids: Optional[Sequence[str]] = None,
+    ) -> "MoVMFTypicalityModel":
         """
         Ajusta a mistura.
 
         Pipeline:
           1. Validação + L2-norm.
-          2. Cálculo do ponto de referência (centralização Fréchet/euclidiana se aplicável).
-          3. Single-component ou EM com n_init restarts (mantém o melhor LL).
-          4. Score do treino, threshold OOD.
+          2. **PR 4: aplica `population_weighting_mode`**:
+             - `FACE_LEVEL_RAW`: usa embeddings como vêm.
+             - `IDENTITY_CENTROIDS`: agrega por identidade
+               (centróide L2-renormalizado) e treina em centróides.
+             - `INVERSE_IDENTITY_FREQUENCY`: NÃO implementado em V2.15;
+               levanta `NotImplementedError` com referência a
+               `docs/typicality_models.md` §4.1.
+          3. Cálculo do ponto de referência (centralização Fréchet/euclidiana se aplicável).
+          4. Single-component ou EM com n_init restarts (mantém o melhor LL).
+          5. Score do treino, threshold OOD.
         """
         x_raw = self._validate_and_normalize_2d(embeddings)
         if x_raw.shape[0] < 2:
             raise ValueError("São necessárias pelo menos 2 amostras para treinar.")
+
+        # PR 4: weighting populacional
+        if self.population_weighting_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
+            if identity_ids is None:
+                raise ValueError(
+                    "PopulationWeightingMode.IDENTITY_CENTROIDS exige "
+                    "`identity_ids` paralelo a `embeddings`."
+                )
+            if len(identity_ids) != x_raw.shape[0]:
+                raise ValueError(
+                    f"len(identity_ids)={len(identity_ids)} difere de "
+                    f"N_embeddings={x_raw.shape[0]}."
+                )
+            x_raw = self._aggregate_by_identity(x_raw, identity_ids)
+        elif self.population_weighting_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+            raise NotImplementedError(
+                "PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY no MoVMF "
+                "está documentado em `docs/typicality_models.md` §4.2 e "
+                "será implementado em iteração futura. Use IDENTITY_CENTROIDS "
+                "(forense recomendado) ou FACE_LEVEL_RAW por enquanto."
+            )
+
         n_samples, dim = x_raw.shape
         if self.n_components > n_samples:
             raise ValueError(
@@ -714,24 +792,47 @@ class MoVMFTypicalityModel:
         self._ensure_fitted()
         return int(self._params.sample_count)  # type: ignore[union-attr]
 
+    def _canonical_component_order(self) -> np.ndarray:
+        """Índices que ordenam os componentes pela chave lex composta:
+        peso decrescente → κ decrescente → hash lex de μ.
+
+        Garante invariância do `model_contract_fingerprint` à permutação
+        de componentes (mistura é simétrica em permutação).
+        """
+        import hashlib
+        p = self._params
+        assert p is not None
+        mu_hashes = [
+            hashlib.sha256(
+                np.ascontiguousarray(p.mus[j], dtype=np.float64).tobytes(order="C")
+            ).hexdigest()
+            for j in range(p.n_components)
+        ]
+        # Chave de ordenação: (-peso, -κ, hash_μ). Quanto MENOR a chave,
+        # mais "à esquerda" — peso/κ negativos invertem para decrescente.
+        keys = [
+            (-float(p.weights[j]), -float(p.kappas[j]), mu_hashes[j])
+            for j in range(p.n_components)
+        ]
+        return np.array(sorted(range(p.n_components), key=lambda j: keys[j]), dtype=np.int64)
+
     @property
     def model_state_fingerprint(self) -> str:
-        """SHA-256 do estado numérico (mus + kappas + weights + CDF +
-        threshold + reference_point).
+        """SHA-256 do estado numérico (componentes canonicalizados,
+        CDF, threshold, reference_point).
 
-        **Não canoniza ordem dos componentes** — PR 4 adiciona ordenação
-        por peso/kappa/μ-hash para preservar invariância à permutação.
-        Em PR 1b, modelos com componentes em ordem diferente geram
-        fingerprints distintos.
+        PR 4: ordem dos componentes canonicalizada (peso ↓ κ ↓ hash_μ)
+        antes do hash — invariância à permutação.
         """
         self._ensure_fitted()
         import hashlib
         p = self._params
         assert p is not None
+        order = self._canonical_component_order()
         h = hashlib.sha256()
-        h.update(np.ascontiguousarray(p.mus, dtype=np.float64).tobytes(order="C"))
-        h.update(np.ascontiguousarray(p.kappas, dtype=np.float64).tobytes(order="C"))
-        h.update(np.ascontiguousarray(p.weights, dtype=np.float64).tobytes(order="C"))
+        h.update(np.ascontiguousarray(p.mus[order], dtype=np.float64).tobytes(order="C"))
+        h.update(np.ascontiguousarray(p.kappas[order], dtype=np.float64).tobytes(order="C"))
+        h.update(np.ascontiguousarray(p.weights[order], dtype=np.float64).tobytes(order="C"))
         if self._train_log_likelihoods is not None:
             h.update(
                 np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64).tobytes(order="C")
@@ -747,7 +848,12 @@ class MoVMFTypicalityModel:
 
     @property
     def model_contract_fingerprint(self) -> str:
-        """SHA-256 do contrato semântico (sem o estado bruto)."""
+        """SHA-256 do contrato semântico (sem o estado bruto).
+
+        PR 4: inclui `unit_norm_policy` e `population_weighting_mode`
+        — mudanças em qualquer um deslocam o contract fingerprint
+        downstream (LR architecture INHERIT rejeita).
+        """
         self._ensure_fitted()
         import hashlib
         p = self._params
@@ -762,6 +868,9 @@ class MoVMFTypicalityModel:
             f"n_components_fitted={p.n_components}",
             f"dim={p.dim}",
             f"ood_quantile={self.ood_quantile:.17g}",
+            # PR 4
+            f"unit_norm_policy={self.unit_norm_policy.to_str()}",
+            f"population_weighting_mode={self.population_weighting_mode.to_str()}",
         ]
         h = hashlib.sha256()
         h.update("\n".join(contract_parts).encode("utf-8"))
@@ -829,8 +938,9 @@ class MoVMFTypicalityModel:
     def summary_protocol(self) -> TypicalityModelSummary:
         """Implementação do `summary()` do protocolo.
 
+        PR 4: health checks expandidos (10 itens documentados em
+        `docs/typicality_models.md` §7).
         Coexistente com o método `summary()` legado que retorna dict.
-        PR 2 unifica para um único `summary()`.
         """
         self._ensure_fitted()
         p = self._params
@@ -838,15 +948,47 @@ class MoVMFTypicalityModel:
 
         warnings_list: list[str] = []
         health = "OK"
+
+        # Health 5: log-likelihood finita
+        if self._train_avg_log_likelihood is None or not np.isfinite(
+            self._train_avg_log_likelihood
+        ):
+            warnings_list.append("avg_train_log_likelihood não-finito")
+            health = "CRITICAL"
+        # Health 6: convergência em pelo menos uma inicialização
         if self._converged_ is False:
-            warnings_list.append("MoVMF não convergiu no EM final")
-            health = "WARNING"
+            warnings_list.append("MoVMF não convergiu na inicialização final")
+            health = "WARNING" if health == "OK" else health
+        # Health 1: n_components ≤ effective_population_size
+        if p.n_components > p.sample_count:
+            warnings_list.append(
+                f"n_components ({p.n_components}) > sample_count "
+                f"({p.sample_count}) — modelo super-parametrizado"
+            )
+            health = "CRITICAL"
+        # Health 3: nenhum peso abaixo de min_component_weight
+        below = np.sum(p.weights < self.min_component_weight)
+        if below > 0:
+            warnings_list.append(
+                f"{int(below)} componente(s) com peso < min_component_weight"
+            )
+            health = "WARNING" if health == "OK" else health
+        # Health 4: nenhum kappa saturou max_kappa
+        saturated = np.sum(p.kappas >= self.max_kappa - 1e-9)
+        if saturated > 0:
+            warnings_list.append(
+                f"{int(saturated)} componente(s) com κ saturado em max_kappa "
+                f"({self.max_kappa}) — pode indicar componente delta"
+            )
+            health = "WARNING" if health == "OK" else health
+        # Health 2: componentes degenerados (peso quase nulo OU κ saturado)
         degenerate = self.get_degenerate_components(weight_threshold=1e-3)
         if degenerate:
             warnings_list.append(
-                f"{len(degenerate)} componente(s) degenerado(s): {degenerate}"
+                f"Componentes degenerados (índices canônicos pós-ordenação "
+                f"podem diferir): {degenerate}"
             )
-            health = "WARNING"
+            health = "WARNING" if health == "OK" else health
 
         return TypicalityModelSummary(
             model_type=TypicalityModelType.MOVMF,
@@ -871,6 +1013,14 @@ class MoVMFTypicalityModel:
                 "bic": self.bic_,
                 "ood_quantile": float(self.ood_quantile),
                 "ood_log_likelihood_threshold": self._ood_log_likelihood_threshold,
+                # PR 4: novos campos auditáveis
+                "unit_norm_policy": self.unit_norm_policy.to_str(),
+                "unit_norm_tolerance": self.unit_norm_tolerance,
+                "population_weighting_mode":
+                    self.population_weighting_mode.to_str(),
+                "n_input_faces": self._n_input_faces,
+                "n_singleton_identities": self._n_singleton_identities,
+                "random_state": self.random_state,
             },
         )
 
@@ -1575,7 +1725,11 @@ class MoVMFTypicalityModel:
             x = x.reshape(1, -1)
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
-        return self._renormalize_rows(x)
+        # PR 4: política UnitNormPolicy explícita (ERROR | NORMALIZE_*)
+        return apply_unit_norm_policy(
+            x, policy=self.unit_norm_policy,
+            tolerance=self.unit_norm_tolerance, eps=self.eps,
+        )
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:
         x = np.asarray(embedding, dtype=np.float64)
@@ -1585,8 +1739,42 @@ class MoVMFTypicalityModel:
             x = x[0]
         if x.ndim != 1:
             raise ValueError("Formato 1D esperado.")
-        norm = max(float(np.linalg.norm(x)), self.eps)
-        return x / norm
+        # PR 4: aplica a política de norma sob o ponto único do batch
+        return apply_unit_norm_policy(
+            x.reshape(1, -1), policy=self.unit_norm_policy,
+            tolerance=self.unit_norm_tolerance, eps=self.eps,
+        )[0]
+
+    def _aggregate_by_identity(
+        self, embeddings: np.ndarray, identities: Sequence[str],
+    ) -> np.ndarray:
+        """Centróide L2-renormalizado por identidade.
+
+        Reusa a fórmula do `KNNTypicalityModel._aggregate_by_identity`.
+        Persiste no estado interno o número de identidades singleton
+        para auditoria em `summary_protocol`.
+        """
+        ids_arr = np.asarray(identities)
+        unique_ids, inverse_idx = np.unique(ids_arr, return_inverse=True)
+        n_ids = unique_ids.shape[0]
+        d = embeddings.shape[1]
+
+        sums = np.zeros((n_ids, d), dtype=np.float64)
+        counts = np.zeros(n_ids, dtype=np.int64)
+        np.add.at(sums, inverse_idx, embeddings)
+        np.add.at(counts, inverse_idx, 1)
+
+        norms = np.linalg.norm(sums, axis=1, keepdims=True)
+        centroids = sums / np.maximum(norms, self.eps)
+
+        if not np.all(np.isfinite(centroids)):
+            raise RuntimeError(
+                "Centroides por identidade contêm valores não finitos."
+            )
+
+        self._n_input_faces = int(embeddings.shape[0])
+        self._n_singleton_identities = int(np.sum(counts == 1))
+        return centroids.astype(np.float64)
 
     def _renormalize_rows(self, x: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(x, axis=1, keepdims=True)

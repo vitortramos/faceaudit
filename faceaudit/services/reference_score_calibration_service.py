@@ -29,6 +29,12 @@ from faceaudit.protocols.typicality_scoring_model_protocol import (
 )
 
 
+def oof_quantile_in_range(q: float) -> bool:
+    """0 < q < 0.5 — protege contra divisão por zero ou quantis acima da
+    metade que não fazem sentido como threshold OOD inferior."""
+    return q is not None and 0.0 < q < 0.5
+
+
 @dataclass(frozen=True)
 class ReferenceScoreCalibrationResult:
     """Resultado da calibração de score de referência.
@@ -96,15 +102,155 @@ class ReferenceScoreCalibrationService:
                 identity_ids=identity_ids,
             )
         if mode == ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY:
-            # PR 4 implementa; PR 2 fail-fast com mensagem explícita.
-            raise NotImplementedError(
-                "ReferenceScoreCalibrationService: CROSS_FIT_IDENTITY entra "
-                "em PR 4. Em PR 2 use IN_SAMPLE_LEGACY (default migratório do "
-                "k-NN); novas estratégias devem aguardar PR 4 para "
-                "CROSS_FIT_IDENTITY."
+            return self._calibrate_cross_fit_identity(
+                backend=backend,
+                trainer_factory=trainer_factory,
+                embeddings=embeddings,
+                identity_ids=identity_ids,
+                n_folds=n_folds,
+                random_state=random_state,
             )
         raise ValueError(
             f"ReferenceScoreCalibrationService: modo não suportado: {mode}."
+        )
+
+    @staticmethod
+    def _calibrate_cross_fit_identity(
+        *,
+        backend: TypicalityModelType,
+        trainer_factory,
+        embeddings: np.ndarray,
+        identity_ids: Optional[Sequence[str]],
+        n_folds: int,
+        random_state: int,
+    ) -> ReferenceScoreCalibrationResult:
+        """K-fold por identidade → scores OOF → CDF + threshold; refit final.
+
+        Procedimento (documentado em `docs/typicality_models.md` §5.1):
+
+        1. Particiona identidades únicas em `n_folds` folds disjuntos.
+        2. Para cada fold: treina backend nos folds train; pontua faces
+           cujas identidades estão no fold test (scores OOF).
+        3. Concatena OOF, ordena → CDF empírica; threshold OOD =
+           quantile.
+        4. Refit final em toda a população: o modelo persistido é este.
+
+        Em PR 4 a implementação cobre k-NN (LOIO real, substituindo LOO
+        de imagem) e MoVMF (k-fold por identidade). O `trainer_factory`
+        é chamado uma vez por fold + uma vez no refit final.
+        """
+        import hashlib
+
+        from faceaudit.enums.typicality_score_type import TypicalityScoreType
+
+        if identity_ids is None or len(identity_ids) != embeddings.shape[0]:
+            raise ValueError(
+                "CROSS_FIT_IDENTITY exige `identity_ids` paralelo a "
+                "`embeddings` (não pode ser None nem ter tamanho diferente)."
+            )
+
+        ids_arr = np.asarray(identity_ids, dtype=object)
+        unique_ids = np.unique(ids_arr)
+        if len(unique_ids) < n_folds:
+            raise ValueError(
+                f"CROSS_FIT_IDENTITY: {len(unique_ids)} identidades únicas "
+                f"insuficientes para {n_folds} folds — reduza cv_n_folds "
+                f"ou aumente a referência."
+            )
+
+        rng = np.random.default_rng(random_state)
+        shuffled_ids = unique_ids.copy()
+        rng.shuffle(shuffled_ids)
+        # Splits balanceados por identidade
+        fold_assignments = np.array_split(shuffled_ids, n_folds)
+
+        # Fingerprint do split (identidade → fold index)
+        identity_to_fold = {}
+        for fold_idx, fold_ids in enumerate(fold_assignments):
+            for ident in fold_ids:
+                identity_to_fold[str(ident)] = fold_idx
+        split_fp_payload = "\n".join(
+            f"{ident}:{idx}"
+            for ident, idx in sorted(identity_to_fold.items())
+        )
+        split_fingerprint = hashlib.sha256(
+            split_fp_payload.encode("utf-8")
+        ).hexdigest()
+
+        oof_scores: list[float] = []
+        fold_seeds: list[int] = []
+        for fold_idx, fold_ids in enumerate(fold_assignments):
+            fold_seed = int(random_state) + fold_idx
+            fold_seeds.append(fold_seed)
+            train_mask = np.array(
+                [str(i) not in set(map(str, fold_ids)) for i in ids_arr],
+                dtype=bool,
+            )
+            test_mask = ~train_mask
+            if train_mask.sum() == 0 or test_mask.sum() == 0:
+                continue
+
+            # Treina backend no fold train
+            fold_model = trainer_factory()
+            train_ids = tuple(str(i) for i in ids_arr[train_mask])
+            fold_model.fit(
+                embeddings[train_mask], identity_ids=train_ids,
+            )
+
+            # Score faces do fold test usando o backend.
+            # Para o cálculo de CDF/OOD escolhemos LOG_DENSITY_ESTIMATE
+            # quando disponível (universal entre k-NN e MoVMF). Se o
+            # backend não suportar, cai em TYPICALITY_PERCENTILE como
+            # fallback. Para o k-NN ambos estão disponíveis após o fit.
+            preferred_types = [
+                TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+                TypicalityScoreType.MEAN_KNN_SIMILARITY,
+            ]
+            chosen_type = None
+            for t in preferred_types:
+                if t in fold_model.enabled_score_types:
+                    chosen_type = t
+                    break
+            if chosen_type is None:
+                raise RuntimeError(
+                    "CROSS_FIT_IDENTITY: backend não expõe score type "
+                    "compatível para construir CDF OOF."
+                )
+
+            batch = fold_model.compute_scores(
+                embeddings[test_mask], chosen_type,
+            )
+            oof_scores.extend(batch.scores.tolist())
+
+        if not oof_scores:
+            raise RuntimeError(
+                "CROSS_FIT_IDENTITY: nenhum score OOF produzido — verifique "
+                "splits ou trainer."
+            )
+        oof_arr = np.array(sorted(oof_scores), dtype=np.float64)
+
+        # Refit final em toda a população
+        refit_model = trainer_factory()
+        all_ids = tuple(str(i) for i in ids_arr)
+        refit_model.fit(embeddings, identity_ids=all_ids)
+
+        # Threshold OOD = quantile(OOF, ood_quantile)
+        # Usamos o ood_quantile do próprio modelo (atributo público dos
+        # backends suportados).
+        ood_quantile = float(getattr(refit_model, "ood_quantile", 0.01))
+        threshold = (
+            float(np.quantile(oof_arr, ood_quantile))
+            if oof_quantile_in_range(ood_quantile) else None
+        )
+
+        return ReferenceScoreCalibrationResult(
+            refit_model=refit_model,
+            mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
+            oof_cdf=oof_arr,
+            ood_threshold=threshold,
+            split_fingerprint=split_fingerprint,
+            fold_seeds=tuple(fold_seeds),
+            n_folds_used=int(n_folds),
         )
 
     @staticmethod
