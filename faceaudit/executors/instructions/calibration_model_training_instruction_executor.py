@@ -215,6 +215,18 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             except Exception as exc:  # bind é best-effort — não bloqueia treinar
                 self._log(context, f"  ⚠ binding fingerprint falhou: {exc}")
 
+            # V1.5 — proveniência do raw_input para auditoria de monotonicidade
+            # condicional. O calibrator precisa saber qual recurso
+            # LR_ARCHITECTURE_RAW_INPUT no contexto bate com seu contract
+            # fingerprint — esse lookup é feito aqui e o nome é persistido no
+            # metadata do calibrador. Permite que a regra CONDITIONAL_MONOTONICITY
+            # resolva o dataset automaticamente em runs posteriores e que a
+            # auditoria pós-refit (logo abaixo) encontre o raw_input correto.
+            try:
+                self._bind_training_raw_input(trained_model, input_payload, context)
+            except Exception as exc:
+                self._log(context, f"  ⚠ bind raw_input resource_id falhou: {exc}")
+
             output_resource_id = instruction.trained_calibration_model_resource_id
             trained_resource = StrategyResource(
                 resource_id=output_resource_id,
@@ -224,6 +236,22 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 artifact_ref=None,
             )
             context.set_resource(trained_resource)
+
+            # V1.5 — auditoria CONDITIONAL_MONOTONICITY pós-refit. Roda
+            # programaticamente sobre o calibrador recém-treinado e persiste
+            # `monotonicity_audit` em seu metadata. Cobre arquiteturas
+            # declarativas de LR_ARCHITECTURE_VECTORIZATION com architecture_state
+            # persistido. Em outras arquiteturas (KDE, BiGauss, LogReg legado
+            # sem architecture_state), pula silenciosamente.
+            try:
+                self._run_monotonicity_audit(
+                    trained_model, output_resource_id, context,
+                )
+            except Exception as exc:
+                self._log(
+                    context,
+                    f"  ⚠ auditoria CONDITIONAL_MONOTONICITY falhou: {exc}",
+                )
 
             self._log(
                 context,
@@ -461,6 +489,112 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             return probe_ids, ref_ids
         except Exception:
             return None, None
+
+    # =========================================================================
+    # V1.5 — proveniência + auditoria pós-refit (CONDITIONAL_MONOTONICITY)
+    # =========================================================================
+
+    def _bind_training_raw_input(
+        self,
+        trained_model: Any,
+        input_payload: Any,
+        context: StrategyExecutionContextProtocol,
+    ) -> None:
+        """Localiza o recurso LR_ARCHITECTURE_RAW_INPUT no contexto cujo
+        `raw_input_matrix_fingerprint` bate com o do training do calibrador,
+        e persiste seu nome no metadata como `training_raw_input_resource_id`.
+        Permite que a auditoria CONDITIONAL_MONOTONICITY resolva o dataset
+        automaticamente.
+
+        Estratégia de fallback (best-effort):
+        1. Match exato por `raw_input_matrix_fingerprint` (após bind_architecture_state).
+        2. Match por `vectorization_contract_fingerprint` (alguns payloads expõem).
+        3. Match por `schema.fingerprint()`.
+        4. Heurística: único recurso LR_ARCHITECTURE_RAW_INPUT no contexto.
+        """
+        if not hasattr(trained_model, "metadata") or trained_model.metadata is None:
+            return
+
+        cal_md = trained_model.metadata
+        target_matrix_fp = cal_md.get("training_raw_input_matrix_fingerprint")
+        input_md = getattr(input_payload, "metadata", None) or {}
+        target_contract_fp = (
+            cal_md.get("vectorization_contract_fingerprint")
+            or input_md.get("vectorization_contract_fingerprint")
+        )
+
+        raw_input_resources = [
+            r for r in context.list_resources()
+            if r.resource_type == StrategyResourceType.LR_ARCHITECTURE_RAW_INPUT
+            and r.payload is not None
+        ]
+
+        for resource in raw_input_resources:
+            payload = resource.payload
+            # Tenta match exato por matrix fingerprint primeiro (mais preciso)
+            if target_matrix_fp:
+                fp = getattr(payload, "raw_input_matrix_fingerprint", None)
+                if fp == target_matrix_fp:
+                    cal_md["training_raw_input_resource_id"] = resource.resource_id
+                    return
+            # Fallback: contract fingerprint via vários campos
+            if target_contract_fp:
+                fp = getattr(payload, "vectorization_contract_fingerprint", None)
+                if fp is None and hasattr(payload, "schema"):
+                    schema = payload.schema
+                    if hasattr(schema, "fingerprint"):
+                        try:
+                            fp = schema.fingerprint()
+                        except Exception:
+                            fp = None
+                if fp == target_contract_fp:
+                    cal_md["training_raw_input_resource_id"] = resource.resource_id
+                    return
+
+        # Heurística final — único raw_input no contexto
+        if len(raw_input_resources) == 1:
+            cal_md["training_raw_input_resource_id"] = raw_input_resources[0].resource_id
+
+    def _run_monotonicity_audit(
+        self,
+        trained_model: Any,
+        calibrator_resource_id: str,
+        context: StrategyExecutionContextProtocol,
+    ) -> None:
+        """Roda CONDITIONAL_MONOTONICITY pós-refit sobre o calibrador
+        recém-treinado e persiste resultado no metadata. Silenciosamente
+        pula se o calibrador não tem architecture_state (KDE, BiGauss,
+        LogReg legado).
+        """
+        if not hasattr(trained_model, "metadata") or trained_model.metadata is None:
+            return
+        if "architecture_state" not in trained_model.metadata:
+            return
+
+        from faceaudit.enums.validation_rule_type import ValidationRuleType
+        from faceaudit.factories.validation_rule_factory import ValidationRuleFactory
+        from faceaudit.models.validation.validation_rule_config import (
+            ValidationRuleConfig,
+        )
+
+        cfg = ValidationRuleConfig(
+            rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+            params={"calibrator_resource_id": calibrator_resource_id},
+        )
+        rule = ValidationRuleFactory.create(cfg, instruction_id="post_refit_audit")
+        result = rule.validate(target=None, context=context)
+
+        # Log do status para a UI/telemetria
+        audit = trained_model.metadata.get("monotonicity_audit") or {}
+        status = audit.get("audit_status", "?")
+        if status == "OK":
+            self._log(context, f"  🛡️ Auditoria de monotonicidade: OK")
+        elif status == "NOT_AUDITED":
+            self._log(context, f"  ⚠ Auditoria de monotonicidade: NOT_AUDITED")
+        elif status == "WARNING":
+            self._log(context, f"  ⚠ Auditoria de monotonicidade: WARNING")
+        elif status == "CRITICAL":
+            self._log(context, f"  ❌ Auditoria de monotonicidade: CRITICAL")
 
     def _train_logistic_regression_calibrator(
         self,

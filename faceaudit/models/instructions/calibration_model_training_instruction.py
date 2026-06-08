@@ -185,17 +185,12 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
             ),
         ]
 
-        # CONDITIONAL_MONOTONICITY: V1 cobre apenas LogReg. KDE e
-        # BI_GAUSSIANIZED não persistem architecture_state.
-        if self.uses_logistic_regression and self.trained_calibration_model_resource_id:
-            defaults.append(
-                ValidationRuleConfig(
-                    rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
-                    params={
-                        "calibrator_resource_id": self.trained_calibration_model_resource_id,
-                    },
-                )
-            )
+        # CONDITIONAL_MONOTONICITY: auditoria embutida no executor (V1.5).
+        # Não auto-populamos como regra pré-execução porque a regra precisa
+        # do calibrador refitado para avaliar; o executor roda auditoria
+        # programaticamente pós-refit e persiste `monotonicity_audit` no
+        # metadata do calibrador. Usuários que queiram opt-in da regra como
+        # validação extra ainda podem adicioná-la manualmente via UI.
 
         self.validation_rule_configs = defaults
 

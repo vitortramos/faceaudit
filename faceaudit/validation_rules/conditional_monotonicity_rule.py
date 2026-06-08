@@ -123,17 +123,30 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
         else:
             # V2.14 não persiste training_raw_input_resource_id no calibrador
             # diretamente — proveniência completa exige fingerprint matching
-            # (V1.5). V1: requer override explícito quando metadata ausente.
+            # (V1.5). V1 fail-graceful: marca NOT_AUDITED com warning quando
+            # metadata ausente. Estratégias V2.14 existentes continuam
+            # funcionando; usuário recebe sinal de que auditoria não foi feita.
             raw_input_resource_id = calibrator_metadata.get(
                 "training_raw_input_resource_id"
             )
             if not raw_input_resource_id:
-                result.add_error(
+                result.add_warning(
                     f"[{self.rule_id}] Calibrador sem "
-                    "'training_raw_input_resource_id' persistido — V1 "
-                    "requer 'dataset_resource_id_override' explícito nesse "
-                    "caso. V1.5 implementará resolução completa via fingerprint."
+                    "'training_raw_input_resource_id' persistido — auditoria "
+                    "não realizada nesta versão (V1.5 implementará resolução "
+                    "completa via fingerprint). audit_status: NOT_AUDITED."
                 )
+                # Persistir flag NOT_AUDITED para auditoria forense rastrear
+                try:
+                    self._persist_audit_metadata(calibrator, {
+                        "rule_version": RULE_VERSION,
+                        "audit_status": "NOT_AUDITED",
+                        "reason": "training_raw_input_resource_id ausente "
+                                  "no calibrator metadata; V1 não consegue "
+                                  "resolver dataset para auditoria.",
+                    })
+                except Exception:
+                    pass
                 return result
 
         # 4. Verificar fingerprint consistency (best-effort em V1)
