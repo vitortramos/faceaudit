@@ -19,7 +19,7 @@ from faceaudit.services.lr_architecture_derivative_provider import (
 )
 from faceaudit.validation_rules.validation_rule_base import ValidationRuleBase
 
-RULE_VERSION = "1.0"
+RULE_VERSION = "2.0"
 
 
 class ConditionalMonotonicityRule(ValidationRuleBase):
@@ -45,6 +45,12 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
             de "curva quase plana" (default None — não verifica)
         box_quantile_low: limite inferior da `central_box` (default 0.05)
         box_quantile_high: limite superior (default 0.95)
+        reportable_box: V2 — domínio operacional explicitamente declarado
+            pela política de reportabilidade. Dict com chaves opcionais
+            "r_probe", "r_reference", "r_single" mapeadas para tuplas
+            (lo, hi) em escala bruta de raridade. Quando fornecido, regra
+            avalia slope nos cantos e gera CRITICAL em violação.
+            Default None (desativado — comportamento V1.5).
         dataset_resource_id_override: override explícito do dataset auditado
             (usar apenas em testes/depuração — gera warning persistido)
     """
@@ -57,6 +63,7 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
         operational_min_slope: Optional[float] = None,
         box_quantile_low: float = 0.05,
         box_quantile_high: float = 0.95,
+        reportable_box: Optional[dict] = None,
         dataset_resource_id_override: Optional[str] = None,
         name: str = "Monotonicidade condicional",
         description: Optional[str] = None,
@@ -76,6 +83,7 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
         self._operational_min_slope = operational_min_slope
         self._box_quantile_low = box_quantile_low
         self._box_quantile_high = box_quantile_high
+        self._reportable_box = reportable_box
         self._dataset_resource_id_override = dataset_resource_id_override
 
     def validate(
@@ -216,6 +224,7 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
                 raw_input_payload=raw_input_payload,
                 box_quantile_low=self._box_quantile_low,
                 box_quantile_high=self._box_quantile_high,
+                reportable_box=self._reportable_box,
             )
         except Exception as e:
             result.add_error(
@@ -233,6 +242,7 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
 
         min_obs, worst_obs_region = self._global_min_observed(regions)
         min_box, worst_box_region = self._global_min_central_box(regions)
+        min_rep, worst_rep_region = self._global_min_reportable_box(regions)
 
         if min_obs is not None and min_obs <= self._numerical_epsilon:
             audit_metadata["audit_status"] = "CRITICAL"
@@ -240,6 +250,15 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
                 f"[{self.rule_id}] Monotonicidade VIOLADA em observed_rows: "
                 f"min_slope = {min_obs:.6g} (região: {worst_obs_region}). "
                 "Aumentar o cosseno reduz log-LR em pares reais de D_cal."
+            )
+        elif min_rep is not None and min_rep <= self._numerical_epsilon:
+            # V2: reportable_box é gate operacional formal → CRITICAL
+            audit_metadata["audit_status"] = "CRITICAL"
+            result.add_error(
+                f"[{self.rule_id}] Monotonicidade VIOLADA em reportable_box "
+                f"(V2 gate operacional): min_slope = {min_rep:.6g} "
+                f"(região: {worst_rep_region}). Domínio declarado de "
+                "reportabilidade não é monotônico — bloqueio operacional."
             )
         elif min_box is not None and min_box <= self._numerical_epsilon:
             audit_metadata["audit_status"] = "WARNING"
@@ -307,6 +326,17 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
                 worst_region = r.region_id
         return best, worst_region
 
+    @staticmethod
+    def _global_min_reportable_box(regions: List[MonotonicityRegionResult]) -> tuple:
+        best: Optional[float] = None
+        worst_region: Optional[str] = None
+        for r in regions:
+            m = r.min_slope_reportable_box()
+            if m is not None and (best is None or m < best):
+                best = m
+                worst_region = r.region_id
+        return best, worst_region
+
     def _build_audit_metadata(
         self,
         *,
@@ -330,18 +360,29 @@ class ConditionalMonotonicityRule(ValidationRuleBase):
                 "worst_observed_row_features": r.worst_observed_row_features,
                 "worst_central_corner_label": r.worst_central_corner_label,
                 "worst_central_corner_values": r.worst_central_corner_values,
+                # V2: reportable_box per region
+                "min_slope_reportable_box": r.min_slope_reportable_box(),
+                "slope_at_reportable_box_corners": r.slope_at_reportable_box_corners,
+                "reportable_corner_labels": r.reportable_corner_labels,
+                "worst_reportable_corner_label": r.worst_reportable_corner_label,
+                "worst_reportable_corner_values": r.worst_reportable_corner_values,
                 "zero_variance_terms": r.zero_variance_terms,
                 "near_zero_variance_terms": r.near_zero_variance_terms,
             })
+
+        audit_domains = ["observed_rows", "central_box"]
+        if self._reportable_box:
+            audit_domains.append("reportable_box")
 
         return {
             "rule_version": RULE_VERSION,
             "architecture": spec_id,
             "training_raw_input_resource_id": raw_input_resource_id,
             "vectorization_contract_fingerprint": expected_fp,
-            "audit_domain_modes": ["observed_rows", "central_box"],
+            "audit_domain_modes": audit_domains,
             "box_quantile_low": self._box_quantile_low,
             "box_quantile_high": self._box_quantile_high,
+            "reportable_box": self._reportable_box,
             "numerical_epsilon": self._numerical_epsilon,
             "operational_min_slope": self._operational_min_slope,
             "regions": regions_summary,

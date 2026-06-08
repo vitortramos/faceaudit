@@ -306,3 +306,142 @@ def test_fingerprint_mismatch_errors():
     # Esperamos erro
     has_error = bool(getattr(result, "errors_messages", None) or getattr(result, "_errors", None))
     assert has_error or True  # validation result indicates error
+
+
+# ─────────────────────────────────────────────────────────────────────
+# V2 — reportable_box tests
+# ─────────────────────────────────────────────────────────────────────
+
+def test_reportable_box_absent_preserves_v15_behavior():
+    """reportable_box=None → mesma decisão da V1.5; audit_domain_modes não inclui reportable_box."""
+    beta_raw = np.array([1.0, 0.5, 0.2], dtype=np.float64)
+    calibrator, payload = _build_hier_one_face_calibrator_and_payload(beta_raw)
+    payload.schema.rarity_probe_column = None
+    payload.schema.rarity_reference_column = None
+    payload.schema.rarity_single_column = 1
+
+    ctx = StubContext()
+    ctx.add("cal_test", calibrator)
+    ctx.add("raw_in_test", payload)
+    cfg = ValidationRuleConfig(
+        rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+        params={"calibrator_resource_id": "cal_test"},  # SEM reportable_box
+    )
+    rule = ValidationRuleFactory.create(cfg, instruction_id="inst")
+    rule.validate(target=None, context=ctx)
+
+    audit = calibrator.metadata["monotonicity_audit"]
+    assert audit["audit_status"] in ("OK", "WARNING")
+    assert "reportable_box" not in audit["audit_domain_modes"]
+    assert audit.get("reportable_box") is None
+
+
+def test_reportable_box_healthy_status_ok():
+    """reportable_box fornecido + coefs saudáveis → status continua OK; audit_domain inclui reportable_box."""
+    beta_raw = np.array([1.0, 0.5, 0.2], dtype=np.float64)
+    calibrator, payload = _build_hier_one_face_calibrator_and_payload(beta_raw)
+    payload.schema.rarity_probe_column = None
+    payload.schema.rarity_reference_column = None
+    payload.schema.rarity_single_column = 1
+
+    ctx = StubContext()
+    ctx.add("cal_test", calibrator)
+    ctx.add("raw_in_test", payload)
+    cfg = ValidationRuleConfig(
+        rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+        params={
+            "calibrator_resource_id": "cal_test",
+            "reportable_box": {"r_single": [0.2, 0.9]},
+        },
+    )
+    rule = ValidationRuleFactory.create(cfg, instruction_id="inst")
+    rule.validate(target=None, context=ctx)
+
+    audit = calibrator.metadata["monotonicity_audit"]
+    assert audit["audit_status"] in ("OK", "WARNING"), \
+        f"esperado OK/WARNING com coefs saudáveis, obteve {audit['audit_status']}"
+    assert "reportable_box" in audit["audit_domain_modes"]
+    assert audit["reportable_box"] == {"r_single": (0.2, 0.9)}
+    # Pelo menos uma região deve ter cantos reportable avaliados
+    has_any_corner = any(
+        r.get("slope_at_reportable_box_corners") for r in audit["regions"]
+    )
+    assert has_any_corner, "reportable_box corners não foram avaliados"
+
+
+def test_reportable_box_violation_critical():
+    """β_h+_r forçado muito negativo + r_single alto → slope canto = β_s + β_h+ + β_h+r * (r - r0) < 0 → CRITICAL.
+
+    HIER_ONE_FACE_CENTERED: ∂/∂s = β_s + β_h+ * 1[s>s0] + β_h+r * (r - r0) * 1[s>s0]
+    Com β_s=1, β_h+=0.5, β_h+r=-50 e r=0.95, r0=0.5: 1 + 0.5 + (-50)(0.45) = -21 < 0
+    """
+    beta_raw = np.array([1.0, 0.5, -50.0], dtype=np.float64)
+    calibrator, payload = _build_hier_one_face_calibrator_and_payload(beta_raw)
+    payload.schema.rarity_probe_column = None
+    payload.schema.rarity_reference_column = None
+    payload.schema.rarity_single_column = 1
+
+    ctx = StubContext()
+    ctx.add("cal_test", calibrator)
+    ctx.add("raw_in_test", payload)
+    # observed range é [0.0, 1.0] mas P5/P95 ~ [0.05, 0.95] → observed_rows também viola.
+    # Para isolar o gate reportable_box, usamos reportable=[0.9, 0.95]
+    # — domínio onde apenas r alto entra; observed_rows pega o range completo.
+    cfg = ValidationRuleConfig(
+        rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+        params={
+            "calibrator_resource_id": "cal_test",
+            "reportable_box": {"r_single": [0.9, 0.95]},
+        },
+    )
+    rule = ValidationRuleFactory.create(cfg, instruction_id="inst")
+    rule.validate(target=None, context=ctx)
+
+    audit = calibrator.metadata["monotonicity_audit"]
+    assert audit["audit_status"] == "CRITICAL", \
+        f"esperado CRITICAL, obteve {audit['audit_status']}"
+
+
+def test_reportable_box_invalid_dict_raises():
+    """Chave não permitida em reportable_box → ValueError da factory."""
+    with pytest.raises(ValueError, match="chave inválida"):
+        ValidationRuleFactory.create(
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+                params={
+                    "calibrator_resource_id": "x",
+                    "reportable_box": {"foo": [0.0, 1.0]},
+                },
+            ),
+            instruction_id="i",
+        )
+
+
+def test_reportable_box_invalid_bounds_raises():
+    """lo > hi em reportable_box → ValueError."""
+    with pytest.raises(ValueError, match="lo=.*> hi"):
+        ValidationRuleFactory.create(
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+                params={
+                    "calibrator_resource_id": "x",
+                    "reportable_box": {"r_single": [0.9, 0.1]},
+                },
+            ),
+            instruction_id="i",
+        )
+
+
+def test_reportable_box_non_pair_raises():
+    """Valor não-par em reportable_box → ValueError."""
+    with pytest.raises(ValueError, match="par .lo, hi."):
+        ValidationRuleFactory.create(
+            ValidationRuleConfig(
+                rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+                params={
+                    "calibrator_resource_id": "x",
+                    "reportable_box": {"r_probe": [0.1]},
+                },
+            ),
+            instruction_id="i",
+        )

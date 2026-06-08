@@ -57,6 +57,7 @@ class LRArchitectureDerivativeProvider:
         raw_input_payload: Any,
         box_quantile_low: float = 0.05,
         box_quantile_high: float = 0.95,
+        reportable_box: Optional[dict] = None,
     ) -> List[MonotonicityRegionResult]:
         # 1. Reconstrói LRArchitectureState e β_raw
         state_dict = calibrator_metadata.get("architecture_state")
@@ -114,11 +115,23 @@ class LRArchitectureDerivativeProvider:
             n_in_region = int(mask.sum())
             slopes_obs = slope_per_pair[mask] if n_in_region else np.array([])
 
-            # Cantos avaliados nesta região
+            # Cantos avaliados nesta região (central_box)
             corner_slopes, corner_labels, worst_corner = self._evaluate_corners(
                 state=state, region_id=region_id, beta_raw=beta_raw,
                 central_box=central_box,
             )
+
+            # V2: cantos da reportable_box (se fornecida)
+            r_corner_slopes: Optional[List[float]] = None
+            r_corner_labels: Optional[List[str]] = None
+            r_worst_corner: Optional[Tuple[str, dict]] = None
+            if reportable_box:
+                r_corner_slopes_list, r_corner_labels_list, r_worst_corner = self._evaluate_corners(
+                    state=state, region_id=region_id, beta_raw=beta_raw,
+                    central_box=reportable_box,
+                )
+                r_corner_slopes = r_corner_slopes_list or None
+                r_corner_labels = r_corner_labels_list or None
 
             # Pior par observado (menor slope)
             worst_idx, worst_features = None, None
@@ -148,10 +161,14 @@ class LRArchitectureDerivativeProvider:
                 slope_at_observed_rows=slopes_obs if slopes_obs.size else None,
                 slope_at_central_box_corners=corner_slopes if corner_slopes else None,
                 corner_labels=corner_labels if corner_labels else None,
+                slope_at_reportable_box_corners=r_corner_slopes,
+                reportable_corner_labels=r_corner_labels,
                 worst_observed_row_index=worst_idx,
                 worst_observed_row_features=worst_features,
                 worst_central_corner_label=worst_corner[0] if worst_corner else None,
                 worst_central_corner_values=worst_corner[1] if worst_corner else None,
+                worst_reportable_corner_label=r_worst_corner[0] if r_worst_corner else None,
+                worst_reportable_corner_values=r_worst_corner[1] if r_worst_corner else None,
                 feature_variance_in_region=feat_variance,
                 zero_variance_terms=zero_var,
                 near_zero_variance_terms=near_zero_var,

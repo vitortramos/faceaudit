@@ -312,12 +312,23 @@ Modelos calibrados antes da implementação da regra não terão metadata de aud
 
 ### V2 — endurecimento operacional
 
-- `reportable_box` operacional
-- Política formal de reportabilidade
-- Opt-out restrito por ambiente
-- Bloqueio de casework para modelos não certificados
-- Histórico de overrides
-- Dashboard consolidado de auditoria
+**Component 1 — `reportable_box`** ✅ IMPLEMENTADO
+
+- Parâmetro opcional `reportable_box: Optional[dict]` na regra (default None preserva V1.5).
+- Aceita chaves `"r_probe"`, `"r_reference"`, `"r_single"` mapeadas para `(lo, hi)` em escala bruta.
+- Factory parser tolerante valida estrutura/par/limites (lo ≤ hi) — config inválida levanta `ValueError`.
+- Provider (`LRArchitectureDerivativeProvider.evaluate_regions`) ganha parâmetro `reportable_box`; quando fornecido, avalia slopes nos cantos cartesianos das dimensões declaradas via mesmo helper `_evaluate_corners` reutilizado pelo `central_box`.
+- `MonotonicityRegionResult` ganha 4 campos novos: `slope_at_reportable_box_corners`, `reportable_corner_labels`, `worst_reportable_corner_label`, `worst_reportable_corner_values` + método `min_slope_reportable_box()`.
+- Policy: `min_slope_reportable_box ≤ numerical_epsilon` → `CRITICAL` (gate operacional). Domínio é declarado pelo usuário como política — violação ali é mais grave que canto da `central_box`.
+- `audit_metadata` ganha entrada `reportable_box` e inclui `"reportable_box"` em `audit_domain_modes` quando ativo.
+- `RULE_VERSION` → `"2.0"`.
+- Testes: 6 testes V2 (`reportable_box_absent_preserves_v15_behavior`, `_healthy_status_ok`, `_violation_critical`, `_invalid_dict_raises`, `_invalid_bounds_raises`, `_non_pair_raises`).
+
+**Components 2-4** (pendente de design adicional antes de codar):
+- Opt-out restrito por ambiente DEV/VALIDATION/PRODUCTION — exige decisão sobre como o ambiente é declarado (config do projeto? env var? setting persistido?).
+- Bloqueio de casework para modelos não certificados — exige integração no `score_calibration_instruction_executor` + schema de certificação.
+- Histórico de overrides — exige schema de persistência (quem, quando, por quê, hash do modelo no momento do override).
+- Dashboard consolidado de auditoria.
 
 ### Projeto paralelo — `TYPICALITY_EFFECT_AUDIT`
 

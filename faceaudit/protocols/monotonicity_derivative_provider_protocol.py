@@ -44,11 +44,21 @@ class MonotonicityRegionResult:
     slope_at_central_box_corners: Optional[List[float]] = None
     corner_labels: Optional[List[str]] = None
 
+    # ── V2: reportable_box — domínio operacional explicitamente declarado
+    # pela política de reportabilidade (subset da caixa empírica considerado
+    # admissível para LR ser reportado em laudo). Quando fornecido pelo
+    # usuário, a auditoria avalia slope nos cantos e gera CRITICAL em
+    # violação. ──
+    slope_at_reportable_box_corners: Optional[List[float]] = None
+    reportable_corner_labels: Optional[List[str]] = None
+
     # Identificação do pior observed_row e pior corner
     worst_observed_row_index: Optional[int] = None
     worst_observed_row_features: Optional[dict] = None
     worst_central_corner_label: Optional[str] = None
     worst_central_corner_values: Optional[dict] = None
+    worst_reportable_corner_label: Optional[str] = None
+    worst_reportable_corner_values: Optional[dict] = None
 
     # ── Diagnósticos ──
     feature_variance_in_region: dict = field(default_factory=dict)
@@ -69,6 +79,14 @@ class MonotonicityRegionResult:
             return self.slope_value
         if self.slope_at_central_box_corners:
             return float(min(self.slope_at_central_box_corners))
+        return None
+
+    def min_slope_reportable_box(self) -> Optional[float]:
+        """Menor slope sobre os cantos da caixa reportable (V2)."""
+        if self.slope_value is not None:
+            return self.slope_value
+        if self.slope_at_reportable_box_corners:
+            return float(min(self.slope_at_reportable_box_corners))
         return None
 
     def max_slope_observed(self) -> Optional[float]:
@@ -101,6 +119,7 @@ class MonotonicityDerivativeProviderProtocol(Protocol):
         raw_input_payload: Any,
         box_quantile_low: float = 0.05,
         box_quantile_high: float = 0.95,
+        reportable_box: Optional[dict] = None,
     ) -> List[MonotonicityRegionResult]:
         """
         Retorna lista de resultados por região piecewise.
