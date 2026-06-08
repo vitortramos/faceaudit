@@ -4702,6 +4702,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
         dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         dialog.show()
 
+        # Resolve a fase da instrução para o frame de execução
+        # (LR_ARCHITECTURE_VECTORIZATION exige frame em VALIDATION/CASEWORK
+        # e fail-closa silenciosamente sem ele).
+        phase = self._current_definition.get_phase_of_instruction(
+            instruction.instruction_id
+        )
+        instruction_index = self._current_definition.get_instruction_index_in_phase(
+            instruction.instruction_id
+        )
+
         thread = QtCore.QThread()
         worker = InstructionExecutionWorker(
             self._executor,
@@ -4709,6 +4719,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._execution_context,
             strategy_id=self._current_definition.strategy_id,
             strategy_name=self._current_definition.name or "",
+            phase=phase,
+            instruction_index=max(0, instruction_index),
         )
         worker.moveToThread(thread)
 

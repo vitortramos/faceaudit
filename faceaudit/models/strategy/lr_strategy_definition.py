@@ -235,6 +235,40 @@ class LRStrategyDefinition(JSONSerializableMixin):
             self.casework_instructions,
         ]
 
+    def get_phase_of_instruction(self, instruction_id: str):
+        """
+        Resolve a fase (PREPARATION/VALIDATION/CASEWORK) à qual a
+        instrução pertence. Retorna `None` se não encontrada.
+
+        Usado pelo orquestrador na execução por-instrução para construir
+        o `InstructionExecutionFrame` correto (LR_ARCHITECTURE_VECTORIZATION
+        fail-closes sem frame em VALIDATION/CASEWORK).
+        """
+        from faceaudit.enums.strategy_phase import StrategyPhase
+
+        mapping = [
+            (self.preparation_instructions, StrategyPhase.PREPARATION),
+            (self.validation_instructions, StrategyPhase.VALIDATION),
+            (self.casework_instructions, StrategyPhase.CASEWORK),
+        ]
+        for phase_list, phase_enum in mapping:
+            for instr in phase_list:
+                if instr.instruction_id == instruction_id:
+                    return phase_enum
+        return None
+
+    def get_instruction_index_in_phase(self, instruction_id: str) -> int:
+        """
+        Retorna o índice da instrução dentro da sua lista de fase, ou
+        -1 se não encontrada. Usado pelo orquestrador na execução
+        por-instrução para popular `InstructionExecutionFrame.instruction_index`.
+        """
+        for phase_list in self._phase_lists():
+            for index, instr in enumerate(phase_list):
+                if instr.instruction_id == instruction_id:
+                    return index
+        return -1
+
     def _get_phase_list(self, phase: str) -> List[StrategyInstructionDefinition]:
         _map = {
             "preparation": self.preparation_instructions,

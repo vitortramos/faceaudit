@@ -207,10 +207,22 @@ class StrategyExecutor:
         self,
         instruction: StrategyInstructionDefinition,
         context: StrategyExecutionContextProtocol,
+        phase=None,
+        instruction_index: int = 0,
     ) -> InstructionExecutionResult:
         """
         Executa uma única instrução dentro do contexto fornecido.
         Os recursos produzidos ficam disponíveis no contexto para instruções futuras.
+
+        `phase`: `StrategyPhase` opcional. Quando informado E o contexto
+        ainda não tem um frame ativo, o orquestrador constrói o
+        `InstructionExecutionFrame` correspondente e injeta via
+        `context.with_frame(frame)`. Executores que dependem do frame
+        (e.g. `LR_ARCHITECTURE_VECTORIZATION`) fail-closam sem ele.
+
+        `_execute_all_phases` continua injetando o frame externamente
+        antes de chamar este método — quando `context.frame` já está
+        preenchido, este método não reescreve.
         """
         # Reseta a lista de execution_logs entre execuções individuais. O
         # contexto é compartilhado ao longo da sessão, mas os logs do Run
@@ -234,6 +246,28 @@ class StrategyExecutor:
                 f"⚠️ Aviso: {n_listeners} listeners de log ativos no contexto. "
                 "Pode indicar acúmulo de dialogs anteriores que não fecharam."
             )
+
+        # Injeta frame quando o caller passa a fase e o contexto ainda
+        # não está framed. Necessário no caminho por-instrução (UI Run),
+        # onde o worker chama este método diretamente sem passar pelo
+        # `_execute_all_phases`. Sem isso, `LR_ARCHITECTURE_VECTORIZATION`
+        # levanta `MissingExecutionFrameError`.
+        if phase is not None and getattr(context, "frame", None) is None:
+            from faceaudit.models.strategy.instruction_execution_frame import (
+                InstructionExecutionFrame,
+            )
+            strategy_id = ""
+            try:
+                strategy_id = context.get_metadata("strategy_id") or ""
+            except Exception:
+                strategy_id = ""
+            frame = InstructionExecutionFrame(
+                phase=phase,
+                instruction_index=int(instruction_index),
+                strategy_id=strategy_id,
+            )
+            if hasattr(context, "with_frame"):
+                context = context.with_frame(frame)
 
         executor = self._resolve_executor(instruction)
         self._log(context, f"▶ Executando: {instruction.name} ({instruction.instruction_id})")
