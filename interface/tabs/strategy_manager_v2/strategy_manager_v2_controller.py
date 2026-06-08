@@ -4653,7 +4653,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if model is None:
                 missing_msg = (
                     "Não foi encontrado um modelo de tipicidade treinado para "
-                    "esta instrução. Execute KNN_TYPICALITY_MODEL_TRAINING primeiro."
+                    "esta instrução. Execute TYPICALITY_MODEL_TRAINING primeiro."
                 )
             else:
                 try:
