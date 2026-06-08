@@ -1312,6 +1312,21 @@ contrato de auditoria** do componente.
 - `monotonicity_check`: descreve a política aplicada (
   `"strict_increasing_post_fit"`).
 
+> **Relação com `ConditionalMonotonicityRule`** (V1.5 da regra plugável,
+> `docs/conditional_monotonicity_rule_design.md`): a regra cobre, na
+> V1.5 atual, as **15 arquiteturas declarativas** de `LR_ARCHITECTURE_VECTORIZATION`
+> via `LRArchitectureDerivativeProvider`. O **piecewise univariado clássico
+> descrito neste documento** (com $K$ knots arbitrários, ajustado pelo
+> `PiecewiseLinearScoreTransformer`) **ainda não é coberto pela regra
+> plugável** — sua verificação de monotonicidade continua sendo feita
+> internamente pelo `LogisticRegressionCalibrationModel` via
+> `require_monotonicity` + `monotonicity_policy` (`segment_slopes_raw`,
+> `is_monotonic` acima). A cobertura do piecewise legado pela regra está
+> enfileirada como `PiecewiseLinearDerivativeProvider` na próxima iteração
+> — quando implementada, os mesmos campos `segment_slopes_raw` serão
+> consumidos por `MonotonicityRegionResult.slope_value` por segmento, e os
+> dois caminhos convergirão.
+
 ### 7.7 Ponto de cruzamento efetivo
 
 - `effective_log_lr_zero_crossing`: $s_{LR=0}$ (None se nenhum

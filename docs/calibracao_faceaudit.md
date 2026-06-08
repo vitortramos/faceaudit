@@ -776,6 +776,29 @@ $C$ em ordem decrescente de score de CV e seleciona-se o primeiro que produza
 curva estritamente monotônica. Se nenhum for monotônico, `ERROR` falha;
 `WARNING` cai no melhor por CV.
 
+##### Gate `CONDITIONAL_MONOTONICITY` para arquiteturas declarativas (V1.5)
+
+A política `monotonicity_policy` descrita acima opera no `LogisticRegressionCalibrationModel`
+**piecewise univariado clássico**. A partir da V1.5 da `ConditionalMonotonicityRule`,
+calibradores treinados via `LR_ARCHITECTURE_VECTORIZATION` (qualquer das 15
+arquiteturas — incluindo as ONE_FACE V2.14.1) recebem **auditoria adicional pós-refit**
+embutida no `CalibrationModelTrainingInstructionExecutor`. A regra:
+
+- Verifica `∂ log_LR / ∂ s > 0` em **todos os pares observados em $D_{\text{cal}}$**
+  (`observed_rows`) e nos **cantos do retângulo $[P_5, P_{95}]$** das raridades
+  observadas (`central_box`).
+- Cobre arquiteturas com derivada multivariada que dependem de raridades
+  $(\tilde r_F, \tilde r_P)$ ou $\tilde r_{\text{single}}$ — caso onde
+  `monotonicity_policy` univariado não se aplica.
+- Persiste `monotonicity_audit` no `calibrator.metadata` com status
+  (`OK / WARNING / CRITICAL / NOT_AUDITED`), slopes por região, pior par observado
+  e pior canto da caixa central.
+- Reportado no CLI durante o `CALIBRATION_MODEL_TRAINING` (`🛡️ OK / ⚠ WARNING / ❌ CRITICAL`).
+
+O suporte ao piecewise univariado legado (com $K$ knots arbitrários) pela mesma
+regra está enfileirado como `PiecewiseLinearDerivativeProvider` na próxima
+iteração. Detalhes em `docs/conditional_monotonicity_rule_design.md`.
+
 #### 4.2.10 Parcimônia
 
 Cada knot adiciona um parâmetro. Mais knots não significam, automaticamente,

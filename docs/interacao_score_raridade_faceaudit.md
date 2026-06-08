@@ -892,6 +892,23 @@ $\tilde r \in [\,\mathrm{mean}(p)-1,\ \mathrm{mean}(p)\,]$. Avaliar os 4 cantos 
 exigir inclinação $\ge 0$ em todos. **Em modo pericial, rejeitar o modelo se
 houver inclinação condicional negativa na faixa operacional.**
 
+> **Implementação operacional (V1.5).** O gate descrito acima é exatamente o
+> que `ConditionalMonotonicityRule` (`faceaudit/validation_rules/conditional_monotonicity_rule.py`)
+> executa para **arquiteturas declarativas de `LR_ARCHITECTURE_VECTORIZATION`**
+> (15 arquiteturas, incluindo as ONE_FACE V2.14.1). A regra é invocada
+> automaticamente pós-refit pelo `CalibrationModelTrainingInstructionExecutor`
+> e avalia a inclinação `∂log_LR/∂s` (i) em **todos os pares observados em
+> $D_{\text{cal}}$** (`observed_rows` — supera o "4 cantos" porque cobre a
+> nuvem real) e (ii) nos **cantos do retângulo $[P_5, P_{95}]$** das raridades
+> observadas (`central_box` — implementa diretamente a recomendação acima).
+> Status é persistido em `calibrator.metadata["monotonicity_audit"]`. Detalhes
+> em `docs/conditional_monotonicity_rule_design.md`. O encadeamento legado via
+> `SCORE_INTERACTION_FEATURE + SCORE_VECTORIZATION` (que produz o calibrador
+> piecewise univariado clássico) **ainda não é coberto pela regra plugável**
+> — esse caminho continua usando `monotonicity_policy` interno do
+> `LogisticRegressionCalibrationModel`; cobertura via `PiecewiseLinearDerivativeProvider`
+> está enfileirada para próxima iteração.
+
 ### H.4 Refinamento 3 — orientação na vetorização
 
 O `SCORE_INTERACTION_FEATURE` usa alinhamento **orientado**
