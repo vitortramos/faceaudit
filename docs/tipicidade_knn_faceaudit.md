@@ -1,6 +1,31 @@
-# Modelo de tipicidade k-NN no FaceAudit (`KNN_TYPICALITY_MODEL_TRAINING`)
+# Modelo de tipicidade k-NN no FaceAudit (`KNN_TYPICALITY_MODEL_TRAINING`) — LEGADO V2.14
 
-> **Status:** documento técnico de referência interna.
+> ## ⚠ DESATUALIZADO — INSTRUÇÃO REMOVIDA EM V2.15
+>
+> A instrução `KNN_TYPICALITY_MODEL_TRAINING` foi **substituída** em
+> V2.15 pela instrução unificada `TYPICALITY_MODEL_TRAINING` que
+> aceita k-NN ou MoVMF via discriminador
+> `typicality_model_type`.
+>
+> Para a versão atual, ver:
+>
+> - **`docs/typicality_model_training_faceaudit.md`** — instrução
+>   unificada (substituto formal).
+> - **`docs/typicality_models.md`** — matemática completa dos dois
+>   backends (k-NN + MoVMF), `UnitNormPolicy`,
+>   `PopulationWeightingMode`, `CROSS_FIT_IDENTITY`, fingerprints em
+>   3 camadas.
+>
+> Estratégias V2.14 que usavam `KNN_TYPICALITY_MODEL_TRAINING` são
+> automaticamente migradas pelo `LegacyStrategyMigrationService` ao
+> abrir o projeto. Defaults históricos preservados literalmente.
+>
+> Preservado por valor histórico. Para a versão atual, ver os docs
+> V2.15.
+
+---
+
+> **Status:** documento técnico de referência interna — **versão V2.14**.
 > **Escopo:** a instrução `KNN_TYPICALITY_MODEL_TRAINING` — o modelo de
 > tipicidade não-paramétrico baseado em k-NN esférico. Objetivo,
 > fundamentação, as três métricas, configurações, fórmulas e exemplos.

@@ -1,6 +1,24 @@
-# Tipicidade pareada no FaceAudit (`TYPICALITY_PAIR_SCORING`)
+# Tipicidade pareada no FaceAudit (`TYPICALITY_PAIR_SCORING`) — LEGADO V2.14
 
-> **Status:** documento técnico de referência interna.
+> ## ⚠ DESATUALIZADO
+>
+> Este documento descreve a versão V2.14 da instrução
+> `TYPICALITY_PAIR_SCORING`. Foi substituído por
+> **`docs/typicality_pair_scoring_faceaudit.md`** (V2.15) que cobre:
+>
+> - Consumo polimórfico via `TypicalityScoringModelProtocol` (k-NN + MoVMF).
+> - Retorno tipado `TypicalityScoreBatch` com fingerprints e
+>   `score_semantics_id`.
+> - Propagação de proveniência no metadata do `SimilarityScoreDataset`
+>   alimentando `vectorization_contract_fingerprint` downstream.
+> - Rename `LOG_DENSITY_KNN` → `LOG_DENSITY_ESTIMATE` (universal).
+> - Validações runtime explícitas no executor.
+>
+> Preservado por valor histórico. Para a versão atual, ver o doc V2.15.
+
+---
+
+> **Status:** documento técnico de referência interna — **versão V2.14**.
 > **Escopo:** a instrução `TYPICALITY_PAIR_SCORING` — a aplicação de modelo(s)
 > de tipicidade às faces de cada par e a combinação das duas tipicidades num
 > score por par. Objetivo, fundamentação, métricas, combinadores, configurações
