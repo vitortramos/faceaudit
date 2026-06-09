@@ -111,8 +111,10 @@ def test_knn_inv_round_trip_preserves_weights(population):
         m2._state.reference_score_weights, m._state.reference_score_weights,
     )
     assert m2._state.weighted_T_k_formula_id == "INV_ID_FREQ_v1"
-    # Format version 3 (PR 4 + 5)
-    assert d["format_version"] == 3
+    # Format version >= 3 (PR 4/5 introduziu v3; revisão externa
+    # 2026-06-09 bumpou para v4 com estado ponderado + proveniência da
+    # referência).
+    assert d["format_version"] >= 3
 
 
 def test_knn_inv_percentiles_use_weighted_cdf(population):

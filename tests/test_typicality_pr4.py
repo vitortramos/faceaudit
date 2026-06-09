@@ -279,8 +279,10 @@ def test_movmf_round_trip_preserves_pr4_fields(reference_population):
     assert m2.unit_norm_policy == UnitNormPolicy.NORMALIZE_WITH_WARNING
     assert m2.unit_norm_tolerance == 1e-3
     assert m2.population_weighting_mode == PopulationWeightingMode.IDENTITY_CENTROIDS
-    # Format version 3 (PR 4)
-    assert d["format_version"] == 3
+    # Format version >= 3 (PR 4 introduziu v3; revisão externa
+    # 2026-06-09 bumpou para v4 com estado ponderado + proveniência da
+    # referência. PR 4 tolera ambos.)
+    assert d["format_version"] >= 3
 
 
 def test_movmf_from_dict_v2_legacy_defaults_pr4_fields(reference_population):

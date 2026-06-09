@@ -327,8 +327,10 @@ def test_to_dict_v2_roundtrip_per_identity():
     ).fit(embs, identities=ids)
 
     data = m1.to_dict()
-    # PR 5: format_version 3 (PR 4 era 2)
-    assert data["format_version"] == 3
+    # PR 5: format_version 3 (PR 4 era 2). Revisão externa 2026-06-09
+    # bumpou para v4 com estado ponderado + proveniência da referência;
+    # tolerar >=3.
+    assert data["format_version"] >= 3
     assert data["hyperparameters"]["reference_mode"] == "PER_IDENTITY"
 
     m2 = KNNTypicalityModel.from_dict(data)

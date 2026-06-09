@@ -46,8 +46,8 @@ Custo:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple, Union
+from dataclasses import dataclass, replace as dataclass_replace
+from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -92,6 +92,13 @@ class _KNNRefState:
     # ID estável da fórmula (`INV_ID_FREQ_v1`), entra no contract
     # fingerprint para auditoria.
     weighted_T_k_formula_id: Optional[str] = None
+    # P0-1 (revisão externa 2026-06-09): proveniência da referência de
+    # scores. Quando `install_reference_score_calibration` é chamado
+    # (caso típico: pós-CROSS_FIT_IDENTITY do
+    # `ReferenceScoreCalibrationService`), esses campos auditam quem
+    # instalou a referência atual. Em fit() puro permanecem None.
+    reference_score_calibration_mode: Optional[Any] = None  # ReferenceScoreCalibrationMode
+    split_fingerprint: Optional[str] = None
 
 
 class KNNTypicalityModel:
@@ -321,6 +328,115 @@ class KNNTypicalityModel:
     def is_fitted(self) -> bool:
         return self._state is not None
 
+    def install_reference_score_calibration(
+        self,
+        *,
+        reference_scores,
+        reference_weights=None,
+        ood_threshold=None,
+        calibration_mode,
+        split_fingerprint=None,
+    ) -> None:
+        """Sobrescreve atomicamente a referência interna de scores T_k.
+
+        P0-1 (revisão externa 2026-06-09): gancho usado pelo
+        `ReferenceScoreCalibrationService` após `CROSS_FIT_IDENTITY` para
+        instalar a distribuição OOF de T_k + threshold OOD no modelo
+        persistido. Antes, a CDF/threshold do `_state` ficavam IN-SAMPLE
+        do refit final e os valores OOF retornados ao serviço nunca
+        chegavam ao modelo.
+
+        Análogo do `install_reference_score_calibration` do MoVMF. Reusa
+        os mesmos parâmetros + semântica. Cria novo `_KNNRefState` (a
+        instância é frozen-by-convention).
+
+        Parâmetros:
+            reference_scores: vetor 1D de T_k (já agregado por face, na
+                escala bruta `[-1, +1]`).
+            reference_weights: pesos opcionais por score. Quando None,
+                rank uniforme.
+            ood_threshold: limiar OOD calculado externamente.
+            calibration_mode: `ReferenceScoreCalibrationMode` que produziu
+                esta referência (entra no contract fingerprint).
+            split_fingerprint: hash do split identidade→fold (auditoria).
+        """
+        self._ensure_fitted()
+        assert self._state is not None
+        from faceaudit.enums.reference_score_calibration_mode import (
+            ReferenceScoreCalibrationMode,
+        )
+
+        scores_arr = np.asarray(reference_scores, dtype=np.float64).ravel()
+        if scores_arr.size == 0:
+            raise ValueError(
+                "install_reference_score_calibration: reference_scores vazio."
+            )
+        if not np.all(np.isfinite(scores_arr)):
+            raise ValueError(
+                "install_reference_score_calibration: reference_scores "
+                "contém valores não finitos."
+            )
+
+        if reference_weights is not None:
+            weights_arr = np.asarray(reference_weights, dtype=np.float64).ravel()
+            if weights_arr.shape != scores_arr.shape:
+                raise ValueError(
+                    f"install_reference_score_calibration: shape de "
+                    f"reference_weights {weights_arr.shape} ≠ scores "
+                    f"{scores_arr.shape}."
+                )
+            if not np.all(np.isfinite(weights_arr)) or np.any(weights_arr < 0):
+                raise ValueError(
+                    "install_reference_score_calibration: reference_weights "
+                    "deve conter valores não-negativos finitos."
+                )
+            total_w = float(weights_arr.sum())
+            if total_w <= 0.0:
+                raise ValueError(
+                    "install_reference_score_calibration: reference_weights "
+                    "soma 0."
+                )
+        else:
+            weights_arr = None
+            total_w = 0.0
+
+        if not isinstance(calibration_mode, ReferenceScoreCalibrationMode):
+            calibration_mode = ReferenceScoreCalibrationMode.from_str(
+                calibration_mode
+            )
+
+        if ood_threshold is not None:
+            ood_val: float = float(ood_threshold)
+            if not np.isfinite(ood_val):
+                raise ValueError(
+                    "install_reference_score_calibration: ood_threshold "
+                    "não finito."
+                )
+        else:
+            ood_val = float("-inf")  # permissivo — consistente com KNN
+
+        # Ordena scores + pesos paralelamente; computa CDF.
+        order = np.argsort(scores_arr)
+        scores_sorted = np.ascontiguousarray(scores_arr[order], dtype=np.float64)
+        if weights_arr is not None:
+            weights_sorted = np.ascontiguousarray(
+                weights_arr[order], dtype=np.float64
+            )
+            cdf_arr = np.cumsum(weights_sorted) / total_w
+        else:
+            weights_sorted = None
+            cdf_arr = None
+
+        self._state = dataclass_replace(
+            self._state,
+            loo_mean_knn_sorted=scores_sorted,
+            ood_threshold=ood_val,
+            loo_mean_knn_sorted_weights=weights_sorted,
+            loo_cdf=cdf_arr,
+            reference_score_calibration_mode=calibration_mode,
+            split_fingerprint=str(split_fingerprint) if split_fingerprint else None,
+        )
+
     def score_samples(self, embeddings: ArrayLike) -> np.ndarray:
         """Retorna log_density_knn pra cada embedding (batch)."""
         infos = self.get_typicality_infos(embeddings, include_top_k=False)
@@ -373,7 +489,7 @@ class KNNTypicalityModel:
         st = self._state
         assert st is not None
         return {
-            "format_version": 3,
+            "format_version": 4,
             "hyperparameters": {
                 "k": self.k,
                 "ood_quantile": self.ood_quantile,
@@ -407,13 +523,22 @@ class KNNTypicalityModel:
                 "reference_mode": st.reference_mode.to_str(),
                 "n_input_faces": st.n_input_faces,
                 "n_singleton_identities": st.n_singleton_identities,
+                # P0-1/P0-3 (format_version=4): proveniência da referência
+                # de scores. Identifica se o modelo carrega CDF OOF
+                # (CROSS_FIT_IDENTITY) ou IN_SAMPLE_LEGACY ou pura `fit()`.
+                "reference_score_calibration_mode": (
+                    st.reference_score_calibration_mode.to_str()
+                    if st.reference_score_calibration_mode is not None
+                    else None
+                ),
+                "split_fingerprint": st.split_fingerprint,
             },
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "KNNTypicalityModel":
         version = data.get("format_version", 1)
-        if version not in (1, 2, 3):
+        if version not in (1, 2, 3, 4):
             raise ValueError(f"Versão de formato não suportada: {version}")
 
         hp = dict(data["hyperparameters"])
@@ -491,6 +616,18 @@ class KNNTypicalityModel:
             if cdf_raw is not None else None
         )
 
+        # P0-1/P0-3 (format_version=4): proveniência da referência de
+        # scores. Pickles v1/v2/v3 não têm os campos — `ls.get(...)`
+        # devolve None, preservando comportamento legado.
+        ref_mode_str = ls.get("reference_score_calibration_mode")
+        if ref_mode_str:
+            from faceaudit.enums.reference_score_calibration_mode import (
+                ReferenceScoreCalibrationMode,
+            )
+            ref_cal_mode = ReferenceScoreCalibrationMode.from_str(ref_mode_str)
+        else:
+            ref_cal_mode = None
+
         model._state = _KNNRefState(
             reference=reference,
             loo_mean_knn_sorted=loo,
@@ -504,6 +641,8 @@ class KNNTypicalityModel:
             loo_mean_knn_sorted_weights=sorted_weights,
             loo_cdf=cdf,
             weighted_T_k_formula_id=ls.get("weighted_T_k_formula_id"),
+            reference_score_calibration_mode=ref_cal_mode,
+            split_fingerprint=ls.get("split_fingerprint"),
         )
         return model
 
@@ -621,8 +760,30 @@ class KNNTypicalityModel:
         h.update(ref.tobytes(order="C"))
         loo = np.ascontiguousarray(st.loo_mean_knn_sorted, dtype=np.float64)
         h.update(loo.tobytes(order="C"))
+        # P0-3 (revisão externa 2026-06-09): pesos e CDF da referência
+        # ponderada entram no state fingerprint. Sem isso, dois modelos
+        # com mesma distribuição de T_k mas pesos diferentes
+        # (INV_ID_FREQ vs uniforme; OOF vs IN_SAMPLE) tinham o mesmo
+        # state fingerprint.
+        if st.loo_mean_knn_sorted_weights is not None:
+            h.update(np.ascontiguousarray(
+                st.loo_mean_knn_sorted_weights, dtype=np.float64
+            ).tobytes(order="C"))
+        if st.loo_cdf is not None:
+            h.update(np.ascontiguousarray(
+                st.loo_cdf, dtype=np.float64
+            ).tobytes(order="C"))
         h.update(f"{st.ood_threshold:.17g}".encode("utf-8"))
         h.update(f"k={st.k};dim={st.dim};rmode={st.reference_mode.to_str()}".encode("utf-8"))
+        # Proveniência da referência (CROSS_FIT_IDENTITY ↔
+        # IN_SAMPLE_LEGACY ↔ None pré-install).
+        if st.reference_score_calibration_mode is not None:
+            h.update(
+                f"calmode={st.reference_score_calibration_mode.to_str()}"
+                .encode("utf-8")
+            )
+        if st.split_fingerprint:
+            h.update(f"split={st.split_fingerprint}".encode("utf-8"))
         return h.hexdigest()
 
     @property
@@ -652,6 +813,18 @@ class KNNTypicalityModel:
             # PR 5
             f"population_weighting_mode={self.population_weighting_mode.to_str()}",
             f"weighted_T_k_formula_id={st.weighted_T_k_formula_id or 'none'}",
+            # P0-3 (revisão externa 2026-06-09): protocolo de calibração
+            # da referência (CROSS_FIT_IDENTITY ↔ IN_SAMPLE_LEGACY ↔
+            # None) entra no contrato. Aplicar modelo OOF a dataset que
+            # espera IN_SAMPLE_LEGACY muda interpretação dos percentis.
+            (
+                "reference_score_calibration_mode="
+                + (
+                    st.reference_score_calibration_mode.to_str()
+                    if st.reference_score_calibration_mode is not None
+                    else "none"
+                )
+            ),
         ]
         h = hashlib.sha256()
         h.update("\n".join(contract_parts).encode("utf-8"))

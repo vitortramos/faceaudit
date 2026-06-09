@@ -205,6 +205,14 @@ class MoVMFTypicalityModel:
         self._pending_sample_weights: Optional[np.ndarray] = None
         self._train_log_likelihoods_weights: Optional[np.ndarray] = None
         self._train_log_likelihoods_cdf: Optional[np.ndarray] = None
+        # P0-1 (revisão externa 2026-06-09): proveniência da referência de scores.
+        # Quando `install_reference_score_calibration` é chamado (caso típico:
+        # após CROSS_FIT_IDENTITY do `ReferenceScoreCalibrationService`), os
+        # campos `_train_log_likelihoods*` e `_ood_log_likelihood_threshold`
+        # passam a refletir a referência externa (OOF), não a in-sample do
+        # `fit`. Esses dois campos auditam quem instalou a referência atual.
+        self._reference_score_calibration_mode = None  # ReferenceScoreCalibrationMode | None
+        self._split_fingerprint: Optional[str] = None
 
     # =========================================================================
     # COMPATIBILIDADE COM A API ANTIGA
@@ -371,7 +379,7 @@ class MoVMFTypicalityModel:
         assert self._params is not None
         order = self._canonical_component_order()
         return {
-            "format_version": 3,
+            "format_version": 4,
             "hyperparameters": {
                 "population_label": self.population_label,
                 "model_name": self.model_name,
@@ -417,6 +425,31 @@ class MoVMFTypicalityModel:
                 "converged_": self._converged_,
                 "ood_log_likelihood_threshold": self._ood_log_likelihood_threshold,
                 "n_init_used": self._n_init_used,
+                # P0-3 (format_version=4): persistência completa do estado
+                # ponderado (INVERSE_IDENTITY_FREQUENCY) + da proveniência
+                # da referência de scores (CROSS_FIT_IDENTITY etc.). Antes,
+                # `_train_log_likelihoods_weights`/`_train_log_likelihoods_cdf`
+                # e `_reference_score_calibration_mode`/`_split_fingerprint`
+                # eram descartados na serialização — round-trip silenciosamente
+                # devolvia rank uniforme.
+                "train_log_likelihoods_weights": (
+                    self._train_log_likelihoods_weights.tolist()
+                    if self._train_log_likelihoods_weights is not None
+                    else None
+                ),
+                "train_log_likelihoods_cdf": (
+                    self._train_log_likelihoods_cdf.tolist()
+                    if self._train_log_likelihoods_cdf is not None
+                    else None
+                ),
+                "n_input_faces": self._n_input_faces,
+                "n_identities_inv_idfreq": self._n_identities_inv_idfreq,
+                "reference_score_calibration_mode": (
+                    self._reference_score_calibration_mode.to_str()
+                    if self._reference_score_calibration_mode is not None
+                    else None
+                ),
+                "split_fingerprint": self._split_fingerprint,
             },
         }
 
@@ -424,11 +457,11 @@ class MoVMFTypicalityModel:
     def from_dict(cls, data: dict) -> "MoVMFTypicalityModel":
         """
         Reconstrói modelo a partir de dict gerado por to_dict().
-        Aceita format_version 1, 2, 3.
+        Aceita format_version 1, 2, 3, 4.
         Valida invariantes geométricos e numéricos.
         """
         version = data.get("format_version", 1)
-        if version not in (1, 2, 3):
+        if version not in (1, 2, 3, 4):
             raise ValueError(f"Versão de formato não suportada: {version}")
 
         hp = dict(data["hyperparameters"])
@@ -511,6 +544,30 @@ class MoVMFTypicalityModel:
         model._converged_ = st.get("converged_")
         model._ood_log_likelihood_threshold = st.get("ood_log_likelihood_threshold")
         model._n_init_used = st.get("n_init_used")
+
+        # P0-3 (format_version=4): restaura estado ponderado + proveniência
+        # da referência. Em pickles v1/v2/v3 esses campos não existem;
+        # `st.get(...)` retorna None — comportamento idempotente ao da
+        # fit() não-ponderada (rank uniforme via `get_percentiles`).
+        if st.get("train_log_likelihoods_weights") is not None:
+            model._train_log_likelihoods_weights = np.array(
+                st["train_log_likelihoods_weights"], dtype=np.float64
+            )
+        if st.get("train_log_likelihoods_cdf") is not None:
+            model._train_log_likelihoods_cdf = np.array(
+                st["train_log_likelihoods_cdf"], dtype=np.float64
+            )
+        model._n_input_faces = st.get("n_input_faces")
+        model._n_identities_inv_idfreq = st.get("n_identities_inv_idfreq")
+        ref_mode_str = st.get("reference_score_calibration_mode")
+        if ref_mode_str:
+            from faceaudit.enums.reference_score_calibration_mode import (
+                ReferenceScoreCalibrationMode,
+            )
+            model._reference_score_calibration_mode = (
+                ReferenceScoreCalibrationMode.from_str(ref_mode_str)
+            )
+        model._split_fingerprint = st.get("split_fingerprint")
 
         # Computa OOD threshold se ausente (v1) e tivermos referência empírica
         if (
@@ -705,11 +762,20 @@ class MoVMFTypicalityModel:
         self, embeddings: ArrayLike, *, extrapolate: bool = True
     ) -> np.ndarray:
         """
-        Percentil empírico (0..100) do log-likelihood vs distribuição de treino.
-        Mid-rank para empates.
+        Percentil empírico (0..100) do log-likelihood vs distribuição de
+        referência. Mid-rank para empates.
 
-        Se extrapolate=False, valores fora do range observado em treino retornam NaN
-        (recomendado para uso forense — ver nota 3 do header).
+        P0-2 (revisão externa 2026-06-09): quando o modelo tem CDF
+        ponderada (`_train_log_likelihoods_cdf` populada pelo
+        `INVERSE_IDENTITY_FREQUENCY` ou pelo
+        `install_reference_score_calibration`), o percentil é calculado
+        consultando a CDF — não rank uniforme. Antes desta correção,
+        `get_percentiles` ignorava silenciosamente os pesos e produzia
+        percentil uniforme mesmo após cross-fit.
+
+        Se extrapolate=False, valores fora do range observado em treino
+        retornam NaN (recomendado para uso forense — ver nota 3 do
+        header).
         """
         self._ensure_fitted()
         if self._train_log_likelihoods is None:
@@ -719,10 +785,23 @@ class MoVMFTypicalityModel:
         ref = self._train_log_likelihoods
         n = len(ref)
 
-        left = np.searchsorted(ref, ll, side="left")
-        right = np.searchsorted(ref, ll, side="right")
-        mid_rank = (left + right) / 2.0
-        percentiles = 100.0 * mid_rank / n
+        cdf = self._train_log_likelihoods_cdf
+        if cdf is not None:
+            # CDF ponderada: rank ponderado por mid-CDF entre side="left" e
+            # side="right". Mesmo padrão do KNN (`_compute_info_single`).
+            left = np.searchsorted(ref, ll, side="left")
+            right = np.searchsorted(ref, ll, side="right")
+            left_clipped = np.clip(left - 1, 0, n - 1)
+            right_clipped = np.clip(right - 1, 0, n - 1)
+            left_cdf = np.where(left > 0, cdf[left_clipped], 0.0)
+            right_cdf = np.where(right > 0, cdf[right_clipped], 0.0)
+            percentiles = 100.0 * 0.5 * (left_cdf + right_cdf)
+        else:
+            # Rank uniforme (sem pesos)
+            left = np.searchsorted(ref, ll, side="left")
+            right = np.searchsorted(ref, ll, side="right")
+            mid_rank = (left + right) / 2.0
+            percentiles = 100.0 * mid_rank / n
 
         if not extrapolate:
             below = ll < ref[0]
@@ -731,6 +810,120 @@ class MoVMFTypicalityModel:
             percentiles[below | above] = np.nan
 
         return percentiles.astype(np.float64)
+
+    def install_reference_score_calibration(
+        self,
+        *,
+        reference_scores,
+        reference_weights=None,
+        ood_threshold=None,
+        calibration_mode,
+        split_fingerprint=None,
+    ) -> None:
+        """Sobrescreve atomicamente a referência interna de scores do modelo.
+
+        P0-1 (revisão externa 2026-06-09): este método é o gancho usado
+        pelo `ReferenceScoreCalibrationService` após `CROSS_FIT_IDENTITY`
+        para instalar a distribuição OOF (out-of-fold) + threshold OOD no
+        modelo persistido. Antes desta correção, o serviço retornava
+        `oof_cdf`/`ood_threshold` AO LADO de um `refit_model` que ainda
+        carregava a distribuição IN-SAMPLE no próprio
+        `_train_log_likelihoods`/`_ood_log_likelihood_threshold` —
+        `get_percentiles()` e `is_in_distribution()` consultavam os
+        valores in-sample, descartando o cross-fit.
+
+        Parâmetros:
+            reference_scores: vetor 1D de scores (log-likelihood no MoVMF).
+            reference_weights: pesos opcionais por score. Quando None,
+                rank uniforme. Quando dados, é o caminho ponderado
+                (INVERSE_IDENTITY_FREQUENCY ou OOF identitário).
+            ood_threshold: limiar OOD calculado externamente. Quando None,
+                deixa `is_in_distribution` permissivo.
+            calibration_mode: `ReferenceScoreCalibrationMode` — registra
+                como esta referência foi obtida (entra no contract
+                fingerprint).
+            split_fingerprint: hash do split identidade→fold (auditoria).
+
+        Atômico: ou substitui todos os campos derivados, ou levanta erro
+        sem mutar estado.
+        """
+        self._ensure_fitted()
+        from faceaudit.enums.reference_score_calibration_mode import (
+            ReferenceScoreCalibrationMode,
+        )
+
+        scores_arr = np.asarray(reference_scores, dtype=np.float64).ravel()
+        if scores_arr.size == 0:
+            raise ValueError(
+                "install_reference_score_calibration: reference_scores vazio."
+            )
+        if not np.all(np.isfinite(scores_arr)):
+            raise ValueError(
+                "install_reference_score_calibration: reference_scores "
+                "contém valores não finitos."
+            )
+
+        if reference_weights is not None:
+            weights_arr = np.asarray(reference_weights, dtype=np.float64).ravel()
+            if weights_arr.shape != scores_arr.shape:
+                raise ValueError(
+                    f"install_reference_score_calibration: shape de "
+                    f"reference_weights {weights_arr.shape} ≠ scores "
+                    f"{scores_arr.shape}."
+                )
+            if not np.all(np.isfinite(weights_arr)) or np.any(weights_arr < 0):
+                raise ValueError(
+                    "install_reference_score_calibration: reference_weights "
+                    "deve conter valores não-negativos finitos."
+                )
+            total_w = float(weights_arr.sum())
+            if total_w <= 0.0:
+                raise ValueError(
+                    "install_reference_score_calibration: reference_weights "
+                    "soma 0."
+                )
+        else:
+            weights_arr = None
+            total_w = 0.0
+
+        if not isinstance(calibration_mode, ReferenceScoreCalibrationMode):
+            calibration_mode = ReferenceScoreCalibrationMode.from_str(
+                calibration_mode
+            )
+
+        if ood_threshold is not None:
+            ood_threshold_val: Optional[float] = float(ood_threshold)
+            if not np.isfinite(ood_threshold_val):
+                raise ValueError(
+                    "install_reference_score_calibration: ood_threshold "
+                    "não finito."
+                )
+        else:
+            ood_threshold_val = None
+
+        # Ordena scores + pesos paralelamente; computa CDF.
+        order = np.argsort(scores_arr)
+        scores_sorted = np.ascontiguousarray(
+            scores_arr[order], dtype=np.float64
+        )
+        if weights_arr is not None:
+            weights_sorted = np.ascontiguousarray(
+                weights_arr[order], dtype=np.float64
+            )
+            cdf_arr = np.cumsum(weights_sorted) / total_w
+        else:
+            weights_sorted = None
+            cdf_arr = None
+
+        # Substitui atomicamente.
+        self._train_log_likelihoods = scores_sorted
+        self._train_log_likelihoods_weights = weights_sorted
+        self._train_log_likelihoods_cdf = cdf_arr
+        self._ood_log_likelihood_threshold = ood_threshold_val
+        self._reference_score_calibration_mode = calibration_mode
+        self._split_fingerprint = (
+            str(split_fingerprint) if split_fingerprint else None
+        )
 
     def is_in_distribution(self, embeddings: ArrayLike) -> np.ndarray:
         """
@@ -906,8 +1099,31 @@ class MoVMFTypicalityModel:
             h.update(
                 np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64).tobytes(order="C")
             )
+        # P0-3 (revisão externa 2026-06-09): pesos e CDF da referência
+        # ponderada entram no state fingerprint. Sem isso, dois modelos
+        # com mesma distribuição mas pesos diferentes (INV_ID_FREQ vs
+        # uniforme; OOF vs IN_SAMPLE) tinham o mesmo state fingerprint.
+        if self._train_log_likelihoods_weights is not None:
+            h.update(np.ascontiguousarray(
+                self._train_log_likelihoods_weights, dtype=np.float64
+            ).tobytes(order="C"))
+        if self._train_log_likelihoods_cdf is not None:
+            h.update(np.ascontiguousarray(
+                self._train_log_likelihoods_cdf, dtype=np.float64
+            ).tobytes(order="C"))
         ood = self._ood_log_likelihood_threshold
         h.update(f"ood={ood!r}".encode("utf-8"))
+        # Proveniência da referência (CROSS_FIT_IDENTITY ↔ IN_SAMPLE_LEGACY
+        # ↔ None pré-fit) — duas referências com mesma distribuição numérica
+        # produzida por protocolos diferentes não devem compartilhar
+        # fingerprint.
+        if self._reference_score_calibration_mode is not None:
+            h.update(
+                f"calmode={self._reference_score_calibration_mode.to_str()}"
+                .encode("utf-8")
+            )
+        if self._split_fingerprint:
+            h.update(f"split={self._split_fingerprint}".encode("utf-8"))
         if self._reference_point is not None:
             h.update(
                 np.ascontiguousarray(self._reference_point, dtype=np.float64).tobytes(order="C")
@@ -940,6 +1156,19 @@ class MoVMFTypicalityModel:
             # PR 4
             f"unit_norm_policy={self.unit_norm_policy.to_str()}",
             f"population_weighting_mode={self.population_weighting_mode.to_str()}",
+            # P0-3 (revisão externa 2026-06-09): protocolo de calibração da
+            # referência (CROSS_FIT_IDENTITY ↔ IN_SAMPLE_LEGACY ↔ None)
+            # entra no contrato. Aplicar modelo OOF a dataset que espera
+            # IN_SAMPLE_LEGACY (ou vice-versa) muda interpretação dos
+            # percentis e do `is_in_distribution`.
+            (
+                "reference_score_calibration_mode="
+                + (
+                    self._reference_score_calibration_mode.to_str()
+                    if self._reference_score_calibration_mode is not None
+                    else "none"
+                )
+            ),
         ]
         h = hashlib.sha256()
         h.update("\n".join(contract_parts).encode("utf-8"))

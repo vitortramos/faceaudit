@@ -177,7 +177,14 @@ class ReferenceScoreCalibrationService:
             split_fp_payload.encode("utf-8")
         ).hexdigest()
 
-        oof_scores: list[float] = []
+        # P0-4 (revisão externa 2026-06-09): coletamos scores OOF E os
+        # identity_ids correspondentes. Antes só guardávamos scores e o
+        # peso da CDF OOF era uniforme face-a-face — uma identidade com
+        # 20 imagens contribuía 20× mais à CDF mesmo em
+        # INVERSE_IDENTITY_FREQUENCY (frequência de coleta vazando
+        # silenciosamente na referência populacional).
+        oof_score_chunks: list[np.ndarray] = []
+        oof_ids_chunks: list[np.ndarray] = []
         fold_seeds: list[int] = []
         for fold_idx, fold_ids in enumerate(fold_assignments):
             fold_seed = int(random_state) + fold_idx
@@ -220,33 +227,93 @@ class ReferenceScoreCalibrationService:
             batch = fold_model.compute_scores(
                 embeddings[test_mask], chosen_type,
             )
-            oof_scores.extend(batch.scores.tolist())
+            oof_score_chunks.append(np.asarray(batch.scores, dtype=np.float64))
+            oof_ids_chunks.append(ids_arr[test_mask].copy())
 
-        if not oof_scores:
+        if not oof_score_chunks:
             raise RuntimeError(
                 "CROSS_FIT_IDENTITY: nenhum score OOF produzido — verifique "
                 "splits ou trainer."
             )
-        oof_arr = np.array(sorted(oof_scores), dtype=np.float64)
+        oof_scores_unsorted = np.concatenate(oof_score_chunks)
+        oof_ids_unsorted = np.concatenate(oof_ids_chunks)
 
         # Refit final em toda a população
         refit_model = trainer_factory()
         all_ids = tuple(str(i) for i in ids_arr)
         refit_model.fit(embeddings, identity_ids=all_ids)
 
-        # Threshold OOD = quantile(OOF, ood_quantile)
-        # Usamos o ood_quantile do próprio modelo (atributo público dos
-        # backends suportados).
+        # P0-4: pesos OOF derivados do `population_weighting_mode` do modelo
+        # treinado. Lógica:
+        #   INVERSE_IDENTITY_FREQUENCY → w_ij = 1/n_i_oof por face (cada
+        #     identidade contribui o mesmo, independente de quantas imagens
+        #     têm em OOF).
+        #   IDENTITY_CENTROIDS → agrega scores OOF por identidade (média) →
+        #     1 ponto por identidade, w = 1. Coerente com o fit() de
+        #     IDENTITY_CENTROIDS que vê 1 centroide por identidade.
+        #   FACE_LEVEL_RAW → uniforme face-a-face (comportamento legado).
+        pop_mode = getattr(refit_model, "population_weighting_mode", None)
+        if pop_mode is not None:
+            from faceaudit.enums.population_weighting_mode import (
+                PopulationWeightingMode,
+            )
+            if pop_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+                _, inv_idx, id_counts = np.unique(
+                    oof_ids_unsorted, return_inverse=True, return_counts=True,
+                )
+                oof_weights = (1.0 / id_counts[inv_idx]).astype(np.float64)
+                oof_scores_final = oof_scores_unsorted
+            elif pop_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
+                uniq_ids, inv_idx = np.unique(
+                    oof_ids_unsorted, return_inverse=True,
+                )
+                agg = np.zeros(len(uniq_ids), dtype=np.float64)
+                cnt = np.zeros(len(uniq_ids), dtype=np.int64)
+                for i, score in zip(inv_idx, oof_scores_unsorted):
+                    agg[i] += score
+                    cnt[i] += 1
+                oof_scores_final = agg / np.maximum(cnt, 1)
+                oof_weights = np.ones(len(uniq_ids), dtype=np.float64)
+            else:  # FACE_LEVEL_RAW ou ausente
+                oof_weights = np.ones_like(oof_scores_unsorted, dtype=np.float64)
+                oof_scores_final = oof_scores_unsorted
+        else:
+            oof_weights = np.ones_like(oof_scores_unsorted, dtype=np.float64)
+            oof_scores_final = oof_scores_unsorted
+
+        # Ordena scores + pesos paralelamente para a CDF/threshold.
+        order = np.argsort(oof_scores_final)
+        oof_arr_sorted = oof_scores_final[order]
+        oof_weights_sorted = oof_weights[order]
+
+        # Threshold OOD = quantil ponderado em q = ood_quantile
         ood_quantile = float(getattr(refit_model, "ood_quantile", 0.01))
-        threshold = (
-            float(np.quantile(oof_arr, ood_quantile))
-            if oof_quantile_in_range(ood_quantile) else None
+        if oof_quantile_in_range(ood_quantile):
+            total_w = oof_weights_sorted.sum()
+            cdf_arr = np.cumsum(oof_weights_sorted) / total_w
+            idx = int(np.searchsorted(cdf_arr, ood_quantile, side="left"))
+            idx = min(max(idx, 0), len(oof_arr_sorted) - 1)
+            threshold = float(oof_arr_sorted[idx])
+        else:
+            threshold = None
+
+        # P0-1: instala a referência OOF no modelo final. Após este
+        # método retornar, `refit_model.get_percentiles()` e
+        # `is_in_distribution()` consultam a distribuição OOF — não a
+        # in-sample do refit. O `ReferenceScoreCalibrationResult`
+        # continua retornando os mesmos arrays para auditoria.
+        refit_model.install_reference_score_calibration(
+            reference_scores=oof_arr_sorted,
+            reference_weights=oof_weights_sorted,
+            ood_threshold=threshold,
+            calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
+            split_fingerprint=split_fingerprint,
         )
 
         return ReferenceScoreCalibrationResult(
             refit_model=refit_model,
             mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
-            oof_cdf=oof_arr,
+            oof_cdf=oof_arr_sorted,
             ood_threshold=threshold,
             split_fingerprint=split_fingerprint,
             fold_seeds=tuple(fold_seeds),
