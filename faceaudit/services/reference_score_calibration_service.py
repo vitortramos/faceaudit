@@ -49,6 +49,64 @@ def _factory_accepts_seed(factory: Callable) -> bool:
             return True
     return False
 
+
+def _build_model(
+    factory: Callable, *, seed: int, expected_backend=None,
+):
+    """Cria um modelo da factory propagando `seed` de forma uniforme.
+
+    P0-R3-3 (revisão externa 2026-06-09 round 3): substitui as três
+    formas distintas que existiam no serviço — `trainer_factory()`,
+    `trainer_factory(seed=...)`, `try/except TypeError` — por um
+    único ponto de entrada. Usado em peek, em cada fold, e no refit
+    final. Garante que factories com `seed` obrigatório não quebrem
+    o peek/refit (problema apontado pelo revisor: `peek_model =
+    trainer_factory()` sem seed levanta `TypeError` quando a factory
+    é `def trainer_factory(*, seed): ...`).
+
+    P0-R3-2: também valida `model.model_type == expected_backend`
+    quando `expected_backend` é fornecido, evitando que erro de
+    wiring no registry produza um modelo silenciosamente do tipo
+    errado.
+    """
+    if _factory_accepts_seed(factory):
+        model = factory(seed=seed)
+    else:
+        model = factory()
+        # Best-effort: configura random_state se o backend expõe.
+        if hasattr(model, "random_state"):
+            model.random_state = seed
+
+    if expected_backend is not None:
+        actual = getattr(model, "model_type", None)
+        if actual != expected_backend:
+            raise BackendMismatchError(
+                expected=expected_backend, actual=actual,
+            )
+    return model
+
+
+class BackendMismatchError(RuntimeError):
+    """Trainer factory devolveu modelo de um backend distinto do
+    declarado no parâmetro `backend` do serviço.
+
+    P0-R3-2 (revisão externa 2026-06-09 round 3): fail-closed em
+    casos de wiring incorreto do registry (caller declara MOVMF mas
+    factory devolve k-NN, ou vice-versa). Antes, o serviço executava
+    silenciosamente até o final usando o modelo errado.
+    """
+
+    def __init__(self, *, expected, actual) -> None:
+        super().__init__(
+            f"BackendMismatch: serviço chamado com backend="
+            f"{getattr(expected, 'to_str', lambda: str(expected))()!r} "
+            f"mas trainer_factory devolveu model.model_type="
+            f"{getattr(actual, 'to_str', lambda: str(actual))()!r}. "
+            "Verifique o registry de backends ou o config da instrução."
+        )
+        self.expected = expected
+        self.actual = actual
+
 from faceaudit.enums.reference_score_calibration_mode import (
     ReferenceScoreCalibrationMode,
 )
@@ -68,35 +126,62 @@ def oof_quantile_in_range(q: float) -> bool:
 class ReferenceScoreCalibrationResult:
     """Resultado da calibração de score de referência.
 
+    P1-R3-9 (revisão externa 2026-06-09 round 3): nomeação do campo
+    `oof_cdf` corrigida. O nome implicava "função de distribuição
+    cumulativa" mas armazenava na verdade os **scores OOF ordenados**.
+    Agora exposto via três campos separados:
+    - `oof_reference_scores_sorted`: scores ordenados (era `oof_cdf`).
+    - `oof_reference_weights_sorted`: pesos por score (mesma ordem).
+    - `oof_reference_cdf`: cumsum(weights)/sum — a CDF de fato.
+
+    `oof_cdf` continua como property deprecated por back-compat.
+
     Em IN_SAMPLE_LEGACY (k-NN nativo):
-        - `refit_model`: o k-NN treinado nativamente (LOO de imagem).
-        - `oof_cdf`: None (não há scores OOF nessa via).
-        - `ood_threshold`: derivado do próprio modelo.
-        - `split_fingerprint`: None.
+        - `refit_model`: k-NN com LOO de imagem.
+        - oof_reference_*: todos None (não há OOF).
 
     Em CROSS_FIT_IDENTITY (MoVMF + k-NN):
         - `refit_model`: modelo treinado em toda a população — com
-          a referência OOF JÁ INSTALADA atomicamente
-          (P0-1, revisão externa). `get_percentiles` e
-          `is_in_distribution` consultam OOF, não in-sample.
-        - `oof_cdf`: vetor ordenado de scores out-of-fold; em
-          IDENTITY_CENTROIDS é o score do centroide por identidade
-          (P0-R2-3); em INVERSE_IDENTITY_FREQUENCY é por face com
-          pesos `1/n_i` (P0-4).
-        - `ood_threshold`: quantil ponderado do `oof_cdf` quando
-          aplicável.
+          a referência OOF JÁ INSTALADA atomicamente (P0-1).
+        - `oof_reference_scores_sorted`: em IDENTITY_CENTROIDS é o
+          score de cada centroide identitário; em
+          INVERSE_IDENTITY_FREQUENCY é por face.
+        - `oof_reference_weights_sorted`: pesos derivados do
+          `population_weighting_mode`.
+        - `oof_reference_cdf`: CDF empírica ponderada.
+        - `ood_threshold`: quantil ponderado.
         - `split_fingerprint`: hash do mapeamento identidade → fold.
-        - `fold_seeds`: lista de seeds por fold (de fato propagadas
-          ao trainer_factory via inspeção de assinatura — P1-R2-10).
+        - `fold_seeds`: lista de seeds por fold de fato propagadas
+          ao trainer_factory.
     """
 
     refit_model: FittableTypicalityModelProtocol
     mode: ReferenceScoreCalibrationMode
-    oof_cdf: Optional[np.ndarray] = None
+    oof_reference_scores_sorted: Optional[np.ndarray] = None
+    oof_reference_weights_sorted: Optional[np.ndarray] = None
+    oof_reference_cdf: Optional[np.ndarray] = None
     ood_threshold: Optional[float] = None
     split_fingerprint: Optional[str] = None
     fold_seeds: Optional[Sequence[int]] = None
     n_folds_used: int = 0
+
+    @property
+    def oof_cdf(self) -> Optional[np.ndarray]:
+        """DEPRECATED (P1-R3-9): nome confuso — armazenava SCORES,
+        não CDF. Use `oof_reference_scores_sorted`.
+
+        Emite DeprecationWarning. Será removido em revisão final V4.
+        """
+        import warnings
+        warnings.warn(
+            "ReferenceScoreCalibrationResult.oof_cdf foi renomeado para "
+            "`oof_reference_scores_sorted` (o campo armazena scores OOF "
+            "ordenados, não a CDF). A CDF de fato está em "
+            "`oof_reference_cdf`. Alias deprecated, remoção planejada.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.oof_reference_scores_sorted
 
 
 class ReferenceScoreCalibrationService:
@@ -180,13 +265,29 @@ class ReferenceScoreCalibrationService:
 
         from faceaudit.enums.typicality_score_type import TypicalityScoreType
 
+        # P0-R3-4 (revisão externa round 3): validação explícita de
+        # `n_folds`. Antes, `n_folds = 0` caía em `ValueError` genérico
+        # de `np.array_split`; `n_folds = 1` ia até o final e levantava
+        # "nenhum score OOF produzido" — diagnóstico ruim, longe da
+        # causa.
+        if not isinstance(n_folds, (int, np.integer)) or int(n_folds) < 2:
+            raise ValueError(
+                f"CROSS_FIT_IDENTITY exige n_folds >= 2 (recebido "
+                f"{n_folds!r}). Cross-fit com um único fold é semanticamente "
+                "indistinguível de IN_SAMPLE."
+            )
+        n_folds = int(n_folds)
+
         if identity_ids is None or len(identity_ids) != embeddings.shape[0]:
             raise ValueError(
                 "CROSS_FIT_IDENTITY exige `identity_ids` paralelo a "
                 "`embeddings` (não pode ser None nem ter tamanho diferente)."
             )
 
-        ids_arr = np.asarray(identity_ids, dtype=object)
+        # P0-R3-4: normaliza `identity_ids` para strings cedo. Antes,
+        # IDs heterogêneos como `(1, "1", 2, "2")` quebravam
+        # `np.unique` com erro de ordenação entre str e int.
+        ids_arr = np.array([str(i) for i in identity_ids], dtype=object)
         unique_ids = np.unique(ids_arr)
         if len(unique_ids) < n_folds:
             raise ValueError(
@@ -217,7 +318,13 @@ class ReferenceScoreCalibrationService:
         # Antecipa o `population_weighting_mode` para decidir como
         # agregar OOF dentro de cada fold. Precisamos de um trainer
         # apenas pra ler o atributo — não fit().
-        peek_model = trainer_factory()
+        # P0-R3-2 + P0-R3-3: peek via helper único com seed e validação
+        # de backend.
+        peek_model = _build_model(
+            trainer_factory,
+            seed=int(random_state),
+            expected_backend=backend,
+        )
         pop_mode = getattr(peek_model, "population_weighting_mode", None)
 
         # P0-4 (revisão externa 2026-06-09): coletamos scores OOF E os
@@ -253,20 +360,13 @@ class ReferenceScoreCalibrationService:
             if train_mask.sum() == 0 or test_mask.sum() == 0:
                 continue
 
-            # P1-12 (revisão externa 2026-06-09): propaga o `fold_seed`
-            # ao trainer_factory para que cada fold use seed distinta.
-            # P1-R2-10 (round 2): inspeção de assinatura em vez de
-            # try/except TypeError — o except amplo mascarava
-            # TypeErrors legítimos do interior da factory (ex:
-            # erro de tipo num arg do construtor do modelo).
-            if _factory_accepts_seed(trainer_factory):
-                fold_model = trainer_factory(seed=fold_seed)
-            else:
-                fold_model = trainer_factory()
-                # Best-effort: configura random_state diretamente se o
-                # backend expõe esse atributo (MoVMF + KNN expõem).
-                if hasattr(fold_model, "random_state"):
-                    fold_model.random_state = fold_seed
+            # P1-12 + P1-R2-10 + P0-R3-2/3: helper único de
+            # instanciação com seed por fold e validação de backend.
+            fold_model = _build_model(
+                trainer_factory,
+                seed=fold_seed,
+                expected_backend=backend,
+            )
             train_ids = tuple(str(i) for i in ids_arr[train_mask])
             fold_model.fit(
                 embeddings[train_mask], identity_ids=train_ids,
@@ -336,7 +436,13 @@ class ReferenceScoreCalibrationService:
         oof_ids_unsorted = np.concatenate(oof_ids_chunks)
 
         # Refit final em toda a população
-        refit_model = trainer_factory()
+        # P0-R3-3: refit também via helper, com seed = random_state
+        # principal (não offset de fold). Garante reprodutibilidade.
+        refit_model = _build_model(
+            trainer_factory,
+            seed=int(random_state),
+            expected_backend=backend,
+        )
         all_ids = tuple(str(i) for i in ids_arr)
         refit_model.fit(embeddings, identity_ids=all_ids)
 
@@ -367,11 +473,13 @@ class ReferenceScoreCalibrationService:
         oof_arr_sorted = oof_scores_final[order]
         oof_weights_sorted = oof_weights[order]
 
-        # Threshold OOD = quantil ponderado em q = ood_quantile
+        # Threshold OOD = quantil ponderado em q = ood_quantile.
+        # Computa CDF SEMPRE — usada tanto para threshold quanto
+        # exposta no result (P1-R3-9).
         ood_quantile = float(getattr(refit_model, "ood_quantile", 0.01))
+        total_w = oof_weights_sorted.sum()
+        cdf_arr = np.cumsum(oof_weights_sorted) / total_w
         if oof_quantile_in_range(ood_quantile):
-            total_w = oof_weights_sorted.sum()
-            cdf_arr = np.cumsum(oof_weights_sorted) / total_w
             idx = int(np.searchsorted(cdf_arr, ood_quantile, side="left"))
             idx = min(max(idx, 0), len(oof_arr_sorted) - 1)
             threshold = float(oof_arr_sorted[idx])
@@ -391,10 +499,21 @@ class ReferenceScoreCalibrationService:
             split_fingerprint=split_fingerprint,
         )
 
+        # P1-R3-9: arrays expostos no result são read-only.
+        # Auditoria não deve poder mutar o snapshot devolvido.
+        scores_ro = np.ascontiguousarray(oof_arr_sorted, dtype=np.float64)
+        scores_ro.setflags(write=False)
+        weights_ro = np.ascontiguousarray(oof_weights_sorted, dtype=np.float64)
+        weights_ro.setflags(write=False)
+        cdf_ro = np.ascontiguousarray(cdf_arr, dtype=np.float64)
+        cdf_ro.setflags(write=False)
+
         return ReferenceScoreCalibrationResult(
             refit_model=refit_model,
             mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
-            oof_cdf=oof_arr_sorted,
+            oof_reference_scores_sorted=scores_ro,
+            oof_reference_weights_sorted=weights_ro,
+            oof_reference_cdf=cdf_ro,
             ood_threshold=threshold,
             split_fingerprint=split_fingerprint,
             fold_seeds=tuple(fold_seeds),
@@ -409,7 +528,10 @@ class ReferenceScoreCalibrationService:
         identity_ids: Optional[Sequence[str]],
     ) -> ReferenceScoreCalibrationResult:
         """k-NN nativo já faz LOO de imagem internamente."""
-        model = trainer_factory()
+        # P0-R3-3: helper único aqui também (mesmo o caminho legado).
+        # Não valida backend porque IN_SAMPLE_LEGACY pode rodar tanto
+        # em k-NN quanto em MoVMF sem ambiguidade — o caller decide.
+        model = _build_model(trainer_factory, seed=0)
         if identity_ids is not None:
             model.fit(embeddings, identity_ids=tuple(str(i) for i in identity_ids))
         else:
@@ -418,7 +540,9 @@ class ReferenceScoreCalibrationService:
         return ReferenceScoreCalibrationResult(
             refit_model=model,
             mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
-            oof_cdf=None,
+            oof_reference_scores_sorted=None,
+            oof_reference_weights_sorted=None,
+            oof_reference_cdf=None,
             ood_threshold=None,
             split_fingerprint=None,
             fold_seeds=None,

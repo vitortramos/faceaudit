@@ -230,11 +230,17 @@ class MoVMFTypicalityModel:
         # `fit`. Esses dois campos auditam quem instalou a referência atual.
         self._reference_score_calibration_mode = None  # ReferenceScoreCalibrationMode | None
         self._split_fingerprint: Optional[str] = None
-        # P2-R2-13: telemetria da normalização aplicada no fit
-        # (n_normalized, max_norm_deviation, etc.). Útil para
-        # auditoria pericial — quantos embeddings foram silenciosamente
-        # ajustados pelo NORMALIZE_SILENTLY.
-        self._unit_norm_telemetry: Optional[dict] = None
+        # P2-R2-13 + P0-R3-6: telemetria da normalização aplicada.
+        # Separada por escopo:
+        # - `_fit_unit_norm_telemetry`: registrada uma vez durante o
+        #   fit. Auditoria pericial consulta este (snapshot estável).
+        # - `_inference_unit_norm_telemetry_last`: registrada na
+        #   última chamada de inferência. Útil para debugging mas
+        #   NÃO entra em laudo.
+        # Antes do P0-R3-6 esses dois compartilhavam um único atributo
+        # `_unit_norm_telemetry` que era sobrescrito pela inferência.
+        self._fit_unit_norm_telemetry: Optional[dict] = None
+        self._inference_unit_norm_telemetry_last: Optional[dict] = None
 
     # =========================================================================
     # COMPATIBILIDADE COM A API ANTIGA
@@ -688,6 +694,10 @@ class MoVMFTypicalityModel:
                 ood_threshold=model._ood_log_likelihood_threshold,
             )
 
+        # P1-R3-7: congela arrays restaurados — pickle reconstrói buffers
+        # novos, mas o snapshot persistido em disco é semanticamente
+        # imutável e consumidores não devem mutá-lo.
+        model._freeze_state_arrays()
         return model
 
     # =========================================================================
@@ -705,16 +715,18 @@ class MoVMFTypicalityModel:
 
         Pipeline:
           1. Validação + L2-norm.
-          2. **PR 4: aplica `population_weighting_mode`**:
+          2. **PR 4 / PR 5: aplica `population_weighting_mode`**:
              - `FACE_LEVEL_RAW`: usa embeddings como vêm.
              - `IDENTITY_CENTROIDS`: agrega por identidade
                (centróide L2-renormalizado) e treina em centróides.
-             - `INVERSE_IDENTITY_FREQUENCY`: NÃO implementado em V2.15;
-               levanta `NotImplementedError` com referência a
-               `docs/typicality_models.md` §4.1.
+             - `INVERSE_IDENTITY_FREQUENCY` (PR 5, implementado):
+               EM ponderado com `w_i = 1/n_faces(id_i)`. k-means++
+               init também é ponderado (P2-R2-14). AIC/BIC retornam
+               `None` nesse modo (P1-R2-6) — usar seleção externa de K.
           3. Cálculo do ponto de referência (centralização Fréchet/euclidiana se aplicável).
           4. Single-component ou EM com n_init restarts (mantém o melhor LL).
-          5. Score do treino, threshold OOD.
+          5. Score do treino, threshold OOD (quantil ponderado quando
+             aplicável).
         """
         # P1-7 (revisão externa 2026-06-09): reset defensivo de TODOS
         # os campos derivados/transitórios no início do fit. Antes,
@@ -828,6 +840,11 @@ class MoVMFTypicalityModel:
             else:
                 self._ood_log_likelihood_threshold = None
 
+        # P1-R3-7 (revisão externa 2026-06-09 round 3): congela arrays
+        # internos do state contra mutação acidental por consumidores
+        # (auditoria, plots, scripts ad-hoc). EM já terminou e o state
+        # não é mais reescrito.
+        self._freeze_state_arrays()
         return self
 
     def is_fitted(self) -> bool:
@@ -835,6 +852,46 @@ class MoVMFTypicalityModel:
 
     def has_percentile_reference(self) -> bool:
         return self._train_log_likelihoods is not None
+
+    def _freeze_state_arrays(self) -> None:
+        """P1-R3-7 (revisão externa 2026-06-09 round 3): congela arrays
+        internos como read-only após o fit terminar.
+
+        Aplica a `_MoVMFParams.mus/kappas/weights` e a todos os
+        `_train_log_likelihoods*` que existirem. O EM já terminou neste
+        ponto — consumidores (plots, auditoria, scripts ad-hoc) não
+        devem poder mutar o snapshot persistido.
+
+        Idempotente. Robusto a estado parcial (params=None, arrays
+        já read-only). Chamado pelo fim de `fit()`,
+        `install_reference_score_calibration()` e `from_dict()`.
+        """
+        def _freeze(arr: Optional[np.ndarray]) -> Optional[np.ndarray]:
+            if arr is None:
+                return None
+            # Cópia defensiva apenas se ainda for writeable.
+            out = arr if not arr.flags.writeable else arr.copy()
+            out.setflags(write=False)
+            return out
+
+        if self._params is not None:
+            self._params = _MoVMFParams(
+                mus=_freeze(self._params.mus),
+                kappas=_freeze(self._params.kappas),
+                weights=_freeze(self._params.weights),
+                dim=self._params.dim,
+                sample_count=self._params.sample_count,
+                n_components=self._params.n_components,
+            )
+        self._train_log_likelihoods = _freeze(self._train_log_likelihoods)
+        self._train_log_likelihoods_weights = _freeze(
+            self._train_log_likelihoods_weights
+        )
+        self._train_log_likelihoods_cdf = _freeze(
+            self._train_log_likelihoods_cdf
+        )
+        if self._reference_point is not None:
+            self._reference_point = _freeze(self._reference_point)
 
     def _reset_derived_state(self) -> None:
         """Reseta TODOS os campos derivados do fit anterior.
@@ -1066,6 +1123,8 @@ class MoVMFTypicalityModel:
         self._split_fingerprint = (
             str(split_fingerprint) if split_fingerprint else None
         )
+        # P1-R3-7: congela snapshot da referência recém-instalada.
+        self._freeze_state_arrays()
 
     def is_in_distribution(self, embeddings: ArrayLike) -> np.ndarray:
         """
@@ -1844,12 +1903,18 @@ class MoVMFTypicalityModel:
 
         P2-R2-14 (revisão externa 2026-06-09 round 2): em
         INVERSE_IDENTITY_FREQUENCY o M-step ponderado já era correto,
-        mas a inicialização por k-means++ usava prob ∝ dist² sem
-        ponderar por w_i, então identidades super-representadas
-        dominavam a escolha de sementes. Quando `sample_weights`
-        é fornecido, a prob de seleção da semente vira:
-            prob_i ∝ w_i · dist²_i.
-        Também o cluster assignment para weights/r_bars usa pesos
+        mas a inicialização por k-means++ não ponderava sementes —
+        identidades super-representadas dominavam.
+
+        P1-R3-12 (round 3): nomenclatura precisa. Na esfera unitária:
+            ‖x − y‖² = 2 (1 − cos(x, y))
+        Logo `(1 − cos)` é proporcional à distância de corda ao
+        quadrado (squared chord distance). Já a tomamos como proxy
+        de "dist²" do k-means++ clássico — NÃO elevar ao quadrado
+        novamente. A probabilidade de seleção da semente vira:
+            prob_i ∝ w_i · (1 − cos)_i
+        (com w_i = 1 quando `sample_weights` é None — caminho legado).
+        Cluster assignment para weights/r_bars também usa pesos
         renormalizados.
         """
         n_samples, dim = x.shape
@@ -1872,14 +1937,15 @@ class MoVMFTypicalityModel:
         for j in range(1, k):
             sims = x @ mus[:j].T  # (N, j)
             max_sim = np.max(sims, axis=1)
-            dist = np.maximum(1.0 - max_sim, 0.0)
-            # Prob ∝ w_i · dist²_i (clássico k-means++ pondera por dist²;
-            # mantemos `dist` como proxy esférico — em S^{d-1}, 1 - cos
-            # é a distância de cordilheira).
+            # `(1 − cos)` é proporcional à distância de corda ao
+            # quadrado em S^{d−1} (vide P1-R3-12). Não elevar
+            # novamente ao quadrado — esta É a "dist²" do k-means++
+            # esférico.
+            squared_chord_distance_proxy = np.maximum(1.0 - max_sim, 0.0)
             if sw is not None:
-                probs = sw * dist
+                probs = sw * squared_chord_distance_proxy
             else:
-                probs = dist
+                probs = squared_chord_distance_proxy
             dsum = float(np.sum(probs))
             if dsum > 0:
                 mus[j] = x[rng.choice(n_samples, p=probs / dsum)]
@@ -2120,19 +2186,36 @@ class MoVMFTypicalityModel:
 
         # Vetoriza via list comprehension (ive escalar é simples;
         # batch tem custo similar e mantém código uniforme com Olver).
+        # P1-R3-8 (revisão externa 2026-06-09 round 3): SEM fallback
+        # silencioso ao normalizador uniforme. Para κ > eps_safe, se
+        # `_log_iv_robust` ou o cálculo subsequente falharem com
+        # não-finito, levantamos `RuntimeError` em vez de mascarar
+        # uma distribuição concentrada como uniforme. O comportamento
+        # antigo (`continue`) mantinha o limite uniforme inicializado
+        # no início — risco real de quebra silenciosa em produção.
         for idx in np.where(active)[0]:
             k = float(kappas[idx])
             log_iv = self._log_iv_robust(nu, k)
             if not np.isfinite(log_iv):
-                # Caso degenerado real (não underflow): mantém uniforme.
-                continue
+                raise RuntimeError(
+                    f"_log_vmf_normalizing_constant_vec: "
+                    f"_log_iv_robust(ν={nu}, κ={k}) devolveu valor "
+                    f"não-finito ({log_iv!r}). Em vMF não-degenerada "
+                    "esse caminho indica falha numérica que não pode "
+                    "ser mascarada pelo normalizador uniforme."
+                )
             val = (
                 nu * np.log(k)
                 - (dim / 2.0) * log(2.0 * pi)
                 - log_iv
             )
-            if np.isfinite(val):
-                out[idx] = val
+            if not np.isfinite(val):
+                raise RuntimeError(
+                    f"_log_vmf_normalizing_constant_vec: "
+                    f"log C_d(κ={k}) intermediário não-finito ({val!r})"
+                    " — falha numérica não pode ser mascarada."
+                )
+            out[idx] = val
         return out
 
     def _estimate_kappa_vectorized(
@@ -2399,17 +2482,20 @@ class MoVMFTypicalityModel:
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
         # PR 4: política UnitNormPolicy explícita (ERROR | NORMALIZE_*)
-        # P2-R2-13: registra telemetria da normalização para auditoria.
-        # Acumula sobre todas as chamadas durante o `fit` (mantém o
-        # último _validate_and_normalize_2d feito como representativo do
-        # treino — o caso típico é uma chamada única).
+        # P2-R2-13 + P0-R3-6: registra telemetria. Caminho escolhido
+        # com base em `is_fitted()` — se o modelo NÃO está treinado,
+        # estamos no caminho do fit; se está, é inferência. Snapshot
+        # do fit fica imutável depois disso.
         telemetry: dict = {}
         out = apply_unit_norm_policy(
             x, policy=self.unit_norm_policy,
             tolerance=self.unit_norm_tolerance, eps=self.eps,
             telemetry=telemetry,
         )
-        self._unit_norm_telemetry = telemetry
+        if self.is_fitted():
+            self._inference_unit_norm_telemetry_last = telemetry
+        else:
+            self._fit_unit_norm_telemetry = telemetry
         return out
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:

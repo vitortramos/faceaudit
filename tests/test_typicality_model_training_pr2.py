@@ -82,7 +82,13 @@ def test_knn_config_defaults():
     assert c.population_weighting_mode == PopulationWeightingMode.IDENTITY_CENTROIDS
     assert c.unit_norm_policy == UnitNormPolicy.ERROR
     assert c.percentile_basis_score_type == TypicalityPercentileBasis.MEAN_KNN_SIMILARITY
-    assert c.reference_score_calibration_mode == ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY
+    # P1-R3-11 (revisão externa 2026-06-09 round 3): default mudou para
+    # CROSS_FIT_IDENTITY — novas estratégias nascem com calibração
+    # honesta de OOF.
+    assert (
+        c.reference_score_calibration_mode
+        == ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY
+    )
 
 
 def test_knn_config_round_trip():
@@ -98,8 +104,11 @@ def test_knn_config_round_trip():
 
 
 def test_knn_config_hidden_fields_in_sample():
-    c = KNNTypicalityModelConfig()
-    # IN_SAMPLE_LEGACY (default) → cv_n_folds escondido
+    # P1-R3-11: novo default é CROSS_FIT_IDENTITY (cv_n_folds visível).
+    # Forçamos IN_SAMPLE_LEGACY explicitamente para validar o hide.
+    c = KNNTypicalityModelConfig(
+        reference_score_calibration_mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
+    )
     assert "cv_n_folds" in c.get_hidden_fields()
 
 

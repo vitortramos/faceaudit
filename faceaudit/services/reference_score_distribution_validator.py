@@ -122,6 +122,33 @@ def validate_reference_score_distribution(
                 f"último valor = {float(cdf[-1])} (esperado ≈ 1.0)",
             )
 
+    # ─── coerência cdf × weights ───────────────────────────────────
+    # P0-R3-5 (revisão externa 2026-06-09 round 3): validador anterior
+    # aceitava CDF incompatível com pesos. Agora exige acoplamento:
+    # - ambos presentes → CDF deve ser exatamente cumsum(weights)/sum.
+    # - apenas weights presentes → CDF é obrigatória (calleers ficam
+    #   responsáveis por construí-la coerente; protege contra
+    #   round-trips parciais de pickles antigos).
+    if weights is not None and cdf is None:
+        raise InvalidReferenceDistributionError(
+            "cdf",
+            "weights presentes mas cdf ausente — formato ponderado "
+            "exige CDF explícita para garantir coerência. Use cumsum"
+            "(weights)/sum.",
+        )
+    if cdf is not None and weights is not None:
+        total_w = float(weights.sum())
+        expected_cdf = np.cumsum(weights) / total_w
+        if not np.allclose(cdf, expected_cdf, atol=1e-9):
+            max_diff = float(np.max(np.abs(cdf - expected_cdf)))
+            raise InvalidReferenceDistributionError(
+                "cdf",
+                f"incoerente com weights: cumsum(weights)/sum produz "
+                f"CDF que difere em até {max_diff:.2e} (atol=1e-9). "
+                "Verifique se os pesos e a CDF foram persistidos do "
+                "mesmo snapshot do estado.",
+            )
+
     # ─── ood_threshold ─────────────────────────────────────────────
     if ood_threshold is not None:
         if not np.isfinite(ood_threshold):

@@ -66,6 +66,35 @@ from faceaudit.models.typicality.typicality_score_batch import (
 ArrayLike = Union[np.ndarray, Iterable[float], Iterable[Iterable[float]]]
 
 
+def _freeze_array(
+    arr: Optional[np.ndarray],
+    *,
+    dtype: Optional[np.dtype] = None,
+) -> Optional[np.ndarray]:
+    """P1-R3-7 (revisão externa 2026-06-09 round 3): congela arrays
+    internos do state como read-only.
+
+    Faz cópia (defensiva — caller não pode escrever no mesmo buffer
+    depois), garante C-contiguous, opcionalmente normaliza dtype e zera
+    a flag de write. Acesso posterior tenta-escrever levanta
+    `ValueError: assignment destination is read-only`.
+
+    Aceita None (passa adiante) para simplificar uso em campos
+    opcionais (pesos, CDF).
+    """
+    if arr is None:
+        return None
+    out = np.ascontiguousarray(arr, dtype=dtype) if dtype is not None \
+        else np.ascontiguousarray(arr)
+    if out is arr:
+        # ascontiguousarray pode devolver o próprio array sem copiar
+        # quando já é C-contiguous + dtype compatível. Forçamos cópia
+        # para garantir snapshot defensivo independente do caller.
+        out = out.copy()
+    out.setflags(write=False)
+    return out
+
+
 @dataclass
 class _KNNRefState:
     """Estado interno congelado pós-fit. Imutável conceitualmente."""
@@ -178,11 +207,12 @@ class KNNTypicalityModel:
 
         # Estado pós-fit. None até `fit()` ser chamado.
         self._state: Optional[_KNNRefState] = None
-        # P2-R2-13 (revisão externa round 2): telemetria da normalização
-        # aplicada (n_normalized, max_norm_deviation, etc.). Útil para
-        # auditoria pericial — quantos embeddings foram silenciosamente
-        # ajustados pelo NORMALIZE_SILENTLY.
-        self._unit_norm_telemetry: Optional[dict] = None
+        # P2-R2-13 + P0-R3-6: telemetria de normalização separada por
+        # escopo (fit vs inference). Auditoria pericial usa
+        # `_fit_unit_norm_telemetry`; o snapshot da última inferência
+        # fica em `_inference_unit_norm_telemetry_last`.
+        self._fit_unit_norm_telemetry: Optional[dict] = None
+        self._inference_unit_norm_telemetry_last: Optional[dict] = None
 
     # =========================================================================
     # API PÚBLICA
@@ -324,17 +354,21 @@ class KNNTypicalityModel:
             formula_id = None
 
         self._state = _KNNRefState(
-            reference=reference.astype(np.float32),
-            loo_mean_knn_sorted=loo_sorted,
+            reference=_freeze_array(reference, dtype=np.float32),
+            loo_mean_knn_sorted=_freeze_array(loo_sorted, dtype=np.float64),
             ood_threshold=ood_threshold,
             k=self.k,
             dim=int(d),
             reference_mode=self.reference_mode,
             n_input_faces=int(n_input),
             n_singleton_identities=int(n_singletons),
-            reference_score_weights=reference_score_weights,
-            loo_mean_knn_sorted_weights=loo_sorted_weights,
-            loo_cdf=cdf,
+            reference_score_weights=_freeze_array(
+                reference_score_weights, dtype=np.float64,
+            ),
+            loo_mean_knn_sorted_weights=_freeze_array(
+                loo_sorted_weights, dtype=np.float64,
+            ),
+            loo_cdf=_freeze_array(cdf, dtype=np.float64),
             weighted_T_k_formula_id=formula_id,
         )
         return self
@@ -443,10 +477,12 @@ class KNNTypicalityModel:
 
         self._state = dataclass_replace(
             self._state,
-            loo_mean_knn_sorted=scores_sorted,
+            loo_mean_knn_sorted=_freeze_array(scores_sorted, dtype=np.float64),
             ood_threshold=ood_val,
-            loo_mean_knn_sorted_weights=weights_sorted,
-            loo_cdf=cdf_arr,
+            loo_mean_knn_sorted_weights=_freeze_array(
+                weights_sorted, dtype=np.float64,
+            ),
+            loo_cdf=_freeze_array(cdf_arr, dtype=np.float64),
             reference_score_calibration_mode=calibration_mode,
             split_fingerprint=str(split_fingerprint) if split_fingerprint else None,
         )
@@ -643,17 +679,19 @@ class KNNTypicalityModel:
             ref_cal_mode = None
 
         model._state = _KNNRefState(
-            reference=reference,
-            loo_mean_knn_sorted=loo,
+            reference=_freeze_array(reference, dtype=np.float32),
+            loo_mean_knn_sorted=_freeze_array(loo, dtype=np.float64),
             ood_threshold=float(ls["ood_threshold"]),
             k=int(ls["k"]),
             dim=int(ls["dim"]),
             reference_mode=state_mode,
             n_input_faces=int(ls.get("n_input_faces", reference.shape[0])),
             n_singleton_identities=int(ls.get("n_singleton_identities", 0)),
-            reference_score_weights=ref_weights,
-            loo_mean_knn_sorted_weights=sorted_weights,
-            loo_cdf=cdf,
+            reference_score_weights=_freeze_array(ref_weights, dtype=np.float64),
+            loo_mean_knn_sorted_weights=_freeze_array(
+                sorted_weights, dtype=np.float64,
+            ),
+            loo_cdf=_freeze_array(cdf, dtype=np.float64),
             weighted_T_k_formula_id=ls.get("weighted_T_k_formula_id"),
             reference_score_calibration_mode=ref_cal_mode,
             split_fingerprint=ls.get("split_fingerprint"),
@@ -1218,7 +1256,9 @@ class KNNTypicalityModel:
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
         # PR 4: aplica UnitNormPolicy
-        # P2-R2-13: registra telemetria de normalização para auditoria.
+        # P2-R2-13 + P0-R3-6: telemetria. Snapshot do fit fica
+        # imutável após o treino; chamadas subsequentes (inferência)
+        # populam o slot separado.
         from faceaudit.services.unit_norm_validator import (
             apply_unit_norm_policy,
         )
@@ -1228,7 +1268,10 @@ class KNNTypicalityModel:
             tolerance=self.unit_norm_tolerance, eps=self.eps,
             telemetry=telemetry,
         )
-        self._unit_norm_telemetry = telemetry
+        if self.is_fitted():
+            self._inference_unit_norm_telemetry_last = telemetry
+        else:
+            self._fit_unit_norm_telemetry = telemetry
         return out
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:

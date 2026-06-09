@@ -202,6 +202,22 @@ class MoVMFTypicalityModelConfig(JSONSerializableMixin):
                 "cv_n_folds deve ser >= 2 quando "
                 "reference_score_calibration_mode = CROSS_FIT_IDENTITY."
             )
+        # P0-R3-1 (revisão externa round 3, 2026-06-09): MoVMF só
+        # implementa `LOG_DENSITY_ESTIMATE` como base canônica do
+        # percentil. Aceitar `MEAN_KNN_SIMILARITY` no DTO sem
+        # propagação ao runtime produzia configuração silenciosamente
+        # ignorada.
+        if (
+            self.percentile_basis_score_type
+            != TypicalityPercentileBasis.LOG_DENSITY_ESTIMATE
+        ):
+            raise ValueError(
+                "MoVMFTypicalityModelConfig.percentile_basis_score_type "
+                f"= {self.percentile_basis_score_type.to_str()!r} não é "
+                "suportado pelo backend MoVMF — único valor implementado "
+                "é LOG_DENSITY_ESTIMATE. Para usar MEAN_KNN_SIMILARITY "
+                "como base, escolha o backend k-NN."
+            )
 
     # ─────────────────────── visibilidade UI ────────────────────────
 

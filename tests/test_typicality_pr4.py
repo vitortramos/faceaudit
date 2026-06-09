@@ -143,17 +143,32 @@ def test_movmf_inverse_identity_frequency_now_implemented(reference_population):
 def test_movmf_component_permutation_preserves_contract_fp(reference_population):
     """Permutar componentes não altera o contract fingerprint
     (invariância à simetria de permutação da mistura).
+
+    P1-R3-7 (revisão externa 2026-06-09 round 3): após o fit os arrays
+    internos são read-only para impedir mutação acidental. A permutação
+    aqui é feita reconstruindo `_params` com cópias permutadas — preserva
+    a intenção do teste (validar invariância de fingerprint sob
+    permutação) sem violar o contrato de imutabilidade.
     """
+    from faceaudit.services.movmf_typicality_model import _MoVMFParams
+
     X, _ = reference_population
     m = MoVMFTypicalityModel(n_components=3, random_state=0)
     m.fit(X)
     fp_before = m.model_contract_fingerprint
     state_before = m.model_state_fingerprint
-    # Permuta componentes 0 e 1
+    # Permuta componentes 0 e 1 reconstruindo _params via cópia.
     p = m._params
-    p.mus[0], p.mus[1] = p.mus[1].copy(), p.mus[0].copy()
-    p.kappas[0], p.kappas[1] = p.kappas[1], p.kappas[0]
-    p.weights[0], p.weights[1] = p.weights[1], p.weights[0]
+    mus = p.mus.copy()
+    kappas = p.kappas.copy()
+    weights = p.weights.copy()
+    mus[0], mus[1] = p.mus[1].copy(), p.mus[0].copy()
+    kappas[0], kappas[1] = p.kappas[1], p.kappas[0]
+    weights[0], weights[1] = p.weights[1], p.weights[0]
+    m._params = _MoVMFParams(
+        mus=mus, kappas=kappas, weights=weights,
+        dim=p.dim, sample_count=p.sample_count, n_components=p.n_components,
+    )
     assert m.model_contract_fingerprint == fp_before
     assert m.model_state_fingerprint == state_before
 

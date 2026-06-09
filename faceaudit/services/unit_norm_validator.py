@@ -119,6 +119,22 @@ def apply_unit_norm_policy(
     - **NORMALIZE_SILENTLY**: normaliza sem emitir warning. Default
       migratório do k-NN V2.14.
     """
+    # P1-R3-10 (revisão externa 2026-06-09 round 3): valida tolerance
+    # e eps cedo. Antes, `tolerance=NaN` ou `tolerance=+inf` eram
+    # silenciosamente aceitos via `deviation > tolerance` (sempre False
+    # em NaN/inf), permitindo vetores fora da esfera passarem mesmo em
+    # policy=ERROR.
+    if not np.isfinite(tolerance) or tolerance <= 0:
+        raise ValueError(
+            f"apply_unit_norm_policy: tolerance deve ser finita e > 0; "
+            f"recebido {tolerance!r}."
+        )
+    if not np.isfinite(eps) or eps <= 0:
+        raise ValueError(
+            f"apply_unit_norm_policy: eps deve ser finito e > 0; "
+            f"recebido {eps!r}."
+        )
+
     x = np.asarray(x, dtype=np.float64)
     if x.ndim == 1:
         x = x.reshape(1, -1)

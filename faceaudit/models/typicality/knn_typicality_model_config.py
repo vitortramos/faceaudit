@@ -91,15 +91,18 @@ class KNNTypicalityModelConfig(JSONSerializableMixin):
     )
 
     reference_score_calibration_mode: ReferenceScoreCalibrationMode = field(
-        default=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
+        default=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
         metadata={"help": (
             "<html><b>Como construir a CDF de referência e o threshold "
             "OOD.</b><br/>"
-            "<b>CROSS_FIT_IDENTITY</b> (recomendado, PR 4): K-fold por "
-            "identidade; CDF construída com scores OOF; refit final em "
-            "toda a população.<br/>"
-            "<b>IN_SAMPLE_LEGACY</b> (default migratório): LOO de imagem; "
-            "comportamento histórico do k-NN.</html>"
+            "<b>CROSS_FIT_IDENTITY</b> (default novas estratégias):"
+            " K-fold por identidade; CDF construída com scores OOF; "
+            "refit final em toda a população.<br/>"
+            "<b>IN_SAMPLE_LEGACY</b>: LOO de imagem; comportamento "
+            "histórico do k-NN. Mantido como opção explícita para "
+            "estratégias V2.14 migradas (a migração preservativa grava "
+            "este valor literal no JSON antigo) — não é o default "
+            "para estratégias novas.</html>"
         )},
     )
 
@@ -150,6 +153,24 @@ class KNNTypicalityModelConfig(JSONSerializableMixin):
         ):
             # Sentinel: 5 folds default quando CROSS_FIT ativo.
             object.__setattr__(self, "cv_n_folds", 5)
+        # P0-R3-1 (revisão externa round 3, 2026-06-09): o backend k-NN
+        # só implementa `MEAN_KNN_SIMILARITY` como base canônica do
+        # percentil (`reference_score_basis_type`). Aceitar
+        # `LOG_DENSITY_ESTIMATE` no DTO sem propagação ao runtime
+        # produzia configuração silenciosamente ignorada. Restringimos
+        # aqui até que a propagação completa esteja implementada como
+        # PR separado.
+        if (
+            self.percentile_basis_score_type
+            != TypicalityPercentileBasis.MEAN_KNN_SIMILARITY
+        ):
+            raise ValueError(
+                "KNNTypicalityModelConfig.percentile_basis_score_type "
+                f"= {self.percentile_basis_score_type.to_str()!r} não é "
+                "suportado pelo backend k-NN — único valor implementado é "
+                "MEAN_KNN_SIMILARITY. Para usar LOG_DENSITY_ESTIMATE como "
+                "base, escolha o backend MoVMF."
+            )
 
     # ─────────────────────── visibilidade UI ────────────────────────
 

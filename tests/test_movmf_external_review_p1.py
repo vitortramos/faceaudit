@@ -217,7 +217,13 @@ def test_knn_contract_fingerprint_sensitive_to_unit_norm_tolerance():
 
 
 def test_cross_fit_passes_fold_seed_to_trainer_factory():
-    """Trainer factory recebe `seed=fold_seed` quando aceita o kwarg."""
+    """Trainer factory recebe `seed=fold_seed` quando aceita o kwarg.
+
+    P0-R3-3 (round 3): helper único `_build_model` instancia peek,
+    folds e refit. Peek e refit recebem `seed=random_state`
+    principal (10); folds recebem `random_state + fold_idx`
+    (10, 11, 12 para n_folds=3).
+    """
     X, ids = _make_data(n_id=10, per=8)
     captured_seeds = []
 
@@ -238,12 +244,12 @@ def test_cross_fit_passes_fold_seed_to_trainer_factory():
         mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
         n_folds=3, random_state=10,
     )
-    # 3 folds + 1 refit final = 4 chamadas com seed; refit em geral
-    # vem sem seed (back-compat), mas folds devem ter recebido.
-    fold_calls = [s for s in captured_seeds if s is not None]
-    assert len(fold_calls) >= 3
-    # Seeds distintas por fold (10, 11, 12)
-    assert sorted(fold_calls)[:3] == [10, 11, 12]
+    # Esperado: peek (10) + 3 folds (10, 11, 12) + refit (10).
+    # Todas as chamadas via helper repassam seed (não há mais
+    # chamada sem seed).
+    assert None not in captured_seeds
+    # Seeds dos folds presentes no conjunto.
+    assert {10, 11, 12}.issubset(set(captured_seeds))
     assert result.fold_seeds == (10, 11, 12)
 
 
