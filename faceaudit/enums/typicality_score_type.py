@@ -55,6 +55,7 @@ class TypicalityScoreType(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "TypicalityScoreType":
+        # None/empty: default por back-compat de JSONs antigos.
         if not value:
             return cls.MEAN_KNN_SIMILARITY
         if isinstance(value, cls):
@@ -66,7 +67,12 @@ class TypicalityScoreType(Enum):
             for item in cls:
                 if item.value == norm:
                     return item
-            return cls.MEAN_KNN_SIMILARITY
+            # P1-10 (revisão externa 2026-06-09): strings desconhecidas
+            # levantam em vez de cair em default silencioso.
+            raise ValueError(
+                f"TypicalityScoreType.from_str: valor desconhecido "
+                f"{value!r}. Aceitos: {[m.value for m in cls]}."
+            )
 
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:

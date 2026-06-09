@@ -197,8 +197,21 @@ class ReferenceScoreCalibrationService:
             if train_mask.sum() == 0 or test_mask.sum() == 0:
                 continue
 
-            # Treina backend no fold train
-            fold_model = trainer_factory()
+            # P1-12 (revisão externa 2026-06-09): propaga o `fold_seed`
+            # ao trainer_factory para que cada fold use seed distinta.
+            # Antes, fold_seeds eram calculados e registrados no
+            # ReferenceScoreCalibrationResult mas nunca afetavam os
+            # modelos — a reprodutibilidade do cross-fit era vacua.
+            # Aceitamos tanto factories com assinatura `factory(seed=...)`
+            # quanto factories sem essa keyword (back-compat).
+            try:
+                fold_model = trainer_factory(seed=fold_seed)
+            except TypeError:
+                fold_model = trainer_factory()
+                # Best-effort: configura random_state diretamente se o
+                # backend expõe esse atributo (MoVMF + KNN expõem).
+                if hasattr(fold_model, "random_state"):
+                    fold_model.random_state = fold_seed
             train_ids = tuple(str(i) for i in ids_arr[train_mask])
             fold_model.fit(
                 embeddings[train_mask], identity_ids=train_ids,

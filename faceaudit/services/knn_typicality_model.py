@@ -820,6 +820,10 @@ class KNNTypicalityModel:
             f"ood_quantile={self.ood_quantile:.17g}",
             # PR 4
             f"unit_norm_policy={self.unit_norm_policy.to_str()}",
+            # P1-11 (revisão externa 2026-06-09): tolerance entra no
+            # contrato — dois modelos com tolerâncias diferentes aceitam
+            # universos diferentes de embeddings como esféricos.
+            f"unit_norm_tolerance={self.unit_norm_tolerance:.17g}",
             # PR 5
             f"population_weighting_mode={self.population_weighting_mode.to_str()}",
             f"weighted_T_k_formula_id={st.weighted_T_k_formula_id or 'none'}",

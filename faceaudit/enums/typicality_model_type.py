@@ -44,6 +44,7 @@ class TypicalityModelType(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "TypicalityModelType":
+        # None/empty: default por back-compat de JSONs antigos sem o campo.
         if not value:
             return cls.KNN
         if isinstance(value, cls):
@@ -55,7 +56,14 @@ class TypicalityModelType(Enum):
             for item in cls:
                 if item.value == norm:
                     return item
-            return cls.KNN
+            # P1-10 (revisão externa 2026-06-09): strings desconhecidas
+            # levantam em vez de cair em default silencioso. Antes,
+            # "IDENTITY_CENTROD" virava "KNN" sem aviso — bug perigoso
+            # em audit forense.
+            raise ValueError(
+                f"TypicalityModelType.from_str: valor desconhecido "
+                f"{value!r}. Aceitos: {[m.value for m in cls]}."
+            )
 
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:

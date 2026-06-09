@@ -75,6 +75,7 @@ class PopulationWeightingMode(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "PopulationWeightingMode":
+        # None/empty: default por back-compat de JSONs antigos.
         if not value:
             return cls.IDENTITY_CENTROIDS
         if isinstance(value, cls):
@@ -86,7 +87,13 @@ class PopulationWeightingMode(Enum):
             for item in cls:
                 if item.value == norm:
                     return item
-            return cls.IDENTITY_CENTROIDS
+            # P1-10 (revisão externa 2026-06-09): strings desconhecidas
+            # levantam — "IDENTITY_CENTROD" não pode virar
+            # "IDENTITY_CENTROIDS" silenciosamente.
+            raise ValueError(
+                f"PopulationWeightingMode.from_str: valor desconhecido "
+                f"{value!r}. Aceitos: {[m.value for m in cls]}."
+            )
 
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:

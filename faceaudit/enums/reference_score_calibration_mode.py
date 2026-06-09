@@ -64,6 +64,7 @@ class ReferenceScoreCalibrationMode(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "ReferenceScoreCalibrationMode":
+        # None/empty: default por back-compat de JSONs antigos.
         if not value:
             return cls.CROSS_FIT_IDENTITY
         if isinstance(value, cls):
@@ -75,7 +76,13 @@ class ReferenceScoreCalibrationMode(Enum):
             for item in cls:
                 if item.value == norm:
                     return item
-            return cls.CROSS_FIT_IDENTITY
+            # P1-10 (revisão externa 2026-06-09): strings desconhecidas
+            # levantam — escolha entre OOF e in-sample é load-bearing.
+            raise ValueError(
+                f"ReferenceScoreCalibrationMode.from_str: valor "
+                f"desconhecido {value!r}. Aceitos: "
+                f"{[m.value for m in cls]}."
+            )
 
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:

@@ -63,6 +63,7 @@ class UnitNormPolicy(Enum):
 
     @classmethod
     def from_str(cls, value: str) -> "UnitNormPolicy":
+        # None/empty: default por back-compat de JSONs antigos.
         if not value:
             return cls.ERROR
         if isinstance(value, cls):
@@ -74,7 +75,12 @@ class UnitNormPolicy(Enum):
             for item in cls:
                 if item.value == norm:
                     return item
-            return cls.ERROR
+            # P1-10 (revisão externa 2026-06-09): strings desconhecidas
+            # levantam — política de norma é load-bearing forense.
+            raise ValueError(
+                f"UnitNormPolicy.from_str: valor desconhecido "
+                f"{value!r}. Aceitos: {[m.value for m in cls]}."
+            )
 
     @classmethod
     def choices(cls) -> List[Tuple[str, str]]:

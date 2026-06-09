@@ -10,12 +10,22 @@ backends é cientificamente relevante; ver `docs/typicality_models.md`.
 
 NOTAS METODOLÓGICAS IMPORTANTES (ver docstrings dos métodos para detalhes):
 
-1. CENTRALIZAÇÃO: A centralização euclidiana seguida de renormalização L2 *não*
-   preserva a métrica esférica e distorce a interpretação probabilística da vMF.
-   Por isso, o default agora é "none". Para mitigar hubness, oferecemos a opção
-   "frechet" (centralização geodésica via média intrínseca esférica), que preserva
-   a estrutura. A opção "euclidean_legacy" é mantida apenas para retrocompatibilidade
-   e emite um warning.
+1. CENTRALIZAÇÃO: A centralização euclidiana seguida de renormalização L2
+   *não* preserva a métrica esférica e distorce a interpretação
+   probabilística da vMF. Por isso, o default é "none".
+
+   Sobre a opção "frechet" (P1-8, revisão externa 2026-06-09):
+   matemáticamente é uma reflexão Householder que alinha a média de
+   Fréchet ao polo norte. Como é uma transformação **ortogonal**
+   (Q^T Q = I), preserva produtos internos — logo preserva cossenos,
+   distâncias angulares e a estrutura geométrica do vMF. **Não mitiga
+   hubness** porque hubness é função de proximidade angular, invariante
+   à orientação. "frechet" deve ser entendido como **canonicalização de
+   orientação** (útil para diagnóstico e reprodutibilidade entre rodadas
+   com seeds diferentes), não como mitigação topológica. A opção
+   "euclidean_legacy" é mantida apenas para retrocompatibilidade e
+   emite um warning — essa SIM altera geometria (não-ortogonal), mas
+   distorce a interpretação probabilística.
 
 2. AIC/BIC: Os graus de liberdade são contados como K*(D-1) para as direções
    médias (que vivem em S^{D-1}, não em R^D), K para os kappas, e (K-1) para os
@@ -202,7 +212,6 @@ class MoVMFTypicalityModel:
         self._n_singleton_identities: Optional[int] = None
         # PR 5: estado do INVERSE_IDENTITY_FREQUENCY
         self._n_identities_inv_idfreq: Optional[int] = None
-        self._pending_sample_weights: Optional[np.ndarray] = None
         self._train_log_likelihoods_weights: Optional[np.ndarray] = None
         self._train_log_likelihoods_cdf: Optional[np.ndarray] = None
         # P0-1 (revisão externa 2026-06-09): proveniência da referência de scores.
@@ -618,9 +627,22 @@ class MoVMFTypicalityModel:
           4. Single-component ou EM com n_init restarts (mantém o melhor LL).
           5. Score do treino, threshold OOD.
         """
+        # P1-7 (revisão externa 2026-06-09): reset defensivo de TODOS
+        # os campos derivados/transitórios no início do fit. Antes,
+        # `_pending_sample_weights` vivia em estado mutável persistente
+        # entre fit() calls — uma exceção entre o set-pesos e o consume
+        # podia deixar pesos antigos vazando para o próximo fit. Agora
+        # cada `fit()` começa com slate limpo + os pesos vivem em
+        # variável local (não atributo).
+        self._reset_derived_state()
+
         x_raw = self._validate_and_normalize_2d(embeddings)
         if x_raw.shape[0] < 2:
             raise ValueError("São necessárias pelo menos 2 amostras para treinar.")
+
+        # Variável local de pesos por face — substitui o antigo
+        # `self._pending_sample_weights` (eliminado em P1-7).
+        sample_weights: Optional[np.ndarray] = None
 
         # PR 4: weighting populacional
         if self.population_weighting_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
@@ -654,8 +676,6 @@ class MoVMFTypicalityModel:
             sample_weights = (1.0 / id_counts[inverse_idx]).astype(np.float64)
             self._n_input_faces = int(x_raw.shape[0])
             self._n_identities_inv_idfreq = int(unique_ids.shape[0])
-            # Anexa pesos para o resto do fit usar
-            self._pending_sample_weights = sample_weights
 
         n_samples, dim = x_raw.shape
         if self.n_components > n_samples:
@@ -666,11 +686,7 @@ class MoVMFTypicalityModel:
         self._compute_reference_point(x_raw)
         x = self._apply_transform(x_raw)
 
-        # PR 5: pega pesos pendentes (de INVERSE_IDENTITY_FREQUENCY)
-        sample_weights = getattr(self, "_pending_sample_weights", None)
-        if sample_weights is not None:
-            # Limpa para não vazar para outros fits
-            self._pending_sample_weights = None
+        # P1-7: `sample_weights` é variável local — sem leak entre fits.
 
         if self.n_components == 1:
             self._fit_single_component(x, sample_weights=sample_weights)
@@ -730,6 +746,32 @@ class MoVMFTypicalityModel:
 
     def has_percentile_reference(self) -> bool:
         return self._train_log_likelihoods is not None
+
+    def _reset_derived_state(self) -> None:
+        """Reseta TODOS os campos derivados do fit anterior.
+
+        P1-7 (revisão externa 2026-06-09): garante que cada `fit()`
+        começa com slate limpo. Antes, `_pending_sample_weights`
+        (campo mutável persistente) podia vazar entre fits se uma
+        exceção ocorresse no meio. P1-7 elimina esse field via variável
+        local em `fit()`; este helper formaliza a regra: estado
+        derivado nunca sobrevive a um novo fit (sucesso ou falha).
+        """
+        self._params = None
+        self._train_log_likelihoods = None
+        self._reference_point = None
+        self._train_avg_log_likelihood = None
+        self._n_iter_ = None
+        self._converged_ = None
+        self._ood_log_likelihood_threshold = None
+        self._n_init_used = None
+        self._n_input_faces = None
+        self._n_singleton_identities = None
+        self._n_identities_inv_idfreq = None
+        self._train_log_likelihoods_weights = None
+        self._train_log_likelihoods_cdf = None
+        self._reference_score_calibration_mode = None
+        self._split_fingerprint = None
 
     @property
     def reference_log_likelihoods(self) -> Optional[np.ndarray]:
@@ -1167,6 +1209,14 @@ class MoVMFTypicalityModel:
             # PR 4
             f"unit_norm_policy={self.unit_norm_policy.to_str()}",
             f"population_weighting_mode={self.population_weighting_mode.to_str()}",
+            # P1-11 (revisão externa 2026-06-09): tolerance e
+            # population_label entram no contrato. Tolerância governa
+            # qual conjunto de embeddings é aceito como esférico — duas
+            # tolerâncias diferentes implicam contratos operacionais
+            # diferentes. population_label permite distinguir modelos
+            # treinados em populações nominalmente diferentes.
+            f"unit_norm_tolerance={self.unit_norm_tolerance:.17g}",
+            f"population_label={self.population_label or 'none'}",
             # P0-3 (revisão externa 2026-06-09): protocolo de calibração da
             # referência (CROSS_FIT_IDENTITY ↔ IN_SAMPLE_LEGACY ↔ None)
             # entra no contrato. Aplicar modelo OOF a dataset que espera
@@ -1711,8 +1761,15 @@ class MoVMFTypicalityModel:
 
         - 'none': sem centralização. _reference_point fica None.
         - 'frechet': média intrínseca esférica (média de Fréchet) iterativa.
-            Preserva a métrica esférica via log/exp maps.
-        - 'euclidean_legacy': média euclidiana tradicional (legado, não preserva métrica).
+            Aplicada como reflexão Householder no `_apply_transform` —
+            transformação **ortogonal**, preserva cossenos e distâncias
+            angulares. Útil como canonicalização de orientação para
+            reprodutibilidade; **não muda a geometria observável** do
+            vMF (ver §1 das notas no topo do módulo e P1-8 da revisão
+            externa 2026-06-09). Não é mitigação de hubness.
+        - 'euclidean_legacy': média euclidiana tradicional (legado, não
+            preserva métrica esférica — disponível por retrocompat,
+            emite warning).
         """
         if self.centering == "none":
             self._reference_point = None
