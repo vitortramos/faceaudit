@@ -122,6 +122,21 @@ def oof_quantile_in_range(q: float) -> bool:
     return q is not None and 0.0 < q < 0.5
 
 
+def _safe_float(x) -> Optional[float]:
+    """Converte para float; retorna None se input é None ou não-finito.
+
+    R4: usado para coletar `ood_threshold_by_fold` de modelos transitórios
+    cujos campos podem ser None (ood_quantile=0.0) ou ±inf.
+    """
+    if x is None:
+        return None
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
 @dataclass(frozen=True)
 class ReferenceScoreCalibrationResult:
     """Resultado da calibração de score de referência.
@@ -160,6 +175,26 @@ class ReferenceScoreCalibrationResult:
     oof_reference_scores_sorted: Optional[np.ndarray] = None
     oof_reference_weights_sorted: Optional[np.ndarray] = None
     oof_reference_cdf: Optional[np.ndarray] = None
+    # Métricas preditivas OOF (R4 — solicitação do revisor externo
+    # 2026-06-09). Implementação do que estava implícito no procedimento
+    # de cross-fit mas não exposto: log-likelihood preditiva OOF
+    # agregada por fold e global, mais contagens por fold e thresholds
+    # OOD intermediários para diagnóstico de estabilidade.
+    #
+    # Em MoVMF (basis=LOG_DENSITY_ESTIMATE), `oof_predictive_avg_score`
+    # é diretamente o estimador OOF de E[log p_θ(x)] sobre a população —
+    # análogo a Cllr_min na linguagem de calibração, e o critério
+    # primário recomendado para escolher K (cobre AIC/BIC sem assumir
+    # tamanho amostral efetivo). Em k-NN
+    # (basis=MEAN_KNN_SIMILARITY), é a similaridade média ao k-ésimo
+    # vizinho na população OOF — útil como métrica relativa entre k's,
+    # não interpretável como log-likelihood.
+    oof_predictive_avg_score: Optional[float] = None
+    oof_predictive_avg_score_by_fold: Optional[tuple] = None
+    oof_predictive_score_type: Optional[str] = None
+    n_identities_by_fold: Optional[tuple] = None
+    n_scores_by_fold: Optional[tuple] = None
+    ood_threshold_by_fold: Optional[tuple] = None
     ood_threshold: Optional[float] = None
     split_fingerprint: Optional[str] = None
     fold_seeds: Optional[Sequence[int]] = None
@@ -342,6 +377,16 @@ class ReferenceScoreCalibrationService:
         oof_score_chunks: list[np.ndarray] = []
         oof_ids_chunks: list[np.ndarray] = []
         fold_seeds: list[int] = []
+        # R4 (revisão externa 2026-06-09 round 4): diagnósticos por fold.
+        # Capturados durante o loop e expostos no result para auditoria
+        # de estabilidade entre folds (recomendação central do revisor:
+        # sem dispersão entre folds, K=1/K=3 não pode ser comparado
+        # honestamente).
+        fold_avg_scores: list[float] = []
+        fold_n_identities: list[int] = []
+        fold_n_scores: list[int] = []
+        fold_ood_thresholds: list[Optional[float]] = []
+        chosen_type_overall: Optional[object] = None
         # Detecta modo agregação OOF por identidade
         from faceaudit.enums.population_weighting_mode import (
             PopulationWeightingMode,
@@ -416,16 +461,42 @@ class ReferenceScoreCalibrationService:
                 norms = np.maximum(norms, 1e-12)
                 centroids /= norms
                 batch = fold_model.compute_scores(centroids, chosen_type)
-                oof_score_chunks.append(
-                    np.asarray(batch.scores, dtype=np.float64)
-                )
-                oof_ids_chunks.append(uniq_ids.copy())
+                fold_scores = np.asarray(batch.scores, dtype=np.float64)
+                fold_ids = uniq_ids.copy()
             else:
                 batch = fold_model.compute_scores(
                     embeddings[test_mask], chosen_type,
                 )
-                oof_score_chunks.append(np.asarray(batch.scores, dtype=np.float64))
-                oof_ids_chunks.append(ids_arr[test_mask].copy())
+                fold_scores = np.asarray(batch.scores, dtype=np.float64)
+                fold_ids = ids_arr[test_mask].copy()
+
+            oof_score_chunks.append(fold_scores)
+            oof_ids_chunks.append(fold_ids)
+
+            # R4: diagnóstico por fold. Avg do fold ponderado pelo modo:
+            # FACE_LEVEL_RAW / IDENTITY_CENTROIDS → média simples;
+            # INVERSE_IDENTITY_FREQUENCY → pesos 1/n_id dentro do fold
+            # (cada identidade contribui igualmente ao avg).
+            if pop_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+                _, fold_inv, fold_counts = np.unique(
+                    fold_ids, return_inverse=True, return_counts=True,
+                )
+                w_fold = 1.0 / fold_counts[fold_inv]
+                fold_avg = float(np.sum(w_fold * fold_scores) / w_fold.sum())
+            else:
+                fold_avg = float(np.mean(fold_scores))
+            fold_avg_scores.append(fold_avg)
+            fold_n_identities.append(int(len(np.unique(fold_ids))))
+            fold_n_scores.append(int(len(fold_scores)))
+            fold_ood_thresholds.append(
+                _safe_float(getattr(fold_model, "_ood_log_likelihood_threshold", None))
+                if backend == TypicalityModelType.MOVMF
+                else _safe_float(getattr(getattr(fold_model, "_state", None), "ood_threshold", None))
+            )
+            # `chosen_type` é determinístico por backend, mas capturamos
+            # o primeiro fold para anexar ao result.
+            if chosen_type_overall is None:
+                chosen_type_overall = chosen_type
 
         if not oof_score_chunks:
             raise RuntimeError(
@@ -486,18 +557,55 @@ class ReferenceScoreCalibrationService:
         else:
             threshold = None
 
+        # R4 (revisão externa 2026-06-09 round 4): log-likelihood
+        # preditiva OOF agregada. É a média ponderada de TODOS os
+        # scores OOF com os mesmos pesos usados na CDF — coerente com
+        # a interpretação "estimador da log-densidade esperada na
+        # população". No MoVMF, score_type = LOG_DENSITY_ESTIMATE
+        # implica que este número é diretamente PLL_OOF (alias exposto
+        # no summary do MoVMF como `oof_predictive_avg_log_likelihood`).
+        # No k-NN (score_type = MEAN_KNN_SIMILARITY), é a similaridade
+        # média ao k-ésimo vizinho — útil como métrica relativa entre
+        # ks, não como log-densidade.
+        oof_predictive_avg = float(
+            np.sum(oof_weights * oof_scores_final) / oof_weights.sum()
+        )
+
         # P0-1: instala a referência OOF no modelo final. Após este
         # método retornar, `refit_model.get_percentiles()` e
         # `is_in_distribution()` consultam a distribuição OOF — não a
         # in-sample do refit. O `ReferenceScoreCalibrationResult`
         # continua retornando os mesmos arrays para auditoria.
-        refit_model.install_reference_score_calibration(
+        #
+        # R4: também propaga a PLL OOF + diagnósticos por fold para o
+        # modelo persistido — quando passados como kwargs opcionais,
+        # cada backend persiste internamente para que `summary()` exiba.
+        # Backends antigos (sem suporte aos kwargs) silenciosamente
+        # ignoram via TypeError handler — não bloqueia o cross-fit.
+        _install_kwargs = dict(
             reference_scores=oof_arr_sorted,
             reference_weights=oof_weights_sorted,
             ood_threshold=threshold,
             calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
             split_fingerprint=split_fingerprint,
         )
+        _r4_kwargs = dict(
+            oof_predictive_avg_score=oof_predictive_avg,
+            oof_predictive_avg_score_by_fold=tuple(fold_avg_scores),
+            oof_predictive_score_type=(
+                chosen_type_overall.to_str()
+                if chosen_type_overall is not None
+                and hasattr(chosen_type_overall, "to_str")
+                else (str(chosen_type_overall) if chosen_type_overall else None)
+            ),
+        )
+        try:
+            refit_model.install_reference_score_calibration(
+                **_install_kwargs, **_r4_kwargs,
+            )
+        except TypeError:
+            # Backend ainda não suporta os kwargs R4 — chama sem eles.
+            refit_model.install_reference_score_calibration(**_install_kwargs)
 
         # P1-R3-9: arrays expostos no result são read-only.
         # Auditoria não deve poder mutar o snapshot devolvido.
@@ -514,6 +622,17 @@ class ReferenceScoreCalibrationService:
             oof_reference_scores_sorted=scores_ro,
             oof_reference_weights_sorted=weights_ro,
             oof_reference_cdf=cdf_ro,
+            oof_predictive_avg_score=oof_predictive_avg,
+            oof_predictive_avg_score_by_fold=tuple(fold_avg_scores),
+            oof_predictive_score_type=(
+                chosen_type_overall.to_str()
+                if chosen_type_overall is not None
+                and hasattr(chosen_type_overall, "to_str")
+                else (str(chosen_type_overall) if chosen_type_overall else None)
+            ),
+            n_identities_by_fold=tuple(fold_n_identities),
+            n_scores_by_fold=tuple(fold_n_scores),
+            ood_threshold_by_fold=tuple(fold_ood_thresholds),
             ood_threshold=threshold,
             split_fingerprint=split_fingerprint,
             fold_seeds=tuple(fold_seeds),

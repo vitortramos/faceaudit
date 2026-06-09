@@ -230,6 +230,14 @@ class MoVMFTypicalityModel:
         # `fit`. Esses dois campos auditam quem instalou a referência atual.
         self._reference_score_calibration_mode = None  # ReferenceScoreCalibrationMode | None
         self._split_fingerprint: Optional[str] = None
+        # R4 (revisão externa 2026-06-09 round 4): métricas preditivas
+        # OOF persistidas pelo `install_reference_score_calibration`.
+        # Expostas via `summary()` como
+        # `oof_predictive_avg_log_likelihood` (alias) quando
+        # `oof_predictive_score_type == "LOG_DENSITY_ESTIMATE"`.
+        self._oof_predictive_avg_score: Optional[float] = None
+        self._oof_predictive_avg_score_by_fold: Optional[tuple] = None
+        self._oof_predictive_score_type: Optional[str] = None
         # P2-R2-13 + P0-R3-6: telemetria da normalização aplicada.
         # Separada por escopo:
         # - `_fit_unit_norm_telemetry`: registrada uma vez durante o
@@ -535,6 +543,18 @@ class MoVMFTypicalityModel:
                     else None
                 ),
                 "split_fingerprint": self._split_fingerprint,
+                # R4: métricas preditivas OOF persistidas no envelope
+                # para sobreviver pickle. format_version=3 já cobre
+                # tudo abaixo (campos None em pickles antigos via
+                # `st.get(...)` no `from_dict`).
+                "oof_predictive_avg_score": self._oof_predictive_avg_score,
+                "oof_predictive_avg_score_by_fold": (
+                    list(self._oof_predictive_avg_score_by_fold)
+                    if self._oof_predictive_avg_score_by_fold is not None
+                    else None
+                ),
+                "oof_predictive_score_type":
+                    self._oof_predictive_score_type,
             },
         }
 
@@ -653,6 +673,15 @@ class MoVMFTypicalityModel:
                 ReferenceScoreCalibrationMode.from_str(ref_mode_str)
             )
         model._split_fingerprint = st.get("split_fingerprint")
+
+        # R4: hidrata métricas preditivas OOF. Pickles antigos (R3 e
+        # anteriores) não têm esses campos — `get` devolve None.
+        model._oof_predictive_avg_score = st.get("oof_predictive_avg_score")
+        _by_fold = st.get("oof_predictive_avg_score_by_fold")
+        model._oof_predictive_avg_score_by_fold = (
+            tuple(float(x) for x in _by_fold) if _by_fold is not None else None
+        )
+        model._oof_predictive_score_type = st.get("oof_predictive_score_type")
 
         # Computa OOD threshold se ausente (v1) e tivermos referência empírica.
         # P1-R2-7 (round 2): em INV_ID_FREQ usa quantil ponderado se
@@ -918,6 +947,10 @@ class MoVMFTypicalityModel:
         self._train_log_likelihoods_cdf = None
         self._reference_score_calibration_mode = None
         self._split_fingerprint = None
+        # R4: reset das métricas preditivas OOF.
+        self._oof_predictive_avg_score = None
+        self._oof_predictive_avg_score_by_fold = None
+        self._oof_predictive_score_type = None
 
     @property
     def reference_log_likelihoods(self) -> Optional[np.ndarray]:
@@ -1018,6 +1051,12 @@ class MoVMFTypicalityModel:
         ood_threshold=None,
         calibration_mode,
         split_fingerprint=None,
+        # R4 (revisão externa 2026-06-09 round 4): métricas preditivas
+        # agregadas pelo cross-fit. Persistidas para exibir no
+        # `summary()` (alias `oof_predictive_avg_log_likelihood`).
+        oof_predictive_avg_score=None,
+        oof_predictive_avg_score_by_fold=None,
+        oof_predictive_score_type=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores do modelo.
 
@@ -1122,6 +1161,19 @@ class MoVMFTypicalityModel:
         self._reference_score_calibration_mode = calibration_mode
         self._split_fingerprint = (
             str(split_fingerprint) if split_fingerprint else None
+        )
+        # R4: métricas preditivas OOF.
+        self._oof_predictive_avg_score = (
+            float(oof_predictive_avg_score)
+            if oof_predictive_avg_score is not None else None
+        )
+        self._oof_predictive_avg_score_by_fold = (
+            tuple(float(x) for x in oof_predictive_avg_score_by_fold)
+            if oof_predictive_avg_score_by_fold is not None else None
+        )
+        self._oof_predictive_score_type = (
+            str(oof_predictive_score_type)
+            if oof_predictive_score_type is not None else None
         )
         # P1-R3-7: congela snapshot da referência recém-instalada.
         self._freeze_state_arrays()
@@ -1580,6 +1632,27 @@ class MoVMFTypicalityModel:
                 "n_input_faces": self._n_input_faces,
                 "n_singleton_identities": self._n_singleton_identities,
                 "random_state": self.random_state,
+                # R4 (revisão externa 2026-06-09 round 4): log-likelihood
+                # preditiva OOF agregada e por fold. None quando o modelo
+                # foi treinado sem cross-fit (IN_SAMPLE_LEGACY ou fit
+                # direto). Alias `oof_predictive_avg_log_likelihood`
+                # exposto explicitamente porque o backend MoVMF usa
+                # LOG_DENSITY_ESTIMATE como base de referência —
+                # interpretação direta.
+                "oof_predictive_avg_score": self._oof_predictive_avg_score,
+                "oof_predictive_avg_log_likelihood": (
+                    self._oof_predictive_avg_score
+                    if self._oof_predictive_score_type == "LOG_DENSITY_ESTIMATE"
+                    else None
+                ),
+                "oof_predictive_avg_score_by_fold":
+                    self._oof_predictive_avg_score_by_fold,
+                "oof_predictive_log_likelihood_by_fold": (
+                    self._oof_predictive_avg_score_by_fold
+                    if self._oof_predictive_score_type == "LOG_DENSITY_ESTIMATE"
+                    else None
+                ),
+                "oof_predictive_score_type": self._oof_predictive_score_type,
             },
         )
 

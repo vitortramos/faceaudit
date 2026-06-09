@@ -213,6 +213,13 @@ class KNNTypicalityModel:
         # fica em `_inference_unit_norm_telemetry_last`.
         self._fit_unit_norm_telemetry: Optional[dict] = None
         self._inference_unit_norm_telemetry_last: Optional[dict] = None
+        # R4 (revisão externa 2026-06-09 round 4): métricas preditivas
+        # OOF persistidas pelo `install_reference_score_calibration`.
+        # No k-NN com basis=MEAN_KNN_SIMILARITY, esses números NÃO são
+        # log-likelihood — são T_k médio na população OOF.
+        self._oof_predictive_avg_score: Optional[float] = None
+        self._oof_predictive_avg_score_by_fold: Optional[tuple] = None
+        self._oof_predictive_score_type: Optional[str] = None
 
     # =========================================================================
     # API PÚBLICA
@@ -384,6 +391,14 @@ class KNNTypicalityModel:
         ood_threshold=None,
         calibration_mode,
         split_fingerprint=None,
+        # R4 (revisão externa 2026-06-09 round 4): métricas preditivas
+        # agregadas. Persistidas para exibir no `summary()`. No k-NN
+        # (basis=MEAN_KNN_SIMILARITY) NÃO é log-likelihood — é a média
+        # da similaridade T_k ao k-ésimo vizinho na população OOF.
+        # Útil como métrica relativa entre k's.
+        oof_predictive_avg_score=None,
+        oof_predictive_avg_score_by_fold=None,
+        oof_predictive_score_type=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores T_k.
 
@@ -486,6 +501,21 @@ class KNNTypicalityModel:
             reference_score_calibration_mode=calibration_mode,
             split_fingerprint=str(split_fingerprint) if split_fingerprint else None,
         )
+        # R4: persiste métricas preditivas como atributos da instância
+        # (não no `_KNNRefState` para evitar quebrar pickles antigos —
+        # `_state` é restaurado por `from_dict` validando shapes).
+        self._oof_predictive_avg_score = (
+            float(oof_predictive_avg_score)
+            if oof_predictive_avg_score is not None else None
+        )
+        self._oof_predictive_avg_score_by_fold = (
+            tuple(float(x) for x in oof_predictive_avg_score_by_fold)
+            if oof_predictive_avg_score_by_fold is not None else None
+        )
+        self._oof_predictive_score_type = (
+            str(oof_predictive_score_type)
+            if oof_predictive_score_type is not None else None
+        )
 
     def score_samples(self, embeddings: ArrayLike) -> np.ndarray:
         """Retorna log_density_knn pra cada embedding (batch)."""
@@ -582,6 +612,15 @@ class KNNTypicalityModel:
                     else None
                 ),
                 "split_fingerprint": st.split_fingerprint,
+                # R4: métricas preditivas OOF persistidas no envelope.
+                "oof_predictive_avg_score": self._oof_predictive_avg_score,
+                "oof_predictive_avg_score_by_fold": (
+                    list(self._oof_predictive_avg_score_by_fold)
+                    if self._oof_predictive_avg_score_by_fold is not None
+                    else None
+                ),
+                "oof_predictive_score_type":
+                    self._oof_predictive_score_type,
             },
         }
 
@@ -719,6 +758,15 @@ class KNNTypicalityModel:
             cdf=cdf,
             ood_threshold=float(ls["ood_threshold"]),
         )
+
+        # R4: hidrata métricas preditivas OOF. Pickles antigos não
+        # têm esses campos — devolvem None.
+        model._oof_predictive_avg_score = ls.get("oof_predictive_avg_score")
+        _by_fold = ls.get("oof_predictive_avg_score_by_fold")
+        model._oof_predictive_avg_score_by_fold = (
+            tuple(float(x) for x in _by_fold) if _by_fold is not None else None
+        )
+        model._oof_predictive_score_type = ls.get("oof_predictive_score_type")
         return model
 
     # =========================================================================
@@ -1098,6 +1146,14 @@ class KNNTypicalityModel:
                 "loo_T_k_median": float(np.median(loo)),
                 "loo_T_k_mean": float(np.mean(loo)),
                 "loo_T_k_std": float(np.std(loo)),
+                # R4: métricas preditivas OOF. NÃO são log-likelihood
+                # no k-NN (basis=MEAN_KNN_SIMILARITY) — são T_k médio
+                # ponderado entre os scores OOF. Úteis como métrica
+                # relativa entre valores de k.
+                "oof_predictive_avg_score": self._oof_predictive_avg_score,
+                "oof_predictive_avg_score_by_fold":
+                    self._oof_predictive_avg_score_by_fold,
+                "oof_predictive_score_type": self._oof_predictive_score_type,
             },
         )
 
