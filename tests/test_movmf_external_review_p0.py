@@ -310,6 +310,83 @@ def test_cross_fit_inv_id_freq_weights_by_identity():
     assert weights.std() > 1e-6
 
 
+# ─── P0-5 ────────────────────────────────────────────────────────────────
+
+
+def test_summary_canonical_returns_dto():
+    """`summary()` agora retorna TypicalityModelSummary (cumpre o protocolo)."""
+    from faceaudit.models.typicality.typicality_model_summary import (
+        TypicalityModelSummary,
+    )
+    X, ids = _make_data(n_id=6, per=8)
+    knn = KNNTypicalityModel(
+        k=5, ood_quantile=0.1,
+        unit_norm_policy="NORMALIZE_SILENTLY",
+        population_weighting_mode=PopulationWeightingMode.IDENTITY_CENTROIDS,
+    )
+    knn.fit(X, identity_ids=ids)
+    assert isinstance(knn.summary(), TypicalityModelSummary)
+    # Back-compat: summary_legacy() ainda devolve dict
+    assert isinstance(knn.summary_legacy(), dict)
+
+    mv = MoVMFTypicalityModel(
+        n_components=2, n_init=2, centering="none", ood_quantile=0.1,
+        unit_norm_policy="NORMALIZE_SILENTLY",
+        population_weighting_mode=PopulationWeightingMode.IDENTITY_CENTROIDS,
+    )
+    mv.fit(X, identity_ids=ids)
+    assert isinstance(mv.summary(), TypicalityModelSummary)
+    assert isinstance(mv.summary_legacy(), dict)
+
+
+# ─── P0-6 ────────────────────────────────────────────────────────────────
+
+
+def test_batch_fingerprint_invariant_to_superfluous_metadata():
+    """Batches semanticamente equivalentes têm o mesmo fingerprint, mesmo
+    quando o caller passa campos supérfluos (percentile_basis em score
+    não-percentil) — esses são limpos ANTES do hash."""
+    from faceaudit.models.typicality.typicality_score_batch import (
+        TypicalityScoreBatch,
+    )
+    from faceaudit.enums.typicality_score_type import TypicalityScoreType
+
+    arr = np.array([0.1, 0.2, 0.3])
+    b_clean = TypicalityScoreBatch(
+        scores=arr, n=3, embedding_dim=64,
+        score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+        score_semantics_id="LOG_LIKELIHOOD_MOVMF",
+        model_type=TypicalityModelType.MOVMF,
+    )
+    b_superfluous = TypicalityScoreBatch(
+        scores=arr, n=3, embedding_dim=64,
+        score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+        score_semantics_id="LOG_LIKELIHOOD_MOVMF",
+        percentile_basis_score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+        reference_score_distribution_fingerprint="ignored",
+        model_type=TypicalityModelType.MOVMF,
+    )
+    assert b_clean.batch_fingerprint == b_superfluous.batch_fingerprint
+
+
+def test_batch_fingerprint_rejects_external_mismatch():
+    """Caller passando batch_fingerprint divergente do canônico — rejeita."""
+    from faceaudit.models.typicality.typicality_score_batch import (
+        TypicalityScoreBatch,
+    )
+    from faceaudit.enums.typicality_score_type import TypicalityScoreType
+
+    arr = np.array([0.1, 0.2, 0.3])
+    with pytest.raises(ValueError, match="diverge do canônico"):
+        TypicalityScoreBatch(
+            scores=arr, n=3, embedding_dim=64,
+            score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
+            score_semantics_id="LOG_LIKELIHOOD_MOVMF",
+            model_type=TypicalityModelType.MOVMF,
+            batch_fingerprint="hash-falso",
+        )
+
+
 def test_cross_fit_identity_centroids_aggregates_per_identity():
     """IDENTITY_CENTROIDS: OOF agrega para 1 score por identidade."""
     X, ids = _make_data(n_id=12, per=10)

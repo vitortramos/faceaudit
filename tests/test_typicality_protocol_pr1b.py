@@ -313,7 +313,7 @@ def test_knn_contract_changes_with_k(reference_data):
 
 def test_knn_summary_protocol(trained_knn):
     m, _ = trained_knn
-    s = m.summary_protocol()
+    s = m.summary()
     assert isinstance(s, TypicalityModelSummary)
     assert s.model_type == TypicalityModelType.KNN
     assert s.health_status in ("OK", "WARNING", "CRITICAL")
@@ -322,7 +322,7 @@ def test_knn_summary_protocol(trained_knn):
 
 def test_movmf_summary_protocol(trained_movmf):
     m, _ = trained_movmf
-    s = m.summary_protocol()
+    s = m.summary()
     assert isinstance(s, TypicalityModelSummary)
     assert s.model_type == TypicalityModelType.MOVMF
     assert "n_components" in s.backend_details

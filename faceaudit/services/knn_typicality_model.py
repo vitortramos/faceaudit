@@ -650,7 +650,17 @@ class KNNTypicalityModel:
     # DIAGNÓSTICO / OBSERVABILIDADE
     # =========================================================================
 
-    def summary(self) -> dict:
+    def summary_legacy(self) -> dict:
+        """Resumo dict ad-hoc — preservado por back-compat com a UI
+        (`ResourceInfoWidget._populate_typicality_details`).
+
+        P0-5 (revisão externa 2026-06-09): a versão canônica do método
+        `summary()` agora retorna `TypicalityModelSummary` para cumprir o
+        protocolo — vide doc da nova `summary()`.
+        """
+        return self._summary_dict()
+
+    def _summary_dict(self) -> dict:
         """Estatísticas de auditoria do modelo treinado."""
         if not self.is_fitted():
             return {"status": "unfitted"}
@@ -903,7 +913,7 @@ class KNNTypicalityModel:
         loo = np.ascontiguousarray(st.loo_mean_knn_sorted, dtype=np.float64)
         return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
 
-    def summary_protocol(self) -> TypicalityModelSummary:
+    def summary(self) -> TypicalityModelSummary:
         """Implementação do `summary()` do protocolo.
 
         Nome distinto do método legado `summary()` (que retorna dict) para

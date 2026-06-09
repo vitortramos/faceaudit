@@ -2172,13 +2172,19 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self._clear_typicality()
             return
 
-        summary = getattr(payload, "summary", None)
-        if not callable(summary):
+        # P0-5 (revisão externa 2026-06-09): `summary()` canônico devolve
+        # `TypicalityModelSummary` (DTO) para cumprir o protocolo. O dict
+        # ad-hoc consumido por este widget vive em `summary_legacy()`.
+        summary_legacy = getattr(payload, "summary_legacy", None)
+        summary_fn = summary_legacy if callable(summary_legacy) else getattr(
+            payload, "summary", None
+        )
+        if not callable(summary_fn):
             self._clear_typicality()
             return
 
         try:
-            s = summary()
+            s = summary_fn()
         except Exception:
             self._clear_typicality()
             return

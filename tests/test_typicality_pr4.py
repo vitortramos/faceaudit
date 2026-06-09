@@ -313,7 +313,7 @@ def test_movmf_summary_includes_pr4_audit_fields(reference_population):
         population_weighting_mode=PopulationWeightingMode.IDENTITY_CENTROIDS,
     )
     m.fit(X, identity_ids=ids)
-    s = m.summary_protocol()
+    s = m.summary()
     assert s.backend_details["unit_norm_policy"] == "NORMALIZE_SILENTLY"
     assert s.backend_details["population_weighting_mode"] == "IDENTITY_CENTROIDS"
     assert "random_state" in s.backend_details
@@ -328,7 +328,7 @@ def test_movmf_summary_warns_on_oversized_n_components():
     X = rng.standard_normal((6, 8)); X /= np.linalg.norm(X, axis=1, keepdims=True)
     m = MoVMFTypicalityModel(n_components=5, random_state=0)
     m.fit(X)
-    s = m.summary_protocol()
+    s = m.summary()
     # Pode ser OK ou WARNING/CRITICAL dependendo dos warnings agregados
     # — só verificamos que n_components_fitted ≤ sample_count após drops
     assert s.backend_details["n_components"] <= s.sample_count

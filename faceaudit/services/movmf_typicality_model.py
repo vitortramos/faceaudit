@@ -326,7 +326,18 @@ class MoVMFTypicalityModel:
                 out.append(j)
         return out
 
-    def summary(self, degenerate_weight_threshold: float = 1e-3) -> dict:
+    def summary_legacy(self, degenerate_weight_threshold: float = 1e-3) -> dict:
+        """Resumo dict ad-hoc — preservado por back-compat com a UI legada
+        (`ResourceInfoWidget._populate_typicality_details`) e código que
+        ainda consome o dict diretamente.
+
+        P0-5 (revisão externa 2026-06-09): a versão canônica do método
+        `summary()` agora retorna `TypicalityModelSummary` para cumprir o
+        protocolo — vide doc da nova `summary()`.
+        """
+        return self._summary_dict(degenerate_weight_threshold)
+
+    def _summary_dict(self, degenerate_weight_threshold: float = 1e-3) -> dict:
         """Estatísticas do modelo ajustado para auditoria/observabilidade."""
         if not self.is_fitted():
             return {"status": "unfitted"}
@@ -1233,12 +1244,16 @@ class MoVMFTypicalityModel:
         loo = np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64)
         return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
 
-    def summary_protocol(self) -> TypicalityModelSummary:
-        """Implementação do `summary()` do protocolo.
+    def summary(self) -> TypicalityModelSummary:
+        """Resumo de auditoria que satisfaz o
+        `TypicalityScoringModelProtocol.summary()`.
+
+        P0-5 (revisão externa 2026-06-09): este é agora o nome canônico
+        (antes era `summary_protocol`). O método legado que retorna dict
+        sobrevive como `summary_legacy()` para back-compat com a UI.
 
         PR 4: health checks expandidos (10 itens documentados em
         `docs/typicality_models.md` §7).
-        Coexistente com o método `summary()` legado que retorna dict.
         """
         self._ensure_fitted()
         p = self._params

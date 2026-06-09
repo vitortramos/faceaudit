@@ -391,12 +391,15 @@ def test_from_dict_rejects_unnormalized_reference():
 # ─────────────────────────── summary / diagnóstico ─────────────
 
 
-def test_summary_unfitted_returns_status():
-    s = KNNTypicalityModel().summary()
+def test_summary_legacy_unfitted_returns_status():
+    # P0-5 (revisão externa 2026-06-09): `summary()` canônico agora
+    # devolve TypicalityModelSummary; `summary_legacy()` preserva o dict
+    # ad-hoc consumido pela UI.
+    s = KNNTypicalityModel().summary_legacy()
     assert s == {"status": "unfitted"}
 
 
-def test_summary_fitted_per_identity_includes_diagnostics():
+def test_summary_legacy_fitted_per_identity_includes_diagnostics():
     rng = np.random.default_rng(0)
     embs_grouped, ids_grouped = _make_population_with_ids(
         n_identities=20, samples_per_id=3, d=16, rng=rng,
@@ -411,7 +414,7 @@ def test_summary_fitted_per_identity_includes_diagnostics():
     m = KNNTypicalityModel(
         k=5, reference_mode=TypicalityReferenceMode.PER_IDENTITY,
     ).fit(embs, identities=ids)
-    s = m.summary()
+    s = m.summary_legacy()
     assert s["status"] == "fitted"
     assert s["reference_mode"] == "PER_IDENTITY"
     assert s["sample_count"] == 30  # 20 grouped + 10 singletons

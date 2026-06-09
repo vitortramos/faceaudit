@@ -249,5 +249,5 @@ def test_movmf_inv_summary_includes_weighting_mode(population):
         population_weighting_mode=PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY,
     )
     m.fit(X, identity_ids=ids)
-    s = m.summary_protocol()
+    s = m.summary()
     assert s.backend_details["population_weighting_mode"] == "INVERSE_IDENTITY_FREQUENCY"

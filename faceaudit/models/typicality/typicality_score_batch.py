@@ -80,13 +80,26 @@ class TypicalityScoreBatch:
     batch_fingerprint: str = ""
 
     def __post_init__(self) -> None:
-        # Canonicaliza o array (float64, contíguo, write=False).
+        # P0-6 (revisão externa 2026-06-09): ordem canônica do
+        # `__post_init__` é
+        #   1. validar (shape, n)
+        #   2. normalizar (float64 C-contíguo + write=False)
+        #   3. remover campos semanticamente irrelevantes (percentile_basis
+        #      e reference_distribution_fingerprint só existem em scores
+        #      TYPICALITY_PERCENTILE)
+        #   4. computar fingerprint
+        #   5. validar fingerprint fornecido externamente (não confiar
+        #      cegamente)
+        # Antes da correção o fingerprint era calculado em (4) ANTES de
+        # (3), então dois batches com mesmo conteúdo observável mas
+        # metadata supérflua diferente tinham fingerprints divergentes.
+
+        # 1 + 2 — normalização do array
         arr = np.ascontiguousarray(np.asarray(self.scores, dtype=np.float64))
         arr = arr.copy()
         arr.setflags(write=False)
         object.__setattr__(self, "scores", arr)
 
-        # Coerências de tamanho.
         if arr.ndim != 1:
             raise ValueError(
                 f"TypicalityScoreBatch.scores deve ser 1D; recebido "
@@ -98,12 +111,8 @@ class TypicalityScoreBatch:
                 f"len(scores)={arr.shape[0]}."
             )
 
-        # Computa batch_fingerprint se não fornecido.
-        if not self.batch_fingerprint:
-            fp = self._compute_batch_fingerprint(arr)
-            object.__setattr__(self, "batch_fingerprint", fp)
-
-        # Coerência da base de percentil.
+        # 3 — coerência semântica + limpeza de campos irrelevantes ANTES
+        # do fingerprint.
         if self.score_type == TypicalityScoreType.TYPICALITY_PERCENTILE:
             if self.percentile_basis_score_type is None:
                 raise ValueError(
@@ -111,13 +120,28 @@ class TypicalityScoreBatch:
                     "requer percentile_basis_score_type explícito."
                 )
         else:
-            # Limpa campos que não fazem sentido em scores não-percentil.
             if self.percentile_basis_score_type is not None:
                 object.__setattr__(self, "percentile_basis_score_type", None)
             if self.reference_score_distribution_fingerprint is not None:
                 object.__setattr__(
                     self, "reference_score_distribution_fingerprint", None
                 )
+
+        # 4 — calcula o fingerprint canônico
+        provided_fp = self.batch_fingerprint
+        canonical_fp = self._compute_batch_fingerprint(arr)
+        object.__setattr__(self, "batch_fingerprint", canonical_fp)
+
+        # 5 — valida fingerprint fornecido externamente (anti-spoof
+        # leve; não confiamos cegamente em hash externo).
+        if provided_fp and provided_fp != canonical_fp:
+            raise ValueError(
+                "TypicalityScoreBatch: batch_fingerprint fornecido "
+                f"({provided_fp[:16]}…) diverge do canônico computado "
+                f"({canonical_fp[:16]}…). Caller passou um hash que não "
+                "corresponde ao conteúdo do batch — possível mutação "
+                "silenciosa de metadata."
+            )
 
     def _compute_batch_fingerprint(self, arr: np.ndarray) -> str:
         """SHA-256 dos scores + metadados de proveniência.
