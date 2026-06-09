@@ -15,10 +15,34 @@ para LOIO real do k-NN (substituir LOO de imagem).
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
+
+
+def _factory_accepts_seed(factory: Callable) -> bool:
+    """True quando `factory` aceita o keyword argument `seed`.
+
+    P1-R2-10 (revisão externa 2026-06-09 round 2): substitui o
+    `try: factory(seed=...); except TypeError: factory()` que
+    mascarava TypeErrors legítimos disparados pelo construtor
+    interno do modelo.
+    """
+    try:
+        sig = inspect.signature(factory)
+    except (ValueError, TypeError):
+        # built-in / C-extension sem assinatura introspectível
+        return False
+    params = sig.parameters
+    if "seed" in params:
+        return True
+    # Aceita **kwargs?
+    for p in params.values():
+        if p.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return False
 
 from faceaudit.enums.reference_score_calibration_mode import (
     ReferenceScoreCalibrationMode,
@@ -218,14 +242,13 @@ class ReferenceScoreCalibrationService:
 
             # P1-12 (revisão externa 2026-06-09): propaga o `fold_seed`
             # ao trainer_factory para que cada fold use seed distinta.
-            # Antes, fold_seeds eram calculados e registrados no
-            # ReferenceScoreCalibrationResult mas nunca afetavam os
-            # modelos — a reprodutibilidade do cross-fit era vacua.
-            # Aceitamos tanto factories com assinatura `factory(seed=...)`
-            # quanto factories sem essa keyword (back-compat).
-            try:
+            # P1-R2-10 (round 2): inspeção de assinatura em vez de
+            # try/except TypeError — o except amplo mascarava
+            # TypeErrors legítimos do interior da factory (ex:
+            # erro de tipo num arg do construtor do modelo).
+            if _factory_accepts_seed(trainer_factory):
                 fold_model = trainer_factory(seed=fold_seed)
-            except TypeError:
+            else:
                 fold_model = trainer_factory()
                 # Best-effort: configura random_state diretamente se o
                 # backend expõe esse atributo (MoVMF + KNN expõem).

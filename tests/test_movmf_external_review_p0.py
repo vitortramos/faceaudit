@@ -351,12 +351,16 @@ def test_batch_fingerprint_invariant_to_superfluous_metadata():
     )
     from faceaudit.enums.typicality_score_type import TypicalityScoreType
 
+    # P1-R2-9 (round 2): fingerprints obrigatórios.
+    sfp = "aabb"
+    cfp = "ccdd"
     arr = np.array([0.1, 0.2, 0.3])
     b_clean = TypicalityScoreBatch(
         scores=arr, n=3, embedding_dim=64,
         score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         score_semantics_id="LOG_LIKELIHOOD_MOVMF",
         model_type=TypicalityModelType.MOVMF,
+        model_state_fingerprint=sfp, model_contract_fingerprint=cfp,
     )
     b_superfluous = TypicalityScoreBatch(
         scores=arr, n=3, embedding_dim=64,
@@ -365,6 +369,7 @@ def test_batch_fingerprint_invariant_to_superfluous_metadata():
         percentile_basis_score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         reference_score_distribution_fingerprint="ignored",
         model_type=TypicalityModelType.MOVMF,
+        model_state_fingerprint=sfp, model_contract_fingerprint=cfp,
     )
     assert b_clean.batch_fingerprint == b_superfluous.batch_fingerprint
 
@@ -383,6 +388,7 @@ def test_batch_fingerprint_rejects_external_mismatch():
             score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
             score_semantics_id="LOG_LIKELIHOOD_MOVMF",
             model_type=TypicalityModelType.MOVMF,
+            model_state_fingerprint="aa", model_contract_fingerprint="bb",
             batch_fingerprint="hash-falso",
         )
 

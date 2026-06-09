@@ -124,6 +124,10 @@ def test_score_batch_auto_fingerprint():
         score_type=TypicalityScoreType.MEAN_KNN_SIMILARITY,
         score_semantics_id="X",
         model_type=TypicalityModelType.KNN,
+        # P1-R2-9 (revisão externa round 2): fingerprints de
+        # state e contract são obrigatórios.
+        model_state_fingerprint="aa",
+        model_contract_fingerprint="bb",
     )
     assert b.batch_fingerprint != ""
     assert len(b.batch_fingerprint) == 64  # SHA-256 hex
@@ -150,6 +154,8 @@ def test_score_batch_percentile_requires_basis():
             score_type=TypicalityScoreType.TYPICALITY_PERCENTILE,
             score_semantics_id="X",
             model_type=TypicalityModelType.KNN,
+            model_state_fingerprint="aa",
+            model_contract_fingerprint="bb",
             # falta percentile_basis_score_type
         )
 
@@ -164,6 +170,8 @@ def test_score_batch_basis_cleared_when_not_percentile():
         percentile_basis_score_type=TypicalityScoreType.LOG_DENSITY_ESTIMATE,
         reference_score_distribution_fingerprint="abc",
         model_type=TypicalityModelType.KNN,
+        model_state_fingerprint="aa",
+        model_contract_fingerprint="bb",
     )
     # Limpa campos que não fazem sentido em scores não-percentil.
     assert b.percentile_basis_score_type is None

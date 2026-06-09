@@ -293,14 +293,26 @@ def test_per_identity_neutralizes_imbalance():
     assert 0.0 <= big_centroid_typicality <= 100.0
 
 
-def test_self_match_is_handled():
+def test_inference_external_does_not_exclude_self_match():
+    """P1-R2-8 (revisão externa round 2): inferência externa NÃO
+    descarta vizinho próximo com cos ≈ 1. A heurística antiga
+    `if top_sim[0] > 1 - 1e-6: drop` eliminava também vizinhos
+    LEGÍTIMOS quase-idênticos.
+
+    Inferência externa = consulta sobre face nova. Se o caller passar
+    uma face que coincide com uma da referência, isso é caso legítimo
+    (re-scoring) e o vizinho com cos=1 conta. LOO interno do fit é
+    tratado por exclusão de índice na diagonal, em caminho separado.
+    """
     rng = np.random.default_rng(9)
     X = _normalize(rng.normal(size=(300, 32)))
     m = KNNTypicalityModel(
         k=30, reference_mode=TypicalityReferenceMode.PER_FACE,
     ).fit(X)
     info = m.get_typicality_info(X[42])
-    assert info.knn_similarities[0] < 0.999
+    # Quando query coincide com uma face de referência, vizinho mais
+    # próximo é a própria face (cos ≈ 1).
+    assert info.knn_similarities[0] > 0.999
 
 
 def test_dim_mismatch_raises():

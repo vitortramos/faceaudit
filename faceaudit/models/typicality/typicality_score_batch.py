@@ -111,6 +111,31 @@ class TypicalityScoreBatch:
                 f"len(scores)={arr.shape[0]}."
             )
 
+        # P1-R2-9 (revisão externa 2026-06-09 round 2): invariantes
+        # mais estritos. Este DTO é fronteira de proveniência —
+        # deixar passar batch malformado contamina toda a cadeia
+        # downstream (LR architecture, score vectorization, etc.).
+        if not np.all(np.isfinite(arr)):
+            n_bad = int((~np.isfinite(arr)).sum())
+            raise ValueError(
+                f"TypicalityScoreBatch.scores tem {n_bad}/{arr.size} valores "
+                "não finitos (NaN ou inf). Score batch é fronteira de "
+                "proveniência — não pode propagar invariantes quebrados."
+            )
+        if int(self.embedding_dim) <= 0:
+            raise ValueError(
+                f"TypicalityScoreBatch.embedding_dim deve ser > 0; "
+                f"recebido {self.embedding_dim}."
+            )
+        if not self.model_state_fingerprint:
+            raise ValueError(
+                "TypicalityScoreBatch.model_state_fingerprint é obrigatório."
+            )
+        if not self.model_contract_fingerprint:
+            raise ValueError(
+                "TypicalityScoreBatch.model_contract_fingerprint é obrigatório."
+            )
+
         # 3 — coerência semântica + limpeza de campos irrelevantes ANTES
         # do fingerprint.
         if self.score_type == TypicalityScoreType.TYPICALITY_PERCENTILE:
@@ -118,6 +143,22 @@ class TypicalityScoreBatch:
                 raise ValueError(
                     "TypicalityScoreBatch: score_type=TYPICALITY_PERCENTILE "
                     "requer percentile_basis_score_type explícito."
+                )
+            # P1-R2-9: reference distribution fingerprint é obrigatório
+            # em percentile — o número 47.3% só faz sentido referente a
+            # uma distribuição específica.
+            if not self.reference_score_distribution_fingerprint:
+                raise ValueError(
+                    "TypicalityScoreBatch: score_type=TYPICALITY_PERCENTILE "
+                    "requer reference_score_distribution_fingerprint não "
+                    "vazio (proveniência da CDF que define o percentile)."
+                )
+            # Percentis devem estar em [0, 100]; tolerância pequena para
+            # arredondamento.
+            if arr.size > 0 and (arr.min() < -1e-6 or arr.max() > 100.0 + 1e-6):
+                raise ValueError(
+                    f"TypicalityScoreBatch: percentile fora de [0, 100]: "
+                    f"min={arr.min():.4f}, max={arr.max():.4f}."
                 )
         else:
             if self.percentile_basis_score_type is not None:

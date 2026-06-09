@@ -644,6 +644,29 @@ class KNNTypicalityModel:
             reference_score_calibration_mode=ref_cal_mode,
             split_fingerprint=ls.get("split_fingerprint"),
         )
+
+        # P1-R2-7 (revisão externa round 2): valida integridade
+        # estrutural da distribuição de referência restaurada antes
+        # de devolver o modelo. Sem isso, pickles corrompidos
+        # (scores não-ordenados, pesos negativos, CDF incoerente)
+        # passavam silenciosamente e davam erro só no momento do
+        # get_percentiles.
+        from faceaudit.services.reference_score_distribution_validator import (
+            validate_reference_score_distribution,
+        )
+        # Centroides L2-normalizados: validação extra.
+        ref_norms = np.linalg.norm(reference, axis=1)
+        if not np.allclose(ref_norms, 1.0, atol=1e-3):
+            raise ValueError(
+                f"KNN.from_dict: reference matrix não está L2-normalizada "
+                f"(norms min={ref_norms.min()}, max={ref_norms.max()})."
+            )
+        validate_reference_score_distribution(
+            scores=loo,
+            weights=sorted_weights,
+            cdf=cdf,
+            ood_threshold=float(ls["ood_threshold"]),
+        )
         return model
 
     # =========================================================================
@@ -745,17 +768,33 @@ class KNNTypicalityModel:
     def enabled_score_types(self) -> frozenset[TypicalityScoreType]:
         """Quais score types esta instância está pronta para produzir.
 
-        k-NN treinado disponibiliza os três: T_k bruto, percentil
-        empírico (sobre T_k) e log-densidade L-Q esférica. Antes do `fit`,
-        nenhum.
+        k-NN treinado disponibiliza T_k bruto e percentil empírico
+        sobre T_k. Log-densidade L-Q esférica é exposta APENAS em
+        modos não-ponderados (FACE_LEVEL_RAW, IDENTITY_CENTROIDS).
+
+        P1-R2-11 (revisão externa 2026-06-09 round 2): em
+        INVERSE_IDENTITY_FREQUENCY, T_k é ponderado (pesos
+        renormalizados sobre os k vizinhos), mas a estimativa
+        Loftsgaarden-Quesenberry segue `log k − log N − (d−1) log θ_k`
+        sem incorporar pesos. Versão ponderada formal de L-Q em S^d
+        não está definida no projeto; expor a versão não-ponderada
+        em modo ponderado produziria valores incoerentes com o T_k
+        que alimenta a CDF. Solução: ocultar `LOG_DENSITY_ESTIMATE`
+        de `enabled_score_types` em INV_ID_FREQ até definição
+        formal.
         """
         if not self.is_fitted():
             return frozenset()
-        return frozenset({
+        from faceaudit.enums.population_weighting_mode import (
+            PopulationWeightingMode,
+        )
+        types = {
             TypicalityScoreType.MEAN_KNN_SIMILARITY,
             TypicalityScoreType.TYPICALITY_PERCENTILE,
-            TypicalityScoreType.LOG_DENSITY_ESTIMATE,
-        })
+        }
+        if self.population_weighting_mode != PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+            types.add(TypicalityScoreType.LOG_DENSITY_ESTIMATE)
+        return frozenset(types)
 
     @property
     def embedding_dim(self) -> int:
@@ -1075,27 +1114,25 @@ class KNNTypicalityModel:
 
         sims = st.reference @ x_normalized.astype(st.reference.dtype)  # (N,)
 
-        # Top-k. Tratamento de self-match: se o query for um ponto da referência,
-        # vai aparecer com cosseno ≈ 1.0. Pega top k+1 e descarta o ≈1.0 mais alto
-        # quando isso acontece — garante consistência com a CDF LOO usada no fit.
+        # P1-R2-8 (revisão externa 2026-06-09 round 2): SEM heurística
+        # de self-match por cosseno. A versão anterior descartava o
+        # vizinho mais próximo quando `cos > 1 - 1e-6`, mas isso
+        # eliminava também vizinhos LEGÍTIMOS quase-idênticos (face
+        # quase-duplicata, consulta externa coincidente com referência,
+        # etc.) durante inferência externa.
+        #
+        # `_compute_info_single` é exclusivo da inferência sobre faces
+        # NOVAS — self-match não é uma possibilidade legítima neste
+        # caminho. O LOO interno do `fit` (cálculo de
+        # `loo_mean_knn_sorted`) já exclui self por índice via
+        # `np.fill_diagonal(sims, -np.inf)` ao construir o estado.
         n = sims.shape[0]
-        kp = min(self.k + 1, n)
-        top_idx = np.argpartition(-sims, kp - 1)[:kp]
+        k = min(self.k, n)
+        top_idx = np.argpartition(-sims, k - 1)[:k]
         top_sim = sims[top_idx]
-
-        # Preserva ordem desc para alinhar com pesos. Ordena por cosseno
-        # decrescente (e mantém os índices originais para o lookup de
-        # pesos no modo ponderado).
         desc_order = np.argsort(-top_sim)
         top_sim = top_sim[desc_order]
         top_idx_desc = top_idx[desc_order]
-
-        if top_sim[0] > 1.0 - 1e-6 and kp > self.k:
-            top_sim = top_sim[1 : self.k + 1]
-            top_idx_desc = top_idx_desc[1 : self.k + 1]
-        else:
-            top_sim = top_sim[: self.k]
-            top_idx_desc = top_idx_desc[: self.k]
 
         # PR 5: T_k ponderado quando reference_score_weights estiver definido.
         if st.reference_score_weights is not None:

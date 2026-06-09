@@ -251,33 +251,68 @@ class MoVMFTypicalityModel:
         d = self._params.dim
         return k * (d - 1) + k + (k - 1)
 
+    def _aic_bic_n_effective(self) -> Optional[int]:
+        """Tamanho amostral efetivo para AIC/BIC.
+
+        P1-R2-6 (revisão externa 2026-06-09 round 2):
+        - FACE_LEVEL_RAW (sem pesos): N = sample_count = n_faces.
+        - IDENTITY_CENTROIDS: o `fit` agregou as faces em centroides
+          antes de treinar — `sample_count` já é o número de
+          identidades, valor correto.
+        - INVERSE_IDENTITY_FREQUENCY: o log-likelihood médio é
+          ponderado (Σ w_i · LL_i / Σ w_i), com Σ w_i ≈ número de
+          identidades. Multiplicar por `sample_count = n_faces`
+          INFLA o LL total. Definição formal de N efetivo nesse
+          modo (ESS de Kish; n_identities; etc.) ainda não está
+          fechada — retornamos None para que AIC/BIC sejam
+          desabilitados em vez de produzir valor enganoso.
+        """
+        if not self.is_fitted():
+            return None
+        assert self._params is not None
+        if self.population_weighting_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+            return None
+        # Em FACE_LEVEL_RAW e IDENTITY_CENTROIDS, sample_count é o
+        # tamanho efetivamente visto pelo EM.
+        return int(self._params.sample_count)
+
     @property
     def aic_(self) -> Optional[float]:
-        """Akaike (menor é melhor). Ver `_free_parameters` para a contagem."""
+        """Akaike (menor é melhor). Ver `_free_parameters` para a contagem.
+
+        P1-R2-6 (round 2): retorna None em INVERSE_IDENTITY_FREQUENCY
+        — definição formal de N efetivo ainda em aberto, valor
+        ingênuo (N = n_faces) inflaria o LL total.
+        """
         if not self.is_fitted() or self._train_avg_log_likelihood is None:
             return None
         if not np.isfinite(self._train_avg_log_likelihood):
             return None
-        assert self._params is not None
-        n = self._params.sample_count
+        n_eff = self._aic_bic_n_effective()
+        if n_eff is None:
+            return None
         p = self._free_parameters()
         assert p is not None
-        total_ll = self._train_avg_log_likelihood * n
+        total_ll = self._train_avg_log_likelihood * n_eff
         return -2.0 * total_ll + 2.0 * p
 
     @property
     def bic_(self) -> Optional[float]:
-        """Bayesian Information Criterion (menor é melhor)."""
+        """Bayesian Information Criterion (menor é melhor).
+
+        P1-R2-6 (round 2): retorna None em INVERSE_IDENTITY_FREQUENCY.
+        """
         if not self.is_fitted() or self._train_avg_log_likelihood is None:
             return None
         if not np.isfinite(self._train_avg_log_likelihood):
             return None
-        assert self._params is not None
-        n = self._params.sample_count
+        n_eff = self._aic_bic_n_effective()
+        if n_eff is None:
+            return None
         p = self._free_parameters()
         assert p is not None
-        total_ll = self._train_avg_log_likelihood * n
-        return -2.0 * total_ll + p * float(np.log(n))
+        total_ll = self._train_avg_log_likelihood * n_eff
+        return -2.0 * total_ll + p * float(np.log(n_eff))
 
     @classmethod
     def fit_best_model(
@@ -285,11 +320,19 @@ class MoVMFTypicalityModel:
         embeddings: ArrayLike,
         component_candidates: Iterable[int],
         criterion: str = "bic",
+        identity_ids: Optional[Sequence[str]] = None,
         **kwargs,
     ) -> "MoVMFTypicalityModel":
         """
         Testa múltiplos K e retorna o modelo que minimiza o critério escolhido.
-        Falhas numéricas em K específicos são ignoradas e listadas em caso de erro total.
+        Falhas numéricas em K específicos são ignoradas e listadas em caso
+        de erro total.
+
+        P1-R2-6 (revisão externa 2026-06-09 round 2): aceita
+        `identity_ids` para propagar a modos populacionais que exigem
+        (IDENTITY_CENTROIDS / INVERSE_IDENTITY_FREQUENCY). Em modo
+        ponderado, AIC/BIC retornam None — `fit_best_model` desconsidera
+        e levanta erro se nenhum candidato produzir score válido.
         """
         criterion = criterion.lower()
         if criterion not in {"aic", "bic"}:
@@ -303,7 +346,10 @@ class MoVMFTypicalityModel:
         for k in component_candidates:
             model = cls(n_components=k, **kwargs)
             try:
-                model.fit(embeddings)
+                if identity_ids is not None:
+                    model.fit(embeddings, identity_ids=identity_ids)
+                else:
+                    model.fit(embeddings)
                 score = model.bic_ if criterion == "bic" else model.aic_
                 if score is None or not np.isfinite(score):
                     errors.append((k, "Critério não finito ou nulo."))
@@ -589,14 +635,44 @@ class MoVMFTypicalityModel:
             )
         model._split_fingerprint = st.get("split_fingerprint")
 
-        # Computa OOD threshold se ausente (v1) e tivermos referência empírica
+        # Computa OOD threshold se ausente (v1) e tivermos referência empírica.
+        # P1-R2-7 (round 2): em INV_ID_FREQ usa quantil ponderado se
+        # CDF presente; caso contrário cai em quantil uniforme.
         if (
             model._ood_log_likelihood_threshold is None
             and model._train_log_likelihoods is not None
             and model.ood_quantile > 0
         ):
-            model._ood_log_likelihood_threshold = float(
-                np.quantile(model._train_log_likelihoods, model.ood_quantile)
+            if model._train_log_likelihoods_cdf is not None:
+                idx = int(np.searchsorted(
+                    model._train_log_likelihoods_cdf,
+                    model.ood_quantile,
+                    side="left",
+                ))
+                idx = min(max(idx, 0), len(model._train_log_likelihoods) - 1)
+                model._ood_log_likelihood_threshold = float(
+                    model._train_log_likelihoods[idx]
+                )
+            else:
+                model._ood_log_likelihood_threshold = float(
+                    np.quantile(model._train_log_likelihoods, model.ood_quantile)
+                )
+
+        # P1-R2-7 (revisão externa round 2): valida integridade
+        # estrutural da distribuição de referência restaurada antes
+        # de devolver o modelo. Sem isso, pickles corrompidos
+        # (scores não-ordenados, pesos negativos, CDF incoerente)
+        # passavam silenciosamente e davam erro só no momento do
+        # `get_percentiles` — distante da causa.
+        if model._train_log_likelihoods is not None:
+            from faceaudit.services.reference_score_distribution_validator import (
+                validate_reference_score_distribution,
+            )
+            validate_reference_score_distribution(
+                scores=model._train_log_likelihoods,
+                weights=model._train_log_likelihoods_weights,
+                cdf=model._train_log_likelihoods_cdf,
+                ood_threshold=model._ood_log_likelihood_threshold,
             )
 
         return model
