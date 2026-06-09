@@ -65,6 +65,26 @@ class TypicalityScoringModelProtocol(Protocol):
         ...
 
     @property
+    def reference_score_basis_type(self) -> TypicalityScoreType:
+        """Grandeza-base usada para o cálculo interno de percentil e OOD.
+
+        P0-R2-2 (revisão externa 2026-06-09 round 2): cada backend tem
+        uma grandeza canônica para a qual sua distribuição de
+        referência (`_train_log_likelihoods` no MoVMF,
+        `loo_mean_knn_sorted` no KNN) está calibrada. O
+        `ReferenceScoreCalibrationService` consulta esta propriedade
+        para pedir os scores OOF na escala correta — sem isso o
+        serviço escolhia silenciosamente `LOG_DENSITY_ESTIMATE` do
+        KNN como referência e instalava-os em um state cujo
+        `get_percentiles` consulta `T_k`, gerando todos os percentis
+        em 100%.
+
+        - KNN → `MEAN_KNN_SIMILARITY`
+        - MoVMF → `LOG_DENSITY_ESTIMATE`
+        """
+        ...
+
+    @property
     def model_state_fingerprint(self) -> str:
         """SHA-256 do estado numérico (parâmetros + CDF + threshold)."""
         ...

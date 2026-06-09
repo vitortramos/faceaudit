@@ -177,15 +177,34 @@ class ReferenceScoreCalibrationService:
             split_fp_payload.encode("utf-8")
         ).hexdigest()
 
+        # Antecipa o `population_weighting_mode` para decidir como
+        # agregar OOF dentro de cada fold. Precisamos de um trainer
+        # apenas pra ler o atributo — não fit().
+        peek_model = trainer_factory()
+        pop_mode = getattr(peek_model, "population_weighting_mode", None)
+
         # P0-4 (revisão externa 2026-06-09): coletamos scores OOF E os
         # identity_ids correspondentes. Antes só guardávamos scores e o
         # peso da CDF OOF era uniforme face-a-face — uma identidade com
         # 20 imagens contribuía 20× mais à CDF mesmo em
         # INVERSE_IDENTITY_FREQUENCY (frequência de coleta vazando
         # silenciosamente na referência populacional).
+        # P0-R2-3 (round 2): em IDENTITY_CENTROIDS agregamos os
+        # EMBEDDINGS de teste por identidade DENTRO de cada fold,
+        # renormalizamos, e pontuamos o centroide pelo fold_model.
+        # Antes, agregávamos os SCORES por média (semanticamente
+        # diferente de pontuar o centroide; diff ~0.27 no MoVMF /
+        # 0.07 no kNN).
         oof_score_chunks: list[np.ndarray] = []
         oof_ids_chunks: list[np.ndarray] = []
         fold_seeds: list[int] = []
+        # Detecta modo agregação OOF por identidade
+        from faceaudit.enums.population_weighting_mode import (
+            PopulationWeightingMode,
+        )
+        use_centroid_oof = (
+            pop_mode == PopulationWeightingMode.IDENTITY_CENTROIDS
+        )
         for fold_idx, fold_ids in enumerate(fold_assignments):
             fold_seed = int(random_state) + fold_idx
             fold_seeds.append(fold_seed)
@@ -217,31 +236,60 @@ class ReferenceScoreCalibrationService:
                 embeddings[train_mask], identity_ids=train_ids,
             )
 
-            # Score faces do fold test usando o backend.
-            # Para o cálculo de CDF/OOD escolhemos LOG_DENSITY_ESTIMATE
-            # quando disponível (universal entre k-NN e MoVMF). Se o
-            # backend não suportar, cai em TYPICALITY_PERCENTILE como
-            # fallback. Para o k-NN ambos estão disponíveis após o fit.
-            preferred_types = [
-                TypicalityScoreType.LOG_DENSITY_ESTIMATE,
-                TypicalityScoreType.MEAN_KNN_SIMILARITY,
-            ]
-            chosen_type = None
-            for t in preferred_types:
-                if t in fold_model.enabled_score_types:
-                    chosen_type = t
-                    break
-            if chosen_type is None:
+            # P0-R2-2 (revisão externa 2026-06-09 round 2): consulta
+            # a base canônica do backend em vez de aplicar uma lista
+            # de preferência genérica. Antes, KNN exposto a
+            # LOG_DENSITY_ESTIMATE + MEAN_KNN_SIMILARITY era servido
+            # com LOG_DENSITY (primeiro da lista), mas
+            # `_compute_info_single` consulta T_k contra a CDF
+            # interna — escala incompatível → todos os percentis em
+            # 100%. A propriedade `reference_score_basis_type` declara
+            # explicitamente qual grandeza alimenta a referência
+            # interna de cada backend (KNN → MEAN_KNN_SIMILARITY;
+            # MoVMF → LOG_DENSITY_ESTIMATE).
+            chosen_type = getattr(
+                fold_model, "reference_score_basis_type", None
+            )
+            if chosen_type is None or chosen_type not in fold_model.enabled_score_types:
                 raise RuntimeError(
-                    "CROSS_FIT_IDENTITY: backend não expõe score type "
-                    "compatível para construir CDF OOF."
+                    "CROSS_FIT_IDENTITY: backend não expõe "
+                    "`reference_score_basis_type` válido para construir "
+                    "CDF OOF — verifique se o modelo implementa o "
+                    "protocolo atualizado (P0-R2-2)."
                 )
 
-            batch = fold_model.compute_scores(
-                embeddings[test_mask], chosen_type,
-            )
-            oof_score_chunks.append(np.asarray(batch.scores, dtype=np.float64))
-            oof_ids_chunks.append(ids_arr[test_mask].copy())
+            if use_centroid_oof:
+                # P0-R2-3: agrega EMBEDDINGS por identidade dentro
+                # do fold; renormaliza L2 (centroide na esfera);
+                # pontua o centroide com o fold_model. Coerente com
+                # o `fit` em IDENTITY_CENTROIDS, que vê 1 centroide
+                # por identidade na referência.
+                test_embeddings = embeddings[test_mask]
+                test_ids = ids_arr[test_mask]
+                uniq_ids, inv_idx = np.unique(test_ids, return_inverse=True)
+                centroids = np.zeros(
+                    (len(uniq_ids), test_embeddings.shape[1]),
+                    dtype=np.float64,
+                )
+                counts = np.zeros(len(uniq_ids), dtype=np.int64)
+                for emb, j in zip(test_embeddings, inv_idx):
+                    centroids[j] += emb
+                    counts[j] += 1
+                # Renormaliza L2 — preserva a geometria esférica.
+                norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+                norms = np.maximum(norms, 1e-12)
+                centroids /= norms
+                batch = fold_model.compute_scores(centroids, chosen_type)
+                oof_score_chunks.append(
+                    np.asarray(batch.scores, dtype=np.float64)
+                )
+                oof_ids_chunks.append(uniq_ids.copy())
+            else:
+                batch = fold_model.compute_scores(
+                    embeddings[test_mask], chosen_type,
+                )
+                oof_score_chunks.append(np.asarray(batch.scores, dtype=np.float64))
+                oof_ids_chunks.append(ids_arr[test_mask].copy())
 
         if not oof_score_chunks:
             raise RuntimeError(
@@ -256,41 +304,25 @@ class ReferenceScoreCalibrationService:
         all_ids = tuple(str(i) for i in ids_arr)
         refit_model.fit(embeddings, identity_ids=all_ids)
 
-        # P0-4: pesos OOF derivados do `population_weighting_mode` do modelo
+        # Pesos OOF derivados do `population_weighting_mode` do modelo
         # treinado. Lógica:
-        #   INVERSE_IDENTITY_FREQUENCY → w_ij = 1/n_i_oof por face (cada
-        #     identidade contribui o mesmo, independente de quantas imagens
-        #     têm em OOF).
-        #   IDENTITY_CENTROIDS → agrega scores OOF por identidade (média) →
-        #     1 ponto por identidade, w = 1. Coerente com o fit() de
-        #     IDENTITY_CENTROIDS que vê 1 centroide por identidade.
-        #   FACE_LEVEL_RAW → uniforme face-a-face (comportamento legado).
-        pop_mode = getattr(refit_model, "population_weighting_mode", None)
-        if pop_mode is not None:
-            from faceaudit.enums.population_weighting_mode import (
-                PopulationWeightingMode,
+        #   INVERSE_IDENTITY_FREQUENCY → w_ij = 1/n_i_oof por face.
+        #   IDENTITY_CENTROIDS → 1 score por identidade (já agregado
+        #     ao pontuar o centroide dentro do fold em P0-R2-3),
+        #     w = 1.
+        #   FACE_LEVEL_RAW → uniforme face-a-face (legado).
+        if pop_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
+            _, inv_idx, id_counts = np.unique(
+                oof_ids_unsorted, return_inverse=True, return_counts=True,
             )
-            if pop_mode == PopulationWeightingMode.INVERSE_IDENTITY_FREQUENCY:
-                _, inv_idx, id_counts = np.unique(
-                    oof_ids_unsorted, return_inverse=True, return_counts=True,
-                )
-                oof_weights = (1.0 / id_counts[inv_idx]).astype(np.float64)
-                oof_scores_final = oof_scores_unsorted
-            elif pop_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
-                uniq_ids, inv_idx = np.unique(
-                    oof_ids_unsorted, return_inverse=True,
-                )
-                agg = np.zeros(len(uniq_ids), dtype=np.float64)
-                cnt = np.zeros(len(uniq_ids), dtype=np.int64)
-                for i, score in zip(inv_idx, oof_scores_unsorted):
-                    agg[i] += score
-                    cnt[i] += 1
-                oof_scores_final = agg / np.maximum(cnt, 1)
-                oof_weights = np.ones(len(uniq_ids), dtype=np.float64)
-            else:  # FACE_LEVEL_RAW ou ausente
-                oof_weights = np.ones_like(oof_scores_unsorted, dtype=np.float64)
-                oof_scores_final = oof_scores_unsorted
-        else:
+            oof_weights = (1.0 / id_counts[inv_idx]).astype(np.float64)
+            oof_scores_final = oof_scores_unsorted
+        elif pop_mode == PopulationWeightingMode.IDENTITY_CENTROIDS:
+            # P0-R2-3: scores já são "1 por identidade" (centroide
+            # pontuado dentro do fold). Apenas pesos uniformes.
+            oof_weights = np.ones_like(oof_scores_unsorted, dtype=np.float64)
+            oof_scores_final = oof_scores_unsorted
+        else:  # FACE_LEVEL_RAW ou ausente
             oof_weights = np.ones_like(oof_scores_unsorted, dtype=np.float64)
             oof_scores_final = oof_scores_unsorted
 

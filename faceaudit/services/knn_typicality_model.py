@@ -728,6 +728,20 @@ class KNNTypicalityModel:
         return TypicalityModelType.KNN
 
     @property
+    def reference_score_basis_type(self) -> TypicalityScoreType:
+        """Base canônica do KNN: similaridade média aos k vizinhos (T_k).
+
+        P0-R2-2 (revisão externa 2026-06-09 round 2): consultada pelo
+        `ReferenceScoreCalibrationService` para pedir scores OOF na
+        escala que `_state.loo_mean_knn_sorted` e `get_percentiles`
+        consomem. Antes, o serviço escolhia `LOG_DENSITY_ESTIMATE`
+        sem distinguir backend — instalava scores em log-densidade
+        num estado cujo `_compute_info_single` compara contra T_k,
+        produzindo percentis em 100% para todas as consultas.
+        """
+        return TypicalityScoreType.MEAN_KNN_SIMILARITY
+
+    @property
     def enabled_score_types(self) -> frozenset[TypicalityScoreType]:
         """Quais score types esta instância está pronta para produzir.
 
@@ -782,6 +796,14 @@ class KNNTypicalityModel:
         if st.loo_cdf is not None:
             h.update(np.ascontiguousarray(
                 st.loo_cdf, dtype=np.float64
+            ).tobytes(order="C"))
+        # P0-R2-5 (round 2): `reference_score_weights` afeta o T_k
+        # inferido (pesos renormalizados sobre os k vizinhos). Antes
+        # estava fora do state fingerprint — alterando os pesos sem
+        # tocar mais nada produzia mesmo hash mas T_k diferente.
+        if st.reference_score_weights is not None:
+            h.update(np.ascontiguousarray(
+                st.reference_score_weights, dtype=np.float64
             ).tobytes(order="C"))
         h.update(f"{st.ood_threshold:.17g}".encode("utf-8"))
         h.update(f"k={st.k};dim={st.dim};rmode={st.reference_mode.to_str()}".encode("utf-8"))
@@ -909,13 +931,43 @@ class KNNTypicalityModel:
         )
 
     def _reference_score_distribution_fingerprint(self) -> str:
-        """SHA-256 da CDF empírica usada como referência para percentiles."""
+        """Fingerprint da distribuição de referência.
+
+        P0-R2-4 (revisão externa 2026-06-09 round 2): inclui scores
+        ordenados + pesos + CDF + threshold OOD + proveniência da
+        calibração + base canônica. Antes hashava apenas
+        `loo_mean_knn_sorted` — dois modelos com pesos distintos
+        compartilhavam fingerprint apesar de produzirem percentis
+        diferentes.
+        """
         import hashlib
         self._ensure_fitted()
         st = self._state
         assert st is not None
-        loo = np.ascontiguousarray(st.loo_mean_knn_sorted, dtype=np.float64)
-        return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
+        h = hashlib.sha256()
+        h.update(np.ascontiguousarray(
+            st.loo_mean_knn_sorted, dtype=np.float64
+        ).tobytes(order="C"))
+        if st.loo_mean_knn_sorted_weights is not None:
+            h.update(np.ascontiguousarray(
+                st.loo_mean_knn_sorted_weights, dtype=np.float64
+            ).tobytes(order="C"))
+        if st.loo_cdf is not None:
+            h.update(np.ascontiguousarray(
+                st.loo_cdf, dtype=np.float64
+            ).tobytes(order="C"))
+        h.update(f"ood={st.ood_threshold:.17g}".encode("utf-8"))
+        if st.reference_score_calibration_mode is not None:
+            h.update(
+                f"calmode={st.reference_score_calibration_mode.to_str()}"
+                .encode("utf-8")
+            )
+        if st.split_fingerprint:
+            h.update(f"split={st.split_fingerprint}".encode("utf-8"))
+        h.update(
+            f"basis={self.reference_score_basis_type.to_str()}".encode("utf-8")
+        )
+        return h.hexdigest()
 
     def summary(self) -> TypicalityModelSummary:
         """Implementação do `summary()` do protocolo.

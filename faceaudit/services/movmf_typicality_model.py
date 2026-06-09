@@ -1086,6 +1086,17 @@ class MoVMFTypicalityModel:
         return TypicalityModelType.MOVMF
 
     @property
+    def reference_score_basis_type(self) -> TypicalityScoreType:
+        """Base canônica do MoVMF: log-likelihood da mistura.
+
+        P0-R2-2 (revisão externa 2026-06-09 round 2): consultada pelo
+        `ReferenceScoreCalibrationService` para pedir scores OOF na
+        escala que `_train_log_likelihoods`/`get_percentiles`
+        consomem (log-density).
+        """
+        return TypicalityScoreType.LOG_DENSITY_ESTIMATE
+
+    @property
     def enabled_score_types(self) -> frozenset[TypicalityScoreType]:
         if not self.is_fitted():
             return frozenset()
@@ -1287,12 +1298,49 @@ class MoVMFTypicalityModel:
         )
 
     def _reference_score_distribution_fingerprint(self) -> str:
+        """Fingerprint da distribuição de referência (scores OOF ou
+        in-sample).
+
+        P0-R2-4 (revisão externa 2026-06-09 round 2): inclui scores
+        ordenados + pesos + CDF + threshold OOD + proveniência da
+        calibração + base canônica. Antes, hashava apenas o vetor de
+        scores — dois modelos com mesma lista mas pesos distintos
+        tinham fingerprints idênticos enquanto produziam percentis
+        diferentes (até ~17pp de diferença, vide teste direcionado
+        do revisor).
+        """
         import hashlib
         self._ensure_fitted()
         if self._train_log_likelihoods is None:
             return ""
-        loo = np.ascontiguousarray(self._train_log_likelihoods, dtype=np.float64)
-        return hashlib.sha256(loo.tobytes(order="C")).hexdigest()
+        h = hashlib.sha256()
+        h.update(np.ascontiguousarray(
+            self._train_log_likelihoods, dtype=np.float64
+        ).tobytes(order="C"))
+        if self._train_log_likelihoods_weights is not None:
+            h.update(np.ascontiguousarray(
+                self._train_log_likelihoods_weights, dtype=np.float64
+            ).tobytes(order="C"))
+        if self._train_log_likelihoods_cdf is not None:
+            h.update(np.ascontiguousarray(
+                self._train_log_likelihoods_cdf, dtype=np.float64
+            ).tobytes(order="C"))
+        # Threshold OOD entra também — define a fronteira de
+        # `is_in_distribution`.
+        ood = self._ood_log_likelihood_threshold
+        h.update(f"ood={ood!r}".encode("utf-8"))
+        # Proveniência da calibração + base canônica.
+        if self._reference_score_calibration_mode is not None:
+            h.update(
+                f"calmode={self._reference_score_calibration_mode.to_str()}"
+                .encode("utf-8")
+            )
+        if self._split_fingerprint:
+            h.update(f"split={self._split_fingerprint}".encode("utf-8"))
+        h.update(
+            f"basis={self.reference_score_basis_type.to_str()}".encode("utf-8")
+        )
+        return h.hexdigest()
 
     def summary(self) -> TypicalityModelSummary:
         """Resumo de auditoria que satisfaz o
@@ -1914,12 +1962,17 @@ class MoVMFTypicalityModel:
         log C_d(kappa) vetorizado.
 
         log C_d(kappa) = (d/2 - 1) log(kappa) - (d/2) log(2π) - log I_{d/2-1}(kappa)
-                      = (d/2 - 1) log(kappa) - (d/2) log(2π) - kappa - log(ive_{d/2-1}(kappa))
 
-        onde ive(nu, kappa) = I_nu(kappa) * exp(-kappa) é numericamente estável em alta dimensão.
+        P0-R2-1 (revisão externa 2026-06-09 round 2): antes, quando
+        `ive(ν, κ)` fazia underflow (caso típico em d=512 com κ < ~1500),
+        esta função silenciosamente substituía o resultado pelo limite
+        uniforme `log C_d(0)`. Isso mascarava erros — uma vMF com κ=500
+        e d=512 não é nem de longe uniforme, mas o normalizador ficava
+        identico ao da uniforme.
 
-        Para kappa < eps_safe, usa o limite uniforme:
-            log C_d(0) = log Γ(d/2) - log 2 - (d/2) log π.
+        Solução: chama `_log_iv_robust` (ive quando funciona, Olver
+        asintótica quando underflow). Limite uniforme só é usado quando
+        κ < eps_safe (limite verdadeiro da uniforme).
         """
         from math import lgamma, log, pi
 
@@ -1933,24 +1986,21 @@ class MoVMFTypicalityModel:
         if not np.any(active):
             return out
 
-        ka = kappas[active]
-        ive_vals = ive(nu, ka)  # vetor
-
-        # Onde ive falha (não finito ou <= 0), mantém o uniforme.
-        good = np.isfinite(ive_vals) & (ive_vals > 0)
-        if np.any(good):
-            ka_good = ka[good]
-            log_bessel_part = ka_good + np.log(ive_vals[good])
-            vals = (
-                nu * np.log(ka_good)
+        # Vetoriza via list comprehension (ive escalar é simples;
+        # batch tem custo similar e mantém código uniforme com Olver).
+        for idx in np.where(active)[0]:
+            k = float(kappas[idx])
+            log_iv = self._log_iv_robust(nu, k)
+            if not np.isfinite(log_iv):
+                # Caso degenerado real (não underflow): mantém uniforme.
+                continue
+            val = (
+                nu * np.log(k)
                 - (dim / 2.0) * log(2.0 * pi)
-                - log_bessel_part
+                - log_iv
             )
-            # Substitui não finitos pelo uniforme
-            vals = np.where(np.isfinite(vals), vals, log_uniform)
-            # Encaixa de volta na posição certa
-            target_indices = np.where(active)[0][good]
-            out[target_indices] = vals
+            if np.isfinite(val):
+                out[idx] = val
         return out
 
     def _estimate_kappa_vectorized(
@@ -2099,16 +2149,100 @@ class MoVMFTypicalityModel:
         return 0.5 * (lo + hi)
 
     def _A_d(self, kappa: float, dim: int) -> float:
-        """A_d(kappa) = I_{d/2}(kappa) / I_{d/2-1}(kappa) — razão de Bessels via ive."""
+        """A_d(κ) = I_{d/2}(κ) / I_{d/2-1}(κ) — razão de Bessels modificadas.
+
+        P0-R2-1 (revisão externa 2026-06-09 round 2): em alta dimensão
+        (d≥512) `ive(ν, κ)` retorna underflow → 0 para κ pequeno mesmo
+        quando a razão `I_{ν+1}/I_ν` é finita e útil (ex.: d=512, κ=100
+        → ive ~ 2.8e-111, razão correta ≈ 0.188). Antes esta função
+        retornava 0.0 sempre que `den < eps`, fazendo
+        `_estimate_kappa_robust` colapsar para um único valor (~1405)
+        para uma faixa enorme de `r_bar`.
+
+        Estratégia atual:
+        1. Tenta `ive(ν+1)/ive(ν)` direto — barato e exato quando
+           ambos os valores estão na faixa representável.
+        2. Quando algum underflow ou se a razão produz NaN, recorre à
+           fração contínua de Perron (numericamente estável para
+           qualquer ν, κ): A(ν, κ) = κ / (2(ν+1) + κ·A(ν+1, κ)),
+           computada por backward iteration.
+        """
         if kappa <= 0 or not np.isfinite(kappa):
             return 0.0
         nu = dim / 2.0 - 1.0
+
+        # Caminho rápido — funciona em baixa dimensão e regime saudável.
         num = ive(nu + 1.0, kappa)
         den = ive(nu, kappa)
-        if not np.isfinite(num) or not np.isfinite(den) or abs(den) < self.eps:
+        if (
+            np.isfinite(num) and np.isfinite(den)
+            and den > 0.0 and num >= 0.0
+        ):
+            val = num / den
+            if np.isfinite(val):
+                return float(val)
+
+        # Fallback robusto: fração contínua de Perron.
+        return self._bessel_iv_ratio_perron(nu, kappa)
+
+    def _bessel_iv_ratio_perron(
+        self, nu: float, kappa: float, depth: Optional[int] = None,
+    ) -> float:
+        """Razão I_{ν+1}(κ) / I_ν(κ) via fração contínua de Perron.
+
+        Robusta a underflow numérico — não chama `ive` em nenhum ponto.
+        Verificada contra scipy.special.ive em d=16 (ambos os métodos
+        funcionam) com diferença ~1e-14.
+
+        Referência: DLMF 10.33.1 / Gautschi 1967.
+        """
+        if kappa <= 0 or not np.isfinite(kappa) or nu < 0:
             return 0.0
-        val = num / den
-        return float(val) if np.isfinite(val) else 0.0
+        if depth is None:
+            # Heurística: precisamos pelo menos ν + κ níveis para
+            # convergência. Adicionamos margem de 50.
+            depth = int(max(50, nu + kappa + 50))
+        # Inicializa com aproximação assintótica no topo da recursão:
+        # A(ν + depth + 1, κ) ≈ κ / (2(ν + depth + 2)) para depth grande.
+        a = kappa / (2.0 * (nu + depth + 1.0))
+        # Backward iteration: a_n = κ / (2(ν+n) + κ·a_{n+1})
+        for n in range(depth, 0, -1):
+            denom = 2.0 * (nu + n) + kappa * a
+            if denom <= 0.0 or not np.isfinite(denom):
+                return 0.0
+            a = kappa / denom
+        return float(a) if np.isfinite(a) else 0.0
+
+    def _log_iv_robust(self, nu: float, kappa: float) -> float:
+        """log I_ν(κ) numericamente estável em alta dimensão.
+
+        P0-R2-1 (revisão externa 2026-06-09 round 2): em d≥512 `ive`
+        sofre underflow e `log(0) = -inf` propaga. Caminho:
+        1. `ive(ν, κ)` quando finito e > 0 → `κ + log(ive)`.
+        2. Fallback: Olver asintótica uniforme (DLMF 10.41.3 leading
+           order), válida para ν grande, uniforme em κ. Erro
+           relativo de ordem O(1/ν) — ~0.4% em d=512, ~1% em d=16.
+
+        Para uso em ranking/percentile o erro de Olver é constante por
+        κ fixo, não afeta ordem. Para AIC/BIC absolutos contribui com
+        viés sistemático ~1/ν — esperar resolução em P1.
+        """
+        if kappa <= 0 or not np.isfinite(kappa):
+            return -np.inf
+        val = ive(nu, kappa)
+        if np.isfinite(val) and val > 0.0:
+            return float(kappa + np.log(val))
+        # Olver uniform asymptotic:
+        #   log I_ν(νz) ≈ ν·η - 0.5·log(2πν) - 0.25·log(1+z²)
+        # com z = κ/ν, η = sqrt(1+z²) + log(z) - log(1 + sqrt(1+z²))
+        if nu <= 0:
+            return -np.inf
+        z = kappa / nu
+        t = np.sqrt(1.0 + z * z)
+        eta = t + np.log(z) - np.log(1.0 + t)
+        log_pre = -0.5 * np.log(2.0 * np.pi * nu) - 0.25 * np.log(1.0 + z * z)
+        result = nu * eta + log_pre
+        return float(result) if np.isfinite(result) else -np.inf
 
     # =========================================================================
     # VALIDAÇÃO E NORMALIZAÇÃO
