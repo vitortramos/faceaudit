@@ -125,9 +125,18 @@ modo `FACE_LEVEL_RAW` isso degenera para o `1/k` tradicional.
 - `IDENTITY_CENTROIDS`: agrega faces de cada identidade em centróide
   L2-renormalizado; treina o MoVMF sobre os centróides (uma observação
   por pessoa). `sample_count` do modelo = nº de identidades.
-- `INVERSE_IDENTITY_FREQUENCY` (não implementado em V2.15 — ver §4.1):
-  EM ponderado. A E-step e a M-step usam pesos `w_i` em vez de
-  contagem; `n_k` na M-step vira `Σ_i w_i · r_ik`.
+- `INVERSE_IDENTITY_FREQUENCY` (PR 5, **implementado**): EM ponderado.
+  A E-step segue inalterada; a M-step usa pesos `w_i = 1/n_faces(id_i)`
+  em vez de contagem unitária — `n_k = Σ_i w_i · r_ik`, e a média
+  ponderada da log-likelihood entra em `_train_avg_log_likelihood`.
+  CDF de referência também ponderada (cumsum dos pesos ordenados por
+  LL). Inicialização do k-means++ permanece não-ponderada na V2.15 —
+  P2 conhecido, ver §10.
+  **Atenção forense:** AIC/BIC retornam `None` neste modo (P1-R2-6
+  da revisão externa round 2): a definição formal de N efetivo
+  ponderado ainda está em aberto e o valor ingênuo (N = n_faces)
+  inflaria o LL total. Use seleção de K externa (held-out por
+  identidade) em vez de critério de informação.
 - `FACE_LEVEL_RAW`: EM clássico, comportamento V2.14 do MoVMF interno.
 
 ## 5. `ReferenceScoreCalibrationMode` (PR 4)

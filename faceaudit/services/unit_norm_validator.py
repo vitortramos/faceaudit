@@ -9,7 +9,7 @@ política de unit norm declarada pelo config (`UnitNormPolicy`).
 from __future__ import annotations
 
 import warnings
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -104,6 +104,7 @@ def apply_unit_norm_policy(
     policy: UnitNormPolicy,
     tolerance: float,
     eps: float = 1e-12,
+    telemetry: Optional[dict] = None,
 ) -> np.ndarray:
     """Avalia a política e devolve a matriz `(N, D)` apropriada.
 
@@ -160,6 +161,24 @@ def apply_unit_norm_policy(
     violations_mask = deviation > tolerance
     n_violations = int(violations_mask.sum())
     max_dev = float(deviation.max()) if deviation.size else 0.0
+    mean_dev = float(deviation.mean()) if deviation.size else 0.0
+
+    # P2-R2-13 (revisão externa 2026-06-09 round 2): popula telemetria
+    # de auditoria pericial. Caller passa um dict mutável que recebe
+    # os indicadores; valores agregados, não por-vetor (mantém leve).
+    if telemetry is not None:
+        telemetry["policy"] = policy.to_str()
+        telemetry["tolerance"] = float(tolerance)
+        telemetry["n_total"] = int(x.shape[0])
+        telemetry["n_violations"] = n_violations
+        telemetry["max_norm_deviation"] = max_dev
+        telemetry["mean_norm_deviation"] = mean_dev
+        telemetry["n_normalized"] = (
+            n_violations
+            if policy in (UnitNormPolicy.NORMALIZE_WITH_WARNING,
+                          UnitNormPolicy.NORMALIZE_SILENTLY)
+            else 0
+        )
 
     if policy is UnitNormPolicy.ERROR:
         if n_violations > 0:

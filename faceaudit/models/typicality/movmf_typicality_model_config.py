@@ -59,12 +59,16 @@ class MoVMFTypicalityModelConfig(JSONSerializableMixin):
             "<html><b>Centralização pré-fit</b>.<br/>"
             "<b>none</b> (default): nenhuma centralização. Preserva a "
             "métrica esférica original.<br/>"
-            "<b>frechet</b>: média geodésica esférica (Karcher mean), "
-            "preserva a métrica. Recomendado quando o embedding "
-            "concentra em um polo.<br/>"
+            "<b>frechet</b>: aplica reflexão de Householder alinhando "
+            "a média de Fréchet ao polo norte. Transformação <i>ortogonal</i> "
+            "— preserva cossenos, distâncias angulares e likelihood "
+            "da mistura vMF com parâmetros livres. <b>Não mitiga hubness</b> "
+            "(hubness é função de proximidade angular, invariante à "
+            "orientação). Útil como canonicalização de orientação para "
+            "diagnóstico/reprodutibilidade.<br/>"
             "<b>euclidean_legacy</b>: média euclidiana renormalizada. "
             "Não preserva a métrica esférica — disponível por "
-            "retrocompatibilidade.</html>"
+            "retrocompatibilidade, emite warning.</html>"
         )},
     )
 

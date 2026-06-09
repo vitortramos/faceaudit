@@ -124,7 +124,15 @@ class MoVMFTypicalityModel:
         min_kappa: float = 1e-6,
         max_kappa: float = 1e4,
         ood_quantile: float = 0.001,
-        # PR 4: endurecimento experimental
+        # PR 4: endurecimento experimental.
+        # P2-R2-15 (revisão externa round 2): construtor direto default
+        # `NORMALIZE_SILENTLY` por back-compat com fluxo legado;
+        # diverge do default do DTO `MoVMFTypicalityModelConfig`
+        # (`ERROR`, defensável forensicamente). Caminho oficial via
+        # Strategy Engine usa DTO → ERROR. Construtor direto é p/
+        # scripts e notebooks de desenvolvimento. Auditoria via
+        # `model_contract_fingerprint` (`unit_norm_policy` faz parte
+        # do contrato — laudo detecta SILENTLY).
         unit_norm_policy: UnitNormPolicy = UnitNormPolicy.NORMALIZE_SILENTLY,
         unit_norm_tolerance: float = 1e-4,
         population_weighting_mode: PopulationWeightingMode = (
@@ -222,6 +230,11 @@ class MoVMFTypicalityModel:
         # `fit`. Esses dois campos auditam quem instalou a referência atual.
         self._reference_score_calibration_mode = None  # ReferenceScoreCalibrationMode | None
         self._split_fingerprint: Optional[str] = None
+        # P2-R2-13: telemetria da normalização aplicada no fit
+        # (n_normalized, max_norm_deviation, etc.). Útil para
+        # auditoria pericial — quantos embeddings foram silenciosamente
+        # ajustados pelo NORMALIZE_SILENTLY.
+        self._unit_norm_telemetry: Optional[dict] = None
 
     # =========================================================================
     # COMPATIBILIDADE COM A API ANTIGA
@@ -1624,7 +1637,9 @@ class MoVMFTypicalityModel:
         n_samples, dim = x.shape
         k = self.n_components
 
-        mus, kappas, weights = self._initialize_mixture_params(x, rng)
+        mus, kappas, weights = self._initialize_mixture_params(
+            x, rng, sample_weights=sample_weights,
+        )
 
         prev_avg_ll = -np.inf
         consecutive_below_tol = 0
@@ -1820,22 +1835,54 @@ class MoVMFTypicalityModel:
         return new_mus, new_kappas, new_weights
 
     def _initialize_mixture_params(
-        self, x: np.ndarray, rng: np.random.Generator
+        self,
+        x: np.ndarray,
+        rng: np.random.Generator,
+        sample_weights: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """K-Means++ esférico."""
+        """K-Means++ esférico.
+
+        P2-R2-14 (revisão externa 2026-06-09 round 2): em
+        INVERSE_IDENTITY_FREQUENCY o M-step ponderado já era correto,
+        mas a inicialização por k-means++ usava prob ∝ dist² sem
+        ponderar por w_i, então identidades super-representadas
+        dominavam a escolha de sementes. Quando `sample_weights`
+        é fornecido, a prob de seleção da semente vira:
+            prob_i ∝ w_i · dist²_i.
+        Também o cluster assignment para weights/r_bars usa pesos
+        renormalizados.
+        """
         n_samples, dim = x.shape
         k = self.n_components
 
+        sw = (
+            np.asarray(sample_weights, dtype=np.float64)
+            if sample_weights is not None
+            else None
+        )
+
         mus = np.zeros((k, dim), dtype=np.float64)
-        mus[0] = x[int(rng.integers(0, n_samples))]
+        # Primeira semente: aleatória ponderada por w (se houver).
+        if sw is not None:
+            p0 = sw / float(sw.sum())
+            mus[0] = x[int(rng.choice(n_samples, p=p0))]
+        else:
+            mus[0] = x[int(rng.integers(0, n_samples))]
 
         for j in range(1, k):
             sims = x @ mus[:j].T  # (N, j)
             max_sim = np.max(sims, axis=1)
             dist = np.maximum(1.0 - max_sim, 0.0)
-            dsum = float(np.sum(dist))
+            # Prob ∝ w_i · dist²_i (clássico k-means++ pondera por dist²;
+            # mantemos `dist` como proxy esférico — em S^{d-1}, 1 - cos
+            # é a distância de cordilheira).
+            if sw is not None:
+                probs = sw * dist
+            else:
+                probs = dist
+            dsum = float(np.sum(probs))
             if dsum > 0:
-                mus[j] = x[rng.choice(n_samples, p=dist / dsum)]
+                mus[j] = x[rng.choice(n_samples, p=probs / dsum)]
             else:
                 mus[j] = x[int(rng.integers(0, n_samples))]
 
@@ -1845,6 +1892,7 @@ class MoVMFTypicalityModel:
         weights = np.zeros(k, dtype=np.float64)
         r_bars = np.zeros(k, dtype=np.float64)
 
+        total_w = float(sw.sum()) if sw is not None else float(n_samples)
         for j in range(k):
             idx = np.where(labels == j)[0]
             if len(idx) == 0:
@@ -1853,15 +1901,23 @@ class MoVMFTypicalityModel:
                 r_bars[j] = 0.0
                 continue
             cluster_x = x[idx]
-            weights[j] = len(idx) / n_samples
-            resultant = cluster_x.sum(axis=0)
+            if sw is not None:
+                cluster_w = sw[idx]
+                weights[j] = float(cluster_w.sum()) / total_w
+                resultant = (cluster_w[:, None] * cluster_x).sum(axis=0)
+            else:
+                weights[j] = len(idx) / n_samples
+                resultant = cluster_x.sum(axis=0)
             rnorm = float(np.linalg.norm(resultant))
             if rnorm < self.eps:
                 mus[j] = x[int(rng.integers(0, n_samples))]
                 r_bars[j] = 0.0
             else:
                 mus[j] = resultant / rnorm
-                r_bars[j] = rnorm / len(idx)
+                if sw is not None:
+                    r_bars[j] = rnorm / float(sw[idx].sum())
+                else:
+                    r_bars[j] = rnorm / len(idx)
 
         kappas = self._estimate_kappa_vectorized(r_bars, dim)
         kappas = np.clip(kappas, self.min_kappa, self.max_kappa)
@@ -2343,10 +2399,18 @@ class MoVMFTypicalityModel:
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
         # PR 4: política UnitNormPolicy explícita (ERROR | NORMALIZE_*)
-        return apply_unit_norm_policy(
+        # P2-R2-13: registra telemetria da normalização para auditoria.
+        # Acumula sobre todas as chamadas durante o `fit` (mantém o
+        # último _validate_and_normalize_2d feito como representativo do
+        # treino — o caso típico é uma chamada única).
+        telemetry: dict = {}
+        out = apply_unit_norm_policy(
             x, policy=self.unit_norm_policy,
             tolerance=self.unit_norm_tolerance, eps=self.eps,
+            telemetry=telemetry,
         )
+        self._unit_norm_telemetry = telemetry
+        return out
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:
         x = np.asarray(embedding, dtype=np.float64)

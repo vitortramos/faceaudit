@@ -139,8 +139,17 @@ class KNNTypicalityModel:
             else reference_mode
         self.model_name = model_name
         self.eps = float(eps)
-        # PR 4: política UnitNormPolicy. Default conserva comportamento
-        # histórico (NORMALIZE_SILENTLY).
+        # PR 4: política UnitNormPolicy.
+        # P2-R2-15 (revisão externa round 2): construtor direto default
+        # `NORMALIZE_SILENTLY` por back-compat com o caminho legado;
+        # diverge do default do DTO (`KNNTypicalityModelConfig` usa
+        # `ERROR`, defensável forensicamente). O caminho oficial de
+        # treinamento via Strategy Engine passa pelos DTOs e portanto
+        # adota ERROR; instâncias diretas (scripts, notebooks de
+        # desenvolvimento) ficam em SILENTLY salvo override explícito.
+        # A política efetivamente aplicada é persistida no estado e
+        # entra no `model_contract_fingerprint`, então auditoria pode
+        # detectar se foi NORMALIZE_SILENTLY no laudo.
         from faceaudit.enums.unit_norm_policy import UnitNormPolicy
         if unit_norm_policy is None:
             unit_norm_policy = UnitNormPolicy.NORMALIZE_SILENTLY
@@ -169,6 +178,11 @@ class KNNTypicalityModel:
 
         # Estado pós-fit. None até `fit()` ser chamado.
         self._state: Optional[_KNNRefState] = None
+        # P2-R2-13 (revisão externa round 2): telemetria da normalização
+        # aplicada (n_normalized, max_norm_deviation, etc.). Útil para
+        # auditoria pericial — quantos embeddings foram silenciosamente
+        # ajustados pelo NORMALIZE_SILENTLY.
+        self._unit_norm_telemetry: Optional[dict] = None
 
     # =========================================================================
     # API PÚBLICA
@@ -1204,13 +1218,18 @@ class KNNTypicalityModel:
         if x.ndim != 2:
             raise ValueError("Formato esperado: (N, D) ou (D,).")
         # PR 4: aplica UnitNormPolicy
+        # P2-R2-13: registra telemetria de normalização para auditoria.
         from faceaudit.services.unit_norm_validator import (
             apply_unit_norm_policy,
         )
-        return apply_unit_norm_policy(
+        telemetry: dict = {}
+        out = apply_unit_norm_policy(
             x, policy=self.unit_norm_policy,
             tolerance=self.unit_norm_tolerance, eps=self.eps,
+            telemetry=telemetry,
         )
+        self._unit_norm_telemetry = telemetry
+        return out
 
     def _validate_and_normalize_1d(self, embedding: ArrayLike) -> np.ndarray:
         x = np.asarray(embedding, dtype=np.float64)

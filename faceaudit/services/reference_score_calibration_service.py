@@ -2,15 +2,20 @@
 
 """Calibração da distribuição de referência de scores (CDF + threshold OOD).
 
-Em PR 2 o serviço é esqueleto: implementa o caminho `IN_SAMPLE_LEGACY`
-para o k-NN (que delega o fit nativo, que já tem LOO de imagem) e
-levanta `NotImplementedError` para `CROSS_FIT_IDENTITY` — entra em PR 4.
+PR 4 (V2.15): `CROSS_FIT_IDENTITY` implementado para MoVMF e k-NN.
+`IN_SAMPLE_LEGACY` permanece como caminho do k-NN nativo (delega o
+LOO de imagem do fit). Revisão externa round 1 e round 2
+(2026-06-09) corrigiu: instalação atômica da referência OOF no
+modelo via `install_reference_score_calibration` (P0-1); ponderação
+identitária do OOF (P0-4); base canônica por backend via
+`reference_score_basis_type` (P0-R2-2); agregação por centroide em
+IDENTITY_CENTROIDS (P0-R2-3); inspeção de seed por
+`inspect.signature` (P1-R2-10).
 
 A separação de responsabilidades segue a decisão do plano: modelo
 matemático faz só o fit paramétrico (EM no MoVMF; armazenamento de
 referência no k-NN). Serviço orquestra folds, scores OOF, CDF empírica,
-threshold OOD, refit final em toda a população. Permite reuso futuro
-para LOIO real do k-NN (substituir LOO de imagem).
+threshold OOD, refit final em toda a população.
 """
 
 from __future__ import annotations
@@ -63,18 +68,26 @@ def oof_quantile_in_range(q: float) -> bool:
 class ReferenceScoreCalibrationResult:
     """Resultado da calibração de score de referência.
 
-    Em PR 2 (k-NN, IN_SAMPLE_LEGACY):
+    Em IN_SAMPLE_LEGACY (k-NN nativo):
         - `refit_model`: o k-NN treinado nativamente (LOO de imagem).
         - `oof_cdf`: None (não há scores OOF nessa via).
         - `ood_threshold`: derivado do próprio modelo.
         - `split_fingerprint`: None.
 
-    Em PR 4 (MoVMF, CROSS_FIT_IDENTITY):
-        - `refit_model`: modelo treinado em toda a população (persistido).
-        - `oof_cdf`: vetor (N_OOF,) ordenado de scores out-of-fold.
-        - `ood_threshold`: quantil do `oof_cdf`.
+    Em CROSS_FIT_IDENTITY (MoVMF + k-NN):
+        - `refit_model`: modelo treinado em toda a população — com
+          a referência OOF JÁ INSTALADA atomicamente
+          (P0-1, revisão externa). `get_percentiles` e
+          `is_in_distribution` consultam OOF, não in-sample.
+        - `oof_cdf`: vetor ordenado de scores out-of-fold; em
+          IDENTITY_CENTROIDS é o score do centroide por identidade
+          (P0-R2-3); em INVERSE_IDENTITY_FREQUENCY é por face com
+          pesos `1/n_i` (P0-4).
+        - `ood_threshold`: quantil ponderado do `oof_cdf` quando
+          aplicável.
         - `split_fingerprint`: hash do mapeamento identidade → fold.
-        - `fold_seeds`: lista de seeds por fold.
+        - `fold_seeds`: lista de seeds por fold (de fato propagadas
+          ao trainer_factory via inspeção de assinatura — P1-R2-10).
     """
 
     refit_model: FittableTypicalityModelProtocol
