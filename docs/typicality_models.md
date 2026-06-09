@@ -135,8 +135,9 @@ modo `FACE_LEVEL_RAW` isso degenera para o `1/k` tradicional.
   **Atenção forense:** AIC/BIC retornam `None` neste modo (P1-R2-6
   da revisão externa round 2): a definição formal de N efetivo
   ponderado ainda está em aberto e o valor ingênuo (N = n_faces)
-  inflaria o LL total. Use seleção de K externa (held-out por
-  identidade) em vez de critério de informação.
+  inflaria o LL total. **Use a log-likelihood preditiva OOF
+  (`oof_predictive_avg_log_likelihood`) como critério primário para
+  selecionar K** — vide §5.3.
 - `FACE_LEVEL_RAW`: EM clássico, comportamento V2.14 do MoVMF interno.
 
 ## 5. `ReferenceScoreCalibrationMode` (PR 4)
@@ -168,15 +169,124 @@ Procedimento de duas etapas (formalização explícita do plano):
 **Modelo persistido = refit em D completo.** CDF/threshold ≠ refit.
 Auditoria forense deve referenciar ambos.
 
-### 5.2 Implementação V2.15 (PR 4)
+### 5.2 Implementação V2.15 (PR 4 + revisões R1–R4)
 
-- `ReferenceScoreCalibrationService.calibrate_via_cross_fit_identity`
-  funcional para MoVMF e k-NN.
-- Resultado: `ReferenceScoreCalibrationResult` com
-  `refit_model`, `oof_cdf`, `ood_threshold`, `split_fingerprint`,
-  `fold_seeds`, `n_folds_used`.
-- Validações: identidades disjuntas verificadas no `fit` interno;
-  folds com menos de K identidades únicas → erro explícito.
+- `ReferenceScoreCalibrationService.calibrate(...)` funcional para
+  MoVMF e k-NN.
+- Modelo persistido **é o refit em D completo**; a CDF/threshold
+  vêm dos scores OOF. O `install_reference_score_calibration` (P0-1
+  do round 1) substitui atomicamente a referência IN-SAMPLE do refit
+  pela OOF — após o serviço retornar, `get_percentiles()` e
+  `is_in_distribution()` consultam a OOF, **não** a in-sample.
+
+#### Campos do `ReferenceScoreCalibrationResult`
+
+Referência OOF (R3 — round 3 corrigiu nomeação enganosa):
+
+| Campo | Significado |
+|---|---|
+| `refit_model` | Modelo treinado em toda a população, com referência OOF JÁ instalada. |
+| `oof_reference_scores_sorted` | Scores OOF ordenados crescente (era `oof_cdf`; renomeado em R3). |
+| `oof_reference_weights_sorted` | Pesos por score (mesma ordem). |
+| `oof_reference_cdf` | CDF empírica ponderada = `cumsum(weights)/sum`. |
+| `ood_threshold` | Quantil ponderado global. |
+| `split_fingerprint` | Hash do mapeamento identidade → fold. |
+| `fold_seeds` | Seeds efetivamente propagadas ao `trainer_factory`. |
+| `n_folds_used` | Número de folds que produziram scores OOF. |
+
+> O alias `result.oof_cdf` segue como property com `DeprecationWarning`
+> apontando para `oof_reference_scores_sorted`. Será removido em
+> próxima major.
+
+Métricas preditivas OOF (R4 — round 4):
+
+| Campo | Significado |
+|---|---|
+| `oof_predictive_avg_score` | Média ponderada de TODOS os scores OOF (mesmos pesos da CDF). No **MoVMF** (basis = `LOG_DENSITY_ESTIMATE`) é a **estimativa OOF de E[log p_θ(x)]** — a PLL OOF que o revisor recomenda como critério primário para escolher K. No **k-NN** (basis = `MEAN_KNN_SIMILARITY`) é T_k médio populacional — útil como métrica relativa entre `k`'s, **não** interpretável como log-densidade. |
+| `oof_predictive_avg_score_by_fold` | Médias por fold (mesmas regras de ponderação). Dispersão entre folds é o diagnóstico de estabilidade que o revisor pede ao lado da PLL agregada. |
+| `oof_predictive_score_type` | `"LOG_DENSITY_ESTIMATE"` ou `"MEAN_KNN_SIMILARITY"` — chave para interpretar `oof_predictive_avg_score`. |
+| `n_identities_by_fold` | Identidades únicas pontuadas em cada fold. |
+| `n_scores_by_fold` | Quantidade de scores OOF por fold (= n_identidades em `IDENTITY_CENTROIDS`; = n_faces em `FACE_LEVEL_RAW` ou `INVERSE_IDENTITY_FREQUENCY`). |
+| `ood_threshold_by_fold` | Threshold OOD do `fold_model` transitório, por fold (estabilidade do quantil). Cada entrada pode ser `None` quando `ood_quantile = 0.0` no config. |
+
+Os arrays expostos nesses campos são **read-only** (P1-R3-7) — auditoria
+não pode mutar o snapshot devolvido.
+
+#### Exposição no `summary()`
+
+`summary().backend_details` propaga as métricas preditivas para
+auditoria pericial e para a UI:
+
+- **MoVMF** expõe explicitamente o alias log-likelihood:
+  - `oof_predictive_avg_log_likelihood` — só populado quando
+    `oof_predictive_score_type == "LOG_DENSITY_ESTIMATE"` (o caso
+    geral do MoVMF). É **a** métrica forense recomendada para
+    selecionar K.
+  - `oof_predictive_log_likelihood_by_fold` — análogo por fold.
+  - `oof_predictive_avg_score`, `oof_predictive_avg_score_by_fold`,
+    `oof_predictive_score_type` — versões genéricas.
+- **k-NN** expõe apenas os campos genéricos
+  (`oof_predictive_avg_score`, `oof_predictive_avg_score_by_fold`,
+  `oof_predictive_score_type`). Não há alias `*_log_likelihood`
+  porque `MEAN_KNN_SIMILARITY` não é log-densidade.
+
+#### Persistência
+
+Os campos preditivos sobrevivem ao `to_dict` / `from_dict` em ambos
+os backends. Pickles produzidos antes de R4 não trazem esses campos
+e restauram-nos como `None` — comportamento back-compat.
+
+#### Validações
+
+- Identidades disjuntas verificadas no `fit` interno.
+- `n_folds >= 2` e ≤ identidades únicas → erro explícito (P0-R3-4).
+- Backend declarado vs instância retornada pela `trainer_factory`:
+  divergência levanta `BackendMismatchError` (P0-R3-2).
+- `validate_reference_score_distribution` exige acoplamento
+  weights+CDF: ambos presentes → CDF deve ser exatamente
+  `cumsum(weights)/sum(weights)` (P0-R3-5).
+
+### 5.3 Selecionando `n_components` (K) no MoVMF
+
+Pergunta forense central: dado um corpus, qual K usar? R4 consolida
+a recomendação do revisor.
+
+Critério primário recomendado, em ordem de prioridade:
+
+| Prioridade | Métrica | Onde ler |
+|---|---|---|
+| 1 | **log-likelihood preditiva OOF por identidade** | `model.summary().backend_details["oof_predictive_avg_log_likelihood"]` (após `CROSS_FIT_IDENTITY` com `population_weighting_mode = IDENTITY_CENTROIDS`) |
+| 2 | **dispersão da PLL OOF entre folds** | `model.summary().backend_details["oof_predictive_log_likelihood_by_fold"]` — desvio padrão / range |
+| 3 | **saúde dos componentes** | `model.summary().warnings` + `model.summary().backend_details["weights"]/["kappas"]` + método `model.get_degenerate_components()` (separado do summary) |
+| 4 | **estabilidade dos percentis e do threshold OOD** | `ReferenceScoreCalibrationResult.ood_threshold_by_fold` (no objeto devolvido pelo serviço cross-fit; o `summary()` do modelo expõe apenas o threshold global em `backend_details["ood_log_likelihood_threshold"]`) |
+| 5 | AIC / BIC (apenas diagnóstico auxiliar) | `model.summary().backend_details["aic"]`, `["bic"]` (note as chaves sem underscore) — `None` em `INVERSE_IDENTITY_FREQUENCY` (definição de N efetivo ponderado em aberto, P1-R2-6). Não usar como critério único. |
+| 6 | Efeito downstream nas LRs em base de desenvolvimento separada | Métricas do `STRATEGY_EVALUATION` (Cllr, ECE, WS) executado em D_val honesto |
+
+**Recomendação prática**: rodar K ∈ {1, 3, 5} (por exemplo) com o mesmo
+split de identidades, e tabular:
+
+| K | PLL OOF média | desvio entre folds | menor peso | maior κ | componentes degenerados | threshold OOD |
+|---|---|---|---|---|---|---|
+
+K que maximize PLL **sem aumentar dispersão entre folds** nem produzir
+componentes degenerados é o candidato. Mudanças downstream só são
+relevantes quando os critérios 1–4 estão empatados.
+
+**Sinais auxiliares baratos** (descarte rápido de K instáveis, antes de
+olhar PLL):
+- `backend_details["converged"]` — `False` indica EM que não convergiu
+  na inicialização final.
+- `backend_details["n_iter"]` saturando `max_iter` é sintoma análogo.
+- `backend_details["avg_train_log_likelihood"]` − `oof_predictive_avg_log_likelihood`
+  quantifica o gap **in-sample vs OOF**; gap crescendo com K é overfit
+  explícito.
+
+A justificativa do revisor para escolher PLL OOF acima de AIC/BIC: os
+dois critérios de informação só são definidos com tamanho amostral
+efetivo bem postado. Em `INVERSE_IDENTITY_FREQUENCY`, AIC/BIC retornam
+`None` por essa razão. PLL OOF não precisa dessa definição — é uma
+estimativa direta do que o modelo "vai produzir" em identidades não
+vistas.
 
 ## 6. Fingerprints (PR 4 endurece)
 
@@ -238,8 +348,11 @@ Antes de remover o badge `EXPERIMENTAL`:
 2. **Comparação k-NN vs MoVMF em condições controladas**: mesma
    `population_weighting_mode`, mesma `reference_score_calibration_mode`,
    mesmo split, mesmo LR architecture.
-3. **Sensibilidade a `n_components`**: BIC vs estabilidade ao escolher
-   K. Heurística defensável documentada.
+3. **Sensibilidade a `n_components`**: tabela documentada de PLL OOF
+   (`oof_predictive_avg_log_likelihood`) + dispersão entre folds +
+   componentes degenerados para K ∈ {1, 3, 5} em ≥ 3 corpora. AIC/BIC
+   apenas como diagnóstico auxiliar (vide §5.3). Heurística defensável
+   documentada.
 4. **Comportamento sob agulhas de identidade** (paired adversarial):
    adicionar/remover faces de uma identidade deve mover scores
    downstream **menos** que k-NN no mesmo cenário.
@@ -286,4 +399,6 @@ ferramenta explícita.
 
 ---
 
-**Última atualização**: V2.15 (PR 4 — endurecimento experimental).
+**Última atualização**: V2.15 + R4 (log-likelihood preditiva OOF e
+métricas por fold expostas no `ReferenceScoreCalibrationResult` e no
+`summary()` dos backends — vide §5.2 e §5.3).

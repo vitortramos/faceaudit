@@ -168,6 +168,25 @@ class ReferenceScoreCalibrationResult:
         - `split_fingerprint`: hash do mapeamento identidade → fold.
         - `fold_seeds`: lista de seeds por fold de fato propagadas
           ao trainer_factory.
+
+    R4 (revisão externa 2026-06-09 round 4): adicionados os campos
+    preditivos OOF, com semântica documentada em
+    `docs/typicality_models.md` §5.2/§5.3:
+
+        - `oof_predictive_avg_score`: média ponderada de TODOS os
+          scores OOF (mesmos pesos da CDF). No MoVMF
+          (basis=LOG_DENSITY_ESTIMATE) é a estimativa OOF de
+          E[log p_θ(x)] — a log-likelihood preditiva OOF que o
+          revisor recomenda como critério primário para selecionar K.
+          No k-NN (basis=MEAN_KNN_SIMILARITY) é T_k médio populacional
+          — métrica relativa entre k's, NÃO log-densidade.
+        - `oof_predictive_avg_score_by_fold`: médias por fold.
+          Dispersão entre folds é diagnóstico-chave de estabilidade.
+        - `oof_predictive_score_type`: "LOG_DENSITY_ESTIMATE" ou
+          "MEAN_KNN_SIMILARITY" — chave de interpretação.
+        - `n_identities_by_fold`, `n_scores_by_fold`,
+          `ood_threshold_by_fold`: diagnósticos por fold (cobertura
+          e estabilidade do quantil).
     """
 
     refit_model: FittableTypicalityModelProtocol

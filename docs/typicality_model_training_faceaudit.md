@@ -326,13 +326,30 @@ O help text do campo deixa explícito:
 
 > A escolha deve ser justificada externamente, não ajustada sobre o
 > caso examinado. PR 4 endurece com diagnóstico de componentes
-> degenerados; uma iteração futura poderá oferecer seleção automática
-> por BIC ou held-out por identidade.
+> degenerados; R4 expõe métricas preditivas OOF para apoiar a
+> decisão.
+
+**Critério recomendado pós-R4 (cf. `docs/typicality_models.md` §5.3):**
+
+Comparar `K ∈ {1, 3, 5, ...}` em execuções separadas (split de
+identidades idêntico entre execuções, mesmo `population_weighting_mode`,
+mesma `CROSS_FIT_IDENTITY`) e tabular para cada K:
+
+| Métrica | Onde ler | Prioridade |
+|---|---|---|
+| **PLL OOF média** | `model.summary().backend_details["oof_predictive_avg_log_likelihood"]` | **1ª** |
+| Dispersão entre folds | `model.summary().backend_details["oof_predictive_log_likelihood_by_fold"]` — std/range | 2ª |
+| Componentes degenerados / saturação de κ | `model.summary().warnings` + método `model.get_degenerate_components()` (separado do summary) | 3ª |
+| Estabilidade do threshold OOD | `ReferenceScoreCalibrationResult.ood_threshold_by_fold` (devolvido pelo serviço cross-fit; NÃO está no `summary()` do modelo) | 4ª |
+| AIC / BIC | `model.summary().backend_details["aic"]`, `["bic"]` — `None` em `INVERSE_IDENTITY_FREQUENCY` | 5ª (diagnóstico auxiliar) |
+| Cllr/ECE em D_val honesto | `STRATEGY_EVALUATION` downstream | 6ª (desempate) |
 
 A seleção automática via AIC/BIC existe no método utilitário
 `MoVMFTypicalityModel.fit_best_model(...)`, mas hoje não é exposta pela
-instrução. Uma estratégia compara `n_components ∈ {1, 2, 3, ...}` com K
-fixos por execução, não automaticamente dentro da mesma execução.
+instrução, e R4 recomenda **não** usar AIC/BIC como critério único
+(definição formal de N efetivo ponderado em aberto, P1-R2-6).
+Estratégias comparam `n_components ∈ {1, 2, 3, ...}` com K fixos por
+execução, não automaticamente dentro da mesma execução.
 
 ---
 
@@ -627,8 +644,11 @@ MoVMF (`n_k = Σ w_i · r_ik`). Detalhes matemáticos em
    ali por compat; novas estratégias devem usar cross-fit para CDF
    defensável.
 5. **Justifique `n_components` externamente**. Não compare K na mesma
-   execução escolhendo o melhor — vaze BIC ou held-out por
-   identidade em estratégias separadas.
+   execução escolhendo o melhor — rode estratégias separadas com K
+   fixo por execução e tabule a **PLL OOF**
+   (`oof_predictive_avg_log_likelihood`) + dispersão entre folds +
+   componentes degenerados. Vide §6.4 e
+   `docs/typicality_models.md` §5.3 para o protocolo completo.
 6. **Mantenha o mesmo backend em probe e reference**. Comparar k-NN
    vs MoVMF no mesmo par é matematicamente questionável (escalas
    absolutas diferem). Para comparação científica entre backends,
