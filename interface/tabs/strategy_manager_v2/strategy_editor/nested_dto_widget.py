@@ -460,6 +460,9 @@ NESTED_DTO_ATTRS: Tuple[Tuple[str, str], ...] = (
     ("logreg_config", "inline"),
     ("kde_config", "inline"),
     ("bigauss_config", "inline"),
+    # Polimórfico: KNNTypicalityModelConfig ou MoVMFTypicalityModelConfig.
+    # O painel gate pela escolha de backend (uses_knn / uses_movmf).
+    ("typicality_model_config", "inline"),
 )
 
 
@@ -924,6 +927,10 @@ def get_inline_title(attr_name: str) -> str:
         return "Config KDE"
     if attr_name == "bigauss_config":
         return "Config Bi-Gaussianized"
+    if attr_name == "typicality_model_config":
+        # Genérico — o backend específico (k-NN ou MoVMF) já está
+        # selecionado no dropdown acima.
+        return "Hiperparâmetros do Modelo"
     return attr_name.replace("_", " ").title()
 
 
@@ -955,6 +962,16 @@ def make_default_dto(attr_name: str) -> Any:
             BiGaussianizedCalibrationModelConfig,
         )
         return BiGaussianizedCalibrationModelConfig()
+    if attr_name == "typicality_model_config":
+        # Fallback genérico. O caso real é tratado pelo painel: quando o
+        # config nested vem `None`, o panel usa
+        # `instr._reconcile_config_type()` antes de chamar este helper —
+        # então este fallback raramente é alcançado. Mantemos KNN como
+        # default seguro (backend estável; MoVMF é EXPERIMENTAL).
+        from faceaudit.models.typicality.knn_typicality_model_config import (
+            KNNTypicalityModelConfig,
+        )
+        return KNNTypicalityModelConfig()
     return None
 
 

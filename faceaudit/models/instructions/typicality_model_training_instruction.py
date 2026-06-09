@@ -193,6 +193,12 @@ class TypicalityModelTrainingInstruction(StrategyInstructionDefinition):
         self.input_resource_ids = list(dict.fromkeys(inputs))
         self.output_resource_ids = list(dict.fromkeys(outputs))
 
+        # Reconcilia o config nested com o backend escolhido. Caminho do
+        # `_on_choice_changed` do panel: setattr(type) → _sync_declared_io →
+        # sem isso, o `typicality_model_config` continua com o DTO antigo
+        # (KNN ↔ MoVMF) e a renderização inline mostra os campos errados.
+        self._reconcile_config_type()
+
         self._ensure_default_validation_rules()
 
     def _ensure_default_validation_rules(self) -> None:
