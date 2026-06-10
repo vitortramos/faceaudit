@@ -202,7 +202,9 @@ def test_movmf_serialization_preserves_weighted_state():
     )
     m.fit(X, identity_ids=ids)
 
-    # Instala referência com pesos não-uniformes
+    # Instala referência com pesos não-uniformes.
+    # R7: CROSS_FIT_IDENTITY exige bloco OOF completo + score_type
+    # esperado por backend (LOG_DENSITY_ESTIMATE no MoVMF).
     rng = np.random.default_rng(0)
     oof = rng.normal(size=50)
     w = rng.uniform(0.5, 2.0, size=50)
@@ -212,6 +214,14 @@ def test_movmf_serialization_preserves_weighted_state():
         ood_threshold=float(np.quantile(oof, 0.1)),
         calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
         split_fingerprint="xyz",
+        oof_predictive_avg_score=float(np.mean(oof)),
+        oof_predictive_avg_score_by_fold=(-1.0, -0.5, -0.8, -0.4),
+        oof_predictive_score_type="LOG_DENSITY_ESTIMATE",
+        n_identities_by_fold=(2, 2, 2, 2),
+        n_scores_by_fold=(13, 13, 12, 12),
+        ood_threshold_by_fold=(-1.5, -1.4, -1.3, -1.2),
+        fold_seeds=(0, 1, 2, 3),
+        n_folds_used=4,
     )
 
     test = X[:5]

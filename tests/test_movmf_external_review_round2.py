@@ -167,6 +167,9 @@ def test_centroid_oof_aggregates_embeddings_not_scores():
             n_components=1, centering="none",
             unit_norm_policy="NORMALIZE_SILENTLY",
             population_weighting_mode=PopulationWeightingMode.IDENTITY_CENTROIDS,
+            # R7: factory deve propagar a seed para passar pela
+            # validação `EffectiveSeedMismatchError`.
+            random_state=seed if seed is not None else 0,
         )
 
     svc = ReferenceScoreCalibrationService()

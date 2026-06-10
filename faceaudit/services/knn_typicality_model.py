@@ -873,47 +873,79 @@ class KNNTypicalityModel:
 
         # R4: hidrata métricas preditivas OOF. Pickles antigos não
         # têm esses campos — devolvem None.
-        model._oof_predictive_avg_score = ls.get("oof_predictive_avg_score")
-        _by_fold = ls.get("oof_predictive_avg_score_by_fold")
-        model._oof_predictive_avg_score_by_fold = (
-            tuple(float(x) for x in _by_fold) if _by_fold is not None else None
+        # P0-R7-1: passa VALORES BRUTOS aos normalizadores (sem `int(x)`
+        # defensivo). Coerções silenciosas truncavam `1.9 → 1` e
+        # neutralizavam a validação estrita de R6.
+        raw_oof_avg = ls.get("oof_predictive_avg_score")
+        raw_oof_by_fold = ls.get("oof_predictive_avg_score_by_fold")
+        raw_oof_by_fold = (
+            tuple(raw_oof_by_fold) if raw_oof_by_fold is not None else None
         )
-        model._oof_predictive_score_type = ls.get("oof_predictive_score_type")
-        # R5: hidrata diagnósticos por fold + valida fingerprint.
-        _n_ids = ls.get("n_identities_by_fold")
-        model._n_identities_by_fold = (
-            tuple(int(x) for x in _n_ids) if _n_ids is not None else None
-        )
-        _n_scores = ls.get("n_scores_by_fold")
-        model._n_scores_by_fold = (
-            tuple(int(x) for x in _n_scores) if _n_scores is not None else None
-        )
-        _ood_thr_by_fold = ls.get("ood_threshold_by_fold")
-        if _ood_thr_by_fold is not None:
-            model._ood_threshold_by_fold = tuple(
-                (float(x) if x is not None else None)
-                for x in _ood_thr_by_fold
-            )
-        else:
-            model._ood_threshold_by_fold = None
-        _fs = ls.get("fold_seeds")
-        model._fold_seeds = (
-            tuple(int(x) for x in _fs) if _fs is not None else None
-        )
-        model._n_folds_used = ls.get("n_folds_used")
+        raw_n_ids = ls.get("n_identities_by_fold")
+        raw_n_ids = tuple(raw_n_ids) if raw_n_ids is not None else None
+        raw_n_scores = ls.get("n_scores_by_fold")
+        raw_n_scores = tuple(raw_n_scores) if raw_n_scores is not None else None
+        raw_ood_thr = ls.get("ood_threshold_by_fold")
+        raw_ood_thr = tuple(raw_ood_thr) if raw_ood_thr is not None else None
+        raw_fs = ls.get("fold_seeds")
+        raw_fs = tuple(raw_fs) if raw_fs is not None else None
+        raw_n_folds = ls.get("n_folds_used")
         model._audit_metrics_fingerprint = ls.get("audit_metrics_fingerprint")
-        # P0-R6-3 (revisão externa round 6): re-aplica validações
-        # estruturais sobre o payload OOF restaurado.
+        # P0-R6-3 + P0-R7-1: re-aplica validações estruturais ANTES de
+        # armazenar nos atributos.
         from faceaudit.services.oof_audit_metrics import (
+            _normalize_n_folds_used,
+            _normalize_oof_per_fold_floats_optional,
+            _normalize_oof_per_fold_ints,
             _revalidate_oof_payload_or_raise,
+            _validate_cross_fit_audit_completeness_or_raise,
             _verify_audit_metrics_fingerprint_or_raise,
         )
         _revalidate_oof_payload_or_raise(
+            oof_predictive_avg_score=raw_oof_avg,
+            oof_predictive_avg_score_by_fold=raw_oof_by_fold,
+            n_identities_by_fold=raw_n_ids,
+            n_scores_by_fold=raw_n_scores,
+            ood_threshold_by_fold=raw_ood_thr,
+            fold_seeds=raw_fs,
+            n_folds_used=raw_n_folds,
+        )
+        # Validações OK — agora armazena com coerção segura.
+        model._oof_predictive_avg_score = (
+            float(raw_oof_avg) if raw_oof_avg is not None else None
+        )
+        model._oof_predictive_avg_score_by_fold = (
+            tuple(float(x) for x in raw_oof_by_fold)
+            if raw_oof_by_fold is not None else None
+        )
+        model._oof_predictive_score_type = ls.get("oof_predictive_score_type")
+        model._n_identities_by_fold = _normalize_oof_per_fold_ints(
+            raw_n_ids, field="n_identities_by_fold",
+        )
+        model._n_scores_by_fold = _normalize_oof_per_fold_ints(
+            raw_n_scores, field="n_scores_by_fold",
+        )
+        model._ood_threshold_by_fold = _normalize_oof_per_fold_floats_optional(
+            raw_ood_thr, field="ood_threshold_by_fold",
+        )
+        model._fold_seeds = _normalize_oof_per_fold_ints(
+            raw_fs, field="fold_seeds",
+        )
+        model._n_folds_used = _normalize_n_folds_used(raw_n_folds)
+        # P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo +
+        # score_type esperado por backend.
+        _validate_cross_fit_audit_completeness_or_raise(
+            backend="KNN",
+            reference_score_calibration_mode=
+                model._state.reference_score_calibration_mode,
+            persisted_fingerprint=model._audit_metrics_fingerprint,
             oof_predictive_avg_score=model._oof_predictive_avg_score,
             oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=model._oof_predictive_score_type,
             n_identities_by_fold=model._n_identities_by_fold,
             n_scores_by_fold=model._n_scores_by_fold,
             ood_threshold_by_fold=model._ood_threshold_by_fold,
+            split_fingerprint=model._state.split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
         )

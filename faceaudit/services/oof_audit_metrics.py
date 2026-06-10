@@ -37,6 +37,119 @@ class OofAuditMetricMismatchError(ValueError):
         self.computed = computed
 
 
+class IncompleteCrossFitAuditPayloadError(ValueError):
+    """Modelo no modo CROSS_FIT_IDENTITY foi carregado sem o bloco
+    completo de auditoria OOF.
+
+    P0-R7-2 (revisão externa 2026-06-09 round 7): a regra "qualquer
+    campo OOF presente exige fingerprint" do round 6 era necessária
+    mas insuficiente — um adversário podia remover TODOS os
+    diagnósticos OOF + o fingerprint e ainda assim carregar o modelo
+    como CROSS_FIT_IDENTITY válido. Agora a presença de
+    `CROSS_FIT_IDENTITY` em `reference_score_calibration_mode` exige
+    o bloco OOF completo + fingerprint.
+    """
+
+    def __init__(self, *, missing_fields: tuple) -> None:
+        super().__init__(
+            "IncompleteCrossFitAuditPayload: modelo no modo "
+            "CROSS_FIT_IDENTITY exige bloco completo de diagnósticos "
+            f"OOF + fingerprint. Campos ausentes: {missing_fields!r}."
+        )
+        self.missing_fields = missing_fields
+
+
+class UnexpectedOofScoreTypeError(ValueError):
+    """`oof_predictive_score_type` não corresponde ao backend declarado.
+
+    P0-R7-3 (revisão externa 2026-06-09 round 7): MoVMF deve persistir
+    `LOG_DENSITY_ESTIMATE`; k-NN deve persistir `MEAN_KNN_SIMILARITY`.
+    Qualquer outro valor (ex.: `"ARBITRARY_SCALE"`) é fail-closed.
+    """
+
+    def __init__(self, *, backend: str, expected: str, actual) -> None:
+        super().__init__(
+            f"UnexpectedOofScoreType: backend {backend!r} exige "
+            f"`oof_predictive_score_type = {expected!r}` mas o payload "
+            f"persistiu {actual!r}."
+        )
+        self.backend = backend
+        self.expected = expected
+        self.actual = actual
+
+
+# Mapeamento esperado de score_type por backend (P0-R7-3).
+_EXPECTED_OOF_SCORE_TYPE = {
+    "MOVMF": "LOG_DENSITY_ESTIMATE",
+    "KNN": "MEAN_KNN_SIMILARITY",
+}
+
+
+def _validate_cross_fit_audit_completeness_or_raise(
+    *,
+    backend: str,
+    reference_score_calibration_mode,
+    persisted_fingerprint,
+    oof_predictive_avg_score,
+    oof_predictive_avg_score_by_fold,
+    oof_predictive_score_type,
+    n_identities_by_fold,
+    n_scores_by_fold,
+    ood_threshold_by_fold,
+    split_fingerprint,
+    fold_seeds,
+    n_folds_used,
+) -> None:
+    """P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo e
+    score_type coerente com o backend.
+
+    `reference_score_calibration_mode` pode vir como string ou como
+    enum. Comparamos por `.to_str()` quando enum.
+    """
+    if reference_score_calibration_mode is None:
+        return
+    mode_str = (
+        reference_score_calibration_mode.to_str()
+        if hasattr(reference_score_calibration_mode, "to_str")
+        else str(reference_score_calibration_mode)
+    )
+    if mode_str != "CROSS_FIT_IDENTITY":
+        return
+
+    # Bloco completo obrigatório:
+    required = {
+        "audit_metrics_fingerprint": persisted_fingerprint,
+        "oof_predictive_avg_score": oof_predictive_avg_score,
+        "oof_predictive_avg_score_by_fold": oof_predictive_avg_score_by_fold,
+        "oof_predictive_score_type": oof_predictive_score_type,
+        "n_identities_by_fold": n_identities_by_fold,
+        "n_scores_by_fold": n_scores_by_fold,
+        "ood_threshold_by_fold": ood_threshold_by_fold,
+        "split_fingerprint": split_fingerprint,
+        "fold_seeds": fold_seeds,
+        "n_folds_used": n_folds_used,
+    }
+    missing = tuple(name for name, value in required.items() if value is None)
+    if missing:
+        raise IncompleteCrossFitAuditPayloadError(missing_fields=missing)
+
+    # P0-R7-2 / endurecimento adicional: n_folds_used >= 2 em CROSS_FIT.
+    if isinstance(n_folds_used, int) and n_folds_used < 2:
+        raise IncompleteCrossFitAuditPayloadError(
+            missing_fields=(f"n_folds_used={n_folds_used} (deve ser >= 2)",),
+        )
+
+    # P0-R7-3: score_type esperado por backend.
+    backend_key = backend.upper() if isinstance(backend, str) else str(backend)
+    expected = _EXPECTED_OOF_SCORE_TYPE.get(backend_key)
+    if expected is not None and oof_predictive_score_type != expected:
+        raise UnexpectedOofScoreTypeError(
+            backend=backend_key,
+            expected=expected,
+            actual=oof_predictive_score_type,
+        )
+
+
 class MissingOofAuditMetricFingerprintError(ValueError):
     """Payload OOF presente sem fingerprint auditável correspondente.
 
@@ -362,8 +475,11 @@ def _revalidate_oof_payload_or_raise(
         ood_threshold_by_fold, field="ood_threshold_by_fold",
     )
     _normalize_oof_per_fold_ints(fold_seeds, field="fold_seeds")
+    # P0-R7-1: usa `_normalize_n_folds_used` em vez de `int(...)`
+    # defensivo — antes, `1.9 → 1` era truncado silenciosamente.
+    normalized_n_folds = _normalize_n_folds_used(n_folds_used)
     _validate_oof_per_fold_lengths(
-        n_folds_used=(int(n_folds_used) if n_folds_used is not None else None),
+        n_folds_used=normalized_n_folds,
         oof_by_fold=oof_predictive_avg_score_by_fold,
         n_identities_by_fold=n_identities_by_fold,
         n_scores_by_fold=n_scores_by_fold,

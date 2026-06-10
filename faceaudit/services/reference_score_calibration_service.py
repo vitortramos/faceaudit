@@ -83,7 +83,48 @@ def _build_model(
             raise BackendMismatchError(
                 expected=expected_backend, actual=actual,
             )
+    # P1-R7-5 (revisão externa round 7): valida que a factory
+    # propagou efetivamente a seed solicitada. Antes, uma factory
+    # adversarial que ignorasse `seed=...` e hardcodasse
+    # `random_state=0` passava silenciosamente — o serviço gravava
+    # seeds (10, 11, 12) em `fold_seeds`, mas todos os modelos
+    # usavam 0 internamente.
+    #
+    # Só validamos para backends estocásticos que expõem
+    # `random_state`. Backends determinísticos (e.g. k-NN puro) podem
+    # nem ter o atributo — tolerância via `getattr`.
+    actual_seed = getattr(model, "random_state", None)
+    if actual_seed is not None and actual_seed != seed:
+        raise EffectiveSeedMismatchError(
+            requested_seed=int(seed),
+            actual_seed=actual_seed,
+        )
     return model
+
+
+class EffectiveSeedMismatchError(RuntimeError):
+    """Factory ignorou a seed solicitada — `model.random_state` final
+    diverge do requested.
+
+    P1-R7-5 (revisão externa 2026-06-09 round 7): fecha o gap
+    demonstrado pelo revisor: factory adversarial recebe
+    `seed=10/11/12` mas instancia `MoVMFTypicalityModel(random_state=0)`,
+    o serviço grava (10, 11, 12) em fold_seeds, e na auditoria parece
+    correto — mas os modelos efetivos eram todos `random_state=0`.
+
+    Só dispara quando o backend expõe `random_state` (determinísticos
+    como k-NN puro nem têm o atributo — tolerância).
+    """
+
+    def __init__(self, *, requested_seed: int, actual_seed) -> None:
+        super().__init__(
+            f"EffectiveSeedMismatch: serviço chamou factory com "
+            f"seed={requested_seed!r} mas `model.random_state` ficou "
+            f"em {actual_seed!r}. Factory ignorou o parâmetro `seed` — "
+            "estratégia documentada é `base_seed + fold_index`."
+        )
+        self.requested_seed = requested_seed
+        self.actual_seed = actual_seed
 
 
 class BackendMismatchError(RuntimeError):
@@ -106,6 +147,36 @@ class BackendMismatchError(RuntimeError):
         )
         self.expected = expected
         self.actual = actual
+
+
+def _coerce_identity_ids_or_raise(identity_ids) -> list:
+    """P0-R6-5 + P1-R7-6 (revisão externa rounds 6 e 7): coerção fail-closed
+    de identity_ids para `list[str]`, com detecção de colisão.
+
+    Antes, `int(1)` e `str("1")` viravam ambos `"1"` em
+    `_calibrate_cross_fit_identity` e em `_calibrate_in_sample_legacy`,
+    silenciando colisões reais. R7 centraliza a detecção e aplica em
+    ambos os caminhos.
+
+    Lista de strings retornada PRESERVA a ordem original — ids_arr no
+    caller usa exatamente esta lista.
+    """
+    from collections import defaultdict
+
+    original_signatures = [
+        (type(i).__name__, repr(i)) for i in identity_ids
+    ]
+    coerced_strs = [str(i) for i in identity_ids]
+    str_to_sigs: defaultdict = defaultdict(set)
+    for s, sig in zip(coerced_strs, original_signatures):
+        str_to_sigs[s].add(sig)
+    collisions = {
+        s: sorted(sigs)
+        for s, sigs in str_to_sigs.items() if len(sigs) > 1
+    }
+    if collisions:
+        raise IdentityCanonicalizationCollisionError(collisions=collisions)
+    return coerced_strs
 
 
 class IdentityCanonicalizationCollisionError(ValueError):
@@ -260,11 +331,16 @@ def _validate_contract_matches(
                 fold_value=other["embedding_dim"],
                 fold_index=fold_index,
             )
-    # P0-R6-1: contrato de hiperparâmetros de treino.
+    # P0-R6-1 + P1-R7-4: contrato de hiperparâmetros de treino. A
+    # comparação percorre a UNIÃO das chaves (peek ∪ other) em vez de
+    # só `peek`. Antes, chaves extras em `other` eram silenciosamente
+    # ignoradas — em contrato de reprodutibilidade, chaves extras
+    # também são divergência.
     peek_tc = peek.get("training_contract")
     other_tc = other.get("training_contract")
     if peek_tc is not None and other_tc is not None:
-        for key in peek_tc:
+        all_keys = set(peek_tc) | set(other_tc)
+        for key in all_keys:
             if peek_tc.get(key) != other_tc.get(key):
                 raise CrossFitContractMismatchError(
                     field=f"training_contract.{key}",
@@ -523,32 +599,10 @@ class ReferenceScoreCalibrationService:
                 "`embeddings` (não pode ser None nem ter tamanho diferente)."
             )
 
-        # P0-R3-4: normaliza `identity_ids` para strings cedo. Antes,
-        # IDs heterogêneos como `(1, "1", 2, "2")` quebravam
-        # `np.unique` com erro de ordenação entre str e int.
-        #
-        # P0-R6-5 (revisão externa round 6): mas a coerção para str
-        # pode colapsar identidades originalmente distintas (e.g.
-        # int(1) e str("1") viram ambas "1"). Detectamos colisão
-        # comparando o multiset original (representação tipo+valor)
-        # com o multiset coercido.
-        original_signatures = [
-            (type(i).__name__, repr(i)) for i in identity_ids
-        ]
-        coerced_strs = [str(i) for i in identity_ids]
-        # Conjuntos: se o número de pares (str, original-sig) distintos
-        # for menor que o número de strings distintas, houve colisão de
-        # signatures distintas no mesmo string.
-        from collections import defaultdict
-        str_to_sigs: defaultdict = defaultdict(set)
-        for s, sig in zip(coerced_strs, original_signatures):
-            str_to_sigs[s].add(sig)
-        collisions = {
-            s: sorted(sigs)
-            for s, sigs in str_to_sigs.items() if len(sigs) > 1
-        }
-        if collisions:
-            raise IdentityCanonicalizationCollisionError(collisions=collisions)
+        # P0-R3-4 / P0-R6-5: normaliza ids para str e detecta colisão.
+        # Detecção centralizada via helper (P1-R7-6 — também aplicada
+        # no caminho IN_SAMPLE_LEGACY).
+        coerced_strs = _coerce_identity_ids_or_raise(identity_ids)
         ids_arr = np.array(coerced_strs, dtype=object)
         unique_ids = np.unique(ids_arr)
         if len(unique_ids) < n_folds:
@@ -569,9 +623,16 @@ class ReferenceScoreCalibrationService:
         for fold_idx, fold_ids in enumerate(fold_assignments):
             for ident in fold_ids:
                 identity_to_fold[str(ident)] = fold_idx
-        split_fp_payload = "\n".join(
-            f"{ident}:{idx}"
-            for ident, idx in sorted(identity_to_fold.items())
+        # P2-R7-7 (revisão externa round 7): JSON canônico em vez de
+        # interpolação ad-hoc `f"{ident}:{idx}"`. A versão anterior era
+        # ambígua se uma identidade contivesse `:` ou `\n` — dois
+        # mapas distintos podiam produzir a mesma string e o mesmo
+        # hash.
+        import json
+        split_fp_payload = json.dumps(
+            sorted(identity_to_fold.items()),
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
         split_fingerprint = hashlib.sha256(
             split_fp_payload.encode("utf-8")
@@ -920,7 +981,12 @@ class ReferenceScoreCalibrationService:
             expected_backend=backend,
         )
         if identity_ids is not None:
-            model.fit(embeddings, identity_ids=tuple(str(i) for i in identity_ids))
+            # P1-R7-6 (revisão externa round 7): aplicar a detecção
+            # de colisão também no caminho legado. Antes, IN_SAMPLE
+            # aceitava silenciosamente int(1) + str("1") como mesma
+            # id após coerção.
+            safe_ids = _coerce_identity_ids_or_raise(identity_ids)
+            model.fit(embeddings, identity_ids=tuple(safe_ids))
         else:
             model.fit(embeddings)
         # Threshold OOD persistido no próprio modelo via `ood_quantile`.

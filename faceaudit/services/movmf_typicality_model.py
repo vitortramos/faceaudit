@@ -75,6 +75,7 @@ from faceaudit.services.oof_audit_metrics import (
     _normalize_oof_per_fold_floats_optional,
     _normalize_oof_per_fold_ints,
     _revalidate_oof_payload_or_raise,
+    _validate_cross_fit_audit_completeness_or_raise,
     _validate_oof_per_fold_lengths,
     _verify_audit_metrics_fingerprint_or_raise,
 )
@@ -752,49 +753,75 @@ class MoVMFTypicalityModel:
             )
         model._split_fingerprint = st.get("split_fingerprint")
 
-        # R4: hidrata métricas preditivas OOF. Pickles antigos (R3 e
-        # anteriores) não têm esses campos — `get` devolve None.
-        model._oof_predictive_avg_score = st.get("oof_predictive_avg_score")
-        _by_fold = st.get("oof_predictive_avg_score_by_fold")
+        # R4 + P0-R7-1: hidrata métricas preditivas OOF passando os
+        # VALORES BRUTOS para os normalizadores (sem `int(x)` defensivo
+        # antes). Coerções silenciosas truncavam `1.9 → 1` e
+        # neutralizavam a validação estrita de R6.
+        raw_oof_avg = st.get("oof_predictive_avg_score")
+        raw_oof_by_fold = st.get("oof_predictive_avg_score_by_fold")
+        raw_oof_by_fold = (
+            tuple(raw_oof_by_fold) if raw_oof_by_fold is not None else None
+        )
+        raw_n_ids = st.get("n_identities_by_fold")
+        raw_n_ids = tuple(raw_n_ids) if raw_n_ids is not None else None
+        raw_n_scores = st.get("n_scores_by_fold")
+        raw_n_scores = tuple(raw_n_scores) if raw_n_scores is not None else None
+        raw_ood_thr = st.get("ood_threshold_by_fold")
+        raw_ood_thr = tuple(raw_ood_thr) if raw_ood_thr is not None else None
+        raw_fs = st.get("fold_seeds")
+        raw_fs = tuple(raw_fs) if raw_fs is not None else None
+        raw_n_folds = st.get("n_folds_used")
+        # P0-R6-3 + P0-R7-1: re-aplica validações estruturais ANTES de
+        # armazenar nos atributos. Validador rejeita `1.9` antes de
+        # qualquer truncamento silencioso.
+        _revalidate_oof_payload_or_raise(
+            oof_predictive_avg_score=raw_oof_avg,
+            oof_predictive_avg_score_by_fold=raw_oof_by_fold,
+            n_identities_by_fold=raw_n_ids,
+            n_scores_by_fold=raw_n_scores,
+            ood_threshold_by_fold=raw_ood_thr,
+            fold_seeds=raw_fs,
+            n_folds_used=raw_n_folds,
+        )
+        # Validações OK — agora armazena (com os normalizadores
+        # aplicando a coerção segura que não trunca floats fracionários).
+        model._oof_predictive_avg_score = (
+            float(raw_oof_avg) if raw_oof_avg is not None else None
+        )
         model._oof_predictive_avg_score_by_fold = (
-            tuple(float(x) for x in _by_fold) if _by_fold is not None else None
+            tuple(float(x) for x in raw_oof_by_fold)
+            if raw_oof_by_fold is not None else None
         )
         model._oof_predictive_score_type = st.get("oof_predictive_score_type")
-        # R5: hidrata diagnósticos por fold + valida fingerprint
-        # auditável. Pickles pré-R5 não têm os campos — None tolerado.
-        _n_ids = st.get("n_identities_by_fold")
-        model._n_identities_by_fold = (
-            tuple(int(x) for x in _n_ids) if _n_ids is not None else None
+        model._n_identities_by_fold = _normalize_oof_per_fold_ints(
+            raw_n_ids, field="n_identities_by_fold",
         )
-        _n_scores = st.get("n_scores_by_fold")
-        model._n_scores_by_fold = (
-            tuple(int(x) for x in _n_scores) if _n_scores is not None else None
+        model._n_scores_by_fold = _normalize_oof_per_fold_ints(
+            raw_n_scores, field="n_scores_by_fold",
         )
-        _ood_thr_by_fold = st.get("ood_threshold_by_fold")
-        if _ood_thr_by_fold is not None:
-            model._ood_threshold_by_fold = tuple(
-                (float(x) if x is not None else None)
-                for x in _ood_thr_by_fold
-            )
-        else:
-            model._ood_threshold_by_fold = None
-        _fs = st.get("fold_seeds")
-        model._fold_seeds = (
-            tuple(int(x) for x in _fs) if _fs is not None else None
+        model._ood_threshold_by_fold = _normalize_oof_per_fold_floats_optional(
+            raw_ood_thr, field="ood_threshold_by_fold",
         )
-        model._n_folds_used = st.get("n_folds_used")
+        model._fold_seeds = _normalize_oof_per_fold_ints(
+            raw_fs, field="fold_seeds",
+        )
+        model._n_folds_used = _normalize_n_folds_used(raw_n_folds)
         model._audit_metrics_fingerprint = st.get("audit_metrics_fingerprint")
-        # P0-R6-3 (revisão externa round 6): re-aplica validações
-        # estruturais sobre o payload OOF restaurado — finitude,
-        # comprimentos coerentes, contagens não-negativas. Detecta
-        # adulteração que recalcula o fingerprint para esconder
-        # `NaN` ou `n_folds_used` divergente.
-        _revalidate_oof_payload_or_raise(
+        # P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo +
+        # score_type esperado por backend. Fecha o caminho onde TODOS
+        # os diagnósticos OOF + fingerprint eram removidos e o modelo
+        # ainda era carregado como CROSS_FIT_IDENTITY válido.
+        _validate_cross_fit_audit_completeness_or_raise(
+            backend="MOVMF",
+            reference_score_calibration_mode=model._reference_score_calibration_mode,
+            persisted_fingerprint=model._audit_metrics_fingerprint,
             oof_predictive_avg_score=model._oof_predictive_avg_score,
             oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=model._oof_predictive_score_type,
             n_identities_by_fold=model._n_identities_by_fold,
             n_scores_by_fold=model._n_scores_by_fold,
             ood_threshold_by_fold=model._ood_threshold_by_fold,
+            split_fingerprint=model._split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
         )
@@ -1016,15 +1043,18 @@ class MoVMFTypicalityModel:
     def cross_fit_training_contract_snapshot(self) -> dict:
         """P0-R6-1 (revisão externa round 6): captura os hiperparâmetros
         de treino que devem ser idênticos entre peek/fold/refit do
-        cross-fit. Antes, o serviço comparava apenas `model_type`,
-        `reference_score_basis_type`, `population_weighting_mode`,
-        `embedding_dim` e `enabled_score_types`; uma factory adversarial
-        podia alternar `n_components` ou `centering` entre folds
-        produzindo concatenação de scores semanticamente diferentes.
+        cross-fit.
 
         Avaliado ANTES do fit — só lê config/hiperparâmetros, não estado
         treinado. O serviço captura o snapshot de cada instância
         construída e exige igualdade exata.
+
+        P1-R7-5 (revisão externa round 7): `random_state` NÃO está no
+        contrato (varia legitimamente entre folds via
+        `_build_model(seed=fold_seed)`). Em vez disso, o serviço valida
+        diretamente `model.random_state == requested_seed` após
+        construção. O backend MoVMF é estocástico (EM com random init);
+        a estratégia documentada é `base_seed_plus_fold_index`.
         """
         return {
             "model_type": self.model_type.to_str(),
@@ -1033,7 +1063,6 @@ class MoVMFTypicalityModel:
             "max_iter": int(self.max_iter),
             "tol": float(self.tol),
             "convergence_patience": int(self.convergence_patience),
-            "random_state_policy": "fixed",
             "n_init": int(self.n_init),
             "min_component_weight": float(self.min_component_weight),
             "min_kappa": float(self.min_kappa),

@@ -34,6 +34,7 @@ from faceaudit.enums.unit_norm_policy import UnitNormPolicy
 from faceaudit.services.knn_typicality_model import KNNTypicalityModel
 from faceaudit.services.movmf_typicality_model import MoVMFTypicalityModel
 from faceaudit.services.oof_audit_metrics import (
+    IncompleteCrossFitAuditPayloadError,
     MissingOofAuditMetricFingerprintError,
 )
 from faceaudit.services.reference_score_calibration_service import (
@@ -170,7 +171,16 @@ def test_audit_fingerprint_removal_bypass_blocked():
     # Demonstração canônica do revisor:
     payload["state"]["oof_predictive_avg_score"] += 999.0
     payload["state"]["audit_metrics_fingerprint"] = None
-    with pytest.raises(MissingOofAuditMetricFingerprintError):
+    # R7 endurece: o caminho CROSS_FIT_IDENTITY agora exige bloco
+    # completo (P0-R7-2) ANTES do verify do fingerprint (P0-R6-2). A
+    # remoção do fingerprint dispara `IncompleteCrossFitAuditPayload`
+    # — também fail-closed, com mensagem ainda mais informativa.
+    with pytest.raises(
+        (
+            IncompleteCrossFitAuditPayloadError,
+            MissingOofAuditMetricFingerprintError,
+        ),
+    ):
         MoVMFTypicalityModel.from_dict(payload)
 
 
