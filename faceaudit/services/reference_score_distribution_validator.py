@@ -136,6 +136,21 @@ def validate_reference_score_distribution(
             "exige CDF explícita para garantir coerência. Use cumsum"
             "(weights)/sum.",
         )
+    # P1-R6-7 (revisão externa round 6): rejeita também CDF sem
+    # weights. Antes, o validador aceitava — abrindo brecha para
+    # CDF arbitrária sem possibilidade de reconstrução a partir de
+    # pesos auditáveis. No formato canônico, pesos e CDF são pareados:
+    # ambos None (caso uniforme: rank implícito), ou ambos presentes
+    # e coerentes. Adaptadores de migração de formatos antigos devem
+    # converter explicitamente antes de chamar este validador.
+    if cdf is not None and weights is None:
+        raise InvalidReferenceDistributionError(
+            "weights",
+            "cdf presente mas weights ausente — formato canônico exige "
+            "pesos explícitos sempre que a CDF for persistida. Caso a "
+            "intenção seja peso uniforme, persista `weights = ones(N)/N` "
+            "junto com a CDF.",
+        )
     if cdf is not None and weights is not None:
         total_w = float(weights.sum())
         expected_cdf = np.cumsum(weights) / total_w

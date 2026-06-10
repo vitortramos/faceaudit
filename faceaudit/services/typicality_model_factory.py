@@ -115,17 +115,33 @@ class TypicalityModelFactory:
             )
         model = cls.from_dict(payload["legacy_to_dict"])
 
-        # Verifica que os fingerprints declarados batem com os recomputados
+        # P0-R6-4 (revisão externa round 6): no schema atual, ambos
+        # os fingerprints são OBRIGATÓRIOS. Antes, `expected_state` e
+        # `expected_contract` eram verificados apenas quando presentes,
+        # permitindo bypass via remoção do bloco `fingerprints`.
         expected = payload.get("fingerprints", {}) or {}
         expected_state = expected.get("model_state_fingerprint")
         expected_contract = expected.get("model_contract_fingerprint")
-        if expected_state and model.model_state_fingerprint != expected_state:
+        if not expected_state:
+            raise ValueError(
+                "TypicalityModelFactory.from_dict: envelope sem "
+                "`fingerprints.model_state_fingerprint`. No schema atual "
+                "ambos os fingerprints (state + contract) são obrigatórios "
+                "— sua ausência desativaria a proteção contra adulteração."
+            )
+        if not expected_contract:
+            raise ValueError(
+                "TypicalityModelFactory.from_dict: envelope sem "
+                "`fingerprints.model_contract_fingerprint`. Idem regra "
+                "acima: ambos os fingerprints são obrigatórios."
+            )
+        if model.model_state_fingerprint != expected_state:
             raise EnvelopeFingerprintMismatch(
                 kind="state",
                 expected=expected_state,
                 actual=model.model_state_fingerprint,
             )
-        if expected_contract and model.model_contract_fingerprint != expected_contract:
+        if model.model_contract_fingerprint != expected_contract:
             raise EnvelopeFingerprintMismatch(
                 kind="contract",
                 expected=expected_contract,

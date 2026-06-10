@@ -393,6 +393,30 @@ class KNNTypicalityModel:
     def is_fitted(self) -> bool:
         return self._state is not None
 
+    def cross_fit_training_contract_snapshot(self) -> dict:
+        """P0-R6-1 (revisão externa round 6): captura os hiperparâmetros
+        de treino que devem ser idênticos entre peek/fold/refit do
+        cross-fit. Em particular, `k` precisa ser estável — antes uma
+        factory adversarial podia alternar `k=2` e `k=5` entre folds
+        e o serviço aceitava.
+        """
+        return {
+            "model_type": self.model_type.to_str(),
+            "k": int(self.k),
+            "ood_quantile": float(self.ood_quantile),
+            "reference_mode": self.reference_mode.to_str(),
+            "population_weighting_mode":
+                self.population_weighting_mode.to_str(),
+            "unit_norm_policy": self.unit_norm_policy.to_str(),
+            "unit_norm_tolerance": float(self.unit_norm_tolerance),
+            "eps": float(self.eps),
+            "reference_score_basis_type": (
+                self.reference_score_basis_type.to_str()
+                if hasattr(self.reference_score_basis_type, "to_str")
+                else str(self.reference_score_basis_type)
+            ),
+        }
+
     def install_reference_score_calibration(
         self,
         *,
@@ -511,6 +535,7 @@ class KNNTypicalityModel:
         # P0-R5-2: valida finitude + comprimentos antes de instalar.
         from faceaudit.services.oof_audit_metrics import (
             _compute_audit_metrics_fingerprint,
+            _normalize_n_folds_used,
             _normalize_oof_avg_score,
             _normalize_oof_per_fold_floats,
             _normalize_oof_per_fold_floats_optional,
@@ -536,9 +561,8 @@ class KNNTypicalityModel:
         norm_fold_seeds = _normalize_oof_per_fold_ints(
             fold_seeds, field="fold_seeds",
         )
-        norm_n_folds_used = (
-            int(n_folds_used) if n_folds_used is not None else None
-        )
+        # P1-R6-6: usa o helper estrito (rejeita float fracionário).
+        norm_n_folds_used = _normalize_n_folds_used(n_folds_used)
         _validate_oof_per_fold_lengths(
             n_folds_used=norm_n_folds_used,
             oof_by_fold=norm_oof_by_fold,
@@ -878,10 +902,22 @@ class KNNTypicalityModel:
         )
         model._n_folds_used = ls.get("n_folds_used")
         model._audit_metrics_fingerprint = ls.get("audit_metrics_fingerprint")
-        # P0-R5-3: valida fingerprint auditável das métricas OOF.
+        # P0-R6-3 (revisão externa round 6): re-aplica validações
+        # estruturais sobre o payload OOF restaurado.
         from faceaudit.services.oof_audit_metrics import (
+            _revalidate_oof_payload_or_raise,
             _verify_audit_metrics_fingerprint_or_raise,
         )
+        _revalidate_oof_payload_or_raise(
+            oof_predictive_avg_score=model._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            n_identities_by_fold=model._n_identities_by_fold,
+            n_scores_by_fold=model._n_scores_by_fold,
+            ood_threshold_by_fold=model._ood_threshold_by_fold,
+            fold_seeds=model._fold_seeds,
+            n_folds_used=model._n_folds_used,
+        )
+        # P0-R5-3: valida fingerprint auditável das métricas OOF.
         _verify_audit_metrics_fingerprint_or_raise(
             persisted_fingerprint=model._audit_metrics_fingerprint,
             oof_predictive_avg_score=model._oof_predictive_avg_score,

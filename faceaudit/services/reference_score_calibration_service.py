@@ -108,6 +108,26 @@ class BackendMismatchError(RuntimeError):
         self.actual = actual
 
 
+class IdentityCanonicalizationCollisionError(ValueError):
+    """Coerção para `str` produziu colisão entre identidades originalmente
+    distintas (e.g. inteiro `1` e string `"1"` viram ambas `"1"`).
+
+    P0-R6-5 (revisão externa 2026-06-09 round 6): em sistema pericial,
+    não vale a pena aceitar ambiguidade silenciosa entre identidades.
+    Caller deve canonicalizar antes (todos `str` ou todos `int`),
+    ou expor um identifier explícito por face.
+    """
+
+    def __init__(self, *, collisions) -> None:
+        super().__init__(
+            f"IdentityCanonicalizationCollision: a coerção `str(i)` "
+            f"colidiu identidades originalmente distintas: {collisions!r}. "
+            "Em uso forense, isso é fail-closed — normalize as identidades "
+            "no caller antes de chamar `calibrate(...)`."
+        )
+        self.collisions = collisions
+
+
 class CrossFitContractMismatchError(RuntimeError):
     """Modelo construído pela factory em fold/refit difere semanticamente
     do peek_model em campos que afetam a interpretação dos scores OOF.
@@ -163,7 +183,7 @@ def _contract_snapshot(model) -> dict:
         except (RuntimeError, AttributeError):
             return None
 
-    return {
+    base = {
         "model_type": _normalize(_safe_attr("model_type")),
         "reference_score_basis_type": _normalize(
             _safe_attr("reference_score_basis_type")
@@ -174,20 +194,52 @@ def _contract_snapshot(model) -> dict:
         "embedding_dim": _safe_attr("embedding_dim"),
         "enabled_score_types": _normalize(_safe_attr("enabled_score_types")),
     }
+    # P0-R6-1 (revisão externa round 6): também captura hiperparâmetros
+    # de treino — `k`, `n_components`, `centering`, `ood_quantile`,
+    # políticas de norma, etc. — para detectar factories adversariais
+    # que mudam K ou n_components entre folds.
+    training_snapshot = None
+    if hasattr(model, "cross_fit_training_contract_snapshot"):
+        try:
+            training_snapshot = model.cross_fit_training_contract_snapshot()
+        except (RuntimeError, AttributeError):
+            training_snapshot = None
+    base["training_contract"] = training_snapshot
+    return base
 
 
-def _validate_contract_matches(peek: dict, other: dict, *, fold_index=None) -> None:
+def _validate_contract_matches(
+    peek: dict, other: dict, *, fold_index=None, phase: str = "pre_fit",
+) -> None:
     """Compara dois snapshots de contrato. Difere → CrossFitContractMismatchError.
 
-    `embedding_dim` é tolerante a None (alguns backends só calculam após
-    o fit); só compara se ambos têm valor.
+    P0-R6-1: também compara `training_contract` (hiperparâmetros de
+    treino) campo a campo — fail-closed em qualquer divergência.
+
+    `phase`:
+    - `"pre_fit"` (default): valida tudo. Em modelos não fitted,
+      `enabled_score_types` pode ser `()` e `embedding_dim` `None`
+      (tolerado).
+    - `"post_fit"`: o peek_model continua pré-fit, mas o `other` já
+      foi treinado. Pulamos `enabled_score_types` (cresce
+      monotonicamente no fit) e `embedding_dim` (calculado após fit
+      em alguns backends). Validamos só os invariantes estáveis ao
+      fit: `model_type`, `reference_score_basis_type`,
+      `population_weighting_mode`, `training_contract`.
     """
-    for field in (
+    if phase not in ("pre_fit", "post_fit"):
+        raise ValueError(f"phase desconhecida: {phase!r}")
+
+    invariant_fields = (
         "model_type",
         "reference_score_basis_type",
         "population_weighting_mode",
-        "enabled_score_types",
-    ):
+    )
+    pre_fit_only_fields = (
+        () if phase == "post_fit" else ("enabled_score_types",)
+    )
+
+    for field in invariant_fields + pre_fit_only_fields:
         if peek.get(field) != other.get(field):
             raise CrossFitContractMismatchError(
                 field=field,
@@ -195,14 +247,41 @@ def _validate_contract_matches(peek: dict, other: dict, *, fold_index=None) -> N
                 fold_value=other.get(field),
                 fold_index=fold_index,
             )
-    if peek.get("embedding_dim") is not None and other.get("embedding_dim") is not None:
-        if peek["embedding_dim"] != other["embedding_dim"]:
+
+    if phase == "pre_fit":
+        if (
+            peek.get("embedding_dim") is not None
+            and other.get("embedding_dim") is not None
+            and peek["embedding_dim"] != other["embedding_dim"]
+        ):
             raise CrossFitContractMismatchError(
                 field="embedding_dim",
                 peek_value=peek["embedding_dim"],
                 fold_value=other["embedding_dim"],
                 fold_index=fold_index,
             )
+    # P0-R6-1: contrato de hiperparâmetros de treino.
+    peek_tc = peek.get("training_contract")
+    other_tc = other.get("training_contract")
+    if peek_tc is not None and other_tc is not None:
+        for key in peek_tc:
+            if peek_tc.get(key) != other_tc.get(key):
+                raise CrossFitContractMismatchError(
+                    field=f"training_contract.{key}",
+                    peek_value=peek_tc.get(key),
+                    fold_value=other_tc.get(key),
+                    fold_index=fold_index,
+                )
+    elif peek_tc is None and other_tc is not None:
+        raise CrossFitContractMismatchError(
+            field="training_contract",
+            peek_value=None, fold_value=other_tc, fold_index=fold_index,
+        )
+    elif peek_tc is not None and other_tc is None:
+        raise CrossFitContractMismatchError(
+            field="training_contract",
+            peek_value=peek_tc, fold_value=None, fold_index=fold_index,
+        )
 
 from faceaudit.enums.reference_score_calibration_mode import (
     ReferenceScoreCalibrationMode,
@@ -325,7 +404,8 @@ class ReferenceScoreCalibrationResult:
         """DEPRECATED (P1-R3-9): nome confuso — armazenava SCORES,
         não CDF. Use `oof_reference_scores_sorted`.
 
-        Emite DeprecationWarning. Será removido em revisão final V4.
+        Emite DeprecationWarning. Remoção planejada em revisão final V7
+        (após a suíte interna deixar de depender do alias).
         """
         import warnings
         warnings.warn(
@@ -343,7 +423,9 @@ class ReferenceScoreCalibrationService:
     """Serviço de calibração de score de referência.
 
     Implementação por backend dispatchada via `TypicalityModelType`.
-    Em PR 2 só `IN_SAMPLE_LEGACY` está implementado.
+    Em V2.15+ `CROSS_FIT_IDENTITY` e `IN_SAMPLE_LEGACY` estão ambos
+    implementados para MoVMF e k-NN (round 4 introduziu PLL OOF
+    agregada; rounds 5/6 endureceram contratos e fingerprints).
     """
 
     def calibrate(
@@ -444,7 +526,30 @@ class ReferenceScoreCalibrationService:
         # P0-R3-4: normaliza `identity_ids` para strings cedo. Antes,
         # IDs heterogêneos como `(1, "1", 2, "2")` quebravam
         # `np.unique` com erro de ordenação entre str e int.
-        ids_arr = np.array([str(i) for i in identity_ids], dtype=object)
+        #
+        # P0-R6-5 (revisão externa round 6): mas a coerção para str
+        # pode colapsar identidades originalmente distintas (e.g.
+        # int(1) e str("1") viram ambas "1"). Detectamos colisão
+        # comparando o multiset original (representação tipo+valor)
+        # com o multiset coercido.
+        original_signatures = [
+            (type(i).__name__, repr(i)) for i in identity_ids
+        ]
+        coerced_strs = [str(i) for i in identity_ids]
+        # Conjuntos: se o número de pares (str, original-sig) distintos
+        # for menor que o número de strings distintas, houve colisão de
+        # signatures distintas no mesmo string.
+        from collections import defaultdict
+        str_to_sigs: defaultdict = defaultdict(set)
+        for s, sig in zip(coerced_strs, original_signatures):
+            str_to_sigs[s].add(sig)
+        collisions = {
+            s: sorted(sigs)
+            for s, sigs in str_to_sigs.items() if len(sigs) > 1
+        }
+        if collisions:
+            raise IdentityCanonicalizationCollisionError(collisions=collisions)
+        ids_arr = np.array(coerced_strs, dtype=object)
         unique_ids = np.unique(ids_arr)
         if len(unique_ids) < n_folds:
             raise ValueError(
@@ -548,6 +653,18 @@ class ReferenceScoreCalibrationService:
             train_ids = tuple(str(i) for i in ids_arr[train_mask])
             fold_model.fit(
                 embeddings[train_mask], identity_ids=train_ids,
+            )
+            # P1-R6-9 (revisão externa round 6): segunda checagem do
+            # contrato APÓS o fit. Para backends futuros que possam
+            # mutar properties no fit, isso garante que o contrato não
+            # divergiu silenciosamente. `phase="post_fit"` ignora
+            # `enabled_score_types` e `embedding_dim` que crescem
+            # legitimamente no fit.
+            _validate_contract_matches(
+                peek_contract,
+                _contract_snapshot(fold_model),
+                fold_index=fold_idx,
+                phase="post_fit",
             )
 
             # P0-R2-2 (revisão externa 2026-06-09 round 2): consulta
@@ -653,6 +770,11 @@ class ReferenceScoreCalibrationService:
         )
         all_ids = tuple(str(i) for i in ids_arr)
         refit_model.fit(embeddings, identity_ids=all_ids)
+        # P1-R6-9: segunda checagem pós-fit.
+        _validate_contract_matches(
+            peek_contract, _contract_snapshot(refit_model), fold_index=None,
+            phase="post_fit",
+        )
 
         # Pesos OOF derivados do `population_weighting_mode` do modelo
         # treinado. Lógica:
@@ -701,9 +823,10 @@ class ReferenceScoreCalibrationService:
         # população". No MoVMF, score_type = LOG_DENSITY_ESTIMATE
         # implica que este número é diretamente PLL_OOF (alias exposto
         # no summary do MoVMF como `oof_predictive_avg_log_likelihood`).
-        # No k-NN (score_type = MEAN_KNN_SIMILARITY), é a similaridade
-        # média ao k-ésimo vizinho — útil como métrica relativa entre
-        # ks, não como log-densidade.
+        # No k-NN (score_type = MEAN_KNN_SIMILARITY), é T_k médio
+        # (similaridade média AOS k VIZINHOS MAIS PRÓXIMOS, não ao
+        # k-ésimo) — útil como métrica relativa entre ks, não como
+        # log-densidade.
         oof_predictive_avg = float(
             np.sum(oof_weights * oof_scores_final) / oof_weights.sum()
         )

@@ -69,10 +69,12 @@ from faceaudit.models.typicality.typicality_score_batch import (
 from faceaudit.services.oof_audit_metrics import (
     OofAuditMetricMismatchError,
     _compute_audit_metrics_fingerprint,
+    _normalize_n_folds_used,
     _normalize_oof_avg_score,
     _normalize_oof_per_fold_floats,
     _normalize_oof_per_fold_floats_optional,
     _normalize_oof_per_fold_ints,
+    _revalidate_oof_payload_or_raise,
     _validate_oof_per_fold_lengths,
     _verify_audit_metrics_fingerprint_or_raise,
 )
@@ -674,9 +676,44 @@ class MoVMFTypicalityModel:
 
         # 'reference_point' (v2) ou 'mean_vector' (v1)
         ref = st.get("reference_point", st.get("mean_vector", None))
-        model._reference_point = (
-            np.array(ref, dtype=np.float64) if ref is not None else None
-        )
+        if ref is None:
+            model._reference_point = None
+        else:
+            ref_arr = np.array(ref, dtype=np.float64)
+            # P1-R6-8 (revisão externa round 6): validação de
+            # `reference_point` no load. Antes, ANY shape + NaN + inf
+            # eram aceitos.
+            if ref_arr.ndim != 1:
+                raise ValueError(
+                    f"MoVMFTypicalityModel.from_dict: reference_point "
+                    f"deve ser 1D, recebido shape={ref_arr.shape}."
+                )
+            expected_dim = int(lp["dim"])
+            if ref_arr.shape[0] != expected_dim:
+                raise ValueError(
+                    f"MoVMFTypicalityModel.from_dict: reference_point "
+                    f"shape ({ref_arr.shape[0]},) ≠ dim do modelo "
+                    f"({expected_dim},)."
+                )
+            if not np.all(np.isfinite(ref_arr)):
+                raise ValueError(
+                    "MoVMFTypicalityModel.from_dict: reference_point "
+                    "contém NaN ou inf."
+                )
+            # Em `centering=none`, reference_point deveria ser None.
+            # Aceitamos non-None (algumas versões legadas persistiam
+            # vetores triviais) mas exigimos coerência: o modo `frechet`
+            # produz vetor na esfera (norma ≈ 1).
+            centering_val = hp.get("centering", "none")
+            if centering_val == "frechet":
+                norm = float(np.linalg.norm(ref_arr))
+                if not np.isclose(norm, 1.0, atol=1e-3):
+                    raise ValueError(
+                        f"MoVMFTypicalityModel.from_dict: reference_point "
+                        f"em centering=frechet deve estar próximo da esfera "
+                        f"unitária (norma={norm:.4f})."
+                    )
+            model._reference_point = ref_arr
 
         if st.get("train_log_likelihoods") is not None:
             model._train_log_likelihoods = np.array(
@@ -747,6 +784,20 @@ class MoVMFTypicalityModel:
         )
         model._n_folds_used = st.get("n_folds_used")
         model._audit_metrics_fingerprint = st.get("audit_metrics_fingerprint")
+        # P0-R6-3 (revisão externa round 6): re-aplica validações
+        # estruturais sobre o payload OOF restaurado — finitude,
+        # comprimentos coerentes, contagens não-negativas. Detecta
+        # adulteração que recalcula o fingerprint para esconder
+        # `NaN` ou `n_folds_used` divergente.
+        _revalidate_oof_payload_or_raise(
+            oof_predictive_avg_score=model._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            n_identities_by_fold=model._n_identities_by_fold,
+            n_scores_by_fold=model._n_scores_by_fold,
+            ood_threshold_by_fold=model._ood_threshold_by_fold,
+            fold_seeds=model._fold_seeds,
+            n_folds_used=model._n_folds_used,
+        )
         # P0-R5-3: valida fingerprint auditável. Detecta adulteração
         # do tipo `payload["state"]["oof_predictive_avg_score"] += X`
         # após o install.
@@ -961,6 +1012,44 @@ class MoVMFTypicalityModel:
 
     def has_percentile_reference(self) -> bool:
         return self._train_log_likelihoods is not None
+
+    def cross_fit_training_contract_snapshot(self) -> dict:
+        """P0-R6-1 (revisão externa round 6): captura os hiperparâmetros
+        de treino que devem ser idênticos entre peek/fold/refit do
+        cross-fit. Antes, o serviço comparava apenas `model_type`,
+        `reference_score_basis_type`, `population_weighting_mode`,
+        `embedding_dim` e `enabled_score_types`; uma factory adversarial
+        podia alternar `n_components` ou `centering` entre folds
+        produzindo concatenação de scores semanticamente diferentes.
+
+        Avaliado ANTES do fit — só lê config/hiperparâmetros, não estado
+        treinado. O serviço captura o snapshot de cada instância
+        construída e exige igualdade exata.
+        """
+        return {
+            "model_type": self.model_type.to_str(),
+            "n_components": int(self.n_components),
+            "centering": str(self.centering),
+            "max_iter": int(self.max_iter),
+            "tol": float(self.tol),
+            "convergence_patience": int(self.convergence_patience),
+            "random_state_policy": "fixed",
+            "n_init": int(self.n_init),
+            "min_component_weight": float(self.min_component_weight),
+            "min_kappa": float(self.min_kappa),
+            "max_kappa": float(self.max_kappa),
+            "ood_quantile": float(self.ood_quantile),
+            "population_weighting_mode":
+                self.population_weighting_mode.to_str(),
+            "unit_norm_policy": self.unit_norm_policy.to_str(),
+            "unit_norm_tolerance": float(self.unit_norm_tolerance),
+            "reference_score_basis_type": (
+                self.reference_score_basis_type.to_str()
+                if hasattr(self.reference_score_basis_type, "to_str")
+                else str(self.reference_score_basis_type)
+            ),
+            "eps": float(self.eps),
+        }
 
     def _freeze_state_arrays(self) -> None:
         """P1-R3-7 (revisão externa 2026-06-09 round 3): congela arrays
@@ -1271,9 +1360,8 @@ class MoVMFTypicalityModel:
         norm_fold_seeds = _normalize_oof_per_fold_ints(
             fold_seeds, field="fold_seeds",
         )
-        norm_n_folds_used = (
-            int(n_folds_used) if n_folds_used is not None else None
-        )
+        # P1-R6-6: usa o helper estrito (rejeita float fracionário).
+        norm_n_folds_used = _normalize_n_folds_used(n_folds_used)
         # Comprimentos cruzados: todos os arrays por-fold devem ter o
         # mesmo tamanho que n_folds_used.
         _validate_oof_per_fold_lengths(

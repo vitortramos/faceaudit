@@ -37,6 +37,27 @@ class OofAuditMetricMismatchError(ValueError):
         self.computed = computed
 
 
+class MissingOofAuditMetricFingerprintError(ValueError):
+    """Payload OOF presente sem fingerprint auditável correspondente.
+
+    P0-R6-2 (revisão externa 2026-06-09 round 6): fechar o bypass
+    demonstrado pelo revisor — `payload["state"]["audit_metrics_fingerprint"]
+    = None` permitia que QUALQUER alteração das métricas OOF passasse
+    despercebida. A nova regra é: se há qualquer campo OOF persistido,
+    o fingerprint é obrigatório.
+    """
+
+    def __init__(self, *, fields_present: tuple) -> None:
+        super().__init__(
+            "MissingOofAuditMetricFingerprint: payload tem campos OOF "
+            f"persistidos {fields_present!r} mas `audit_metrics_fingerprint` "
+            "é None. Em modelos com payload OOF, o fingerprint auditável "
+            "é obrigatório — removê-lo desativaria a proteção contra "
+            "adulteração das métricas."
+        )
+        self.fields_present = fields_present
+
+
 # ─── Validadores de finitude e comprimento ──────────────────────────────
 
 
@@ -88,17 +109,42 @@ def _normalize_oof_per_fold_floats_optional(
 
 
 def _normalize_oof_per_fold_ints(value, *, field: str) -> Optional[tuple]:
+    """P1-R6-6 (revisão externa round 6): aceita SOMENTE inteiros
+    estritos (int/np.integer ou float com `.is_integer()=True`).
+    Floats fracionários como 1.9 ou 2.2 são rejeitados — antes,
+    `int(1.9)` truncava silenciosamente para 1.
+
+    `bool` é explicitamente rejeitado (Python `bool` é subclasse de
+    `int` mas semanticamente seria ambíguo aqui).
+    """
     if value is None:
         return None
     out = []
     for i, x in enumerate(value):
-        try:
-            v = int(x)
-        except (TypeError, ValueError) as exc:
+        if isinstance(x, bool):
             raise ValueError(
                 f"install_reference_score_calibration: {field}[{i}] "
-                f"não inteiro ({x!r})."
-            ) from exc
+                f"bool não é aceito ({x!r})."
+            )
+        if isinstance(x, (int, np.integer)):
+            v = int(x)
+        elif isinstance(x, (float, np.floating)):
+            if not np.isfinite(x):
+                raise ValueError(
+                    f"install_reference_score_calibration: {field}[{i}] "
+                    f"não-finito ({x!r})."
+                )
+            if not float(x).is_integer():
+                raise ValueError(
+                    f"install_reference_score_calibration: {field}[{i}] "
+                    f"= {x!r} não é inteiro (fração não nula)."
+                )
+            v = int(x)
+        else:
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"= {x!r} não é numérico inteiro."
+            )
         if v < 0:
             raise ValueError(
                 f"install_reference_score_calibration: {field}[{i}] "
@@ -106,6 +152,44 @@ def _normalize_oof_per_fold_ints(value, *, field: str) -> Optional[tuple]:
             )
         out.append(v)
     return tuple(out)
+
+
+def _normalize_n_folds_used(value) -> Optional[int]:
+    """P1-R6-6: `n_folds_used` aceita None, int não-negativo ou float
+    com parte fracionária zero. Floats fracionários levantam.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used bool "
+            f"não é aceito ({value!r})."
+        )
+    if isinstance(value, (int, np.integer)):
+        v = int(value)
+    elif isinstance(value, (float, np.floating)):
+        if not np.isfinite(value):
+            raise ValueError(
+                f"install_reference_score_calibration: n_folds_used "
+                f"não-finito ({value!r})."
+            )
+        if not float(value).is_integer():
+            raise ValueError(
+                f"install_reference_score_calibration: n_folds_used "
+                f"= {value!r} não é inteiro."
+            )
+        v = int(value)
+    else:
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used "
+            f"= {value!r} não é numérico inteiro."
+        )
+    if v < 0:
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used "
+            f"negativo ({v})."
+        )
+    return v
 
 
 def _validate_oof_per_fold_lengths(
@@ -239,6 +323,55 @@ def _compute_audit_metrics_fingerprint(
     return h.hexdigest()
 
 
+def _revalidate_oof_payload_or_raise(
+    *,
+    oof_predictive_avg_score,
+    oof_predictive_avg_score_by_fold,
+    n_identities_by_fold,
+    n_scores_by_fold,
+    ood_threshold_by_fold,
+    fold_seeds,
+    n_folds_used,
+) -> None:
+    """P0-R6-3 (revisão externa round 6): re-aplica as validações
+    estruturais sobre o payload OOF carregado de pickle.
+
+    SHA-256 não substitui validação semântica — alguém que tenha
+    capacidade de adulterar o payload pode recalcular o hash. Aqui
+    re-rodamos os normalizadores: NaN/inf, contagens negativas,
+    comprimentos incoerentes. Levanta `ValueError` em qualquer
+    violação.
+
+    Tolera campos None (pickle pré-R4 sem cross-fit). Mas quando há
+    payload, os comprimentos têm de ser coerentes.
+    """
+    _normalize_oof_avg_score(
+        oof_predictive_avg_score, field="oof_predictive_avg_score",
+    )
+    _normalize_oof_per_fold_floats(
+        oof_predictive_avg_score_by_fold,
+        field="oof_predictive_avg_score_by_fold",
+    )
+    _normalize_oof_per_fold_ints(
+        n_identities_by_fold, field="n_identities_by_fold",
+    )
+    _normalize_oof_per_fold_ints(
+        n_scores_by_fold, field="n_scores_by_fold",
+    )
+    _normalize_oof_per_fold_floats_optional(
+        ood_threshold_by_fold, field="ood_threshold_by_fold",
+    )
+    _normalize_oof_per_fold_ints(fold_seeds, field="fold_seeds")
+    _validate_oof_per_fold_lengths(
+        n_folds_used=(int(n_folds_used) if n_folds_used is not None else None),
+        oof_by_fold=oof_predictive_avg_score_by_fold,
+        n_identities_by_fold=n_identities_by_fold,
+        n_scores_by_fold=n_scores_by_fold,
+        ood_threshold_by_fold=ood_threshold_by_fold,
+        fold_seeds=fold_seeds,
+    )
+
+
 def _verify_audit_metrics_fingerprint_or_raise(
     *,
     persisted_fingerprint: Optional[str],
@@ -255,13 +388,38 @@ def _verify_audit_metrics_fingerprint_or_raise(
     """Recalcula o fingerprint e compara ao persistido. Para uso no
     `from_dict` dos backends.
 
-    `persisted_fingerprint` None significa pickle antigo (anterior a
-    R5) — sem verificação possível. Note que o revisor R5 também aceita
-    isso porque a verificação só protege estados POSTERIORES ao install
-    R5; nada a defender em pickles pré-R5.
+    P0-R6-2 (revisão externa round 6): regra fail-closed —
+    - SEM nenhum campo OOF persistido (todos None): pickle pré-R4 sem
+      cross-fit. Permite migração (fingerprint pode ser None).
+    - COM qualquer campo OOF persistido + fingerprint None: rejeita
+      com `MissingOofAuditMetricFingerprintError` (fechar bypass
+      demonstrado pelo revisor: remover o fingerprint desativava a
+      proteção).
+    - COM payload OOF + fingerprint presente: recalcula e compara.
     """
+    fields_by_name = {
+        "oof_predictive_avg_score": oof_predictive_avg_score,
+        "oof_predictive_avg_score_by_fold": oof_predictive_avg_score_by_fold,
+        "oof_predictive_score_type": oof_predictive_score_type,
+        "n_identities_by_fold": n_identities_by_fold,
+        "n_scores_by_fold": n_scores_by_fold,
+        "ood_threshold_by_fold": ood_threshold_by_fold,
+        "split_fingerprint": split_fingerprint,
+        "fold_seeds": fold_seeds,
+        "n_folds_used": n_folds_used,
+    }
+    fields_present = tuple(
+        name for name, value in fields_by_name.items()
+        if value is not None
+    )
+
     if persisted_fingerprint is None:
+        if fields_present:
+            raise MissingOofAuditMetricFingerprintError(
+                fields_present=fields_present,
+            )
         return
+
     computed = _compute_audit_metrics_fingerprint(
         oof_predictive_avg_score=oof_predictive_avg_score,
         oof_predictive_avg_score_by_fold=oof_predictive_avg_score_by_fold,
