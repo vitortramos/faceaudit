@@ -107,6 +107,103 @@ class BackendMismatchError(RuntimeError):
         self.expected = expected
         self.actual = actual
 
+
+class CrossFitContractMismatchError(RuntimeError):
+    """Modelo construído pela factory em fold/refit difere semanticamente
+    do peek_model em campos que afetam a interpretação dos scores OOF.
+
+    P0-R5-5 (revisão externa 2026-06-09 round 5): fail-closed quando a
+    factory devolve modelos com `reference_score_basis_type`,
+    `population_weighting_mode`, `embedding_dim` ou `enabled_score_types`
+    incompatíveis entre folds — antes, o serviço concatenava silenciosamente
+    scores em escalas diferentes (ex.: fold ímpar em LOG_DENSITY, par em
+    MEAN_KNN_SIMILARITY).
+    """
+
+    def __init__(self, *, field: str, peek_value, fold_value, fold_index=None) -> None:
+        where = "refit" if fold_index is None else f"fold {fold_index}"
+        super().__init__(
+            f"CrossFitContractMismatch: campo {field!r} divergiu entre "
+            f"peek_model e {where}. peek={peek_value!r}, "
+            f"{where}={fold_value!r}. A factory deve produzir modelos "
+            "semanticamente equivalentes em peek/folds/refit."
+        )
+        self.field = field
+        self.peek_value = peek_value
+        self.fold_value = fold_value
+        self.fold_index = fold_index
+
+
+def _contract_snapshot(model) -> dict:
+    """Captura os campos que precisam ser estáveis entre peek/folds/refit
+    para que os scores OOF sejam concatenáveis sem ambiguidade.
+
+    Lê o valor atual em cada chamada — não fica em cache. `_validate_*`
+    abaixo compara strings/ints (não enums brutos) para tolerar pequenas
+    variações de identidade entre instâncias do mesmo enum (por exemplo
+    quando o backend reconstrói).
+    """
+    def _normalize(v):
+        if v is None:
+            return None
+        if hasattr(v, "to_str"):
+            return v.to_str()
+        if isinstance(v, frozenset):
+            return tuple(sorted(_normalize(x) for x in v))
+        if isinstance(v, (tuple, list, set)):
+            return tuple(sorted(_normalize(x) for x in v))
+        return str(v)
+
+    def _safe_attr(name):
+        # Algumas properties levantam quando model ainda não foi fitted
+        # (`embedding_dim`, `enabled_score_types`). Tratamos como None
+        # nesse caso — `_validate_contract_matches` tolera ausência.
+        try:
+            return getattr(model, name, None)
+        except (RuntimeError, AttributeError):
+            return None
+
+    return {
+        "model_type": _normalize(_safe_attr("model_type")),
+        "reference_score_basis_type": _normalize(
+            _safe_attr("reference_score_basis_type")
+        ),
+        "population_weighting_mode": _normalize(
+            _safe_attr("population_weighting_mode")
+        ),
+        "embedding_dim": _safe_attr("embedding_dim"),
+        "enabled_score_types": _normalize(_safe_attr("enabled_score_types")),
+    }
+
+
+def _validate_contract_matches(peek: dict, other: dict, *, fold_index=None) -> None:
+    """Compara dois snapshots de contrato. Difere → CrossFitContractMismatchError.
+
+    `embedding_dim` é tolerante a None (alguns backends só calculam após
+    o fit); só compara se ambos têm valor.
+    """
+    for field in (
+        "model_type",
+        "reference_score_basis_type",
+        "population_weighting_mode",
+        "enabled_score_types",
+    ):
+        if peek.get(field) != other.get(field):
+            raise CrossFitContractMismatchError(
+                field=field,
+                peek_value=peek.get(field),
+                fold_value=other.get(field),
+                fold_index=fold_index,
+            )
+    if peek.get("embedding_dim") is not None and other.get("embedding_dim") is not None:
+        if peek["embedding_dim"] != other["embedding_dim"]:
+            raise CrossFitContractMismatchError(
+                field="embedding_dim",
+                peek_value=peek["embedding_dim"],
+                fold_value=other["embedding_dim"],
+                fold_index=fold_index,
+            )
+
 from faceaudit.enums.reference_score_calibration_mode import (
     ReferenceScoreCalibrationMode,
 )
@@ -201,13 +298,17 @@ class ReferenceScoreCalibrationResult:
     # OOD intermediários para diagnóstico de estabilidade.
     #
     # Em MoVMF (basis=LOG_DENSITY_ESTIMATE), `oof_predictive_avg_score`
-    # é diretamente o estimador OOF de E[log p_θ(x)] sobre a população —
-    # análogo a Cllr_min na linguagem de calibração, e o critério
-    # primário recomendado para escolher K (cobre AIC/BIC sem assumir
-    # tamanho amostral efetivo). Em k-NN
-    # (basis=MEAN_KNN_SIMILARITY), é a similaridade média ao k-ésimo
-    # vizinho na população OOF — útil como métrica relativa entre k's,
-    # não interpretável como log-likelihood.
+    # é diretamente o estimador OOF de E[log p_θ(x)] sobre a população
+    # — quão bem o modelo atribui densidade a observações fora do
+    # treino. É o **critério preditivo principal para seleção de K**
+    # (P1-R5 — revisor 2026-06-09 round 5: PLL OOF NÃO substitui
+    # conceitualmente AIC/BIC, que continuam sendo diagnósticos
+    # auxiliares penalizados in-sample; também não é análoga a Cllr_min,
+    # que mede outra coisa — perda mínima alcançável após transformação
+    # monotônica ideal de scores em problema de LR). Em k-NN
+    # (basis=MEAN_KNN_SIMILARITY), é T_k médio populacional (similaridade
+    # média aos k vizinhos mais próximos, NÃO ao k-ésimo) — útil como
+    # métrica relativa entre k's, não interpretável como log-densidade.
     oof_predictive_avg_score: Optional[float] = None
     oof_predictive_avg_score_by_fold: Optional[tuple] = None
     oof_predictive_score_type: Optional[str] = None
@@ -273,9 +374,11 @@ class ReferenceScoreCalibrationService:
         """
         if mode == ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY:
             return self._calibrate_in_sample_legacy(
+                backend=backend,
                 trainer_factory=trainer_factory,
                 embeddings=embeddings,
                 identity_ids=identity_ids,
+                random_state=random_state,
             )
         if mode == ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY:
             return self._calibrate_cross_fit_identity(
@@ -380,6 +483,9 @@ class ReferenceScoreCalibrationService:
             expected_backend=backend,
         )
         pop_mode = getattr(peek_model, "population_weighting_mode", None)
+        # P0-R5-5: captura snapshot semântico do peek para validar
+        # consistência em folds/refit. Fail-closed em divergência.
+        peek_contract = _contract_snapshot(peek_model)
 
         # P0-4 (revisão externa 2026-06-09): coletamos scores OOF E os
         # identity_ids correspondentes. Antes só guardávamos scores e o
@@ -430,6 +536,14 @@ class ReferenceScoreCalibrationService:
                 trainer_factory,
                 seed=fold_seed,
                 expected_backend=backend,
+            )
+            # P0-R5-5: contrato semântico do fold_model deve bater com
+            # o peek (basis, pop_mode, enabled_score_types). Validação
+            # ANTES do fit para falhar cedo.
+            _validate_contract_matches(
+                peek_contract,
+                _contract_snapshot(fold_model),
+                fold_index=fold_idx,
             )
             train_ids = tuple(str(i) for i in ids_arr[train_mask])
             fold_model.fit(
@@ -533,6 +647,10 @@ class ReferenceScoreCalibrationService:
             seed=int(random_state),
             expected_backend=backend,
         )
+        # P0-R5-5: refit também precisa preservar o contrato do peek.
+        _validate_contract_matches(
+            peek_contract, _contract_snapshot(refit_model), fold_index=None,
+        )
         all_ids = tuple(str(i) for i in ids_arr)
         refit_model.fit(embeddings, identity_ids=all_ids)
 
@@ -596,19 +714,18 @@ class ReferenceScoreCalibrationService:
         # in-sample do refit. O `ReferenceScoreCalibrationResult`
         # continua retornando os mesmos arrays para auditoria.
         #
-        # R4: também propaga a PLL OOF + diagnósticos por fold para o
-        # modelo persistido — quando passados como kwargs opcionais,
-        # cada backend persiste internamente para que `summary()` exiba.
-        # Backends antigos (sem suporte aos kwargs) silenciosamente
-        # ignoram via TypeError handler — não bloqueia o cross-fit.
-        _install_kwargs = dict(
+        # R4 + P0-R5-1 (revisão externa 2026-06-09 round 5): o serviço
+        # passa TODOS os diagnósticos por fold ao install. NÃO há
+        # fallback try/except TypeError — backend deve implementar o
+        # contrato. (Decisão: retrocompat dispensável; o `install` é
+        # parte da fronteira pública e backends desatualizados devem
+        # falhar fechado em vez de descartar métricas silenciosamente.)
+        refit_model.install_reference_score_calibration(
             reference_scores=oof_arr_sorted,
             reference_weights=oof_weights_sorted,
             ood_threshold=threshold,
             calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
             split_fingerprint=split_fingerprint,
-        )
-        _r4_kwargs = dict(
             oof_predictive_avg_score=oof_predictive_avg,
             oof_predictive_avg_score_by_fold=tuple(fold_avg_scores),
             oof_predictive_score_type=(
@@ -617,14 +734,12 @@ class ReferenceScoreCalibrationService:
                 and hasattr(chosen_type_overall, "to_str")
                 else (str(chosen_type_overall) if chosen_type_overall else None)
             ),
+            n_identities_by_fold=tuple(fold_n_identities),
+            n_scores_by_fold=tuple(fold_n_scores),
+            ood_threshold_by_fold=tuple(fold_ood_thresholds),
+            fold_seeds=tuple(fold_seeds),
+            n_folds_used=int(n_folds),
         )
-        try:
-            refit_model.install_reference_score_calibration(
-                **_install_kwargs, **_r4_kwargs,
-            )
-        except TypeError:
-            # Backend ainda não suporta os kwargs R4 — chama sem eles.
-            refit_model.install_reference_score_calibration(**_install_kwargs)
 
         # P1-R3-9: arrays expostos no result são read-only.
         # Auditoria não deve poder mutar o snapshot devolvido.
@@ -661,15 +776,26 @@ class ReferenceScoreCalibrationService:
     @staticmethod
     def _calibrate_in_sample_legacy(
         *,
+        backend: TypicalityModelType,
         trainer_factory,
         embeddings: np.ndarray,
         identity_ids: Optional[Sequence[str]],
+        random_state: int,
     ) -> ReferenceScoreCalibrationResult:
-        """k-NN nativo já faz LOO de imagem internamente."""
-        # P0-R3-3: helper único aqui também (mesmo o caminho legado).
-        # Não valida backend porque IN_SAMPLE_LEGACY pode rodar tanto
-        # em k-NN quanto em MoVMF sem ambiguidade — o caller decide.
-        model = _build_model(trainer_factory, seed=0)
+        """k-NN nativo já faz LOO de imagem internamente.
+
+        P0-R5-4 (revisão externa 2026-06-09 round 5): o caminho legado
+        agora propaga `random_state` ao trainer (antes usava seed=0
+        hardcoded, divergindo da configuração do caller) e valida o
+        backend declarado contra a instância retornada via `_build_model`
+        com `expected_backend` (antes não validava, aceitando silenciosamente
+        factories que devolviam backend errado em modo legado).
+        """
+        model = _build_model(
+            trainer_factory,
+            seed=int(random_state),
+            expected_backend=backend,
+        )
         if identity_ids is not None:
             model.fit(embeddings, identity_ids=tuple(str(i) for i in identity_ids))
         else:

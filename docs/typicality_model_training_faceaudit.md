@@ -223,8 +223,8 @@ Os dois configs polimórficos compartilham um conjunto de campos:
 | `unit_norm_policy` | `UnitNormPolicy` | `ERROR` | Como reagir a embeddings com norma fora de `‖x‖₂ = 1 ± tolerância`. |
 | `unit_norm_tolerance` | `float` | `1e-4` | Tolerância da política. |
 | `percentile_basis_score_type` | `TypicalityPercentileBasis` | k-NN: `MEAN_KNN_SIMILARITY`; MoVMF: `LOG_DENSITY_ESTIMATE` | Base sobre a qual o percentil é calculado. |
-| `reference_score_calibration_mode` | `ReferenceScoreCalibrationMode` | `IN_SAMPLE_LEGACY` (k-NN); `CROSS_FIT_IDENTITY` (MoVMF) | Como construir CDF de referência e threshold OOD. |
-| `cv_n_folds` | `int` | `0` (IN_SAMPLE) ou `5` (CROSS_FIT) | Número de folds do cross-fit; ignorado em `IN_SAMPLE_LEGACY`. |
+| `reference_score_calibration_mode` | `ReferenceScoreCalibrationMode` | `CROSS_FIT_IDENTITY` (default em estratégias novas tanto para k-NN quanto para MoVMF; pickles V2.14 migrados literais preservam `IN_SAMPLE_LEGACY`) | Como construir CDF de referência e threshold OOD. |
+| `cv_n_folds` | `int` | `5` (CROSS_FIT) ou `0` (IN_SAMPLE) | Número de folds do cross-fit; ignorado em `IN_SAMPLE_LEGACY`. |
 | `ood_quantile` | `float` | `0.01` (k-NN); `0.001` (MoVMF) | Quantil que define o threshold OOD. |
 | `population_label` | `Optional[str]` | `None` | Rótulo opcional da população (vai no fingerprint). |
 | `embedding_column` | `Optional[str]` | `None` (usa a da estratégia) | Override da coluna de embedding. |

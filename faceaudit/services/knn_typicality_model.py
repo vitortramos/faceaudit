@@ -220,6 +220,16 @@ class KNNTypicalityModel:
         self._oof_predictive_avg_score: Optional[float] = None
         self._oof_predictive_avg_score_by_fold: Optional[tuple] = None
         self._oof_predictive_score_type: Optional[str] = None
+        # P0-R5-6 (revisão externa round 5): diagnósticos por fold
+        # persistidos. Antes só viviam no `ReferenceScoreCalibrationResult`.
+        self._n_identities_by_fold: Optional[tuple] = None
+        self._n_scores_by_fold: Optional[tuple] = None
+        self._ood_threshold_by_fold: Optional[tuple] = None
+        self._fold_seeds: Optional[tuple] = None
+        self._n_folds_used: Optional[int] = None
+        # P0-R5-3 (revisão externa round 5): fingerprint auditável das
+        # métricas OOF. Recalculado e validado pelo `from_dict`.
+        self._audit_metrics_fingerprint: Optional[str] = None
 
     # =========================================================================
     # API PÚBLICA
@@ -394,11 +404,19 @@ class KNNTypicalityModel:
         # R4 (revisão externa 2026-06-09 round 4): métricas preditivas
         # agregadas. Persistidas para exibir no `summary()`. No k-NN
         # (basis=MEAN_KNN_SIMILARITY) NÃO é log-likelihood — é a média
-        # da similaridade T_k ao k-ésimo vizinho na população OOF.
-        # Útil como métrica relativa entre k's.
+        # de T_k (similaridade média aos k vizinhos mais próximos) na
+        # população OOF. Útil como métrica relativa entre k's.
         oof_predictive_avg_score=None,
         oof_predictive_avg_score_by_fold=None,
         oof_predictive_score_type=None,
+        # P0-R5-3/6 (revisão externa round 5): diagnósticos por fold
+        # persistidos no modelo + fingerprint auditável recalculado em
+        # from_dict (defesa contra adulteração de pickle).
+        n_identities_by_fold=None,
+        n_scores_by_fold=None,
+        ood_threshold_by_fold=None,
+        fold_seeds=None,
+        n_folds_used=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores T_k.
 
@@ -490,6 +508,46 @@ class KNNTypicalityModel:
             weights_sorted = None
             cdf_arr = None
 
+        # P0-R5-2: valida finitude + comprimentos antes de instalar.
+        from faceaudit.services.oof_audit_metrics import (
+            _compute_audit_metrics_fingerprint,
+            _normalize_oof_avg_score,
+            _normalize_oof_per_fold_floats,
+            _normalize_oof_per_fold_floats_optional,
+            _normalize_oof_per_fold_ints,
+            _validate_oof_per_fold_lengths,
+        )
+        norm_oof_avg = _normalize_oof_avg_score(
+            oof_predictive_avg_score, field="oof_predictive_avg_score",
+        )
+        norm_oof_by_fold = _normalize_oof_per_fold_floats(
+            oof_predictive_avg_score_by_fold,
+            field="oof_predictive_avg_score_by_fold",
+        )
+        norm_n_ids_by_fold = _normalize_oof_per_fold_ints(
+            n_identities_by_fold, field="n_identities_by_fold",
+        )
+        norm_n_scores_by_fold = _normalize_oof_per_fold_ints(
+            n_scores_by_fold, field="n_scores_by_fold",
+        )
+        norm_ood_thr_by_fold = _normalize_oof_per_fold_floats_optional(
+            ood_threshold_by_fold, field="ood_threshold_by_fold",
+        )
+        norm_fold_seeds = _normalize_oof_per_fold_ints(
+            fold_seeds, field="fold_seeds",
+        )
+        norm_n_folds_used = (
+            int(n_folds_used) if n_folds_used is not None else None
+        )
+        _validate_oof_per_fold_lengths(
+            n_folds_used=norm_n_folds_used,
+            oof_by_fold=norm_oof_by_fold,
+            n_identities_by_fold=norm_n_ids_by_fold,
+            n_scores_by_fold=norm_n_scores_by_fold,
+            ood_threshold_by_fold=norm_ood_thr_by_fold,
+            fold_seeds=norm_fold_seeds,
+        )
+
         self._state = dataclass_replace(
             self._state,
             loo_mean_knn_sorted=_freeze_array(scores_sorted, dtype=np.float64),
@@ -504,17 +562,28 @@ class KNNTypicalityModel:
         # R4: persiste métricas preditivas como atributos da instância
         # (não no `_KNNRefState` para evitar quebrar pickles antigos —
         # `_state` é restaurado por `from_dict` validando shapes).
-        self._oof_predictive_avg_score = (
-            float(oof_predictive_avg_score)
-            if oof_predictive_avg_score is not None else None
-        )
-        self._oof_predictive_avg_score_by_fold = (
-            tuple(float(x) for x in oof_predictive_avg_score_by_fold)
-            if oof_predictive_avg_score_by_fold is not None else None
-        )
+        self._oof_predictive_avg_score = norm_oof_avg
+        self._oof_predictive_avg_score_by_fold = norm_oof_by_fold
         self._oof_predictive_score_type = (
             str(oof_predictive_score_type)
             if oof_predictive_score_type is not None else None
+        )
+        # R5: diagnósticos por fold + fingerprint auditável.
+        self._n_identities_by_fold = norm_n_ids_by_fold
+        self._n_scores_by_fold = norm_n_scores_by_fold
+        self._ood_threshold_by_fold = norm_ood_thr_by_fold
+        self._fold_seeds = norm_fold_seeds
+        self._n_folds_used = norm_n_folds_used
+        self._audit_metrics_fingerprint = _compute_audit_metrics_fingerprint(
+            oof_predictive_avg_score=self._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=self._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=self._oof_predictive_score_type,
+            n_identities_by_fold=self._n_identities_by_fold,
+            n_scores_by_fold=self._n_scores_by_fold,
+            ood_threshold_by_fold=self._ood_threshold_by_fold,
+            split_fingerprint=self._state.split_fingerprint,
+            fold_seeds=self._fold_seeds,
+            n_folds_used=self._n_folds_used,
         )
 
     def score_samples(self, embeddings: ArrayLike) -> np.ndarray:
@@ -621,6 +690,25 @@ class KNNTypicalityModel:
                 ),
                 "oof_predictive_score_type":
                     self._oof_predictive_score_type,
+                # R5: diagnósticos por fold + fingerprint auditável.
+                "n_identities_by_fold": (
+                    list(self._n_identities_by_fold)
+                    if self._n_identities_by_fold is not None else None
+                ),
+                "n_scores_by_fold": (
+                    list(self._n_scores_by_fold)
+                    if self._n_scores_by_fold is not None else None
+                ),
+                "ood_threshold_by_fold": (
+                    list(self._ood_threshold_by_fold)
+                    if self._ood_threshold_by_fold is not None else None
+                ),
+                "fold_seeds": (
+                    list(self._fold_seeds)
+                    if self._fold_seeds is not None else None
+                ),
+                "n_folds_used": self._n_folds_used,
+                "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
             },
         }
 
@@ -767,6 +855,45 @@ class KNNTypicalityModel:
             tuple(float(x) for x in _by_fold) if _by_fold is not None else None
         )
         model._oof_predictive_score_type = ls.get("oof_predictive_score_type")
+        # R5: hidrata diagnósticos por fold + valida fingerprint.
+        _n_ids = ls.get("n_identities_by_fold")
+        model._n_identities_by_fold = (
+            tuple(int(x) for x in _n_ids) if _n_ids is not None else None
+        )
+        _n_scores = ls.get("n_scores_by_fold")
+        model._n_scores_by_fold = (
+            tuple(int(x) for x in _n_scores) if _n_scores is not None else None
+        )
+        _ood_thr_by_fold = ls.get("ood_threshold_by_fold")
+        if _ood_thr_by_fold is not None:
+            model._ood_threshold_by_fold = tuple(
+                (float(x) if x is not None else None)
+                for x in _ood_thr_by_fold
+            )
+        else:
+            model._ood_threshold_by_fold = None
+        _fs = ls.get("fold_seeds")
+        model._fold_seeds = (
+            tuple(int(x) for x in _fs) if _fs is not None else None
+        )
+        model._n_folds_used = ls.get("n_folds_used")
+        model._audit_metrics_fingerprint = ls.get("audit_metrics_fingerprint")
+        # P0-R5-3: valida fingerprint auditável das métricas OOF.
+        from faceaudit.services.oof_audit_metrics import (
+            _verify_audit_metrics_fingerprint_or_raise,
+        )
+        _verify_audit_metrics_fingerprint_or_raise(
+            persisted_fingerprint=model._audit_metrics_fingerprint,
+            oof_predictive_avg_score=model._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=model._oof_predictive_score_type,
+            n_identities_by_fold=model._n_identities_by_fold,
+            n_scores_by_fold=model._n_scores_by_fold,
+            ood_threshold_by_fold=model._ood_threshold_by_fold,
+            split_fingerprint=model._state.split_fingerprint,
+            fold_seeds=model._fold_seeds,
+            n_folds_used=model._n_folds_used,
+        )
         return model
 
     # =========================================================================
@@ -1147,13 +1274,21 @@ class KNNTypicalityModel:
                 "loo_T_k_mean": float(np.mean(loo)),
                 "loo_T_k_std": float(np.std(loo)),
                 # R4: métricas preditivas OOF. NÃO são log-likelihood
-                # no k-NN (basis=MEAN_KNN_SIMILARITY) — são T_k médio
-                # ponderado entre os scores OOF. Úteis como métrica
-                # relativa entre valores de k.
+                # no k-NN (basis=MEAN_KNN_SIMILARITY) — são T_k
+                # (similaridade média aos k vizinhos mais próximos)
+                # médio ponderado entre os scores OOF. Úteis como
+                # métrica relativa entre valores de k.
                 "oof_predictive_avg_score": self._oof_predictive_avg_score,
                 "oof_predictive_avg_score_by_fold":
                     self._oof_predictive_avg_score_by_fold,
                 "oof_predictive_score_type": self._oof_predictive_score_type,
+                # R5: diagnósticos completos por fold + fingerprint.
+                "n_identities_by_fold": self._n_identities_by_fold,
+                "n_scores_by_fold": self._n_scores_by_fold,
+                "ood_threshold_by_fold": self._ood_threshold_by_fold,
+                "fold_seeds": self._fold_seeds,
+                "n_folds_used": self._n_folds_used,
+                "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
             },
         )
 

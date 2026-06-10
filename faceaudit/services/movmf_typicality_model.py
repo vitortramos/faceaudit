@@ -66,6 +66,16 @@ from faceaudit.models.typicality.typicality_model_summary import (
 from faceaudit.models.typicality.typicality_score_batch import (
     TypicalityScoreBatch,
 )
+from faceaudit.services.oof_audit_metrics import (
+    OofAuditMetricMismatchError,
+    _compute_audit_metrics_fingerprint,
+    _normalize_oof_avg_score,
+    _normalize_oof_per_fold_floats,
+    _normalize_oof_per_fold_floats_optional,
+    _normalize_oof_per_fold_ints,
+    _validate_oof_per_fold_lengths,
+    _verify_audit_metrics_fingerprint_or_raise,
+)
 from faceaudit.services.unit_norm_validator import (
     apply_unit_norm_policy,
 )
@@ -238,6 +248,18 @@ class MoVMFTypicalityModel:
         self._oof_predictive_avg_score: Optional[float] = None
         self._oof_predictive_avg_score_by_fold: Optional[tuple] = None
         self._oof_predictive_score_type: Optional[str] = None
+        # P0-R5-6 (revisão externa round 5): diagnósticos completos por
+        # fold persistidos no modelo (antes só viviam no
+        # `ReferenceScoreCalibrationResult` descartado).
+        self._n_identities_by_fold: Optional[tuple] = None
+        self._n_scores_by_fold: Optional[tuple] = None
+        self._ood_threshold_by_fold: Optional[tuple] = None
+        self._fold_seeds: Optional[tuple] = None
+        self._n_folds_used: Optional[int] = None
+        # P0-R5-3 (revisão externa round 5): fingerprint auditável das
+        # métricas OOF — defesa contra adulteração de pickle entre install
+        # e from_dict. Recalculado e comparado pelo `from_dict`.
+        self._audit_metrics_fingerprint: Optional[str] = None
         # P2-R2-13 + P0-R3-6: telemetria da normalização aplicada.
         # Separada por escopo:
         # - `_fit_unit_norm_telemetry`: registrada uma vez durante o
@@ -555,6 +577,25 @@ class MoVMFTypicalityModel:
                 ),
                 "oof_predictive_score_type":
                     self._oof_predictive_score_type,
+                # R5: diagnósticos por fold + fingerprint auditável.
+                "n_identities_by_fold": (
+                    list(self._n_identities_by_fold)
+                    if self._n_identities_by_fold is not None else None
+                ),
+                "n_scores_by_fold": (
+                    list(self._n_scores_by_fold)
+                    if self._n_scores_by_fold is not None else None
+                ),
+                "ood_threshold_by_fold": (
+                    list(self._ood_threshold_by_fold)
+                    if self._ood_threshold_by_fold is not None else None
+                ),
+                "fold_seeds": (
+                    list(self._fold_seeds)
+                    if self._fold_seeds is not None else None
+                ),
+                "n_folds_used": self._n_folds_used,
+                "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
             },
         }
 
@@ -682,6 +723,45 @@ class MoVMFTypicalityModel:
             tuple(float(x) for x in _by_fold) if _by_fold is not None else None
         )
         model._oof_predictive_score_type = st.get("oof_predictive_score_type")
+        # R5: hidrata diagnósticos por fold + valida fingerprint
+        # auditável. Pickles pré-R5 não têm os campos — None tolerado.
+        _n_ids = st.get("n_identities_by_fold")
+        model._n_identities_by_fold = (
+            tuple(int(x) for x in _n_ids) if _n_ids is not None else None
+        )
+        _n_scores = st.get("n_scores_by_fold")
+        model._n_scores_by_fold = (
+            tuple(int(x) for x in _n_scores) if _n_scores is not None else None
+        )
+        _ood_thr_by_fold = st.get("ood_threshold_by_fold")
+        if _ood_thr_by_fold is not None:
+            model._ood_threshold_by_fold = tuple(
+                (float(x) if x is not None else None)
+                for x in _ood_thr_by_fold
+            )
+        else:
+            model._ood_threshold_by_fold = None
+        _fs = st.get("fold_seeds")
+        model._fold_seeds = (
+            tuple(int(x) for x in _fs) if _fs is not None else None
+        )
+        model._n_folds_used = st.get("n_folds_used")
+        model._audit_metrics_fingerprint = st.get("audit_metrics_fingerprint")
+        # P0-R5-3: valida fingerprint auditável. Detecta adulteração
+        # do tipo `payload["state"]["oof_predictive_avg_score"] += X`
+        # após o install.
+        _verify_audit_metrics_fingerprint_or_raise(
+            persisted_fingerprint=model._audit_metrics_fingerprint,
+            oof_predictive_avg_score=model._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=model._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=model._oof_predictive_score_type,
+            n_identities_by_fold=model._n_identities_by_fold,
+            n_scores_by_fold=model._n_scores_by_fold,
+            ood_threshold_by_fold=model._ood_threshold_by_fold,
+            split_fingerprint=model._split_fingerprint,
+            fold_seeds=model._fold_seeds,
+            n_folds_used=model._n_folds_used,
+        )
 
         # Computa OOD threshold se ausente (v1) e tivermos referência empírica.
         # P1-R2-7 (round 2): em INV_ID_FREQ usa quantil ponderado se
@@ -951,6 +1031,13 @@ class MoVMFTypicalityModel:
         self._oof_predictive_avg_score = None
         self._oof_predictive_avg_score_by_fold = None
         self._oof_predictive_score_type = None
+        # R5: reset dos diagnósticos por fold + fingerprint auditável.
+        self._n_identities_by_fold = None
+        self._n_scores_by_fold = None
+        self._ood_threshold_by_fold = None
+        self._fold_seeds = None
+        self._n_folds_used = None
+        self._audit_metrics_fingerprint = None
 
     @property
     def reference_log_likelihoods(self) -> Optional[np.ndarray]:
@@ -1057,6 +1144,15 @@ class MoVMFTypicalityModel:
         oof_predictive_avg_score=None,
         oof_predictive_avg_score_by_fold=None,
         oof_predictive_score_type=None,
+        # P0-R5-3/6 (revisão externa 2026-06-09 round 5): diagnósticos
+        # por fold persistidos no modelo (antes só ficavam no
+        # `ReferenceScoreCalibrationResult` que era descartado pelo
+        # caller). Permitem auditoria completa a partir do pickle.
+        n_identities_by_fold=None,
+        n_scores_by_fold=None,
+        ood_threshold_by_fold=None,
+        fold_seeds=None,
+        n_folds_used=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores do modelo.
 
@@ -1153,6 +1249,42 @@ class MoVMFTypicalityModel:
             weights_sorted = None
             cdf_arr = None
 
+        # P0-R5-2: valida finitude + coerência dimensional das
+        # métricas OOF antes de instalar. Antes, NaN/inf passavam
+        # silenciosamente e contaminavam seleção de K.
+        norm_oof_avg = _normalize_oof_avg_score(
+            oof_predictive_avg_score, field="oof_predictive_avg_score",
+        )
+        norm_oof_by_fold = _normalize_oof_per_fold_floats(
+            oof_predictive_avg_score_by_fold,
+            field="oof_predictive_avg_score_by_fold",
+        )
+        norm_n_ids_by_fold = _normalize_oof_per_fold_ints(
+            n_identities_by_fold, field="n_identities_by_fold",
+        )
+        norm_n_scores_by_fold = _normalize_oof_per_fold_ints(
+            n_scores_by_fold, field="n_scores_by_fold",
+        )
+        norm_ood_thr_by_fold = _normalize_oof_per_fold_floats_optional(
+            ood_threshold_by_fold, field="ood_threshold_by_fold",
+        )
+        norm_fold_seeds = _normalize_oof_per_fold_ints(
+            fold_seeds, field="fold_seeds",
+        )
+        norm_n_folds_used = (
+            int(n_folds_used) if n_folds_used is not None else None
+        )
+        # Comprimentos cruzados: todos os arrays por-fold devem ter o
+        # mesmo tamanho que n_folds_used.
+        _validate_oof_per_fold_lengths(
+            n_folds_used=norm_n_folds_used,
+            oof_by_fold=norm_oof_by_fold,
+            n_identities_by_fold=norm_n_ids_by_fold,
+            n_scores_by_fold=norm_n_scores_by_fold,
+            ood_threshold_by_fold=norm_ood_thr_by_fold,
+            fold_seeds=norm_fold_seeds,
+        )
+
         # Substitui atomicamente.
         self._train_log_likelihoods = scores_sorted
         self._train_log_likelihoods_weights = weights_sorted
@@ -1162,18 +1294,36 @@ class MoVMFTypicalityModel:
         self._split_fingerprint = (
             str(split_fingerprint) if split_fingerprint else None
         )
-        # R4: métricas preditivas OOF.
-        self._oof_predictive_avg_score = (
-            float(oof_predictive_avg_score)
-            if oof_predictive_avg_score is not None else None
-        )
-        self._oof_predictive_avg_score_by_fold = (
-            tuple(float(x) for x in oof_predictive_avg_score_by_fold)
-            if oof_predictive_avg_score_by_fold is not None else None
-        )
+        # R4: métricas preditivas OOF (já validadas).
+        self._oof_predictive_avg_score = norm_oof_avg
+        self._oof_predictive_avg_score_by_fold = norm_oof_by_fold
         self._oof_predictive_score_type = (
             str(oof_predictive_score_type)
             if oof_predictive_score_type is not None else None
+        )
+        # P0-R5-6 (revisão externa round 5): diagnósticos por fold
+        # agora persistidos no modelo — auditoria reconstrói tabela
+        # completa a partir do pickle, sem depender do
+        # `ReferenceScoreCalibrationResult` (descartado pelo caller).
+        self._n_identities_by_fold = norm_n_ids_by_fold
+        self._n_scores_by_fold = norm_n_scores_by_fold
+        self._ood_threshold_by_fold = norm_ood_thr_by_fold
+        self._fold_seeds = norm_fold_seeds
+        self._n_folds_used = norm_n_folds_used
+        # P0-R5-3 (revisão externa round 5): fingerprint auditável das
+        # métricas OOF. Cobre adulteração das próprias métricas — fora
+        # do `model_state_fingerprint` que só cobre o estado numérico
+        # de scoring. `from_dict` recalcula e compara.
+        self._audit_metrics_fingerprint = _compute_audit_metrics_fingerprint(
+            oof_predictive_avg_score=self._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=self._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=self._oof_predictive_score_type,
+            n_identities_by_fold=self._n_identities_by_fold,
+            n_scores_by_fold=self._n_scores_by_fold,
+            ood_threshold_by_fold=self._ood_threshold_by_fold,
+            split_fingerprint=self._split_fingerprint,
+            fold_seeds=self._fold_seeds,
+            n_folds_used=self._n_folds_used,
         )
         # P1-R3-7: congela snapshot da referência recém-instalada.
         self._freeze_state_arrays()
@@ -1653,6 +1803,14 @@ class MoVMFTypicalityModel:
                     else None
                 ),
                 "oof_predictive_score_type": self._oof_predictive_score_type,
+                # R5 (revisão externa round 5): diagnósticos completos
+                # por fold + fingerprint auditável das métricas OOF.
+                "n_identities_by_fold": self._n_identities_by_fold,
+                "n_scores_by_fold": self._n_scores_by_fold,
+                "ood_threshold_by_fold": self._ood_threshold_by_fold,
+                "fold_seeds": self._fold_seeds,
+                "n_folds_used": self._n_folds_used,
+                "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
             },
         )
 

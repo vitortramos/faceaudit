@@ -19,7 +19,7 @@ referência (cross-fit por identidade) e migração de estratégias V2.14.
 | Família | k-NN esférico (Loftsgaarden-Quesenberry) | Mistura de von Mises-Fisher |
 | Estado pós-fit | Referência inteira (N×D) + CDF LOO de T_k | μ_m, κ_m, π_m (compacto) + CDF + threshold OOD |
 | Suposições | Nenhuma distribucional; hubness vira sinal | Simetria rotacional por componente; dim D fixo |
-| Score nativo | T_k = (1/k) Σ cos(x, y_(i)) | p_MoVMF(x) = Σ π_m C_d(κ_m) exp(κ_m μ_mᵀ x) |
+| Score nativo | T_k = (1/k) Σ_{j∈N_k(x)} cos(x, x_j) — similaridade média aos k vizinhos mais próximos | p_MoVMF(x) = Σ π_m C_d(κ_m) exp(κ_m μ_mᵀ x) |
 | Defensibilidade | Tier 1: ranking não-paramétrico ("X é mais típico que 73 % da população") | Tier 2: exige justificar K, κ, μ, centering em corte |
 | Custo de inferência | O(N·D) por query | O(K·D) por query (compacto) |
 | Status | STABLE | **EXPERIMENTAL** (PR 4) |
@@ -202,7 +202,7 @@ Métricas preditivas OOF (R4 — round 4):
 
 | Campo | Significado |
 |---|---|
-| `oof_predictive_avg_score` | Média ponderada de TODOS os scores OOF (mesmos pesos da CDF). No **MoVMF** (basis = `LOG_DENSITY_ESTIMATE`) é a **estimativa OOF de E[log p_θ(x)]** — a PLL OOF que o revisor recomenda como critério primário para escolher K. No **k-NN** (basis = `MEAN_KNN_SIMILARITY`) é T_k médio populacional — útil como métrica relativa entre `k`'s, **não** interpretável como log-densidade. |
+| `oof_predictive_avg_score` | Média ponderada de TODOS os scores OOF (mesmos pesos da CDF). No **MoVMF** (basis = `LOG_DENSITY_ESTIMATE`) é a **estimativa OOF de E[log p_θ(x)]** — a PLL OOF, critério preditivo principal para selecionar K (não substitui conceitualmente AIC/BIC, que continuam sendo diagnósticos auxiliares penalizados in-sample; não é análoga a Cllr_min, que mede outra coisa). No **k-NN** (basis = `MEAN_KNN_SIMILARITY`) é T_k médio populacional — onde T_k = similaridade média **aos k vizinhos mais próximos** (não ao k-ésimo) — útil como métrica relativa entre `k`'s, **não** interpretável como log-densidade. |
 | `oof_predictive_avg_score_by_fold` | Médias por fold (mesmas regras de ponderação). Dispersão entre folds é o diagnóstico de estabilidade que o revisor pede ao lado da PLL agregada. |
 | `oof_predictive_score_type` | `"LOG_DENSITY_ESTIMATE"` ou `"MEAN_KNN_SIMILARITY"` — chave para interpretar `oof_predictive_avg_score`. |
 | `n_identities_by_fold` | Identidades únicas pontuadas em cada fold. |
@@ -287,6 +287,12 @@ efetivo bem postado. Em `INVERSE_IDENTITY_FREQUENCY`, AIC/BIC retornam
 `None` por essa razão. PLL OOF não precisa dessa definição — é uma
 estimativa direta do que o modelo "vai produzir" em identidades não
 vistas.
+
+> **Nota de uso (round 5 do revisor):** PLL OOF é o critério preditivo
+> **principal**, mas **não substitui conceitualmente** AIC/BIC, que
+> continuam sendo diagnósticos auxiliares com interpretação penalizada
+> in-sample. Use AIC/BIC como sinais secundários quando disponíveis
+> (`FACE_LEVEL_RAW` / `IDENTITY_CENTROIDS`), nunca como critério único.
 
 ## 6. Fingerprints (PR 4 endurece)
 
