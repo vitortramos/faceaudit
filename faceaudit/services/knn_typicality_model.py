@@ -100,7 +100,12 @@ class _KNNRefState:
     """Estado interno congelado pós-fit. Imutável conceitualmente."""
     reference: np.ndarray              # (N_ref, D), L2-normalizado, float32
     loo_mean_knn_sorted: np.ndarray    # (N_ref,), float64, ordem crescente
-    ood_threshold: float
+    # P0-R8-1 (revisão externa round 8): `ood_threshold` agora é
+    # `Optional[float]`. Antes, `ood_quantile=0.0` persistia `-inf`,
+    # que o validador comum rejeitava no round-trip — quebrava o
+    # próprio loader do k-NN. `None` ⇔ "limiar desativado" (mesma
+    # semântica do MoVMF).
+    ood_threshold: Optional[float]
     k: int
     dim: int
     reference_mode: TypicalityReferenceMode
@@ -348,13 +353,14 @@ class KNNTypicalityModel:
             sorted_weights = weights_per_face[order]
             total_w = sorted_weights.sum()
             cdf = np.cumsum(sorted_weights) / total_w
-            # Threshold OOD via quantil ponderado (busca onde cdf >= q)
+            # Threshold OOD via quantil ponderado (busca onde cdf >= q).
+            # P0-R8-1: `None` quando ood_quantile=0 (limiar desativado).
             if self.ood_quantile > 0.0:
                 idx = int(np.searchsorted(cdf, self.ood_quantile, side="left"))
                 idx = min(max(idx, 0), len(loo_sorted) - 1)
                 ood_threshold = float(loo_sorted[idx])
             else:
-                ood_threshold = float(-np.inf)
+                ood_threshold = None
             reference_score_weights = weights_per_face
             loo_sorted_weights = sorted_weights
             formula_id = "INV_ID_FREQ_v1"
@@ -363,7 +369,7 @@ class KNNTypicalityModel:
             ood_threshold = (
                 float(np.quantile(loo_sorted, self.ood_quantile))
                 if self.ood_quantile > 0.0
-                else float(-np.inf)
+                else None
             )
             cdf = None
             reference_score_weights = None
@@ -511,14 +517,16 @@ class KNNTypicalityModel:
             )
 
         if ood_threshold is not None:
-            ood_val: float = float(ood_threshold)
+            ood_val: Optional[float] = float(ood_threshold)
             if not np.isfinite(ood_val):
                 raise ValueError(
                     "install_reference_score_calibration: ood_threshold "
                     "não finito."
                 )
         else:
-            ood_val = float("-inf")  # permissivo — consistente com KNN
+            # P0-R8-1: `None` ⇔ "limiar desativado" (semântica única
+            # entre k-NN e MoVMF; sobrevive ao round-trip).
+            ood_val = None
 
         # Ordena scores + pesos paralelamente; computa CDF.
         order = np.argsort(scores_arr)
@@ -829,10 +837,16 @@ class KNNTypicalityModel:
         else:
             ref_cal_mode = None
 
+        # P0-R8-1: `ood_threshold` agora tolera `None` (limiar
+        # desativado, ood_quantile=0).
+        _ood_raw = ls.get("ood_threshold")
+        ood_thr_loaded: Optional[float] = (
+            None if _ood_raw is None else float(_ood_raw)
+        )
         model._state = _KNNRefState(
             reference=_freeze_array(reference, dtype=np.float32),
             loo_mean_knn_sorted=_freeze_array(loo, dtype=np.float64),
-            ood_threshold=float(ls["ood_threshold"]),
+            ood_threshold=ood_thr_loaded,
             k=int(ls["k"]),
             dim=int(ls["dim"]),
             reference_mode=state_mode,
@@ -868,7 +882,7 @@ class KNNTypicalityModel:
             scores=loo,
             weights=sorted_weights,
             cdf=cdf,
-            ood_threshold=float(ls["ood_threshold"]),
+            ood_threshold=ood_thr_loaded,
         )
 
         # R4: hidrata métricas preditivas OOF. Pickles antigos não
@@ -948,6 +962,11 @@ class KNNTypicalityModel:
             split_fingerprint=model._state.split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
+            # P0-R8-2: contexto semântico para reconstruir invariantes.
+            reference_scores=model._state.loo_mean_knn_sorted,
+            reference_weights=model._state.loo_mean_knn_sorted_weights,
+            ood_quantile=model.ood_quantile,
+            population_weighting_mode=model.population_weighting_mode,
         )
         # P0-R5-3: valida fingerprint auditável das métricas OOF.
         _verify_audit_metrics_fingerprint_or_raise(
@@ -1139,7 +1158,11 @@ class KNNTypicalityModel:
             h.update(np.ascontiguousarray(
                 st.reference_score_weights, dtype=np.float64
             ).tobytes(order="C"))
-        h.update(f"{st.ood_threshold:.17g}".encode("utf-8"))
+        # P0-R8-1: `ood_threshold=None` codifica "limiar desativado".
+        h.update(
+            ("ood=None" if st.ood_threshold is None
+             else f"{st.ood_threshold:.17g}").encode("utf-8")
+        )
         h.update(f"k={st.k};dim={st.dim};rmode={st.reference_mode.to_str()}".encode("utf-8"))
         # Proveniência da referência (CROSS_FIT_IDENTITY ↔
         # IN_SAMPLE_LEGACY ↔ None pré-install).
@@ -1290,7 +1313,11 @@ class KNNTypicalityModel:
             h.update(np.ascontiguousarray(
                 st.loo_cdf, dtype=np.float64
             ).tobytes(order="C"))
-        h.update(f"ood={st.ood_threshold:.17g}".encode("utf-8"))
+        # P0-R8-1: `ood_threshold=None` codifica "limiar desativado".
+        h.update(
+            ("ood=None" if st.ood_threshold is None
+             else f"ood={st.ood_threshold:.17g}").encode("utf-8")
+        )
         if st.reference_score_calibration_mode is not None:
             h.update(
                 f"calmode={st.reference_score_calibration_mode.to_str()}"
@@ -1333,7 +1360,11 @@ class KNNTypicalityModel:
                 "k": int(st.k),
                 "reference_mode": st.reference_mode.to_str(),
                 "ood_quantile": float(self.ood_quantile),
-                "ood_threshold": float(st.ood_threshold),
+                # P0-R8-1: None ⇔ limiar desativado.
+                "ood_threshold": (
+                    None if st.ood_threshold is None
+                    else float(st.ood_threshold)
+                ),
                 "n_input_faces": int(st.n_input_faces),
                 "n_singleton_identities": int(st.n_singleton_identities),
                 "loo_T_k_min": float(loo[0]),
@@ -1495,7 +1526,11 @@ class KNNTypicalityModel:
             typicality_percentile=percentile,
             log_density_knn=float(log_density),
             angular_radius_to_kth_nn=theta_k,
-            is_in_distribution=bool(T_k >= st.ood_threshold),
+            # P0-R8-1: `None` ⇔ limiar desativado → tudo "in".
+            is_in_distribution=(
+                True if st.ood_threshold is None
+                else bool(T_k >= st.ood_threshold)
+            ),
             knn_similarities=top_sim.tolist() if include_top_k else None,
             notes=None,
         )

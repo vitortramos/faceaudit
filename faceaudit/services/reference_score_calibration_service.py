@@ -162,6 +162,29 @@ def _coerce_identity_ids_or_raise(identity_ids) -> list:
     caller usa exatamente esta lista.
     """
     from collections import defaultdict
+    import math
+
+    # P1-R8-6 (revisão externa round 8): rejeitar identidades inválidas
+    # antes da coerção `str(...)`. Antes, `None`, `""`, "   ", `NaN`
+    # viravam strings "válidas" (`"None"`, `""`, `"   "`, `"nan"`) e
+    # eram aceitos como identidades populacionais reais.
+    for i, identifier in enumerate(identity_ids):
+        if identifier is None:
+            raise InvalidIdentityIdError(
+                index=i, reason="None não é identidade válida",
+                value=identifier,
+            )
+        if isinstance(identifier, float) and not math.isfinite(identifier):
+            raise InvalidIdentityIdError(
+                index=i, reason=f"valor não-finito ({identifier!r})",
+                value=identifier,
+            )
+        if isinstance(identifier, str):
+            if identifier.strip() == "":
+                raise InvalidIdentityIdError(
+                    index=i, reason="string vazia ou só espaços",
+                    value=identifier,
+                )
 
     original_signatures = [
         (type(i).__name__, repr(i)) for i in identity_ids
@@ -177,6 +200,25 @@ def _coerce_identity_ids_or_raise(identity_ids) -> list:
     if collisions:
         raise IdentityCanonicalizationCollisionError(collisions=collisions)
     return coerced_strs
+
+
+class InvalidIdentityIdError(ValueError):
+    """Identidade inválida (None, NaN, string vazia, etc.) detectada
+    antes da coerção `str(...)`.
+
+    P1-R8-6 (revisão externa 2026-06-09 round 8): em sistema pericial,
+    `None` e `""` não devem virar identidades populacionais reais por
+    coerção silenciosa.
+    """
+
+    def __init__(self, *, index: int, reason: str, value) -> None:
+        super().__init__(
+            f"InvalidIdentityId: identity_ids[{index}] = {value!r} — "
+            f"{reason}. Coerção silenciosa para string é fail-closed."
+        )
+        self.index = index
+        self.reason = reason
+        self.value = value
 
 
 class IdentityCanonicalizationCollisionError(ValueError):

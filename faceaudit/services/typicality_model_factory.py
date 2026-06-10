@@ -68,6 +68,14 @@ class TypicalityModelFactory:
             "fingerprints": {
                 "model_state_fingerprint": model.model_state_fingerprint,
                 "model_contract_fingerprint": model.model_contract_fingerprint,
+                # P0-R8-3 (revisão externa round 8): vincula o
+                # `audit_metrics_fingerprint` da trilha OOF ao envelope
+                # externo. Antes, alterar contagens/médias OOF e
+                # recalcular apenas o checksum interno passava — o
+                # envelope externo não cobria essa camada.
+                "audit_metrics_fingerprint": getattr(
+                    model, "_audit_metrics_fingerprint", None,
+                ),
             },
             "provenance": {
                 "faceaudit_envelope_version": ENVELOPE_SCHEMA_VERSION,
@@ -134,6 +142,18 @@ class TypicalityModelFactory:
                 "TypicalityModelFactory.from_dict: envelope sem "
                 "`fingerprints.model_contract_fingerprint`. Idem regra "
                 "acima: ambos os fingerprints são obrigatórios."
+            )
+        # P0-R8-3: `audit_metrics_fingerprint` no envelope deve bater
+        # com o do modelo reconstruído. Caso ambos None, é OK (modelo
+        # legado sem cross-fit). Caso um seja None e o outro não, é
+        # adulteração — fail-closed.
+        expected_audit = expected.get("audit_metrics_fingerprint", None)
+        actual_audit = getattr(model, "_audit_metrics_fingerprint", None)
+        if expected_audit != actual_audit:
+            raise EnvelopeFingerprintMismatch(
+                kind="audit_metrics",
+                expected=str(expected_audit),
+                actual=str(actual_audit),
             )
         if model.model_state_fingerprint != expected_state:
             raise EnvelopeFingerprintMismatch(

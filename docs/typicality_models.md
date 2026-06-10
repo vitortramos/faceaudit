@@ -160,8 +160,21 @@ Procedimento de duas etapas (formalização explícita do plano):
    fold test (faces cujas identidades estão no fold test). Coleta os
    scores OOF.
 3. **CDF + threshold OOD**: concatena os scores OOF de todos os folds
-   e ordena. CDF empírica = ordenação; threshold OOD =
-   `np.quantile(oof_sorted, ood_quantile)`.
+   e ordena por score. CDF empírica ponderada é construída como
+   `cumsum(weights_sorted) / sum(weights)`. O threshold OOD é o
+   **primeiro score observado** cuja CDF atinge `ood_quantile`
+   (P2-R8-7: definição implementada — `np.searchsorted(cdf, q, side="left")`).
+   Formalmente:
+
+   ```
+   threshold_OOD = min { score_i : CDF_ponderada(score_i) >= q }
+   ```
+
+   **Não** equivale a `np.quantile(...)` (que faz interpolação por
+   default); em distribuições discretas, a diferença é relevante para
+   defensibilidade pericial.
+
+   Quando `ood_quantile == 0`, threshold é `None` (limiar desativado).
 4. **Refit final**: treina o backend em **toda a população de
    referência**. O modelo persistido é este refit; a CDF/threshold
    vêm do passo 3.
@@ -169,7 +182,7 @@ Procedimento de duas etapas (formalização explícita do plano):
 **Modelo persistido = refit em D completo.** CDF/threshold ≠ refit.
 Auditoria forense deve referenciar ambos.
 
-### 5.2 Implementação V2.15 (PR 4 + revisões R1–R4)
+### 5.2 Implementação V2.15 (PR 4 + revisões R1–R8)
 
 - `ReferenceScoreCalibrationService.calibrate(...)` funcional para
   MoVMF e k-NN.
@@ -405,6 +418,24 @@ ferramenta explícita.
 
 ---
 
-**Última atualização**: V2.15 + R4 (log-likelihood preditiva OOF e
-métricas por fold expostas no `ReferenceScoreCalibrationResult` e no
-`summary()` dos backends — vide §5.2 e §5.3).
+**Última atualização**: V2.15 + R8. Histórico:
+
+- **R4**: log-likelihood preditiva OOF e métricas por fold expostas
+  no `ReferenceScoreCalibrationResult` e no `summary()` (§5.2/§5.3).
+- **R5**: install endurecido + `audit_metrics_fingerprint` interno
+  + diagnósticos por fold persistidos no modelo.
+- **R6**: contrato cross-fit cobre hiperparâmetros de treino;
+  `audit_metrics_fingerprint` obrigatório quando há payload OOF;
+  re-validação estrutural em `from_dict`; envelope da factory exige
+  state+contract fingerprints; colisão de IDs rejeitada.
+- **R7**: loaders sem `int(x)` defensivo; bloco OOF completo em
+  CROSS_FIT_IDENTITY; `oof_predictive_score_type` por backend;
+  contrato simétrico; `EffectiveSeedMismatchError`; colisão no
+  legado; JSON canônico no `split_fingerprint`.
+- **R8**: `ood_threshold=None` no k-NN ⇔ limiar desativado;
+  validações semânticas do bloco OOF (`split_fingerprint` hex
+  SHA-256, `sum(n_scores) == len(ref)`, IDENTITY_CENTROIDS coerente,
+  média global ≈ média ponderada persistida, thresholds finitos vs
+  `ood_quantile`, bloco OOF ausente em modos não-CROSS_FIT);
+  envelope da factory vincula `audit_metrics_fingerprint`;
+  `identity_ids` rejeitam `None`/`""`/`"  "`/`NaN`.

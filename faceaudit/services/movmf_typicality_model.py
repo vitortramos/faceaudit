@@ -824,6 +824,11 @@ class MoVMFTypicalityModel:
             split_fingerprint=model._split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
+            # P0-R8-2: contexto semântico para reconstruir invariantes.
+            reference_scores=model._train_log_likelihoods,
+            reference_weights=model._train_log_likelihoods_weights,
+            ood_quantile=model.ood_quantile,
+            population_weighting_mode=model.population_weighting_mode,
         )
         # P0-R5-3: valida fingerprint auditável. Detecta adulteração
         # do tipo `payload["state"]["oof_predictive_avg_score"] += X`

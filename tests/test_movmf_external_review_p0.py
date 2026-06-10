@@ -213,11 +213,15 @@ def test_movmf_serialization_preserves_weighted_state():
         reference_weights=w,
         ood_threshold=float(np.quantile(oof, 0.1)),
         calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
-        split_fingerprint="xyz",
-        oof_predictive_avg_score=float(np.mean(oof)),
+        # R8 exige split_fingerprint no formato SHA-256 hex (64 chars).
+        split_fingerprint="a" * 64,
+        # R8: avg deve bater com média ponderada dos scores
+        # persistidos (oof + w); n_scores_by_fold == n_identities_by_fold
+        # em IDENTITY_CENTROIDS; soma de n_scores_by_fold == len(oof).
+        oof_predictive_avg_score=float((w * oof).sum() / w.sum()),
         oof_predictive_avg_score_by_fold=(-1.0, -0.5, -0.8, -0.4),
         oof_predictive_score_type="LOG_DENSITY_ESTIMATE",
-        n_identities_by_fold=(2, 2, 2, 2),
+        n_identities_by_fold=(13, 13, 12, 12),
         n_scores_by_fold=(13, 13, 12, 12),
         ood_threshold_by_fold=(-1.5, -1.4, -1.3, -1.2),
         fold_seeds=(0, 1, 2, 3),
@@ -234,7 +238,7 @@ def test_movmf_serialization_preserves_weighted_state():
     assert d["state"]["train_log_likelihoods_weights"] is not None
     assert d["state"]["train_log_likelihoods_cdf"] is not None
     assert d["state"]["reference_score_calibration_mode"] == "CROSS_FIT_IDENTITY"
-    assert d["state"]["split_fingerprint"] == "xyz"
+    assert d["state"]["split_fingerprint"] == "a" * 64
 
     m2 = MoVMFTypicalityModel.from_dict(d)
     pcts_after = m2.get_percentiles(test)

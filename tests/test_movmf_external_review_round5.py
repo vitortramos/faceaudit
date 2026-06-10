@@ -34,7 +34,10 @@ from faceaudit.enums.typicality_model_type import TypicalityModelType
 from faceaudit.enums.unit_norm_policy import UnitNormPolicy
 from faceaudit.services.knn_typicality_model import KNNTypicalityModel
 from faceaudit.services.movmf_typicality_model import MoVMFTypicalityModel
-from faceaudit.services.oof_audit_metrics import OofAuditMetricMismatchError
+from faceaudit.services.oof_audit_metrics import (
+    OofAuditMetricMismatchError,
+    OofAuditSemanticError,
+)
 from faceaudit.services.reference_score_calibration_service import (
     BackendMismatchError,
     CrossFitContractMismatchError,
@@ -163,7 +166,9 @@ def test_audit_fingerprint_detects_tampering():
     payload = result.refit_model.to_dict()
     # Adulteração canônica do revisor.
     payload["state"]["oof_predictive_avg_score"] += 1234.5
-    with pytest.raises(OofAuditMetricMismatchError):
+    # R8 endurece: a mesma adulteração agora é pega pela validação
+    # semântica (avg ≠ média ponderada) antes de chegar ao fingerprint.
+    with pytest.raises((OofAuditMetricMismatchError, OofAuditSemanticError)):
         MoVMFTypicalityModel.from_dict(payload)
 
 
@@ -186,7 +191,9 @@ def test_audit_fingerprint_detects_by_fold_tampering():
     by_fold = list(payload["state"]["oof_predictive_avg_score_by_fold"])
     by_fold[0] += 999.0
     payload["state"]["oof_predictive_avg_score_by_fold"] = by_fold
-    with pytest.raises(OofAuditMetricMismatchError):
+    # R8 endurece: a mesma adulteração agora é pega pela validação
+    # semântica (avg ≠ média ponderada) antes de chegar ao fingerprint.
+    with pytest.raises((OofAuditMetricMismatchError, OofAuditSemanticError)):
         MoVMFTypicalityModel.from_dict(payload)
 
 
@@ -230,7 +237,9 @@ def test_knn_audit_fingerprint_also_protects():
     )
     payload = result.refit_model.to_dict()
     payload["learned_state"]["oof_predictive_avg_score"] += 0.5
-    with pytest.raises(OofAuditMetricMismatchError):
+    # R8 endurece: a mesma adulteração agora é pega pela validação
+    # semântica (avg ≠ média ponderada) antes de chegar ao fingerprint.
+    with pytest.raises((OofAuditMetricMismatchError, OofAuditSemanticError)):
         KNNTypicalityModel.from_dict(payload)
 
 
