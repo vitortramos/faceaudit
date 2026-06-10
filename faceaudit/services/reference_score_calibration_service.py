@@ -163,28 +163,62 @@ def _coerce_identity_ids_or_raise(identity_ids) -> list:
     """
     from collections import defaultdict
     import math
+    import numbers
 
-    # P1-R8-6 (revisão externa round 8): rejeitar identidades inválidas
-    # antes da coerção `str(...)`. Antes, `None`, `""`, "   ", `NaN`
-    # viravam strings "válidas" (`"None"`, `""`, `"   "`, `"nan"`) e
-    # eram aceitos como identidades populacionais reais.
+    # P1-R8-6 + P1-R9-6 (revisão externa rounds 8 e 9): domínio
+    # explícito do que pode ser identidade. R9 estende a R8 para
+    # capturar np.float32(nan), bytes, complex, bool e outros tipos
+    # que str() tornava silenciosamente válidos.
+    import numpy as _np
+
     for i, identifier in enumerate(identity_ids):
         if identifier is None:
             raise InvalidIdentityIdError(
                 index=i, reason="None não é identidade válida",
                 value=identifier,
             )
-        if isinstance(identifier, float) and not math.isfinite(identifier):
+        # bool é subclass de int em Python — rejeita explicitamente.
+        if isinstance(identifier, (bool, _np.bool_)):
             raise InvalidIdentityIdError(
-                index=i, reason=f"valor não-finito ({identifier!r})",
+                index=i, reason="bool não é identidade válida",
                 value=identifier,
             )
-        if isinstance(identifier, str):
-            if identifier.strip() == "":
-                raise InvalidIdentityIdError(
-                    index=i, reason="string vazia ou só espaços",
-                    value=identifier,
-                )
+        # bytes / bytearray / memoryview: ambiguidade de encoding.
+        if isinstance(identifier, (bytes, bytearray, memoryview)):
+            raise InvalidIdentityIdError(
+                index=i, reason="bytes/bytearray não é identidade válida",
+                value=identifier,
+            )
+        # complex: parte imaginária seria descartada por str().
+        if isinstance(identifier, (complex, _np.complexfloating)):
+            raise InvalidIdentityIdError(
+                index=i, reason="complex não é identidade válida",
+                value=identifier,
+            )
+        # Float/Real: tem que ser finito.
+        if isinstance(identifier, (float, _np.floating, numbers.Real)):
+            # numbers.Real captura também int — então cheque ordem
+            # com bool já filtrado acima e int é OK.
+            if not isinstance(identifier, (int, _np.integer)):
+                try:
+                    fval = float(identifier)
+                except (TypeError, ValueError):
+                    raise InvalidIdentityIdError(
+                        index=i,
+                        reason="não-numérico conversível",
+                        value=identifier,
+                    )
+                if not math.isfinite(fval):
+                    raise InvalidIdentityIdError(
+                        index=i, reason=f"valor não-finito ({identifier!r})",
+                        value=identifier,
+                    )
+        # String vazia ou só espaços.
+        if isinstance(identifier, str) and identifier.strip() == "":
+            raise InvalidIdentityIdError(
+                index=i, reason="string vazia ou só espaços",
+                value=identifier,
+            )
 
     original_signatures = [
         (type(i).__name__, repr(i)) for i in identity_ids
@@ -516,6 +550,10 @@ class ReferenceScoreCalibrationResult:
     split_fingerprint: Optional[str] = None
     fold_seeds: Optional[Sequence[int]] = None
     n_folds_used: int = 0
+    # P1-R9-5 (revisão externa round 9): estratégia de derivação das
+    # seeds (`base + fold_index`) persistida para auditoria.
+    base_random_state: Optional[int] = None
+    fold_seed_strategy: Optional[str] = None
 
     @property
     def oof_cdf(self) -> Optional[np.ndarray]:
@@ -965,6 +1003,11 @@ class ReferenceScoreCalibrationService:
             ood_threshold_by_fold=tuple(fold_ood_thresholds),
             fold_seeds=tuple(fold_seeds),
             n_folds_used=int(n_folds),
+            # P1-R9-5 (revisão externa round 9): persiste a estratégia
+            # de seeds para o loader poder validar
+            # `fold_seeds == base + range(n_folds_used)`.
+            base_random_state=int(random_state),
+            fold_seed_strategy="BASE_PLUS_FOLD_INDEX",
         )
 
         # P1-R3-9: arrays expostos no result são read-only.

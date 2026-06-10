@@ -137,8 +137,15 @@ def _validate_cross_fit_audit_completeness_or_raise(
     # validação semântica. Quando passados, regras extras se aplicam.
     reference_scores=None,
     reference_weights=None,
+    reference_cdf=None,
     ood_quantile=None,
     population_weighting_mode=None,
+    # P0-R9 (revisão externa 2026-06-10 round 9): valida também o
+    # threshold global e a estratégia de seeds.
+    ood_threshold_global=None,
+    base_random_state=None,
+    fold_seed_strategy=None,
+    format_version=None,
 ) -> None:
     """P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo e
     score_type coerente com o backend.
@@ -312,9 +319,33 @@ def _validate_cross_fit_audit_completeness_or_raise(
                         ),
                     )
 
+    # P0-R9-1 (revisão externa round 9): em CROSS_FIT_IDENTITY no
+    # schema atual, pesos e CDF são SEMPRE obrigatórios. Antes, a
+    # ausência de weights+cdf abria caminho para média global
+    # arbitrária (a validação `avg_score_matches_weighted_reference`
+    # exigia ambos os arrays para rodar).
+    import numpy as _np
+    if reference_weights is None:
+        raise OofAuditSemanticError(
+            rule="cross_fit_requires_explicit_weights",
+            detail=(
+                "CROSS_FIT_IDENTITY no schema atual exige "
+                "`reference_weights` explícito (ainda que uniforme). "
+                "None impede a validação semântica da média OOF."
+            ),
+        )
+    if reference_cdf is None:
+        raise OofAuditSemanticError(
+            rule="cross_fit_requires_explicit_cdf",
+            detail=(
+                "CROSS_FIT_IDENTITY no schema atual exige "
+                "`reference_cdf` explícito. Ela é a CDF de fato — sem "
+                "ela o threshold global não pode ser revalidado."
+            ),
+        )
+
     # Média global ≈ média ponderada dos scores persistidos.
-    if reference_scores is not None and reference_weights is not None:
-        import numpy as _np
+    if reference_scores is not None:
         arr_s = _np.asarray(reference_scores, dtype=_np.float64)
         arr_w = _np.asarray(reference_weights, dtype=_np.float64)
         if arr_s.shape == arr_w.shape and arr_w.sum() > 0:
@@ -334,6 +365,115 @@ def _validate_cross_fit_audit_completeness_or_raise(
                         f"{reconstructed!r}."
                     ),
                 )
+
+    # P0-R9-2: threshold global vinculado à CDF persistida e a
+    # ood_quantile. Antes, qualquer valor finito era aceito —
+    # incluindo `0.99999` em q=0 (que mudaria classificação OOD)
+    # e `1e9` em q=0.05.
+    if ood_quantile is not None and reference_scores is not None:
+        q = float(ood_quantile)
+        if q == 0.0:
+            if ood_threshold_global is not None:
+                raise OofAuditSemanticError(
+                    rule="ood_global_threshold_must_be_none_when_q_zero",
+                    detail=(
+                        f"ood_quantile=0 exige ood_threshold_global=None "
+                        f"(recebido {ood_threshold_global!r})."
+                    ),
+                )
+        else:
+            if ood_threshold_global is None:
+                raise OofAuditSemanticError(
+                    rule="ood_global_threshold_required_when_q_positive",
+                    detail=(
+                        f"ood_quantile={q} > 0 exige ood_threshold_global "
+                        "não-None."
+                    ),
+                )
+            arr_s = _np.asarray(reference_scores, dtype=_np.float64)
+            arr_cdf = _np.asarray(reference_cdf, dtype=_np.float64)
+            if arr_s.shape == arr_cdf.shape and arr_s.size > 0:
+                idx = int(_np.searchsorted(arr_cdf, q, side="left"))
+                idx = min(max(idx, 0), arr_s.size - 1)
+                expected = float(arr_s[idx])
+                if not _np.isclose(
+                    expected, float(ood_threshold_global),
+                    rtol=1e-9, atol=1e-12,
+                ):
+                    raise OofAuditSemanticError(
+                        rule="ood_global_threshold_matches_weighted_quantile",
+                        detail=(
+                            f"ood_threshold_global="
+                            f"{ood_threshold_global!r} ≠ score em CDF>=q "
+                            f"({expected!r}). q={q}."
+                        ),
+                    )
+
+    # P1-R9-4: by_fold deve agregar à média global ponderado pela
+    # massa do fold. fold_mass = n_identities_by_fold em
+    # INVERSE_IDENTITY_FREQUENCY (cada identidade peso 1); senão
+    # n_scores_by_fold (cada score peso unitário, é o que a CDF usa).
+    if oof_predictive_avg_score_by_fold is not None:
+        if population_weighting_mode is not None:
+            pop_str = (
+                population_weighting_mode.to_str()
+                if hasattr(population_weighting_mode, "to_str")
+                else str(population_weighting_mode)
+            )
+        else:
+            pop_str = None
+        if pop_str == "INVERSE_IDENTITY_FREQUENCY":
+            fold_mass = _np.asarray(n_identities_by_fold, dtype=_np.float64)
+        else:
+            fold_mass = _np.asarray(n_scores_by_fold, dtype=_np.float64)
+        by_fold = _np.asarray(
+            oof_predictive_avg_score_by_fold, dtype=_np.float64,
+        )
+        if by_fold.shape == fold_mass.shape and fold_mass.sum() > 0:
+            agg = float((by_fold * fold_mass).sum() / fold_mass.sum())
+            if not _np.isclose(
+                agg, float(oof_predictive_avg_score),
+                rtol=1e-6, atol=1e-9,
+            ):
+                raise OofAuditSemanticError(
+                    rule="by_fold_aggregates_to_global_average",
+                    detail=(
+                        f"weighted-average(by_fold, fold_mass)={agg!r} "
+                        f"≠ oof_predictive_avg_score="
+                        f"{oof_predictive_avg_score!r}. "
+                        f"pop_mode={pop_str!r}."
+                    ),
+                )
+
+    # P1-R9-5: seeds vinculadas à estratégia declarada.
+    if fold_seed_strategy is not None:
+        if fold_seed_strategy != "BASE_PLUS_FOLD_INDEX":
+            raise OofAuditSemanticError(
+                rule="unknown_fold_seed_strategy",
+                detail=(
+                    f"fold_seed_strategy={fold_seed_strategy!r} desconhecida; "
+                    "única política implementada é 'BASE_PLUS_FOLD_INDEX'."
+                ),
+            )
+        if base_random_state is None:
+            raise OofAuditSemanticError(
+                rule="base_random_state_required_with_strategy",
+                detail=(
+                    "fold_seed_strategy declarada mas base_random_state=None."
+                ),
+            )
+        expected_seeds = tuple(
+            int(base_random_state) + i for i in range(int(n_folds_used))
+        )
+        if tuple(fold_seeds) != expected_seeds:
+            raise OofAuditSemanticError(
+                rule="fold_seeds_match_declared_strategy",
+                detail=(
+                    f"fold_seeds={tuple(fold_seeds)!r} ≠ "
+                    f"esperado(base={base_random_state}, "
+                    f"n_folds={n_folds_used})={expected_seeds!r}."
+                ),
+            )
 
 
 def _reject_oof_block_when_not_cross_fit(
@@ -594,6 +734,9 @@ def _compute_audit_metrics_fingerprint(
     split_fingerprint: Optional[str],
     fold_seeds: Optional[tuple],
     n_folds_used: Optional[int],
+    # R9: estratégia de seeds entra no fingerprint.
+    base_random_state: Optional[int] = None,
+    fold_seed_strategy: Optional[str] = None,
 ) -> Optional[str]:
     """SHA-256 sobre representação textual canônica das métricas OOF.
 
@@ -659,6 +802,8 @@ def _compute_audit_metrics_fingerprint(
     _feed("split_fingerprint", split_fingerprint)
     _feed("fold_seeds", fold_seeds)
     _feed("n_folds_used", n_folds_used)
+    _feed("base_random_state", base_random_state)
+    _feed("fold_seed_strategy", fold_seed_strategy)
     return h.hexdigest()
 
 
@@ -726,6 +871,9 @@ def _verify_audit_metrics_fingerprint_or_raise(
     split_fingerprint: Optional[str],
     fold_seeds: Optional[tuple],
     n_folds_used: Optional[int],
+    # R9: novos campos incluídos no fingerprint.
+    base_random_state: Optional[int] = None,
+    fold_seed_strategy: Optional[str] = None,
 ) -> None:
     """Recalcula o fingerprint e compara ao persistido. Para uso no
     `from_dict` dos backends.
@@ -772,6 +920,8 @@ def _verify_audit_metrics_fingerprint_or_raise(
         split_fingerprint=split_fingerprint,
         fold_seeds=fold_seeds,
         n_folds_used=n_folds_used,
+        base_random_state=base_random_state,
+        fold_seed_strategy=fold_seed_strategy,
     )
     if computed != persisted_fingerprint:
         raise OofAuditMetricMismatchError(

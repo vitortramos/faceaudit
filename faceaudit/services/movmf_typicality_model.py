@@ -259,6 +259,9 @@ class MoVMFTypicalityModel:
         self._ood_threshold_by_fold: Optional[tuple] = None
         self._fold_seeds: Optional[tuple] = None
         self._n_folds_used: Optional[int] = None
+        # P1-R9-5 (revisão externa round 9): estratégia das seeds.
+        self._base_random_state: Optional[int] = None
+        self._fold_seed_strategy: Optional[str] = None
         # P0-R5-3 (revisão externa round 5): fingerprint auditável das
         # métricas OOF — defesa contra adulteração de pickle entre install
         # e from_dict. Recalculado e comparado pelo `from_dict`.
@@ -599,6 +602,9 @@ class MoVMFTypicalityModel:
                 ),
                 "n_folds_used": self._n_folds_used,
                 "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
+                # R9: estratégia de seeds.
+                "base_random_state": self._base_random_state,
+                "fold_seed_strategy": self._fold_seed_strategy,
             },
         }
 
@@ -807,6 +813,12 @@ class MoVMFTypicalityModel:
         )
         model._n_folds_used = _normalize_n_folds_used(raw_n_folds)
         model._audit_metrics_fingerprint = st.get("audit_metrics_fingerprint")
+        # R9: hidrata estratégia de seeds.
+        _brs = st.get("base_random_state")
+        model._base_random_state = (
+            int(_brs) if _brs is not None else None
+        )
+        model._fold_seed_strategy = st.get("fold_seed_strategy")
         # P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo +
         # score_type esperado por backend. Fecha o caminho onde TODOS
         # os diagnósticos OOF + fingerprint eram removidos e o modelo
@@ -824,11 +836,15 @@ class MoVMFTypicalityModel:
             split_fingerprint=model._split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
-            # P0-R8-2: contexto semântico para reconstruir invariantes.
+            # P0-R8-2 / R9: contexto semântico completo.
             reference_scores=model._train_log_likelihoods,
             reference_weights=model._train_log_likelihoods_weights,
+            reference_cdf=model._train_log_likelihoods_cdf,
             ood_quantile=model.ood_quantile,
+            ood_threshold_global=model._ood_log_likelihood_threshold,
             population_weighting_mode=model.population_weighting_mode,
+            base_random_state=model._base_random_state,
+            fold_seed_strategy=model._fold_seed_strategy,
         )
         # P0-R5-3: valida fingerprint auditável. Detecta adulteração
         # do tipo `payload["state"]["oof_predictive_avg_score"] += X`
@@ -844,6 +860,8 @@ class MoVMFTypicalityModel:
             split_fingerprint=model._split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
+            base_random_state=model._base_random_state,
+            fold_seed_strategy=model._fold_seed_strategy,
         )
 
         # Computa OOD threshold se ausente (v1) e tivermos referência empírica.
@@ -1161,6 +1179,9 @@ class MoVMFTypicalityModel:
         self._fold_seeds = None
         self._n_folds_used = None
         self._audit_metrics_fingerprint = None
+        # R9: reset da estratégia de seeds.
+        self._base_random_state = None
+        self._fold_seed_strategy = None
 
     @property
     def reference_log_likelihoods(self) -> Optional[np.ndarray]:
@@ -1276,6 +1297,10 @@ class MoVMFTypicalityModel:
         ood_threshold_by_fold=None,
         fold_seeds=None,
         n_folds_used=None,
+        # P1-R9-5 (revisão externa round 9): estratégia de derivação
+        # das seeds (`fold_seed = base + fold_index`).
+        base_random_state=None,
+        fold_seed_strategy=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores do modelo.
 
@@ -1432,6 +1457,38 @@ class MoVMFTypicalityModel:
         self._ood_threshold_by_fold = norm_ood_thr_by_fold
         self._fold_seeds = norm_fold_seeds
         self._n_folds_used = norm_n_folds_used
+        # P1-R9-5: persiste a política de seeds.
+        self._base_random_state = (
+            int(base_random_state) if base_random_state is not None else None
+        )
+        self._fold_seed_strategy = (
+            str(fold_seed_strategy) if fold_seed_strategy is not None else None
+        )
+        # P0-R9-3: executa validação semântica COMPLETA (igual à do
+        # loader) antes de finalizar o estado. Garante que o artefato
+        # instalado satisfaz o contrato de persistência.
+        _validate_cross_fit_audit_completeness_or_raise(
+            backend="MOVMF",
+            reference_score_calibration_mode=self._reference_score_calibration_mode,
+            persisted_fingerprint="placeholder",  # validado abaixo via fingerprint real
+            oof_predictive_avg_score=self._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=self._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=self._oof_predictive_score_type,
+            n_identities_by_fold=self._n_identities_by_fold,
+            n_scores_by_fold=self._n_scores_by_fold,
+            ood_threshold_by_fold=self._ood_threshold_by_fold,
+            split_fingerprint=self._split_fingerprint,
+            fold_seeds=self._fold_seeds,
+            n_folds_used=self._n_folds_used,
+            reference_scores=self._train_log_likelihoods,
+            reference_weights=self._train_log_likelihoods_weights,
+            reference_cdf=self._train_log_likelihoods_cdf,
+            ood_quantile=self.ood_quantile,
+            ood_threshold_global=self._ood_log_likelihood_threshold,
+            population_weighting_mode=self.population_weighting_mode,
+            base_random_state=self._base_random_state,
+            fold_seed_strategy=self._fold_seed_strategy,
+        )
         # P0-R5-3 (revisão externa round 5): fingerprint auditável das
         # métricas OOF. Cobre adulteração das próprias métricas — fora
         # do `model_state_fingerprint` que só cobre o estado numérico
@@ -1446,6 +1503,8 @@ class MoVMFTypicalityModel:
             split_fingerprint=self._split_fingerprint,
             fold_seeds=self._fold_seeds,
             n_folds_used=self._n_folds_used,
+            base_random_state=self._base_random_state,
+            fold_seed_strategy=self._fold_seed_strategy,
         )
         # P1-R3-7: congela snapshot da referência recém-instalada.
         self._freeze_state_arrays()

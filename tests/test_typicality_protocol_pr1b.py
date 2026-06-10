@@ -379,7 +379,8 @@ def test_registry_resolve_class():
 def test_factory_round_trip_knn(trained_knn):
     m, X = trained_knn
     envelope = TypicalityModelFactory.to_dict(m)
-    assert envelope["schema_version"] == 1
+    # R9: envelope bumped to schema_version=2 (audit_metrics_fingerprint).
+    assert envelope["schema_version"] == 2
     assert envelope["model_type"] == "KNN"
 
     m2 = TypicalityModelFactory.from_dict(envelope)

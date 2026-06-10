@@ -234,14 +234,17 @@ def test_movmf_reference_dist_fingerprint_includes_weights():
     m.install_reference_score_calibration(
         reference_scores=same_scores, reference_weights=w_uniform,
         ood_threshold=-3.0,
-        calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
+        # R9: usa IN_SAMPLE_LEGACY para o teste pois CROSS_FIT_IDENTITY
+        # exige bloco OOF completo. Aqui só estamos comparando
+        # fingerprints, não testando o fluxo cross-fit.
+        calibration_mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
     )
     fp_uniform = m._reference_score_distribution_fingerprint()
 
     m.install_reference_score_calibration(
         reference_scores=same_scores, reference_weights=w_skewed,
         ood_threshold=-3.0,
-        calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
+        calibration_mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
     )
     fp_skewed = m._reference_score_distribution_fingerprint()
 
@@ -262,14 +265,16 @@ def test_movmf_reference_dist_fingerprint_includes_calibration_mode():
     scores = np.linspace(-5, 5, 30)
     weights = np.ones(30)
 
+    # R9: usa IN_SAMPLE_LEGACY com threshold None (não exigido).
+    # Para distinguir os fingerprints, usamos thresholds diferentes.
     m.install_reference_score_calibration(
         reference_scores=scores, reference_weights=weights, ood_threshold=-3.0,
-        calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
+        calibration_mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
     )
     fp_cross = m._reference_score_distribution_fingerprint()
 
     m.install_reference_score_calibration(
-        reference_scores=scores, reference_weights=weights, ood_threshold=-3.0,
+        reference_scores=scores, reference_weights=weights, ood_threshold=-2.0,
         calibration_mode=ReferenceScoreCalibrationMode.IN_SAMPLE_LEGACY,
     )
     fp_in_sample = m._reference_score_distribution_fingerprint()

@@ -45,7 +45,12 @@ from faceaudit.services.typicality_model_backend_registry import (
 )
 
 
-ENVELOPE_SCHEMA_VERSION = 1
+# P2-R9-8 (revisão externa round 9): bump para 2.
+# - V1: dois fingerprints (state + contract).
+# - V2: três fingerprints (state + contract + audit_metrics).
+#       Pickles pré-R8 sem `audit_metrics_fingerprint` no envelope
+#       são tratados como inválidos pelo loader atual.
+ENVELOPE_SCHEMA_VERSION = 2
 
 
 class TypicalityModelFactory:

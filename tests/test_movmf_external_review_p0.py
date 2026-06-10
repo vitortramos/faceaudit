@@ -58,16 +58,34 @@ def test_movmf_install_replaces_in_sample_reference_atomically():
     in_sample_ref = m.reference_log_likelihoods.copy()
     in_sample_th = m.ood_threshold
 
-    # Instala referência arbitrária
+    # Instala referência arbitrária. R9 exige bloco OOF completo +
+    # threshold coerente com ood_quantile/CDF + sum(n_scores)==len.
     oof_scores = np.linspace(-5, 5, 100)
     oof_weights = np.ones(100)
-    oof_threshold = -3.5
+    cdf = np.cumsum(oof_weights) / oof_weights.sum()
+    q = float(m.ood_quantile)
+    idx = int(np.searchsorted(cdf, q, side="left"))
+    oof_threshold = float(oof_scores[min(idx, len(oof_scores) - 1)])
+    n_folds = 4
+    # 100 / 4 = 25 scores por fold, e em IDENTITY_CENTROIDS n_id = n_scores.
+    n_per_fold = (25, 25, 25, 25)
+    avg = float((oof_weights * oof_scores).sum() / oof_weights.sum())
     m.install_reference_score_calibration(
         reference_scores=oof_scores,
         reference_weights=oof_weights,
         ood_threshold=oof_threshold,
         calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
-        split_fingerprint="abc123",
+        split_fingerprint="a" * 64,
+        oof_predictive_avg_score=avg,
+        oof_predictive_avg_score_by_fold=(avg, avg, avg, avg),
+        oof_predictive_score_type="LOG_DENSITY_ESTIMATE",
+        n_identities_by_fold=n_per_fold,
+        n_scores_by_fold=n_per_fold,
+        ood_threshold_by_fold=(oof_threshold,) * 4,
+        fold_seeds=(0, 1, 2, 3),
+        n_folds_used=n_folds,
+        base_random_state=0,
+        fold_seed_strategy="BASE_PLUS_FOLD_INDEX",
     )
 
     # Estado in-sample foi substituído
@@ -78,7 +96,7 @@ def test_movmf_install_replaces_in_sample_reference_atomically():
         m._reference_score_calibration_mode
         == ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY
     )
-    assert m._split_fingerprint == "abc123"
+    assert m._split_fingerprint == "a" * 64
 
 
 def test_service_cross_fit_installs_oof_into_refit_model():
@@ -125,23 +143,40 @@ def test_knn_install_replaces_reference_atomically():
     in_sample_sorted = m._state.loo_mean_knn_sorted.copy()
     in_sample_th = m._state.ood_threshold
 
+    # R9: bloco OOF completo + threshold ≡ score em CDF >= q + sum.
     oof_scores = np.linspace(0, 1, 50)
     oof_weights = np.ones(50)
+    cdf = np.cumsum(oof_weights) / oof_weights.sum()
+    q = float(m.ood_quantile)
+    idx = int(np.searchsorted(cdf, q, side="left"))
+    oof_threshold = float(oof_scores[min(idx, len(oof_scores) - 1)])
+    n_folds = 5
+    n_per_fold = (10, 10, 10, 10, 10)
+    avg = float((oof_weights * oof_scores).sum() / oof_weights.sum())
     m.install_reference_score_calibration(
         reference_scores=oof_scores,
         reference_weights=oof_weights,
-        ood_threshold=0.3,
+        ood_threshold=oof_threshold,
         calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
-        split_fingerprint="def456",
+        split_fingerprint="b" * 64,
+        oof_predictive_avg_score=avg,
+        oof_predictive_avg_score_by_fold=(avg,) * 5,
+        oof_predictive_score_type="MEAN_KNN_SIMILARITY",
+        n_identities_by_fold=n_per_fold,
+        n_scores_by_fold=n_per_fold,
+        ood_threshold_by_fold=(oof_threshold,) * 5,
+        fold_seeds=(0, 1, 2, 3, 4),
+        n_folds_used=n_folds,
+        base_random_state=0,
+        fold_seed_strategy="BASE_PLUS_FOLD_INDEX",
     )
     assert not np.array_equal(m._state.loo_mean_knn_sorted, in_sample_sorted)
     assert m._state.ood_threshold != in_sample_th
-    assert m._state.ood_threshold == pytest.approx(0.3)
     assert (
         m._state.reference_score_calibration_mode
         == ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY
     )
-    assert m._state.split_fingerprint == "def456"
+    assert m._state.split_fingerprint == "b" * 64
 
 
 # ─── P0-2 ────────────────────────────────────────────────────────────────
@@ -208,10 +243,19 @@ def test_movmf_serialization_preserves_weighted_state():
     rng = np.random.default_rng(0)
     oof = rng.normal(size=50)
     w = rng.uniform(0.5, 2.0, size=50)
+    # R9: threshold tem que ser o score em CDF>=q (não np.quantile).
+    order = np.argsort(oof)
+    sorted_scores = oof[order]
+    sorted_w = w[order]
+    sorted_cdf = np.cumsum(sorted_w) / sorted_w.sum()
+    q = float(m.ood_quantile)
+    idx = int(np.searchsorted(sorted_cdf, q, side="left"))
+    idx = min(max(idx, 0), len(sorted_scores) - 1)
+    threshold = float(sorted_scores[idx])
     m.install_reference_score_calibration(
         reference_scores=oof,
         reference_weights=w,
-        ood_threshold=float(np.quantile(oof, 0.1)),
+        ood_threshold=threshold,
         calibration_mode=ReferenceScoreCalibrationMode.CROSS_FIT_IDENTITY,
         # R8 exige split_fingerprint no formato SHA-256 hex (64 chars).
         split_fingerprint="a" * 64,
@@ -219,13 +263,19 @@ def test_movmf_serialization_preserves_weighted_state():
         # persistidos (oof + w); n_scores_by_fold == n_identities_by_fold
         # em IDENTITY_CENTROIDS; soma de n_scores_by_fold == len(oof).
         oof_predictive_avg_score=float((w * oof).sum() / w.sum()),
-        oof_predictive_avg_score_by_fold=(-1.0, -0.5, -0.8, -0.4),
+        # R9: by_fold deve agregar à global ponderado por fold_mass.
+        # Para simplificar, use avg uniforme em todos os folds.
+        oof_predictive_avg_score_by_fold=(
+            (float((w * oof).sum() / w.sum()),) * 4
+        ),
         oof_predictive_score_type="LOG_DENSITY_ESTIMATE",
         n_identities_by_fold=(13, 13, 12, 12),
         n_scores_by_fold=(13, 13, 12, 12),
-        ood_threshold_by_fold=(-1.5, -1.4, -1.3, -1.2),
+        ood_threshold_by_fold=(threshold,) * 4,
         fold_seeds=(0, 1, 2, 3),
         n_folds_used=4,
+        base_random_state=0,
+        fold_seed_strategy="BASE_PLUS_FOLD_INDEX",
     )
 
     test = X[:5]

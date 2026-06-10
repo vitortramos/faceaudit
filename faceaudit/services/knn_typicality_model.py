@@ -235,6 +235,9 @@ class KNNTypicalityModel:
         # P0-R5-3 (revisão externa round 5): fingerprint auditável das
         # métricas OOF. Recalculado e validado pelo `from_dict`.
         self._audit_metrics_fingerprint: Optional[str] = None
+        # R9: estratégia de seeds persistida.
+        self._base_random_state: Optional[int] = None
+        self._fold_seed_strategy: Optional[str] = None
 
     # =========================================================================
     # API PÚBLICA
@@ -447,6 +450,9 @@ class KNNTypicalityModel:
         ood_threshold_by_fold=None,
         fold_seeds=None,
         n_folds_used=None,
+        # R9: estratégia das seeds.
+        base_random_state=None,
+        fold_seed_strategy=None,
     ) -> None:
         """Sobrescreve atomicamente a referência interna de scores T_k.
 
@@ -606,6 +612,41 @@ class KNNTypicalityModel:
         self._ood_threshold_by_fold = norm_ood_thr_by_fold
         self._fold_seeds = norm_fold_seeds
         self._n_folds_used = norm_n_folds_used
+        # R9: persiste estratégia das seeds.
+        self._base_random_state = (
+            int(base_random_state) if base_random_state is not None else None
+        )
+        self._fold_seed_strategy = (
+            str(fold_seed_strategy) if fold_seed_strategy is not None else None
+        )
+        # P0-R9-3: valida o estado candidato com TODAS as regras do
+        # loader antes de finalizar.
+        from faceaudit.services.oof_audit_metrics import (
+            _validate_cross_fit_audit_completeness_or_raise,
+        )
+        _validate_cross_fit_audit_completeness_or_raise(
+            backend="KNN",
+            reference_score_calibration_mode=
+                self._state.reference_score_calibration_mode,
+            persisted_fingerprint="placeholder",
+            oof_predictive_avg_score=self._oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=self._oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=self._oof_predictive_score_type,
+            n_identities_by_fold=self._n_identities_by_fold,
+            n_scores_by_fold=self._n_scores_by_fold,
+            ood_threshold_by_fold=self._ood_threshold_by_fold,
+            split_fingerprint=self._state.split_fingerprint,
+            fold_seeds=self._fold_seeds,
+            n_folds_used=self._n_folds_used,
+            reference_scores=self._state.loo_mean_knn_sorted,
+            reference_weights=self._state.loo_mean_knn_sorted_weights,
+            reference_cdf=self._state.loo_cdf,
+            ood_quantile=self.ood_quantile,
+            ood_threshold_global=self._state.ood_threshold,
+            population_weighting_mode=self.population_weighting_mode,
+            base_random_state=self._base_random_state,
+            fold_seed_strategy=self._fold_seed_strategy,
+        )
         self._audit_metrics_fingerprint = _compute_audit_metrics_fingerprint(
             oof_predictive_avg_score=self._oof_predictive_avg_score,
             oof_predictive_avg_score_by_fold=self._oof_predictive_avg_score_by_fold,
@@ -616,7 +657,14 @@ class KNNTypicalityModel:
             split_fingerprint=self._state.split_fingerprint,
             fold_seeds=self._fold_seeds,
             n_folds_used=self._n_folds_used,
+            base_random_state=self._base_random_state,
+            fold_seed_strategy=self._fold_seed_strategy,
         )
+        # P0-R9-2: também valida o threshold global se ood_quantile=0.
+        # Esse check é redundante com `_validate_cross_fit_audit_completeness_or_raise`
+        # quando o modo é CROSS_FIT_IDENTITY; mas em IN_SAMPLE_LEGACY
+        # esse helper não roda, e o fit pode ter persistido um threshold
+        # finito mesmo com ood_quantile=0 em código pré-R8. Protege.
 
     def score_samples(self, embeddings: ArrayLike) -> np.ndarray:
         """Retorna log_density_knn pra cada embedding (batch)."""
@@ -741,6 +789,9 @@ class KNNTypicalityModel:
                 ),
                 "n_folds_used": self._n_folds_used,
                 "audit_metrics_fingerprint": self._audit_metrics_fingerprint,
+                # R9: estratégia de seeds.
+                "base_random_state": self._base_random_state,
+                "fold_seed_strategy": self._fold_seed_strategy,
             },
         }
 
@@ -946,6 +997,12 @@ class KNNTypicalityModel:
             raw_fs, field="fold_seeds",
         )
         model._n_folds_used = _normalize_n_folds_used(raw_n_folds)
+        # R9: hidrata estratégia de seeds.
+        _brs = ls.get("base_random_state")
+        model._base_random_state = (
+            int(_brs) if _brs is not None else None
+        )
+        model._fold_seed_strategy = ls.get("fold_seed_strategy")
         # P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo +
         # score_type esperado por backend.
         _validate_cross_fit_audit_completeness_or_raise(
@@ -962,11 +1019,15 @@ class KNNTypicalityModel:
             split_fingerprint=model._state.split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
-            # P0-R8-2: contexto semântico para reconstruir invariantes.
+            # R8/R9: contexto semântico completo.
             reference_scores=model._state.loo_mean_knn_sorted,
             reference_weights=model._state.loo_mean_knn_sorted_weights,
+            reference_cdf=model._state.loo_cdf,
             ood_quantile=model.ood_quantile,
+            ood_threshold_global=model._state.ood_threshold,
             population_weighting_mode=model.population_weighting_mode,
+            base_random_state=model._base_random_state,
+            fold_seed_strategy=model._fold_seed_strategy,
         )
         # P0-R5-3: valida fingerprint auditável das métricas OOF.
         _verify_audit_metrics_fingerprint_or_raise(
@@ -980,6 +1041,8 @@ class KNNTypicalityModel:
             split_fingerprint=model._state.split_fingerprint,
             fold_seeds=model._fold_seeds,
             n_folds_used=model._n_folds_used,
+            base_random_state=model._base_random_state,
+            fold_seed_strategy=model._fold_seed_strategy,
         )
         return model
 
