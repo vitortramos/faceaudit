@@ -94,3 +94,23 @@ faceaudit_strategy_engine_c4_packages.md
 # Script de teste local pra CV diagnóstico do calibrador (depende do
 # `Projeto 1 - PLDA/` que já está ignorado via `Projeto*/`).
 test_cv_comparativo.py
+
+# Projetos FaceAudit ativos (datasets primários ~40MB+ e outputs grandes).
+# A estrutura .fa é regenerada pelo controller; datasets primários ficam
+# fora do versionamento porque vêm de corpora ou geradores próprios.
+projects/
+
+# Scripts auxiliares pessoais usados nas sessões de análise (batch runner,
+# K-sweep, comparações ad-hoc). Não fazem parte do produto.
+scripts/
+
+# Caches e artefatos do experimento Teste Tipicidade (modelos cacheados,
+# fingerprints intermediários, JSONs por batch — regenerados pelo design).
+experiments/Teste Tipicidade/_frozen/
+experiments/Teste Tipicidade/_cache/
+experiments/Teste Tipicidade/results/
+experiments/Teste Tipicidade/figures/
+experiments/Teste Tipicidade/*.json
+experiments/Teste Tipicidade/*.log
+experiments/Teste Tipicidade/*.csv
+experiments/Teste Tipicidade/*.parquet
