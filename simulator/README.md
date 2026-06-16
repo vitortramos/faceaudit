@@ -13,15 +13,13 @@ O pacote não implementa a rede neural AdaFace. Ele cria um mundo sintético aud
 - acoplamentos entre qualidade, norma e direção;
 - condições de aquisição alinhadas por identidade.
 
-## Novidades 0.3.0
+## Recursos
 
-- **Dispersão intra-classe selecionável** via `IntraClassSamplingMode`: `VMF` (padrão, idêntico bit a bit à 0.2), `IDPERTURB_CAP` (calota esférica com cosseno uniforme, Boutros et al. CVPR 2026) e `HYBRID_VMF_CAP` (corpo vMF com piso rígido de calota).
-- **Perfil pronto** `make_idperturb_cap_config` para a baseline cooperativa com calota.
-- **Round-trip completo de configuração**: `config_from_dict` / `config_from_manifest` fecham o ciclo que antes só tinha `config_to_dict`.
+- **Dispersão intra-classe selecionável** via `IntraClassSamplingMode`: `VMF` (concentração `κ`, padrão), `IDPERTURB_CAP` (calota esférica com cosseno uniforme, Boutros et al. CVPR 2026) e `HYBRID_VMF_CAP` (corpo vMF com piso rígido de calota).
+- **Perfis prontos** `make_spherical_baseline_config`, `make_cooperative_plda_config`, `make_cross_condition_stress_config` e `make_idperturb_cap_config`.
+- **Serialização de configuração round-trippável**: `config_to_dict` / `config_from_dict` / `config_from_manifest`.
 - **Adapter concreto FaceAudit** (`faceaudit_concrete_adapter`) para `EmbeddingInfo`/`EmbeddingDataset` reais (float32, parquet, cross-condition).
 - **População ancorada em dataset real** via `faceaudit_seed` (Modo A: âncoras biométricas reais; Modo B: centros-fantasma MoVMF).
-
-Consulte [`CHANGELOG.md`](CHANGELOG.md) para a lista completa.
 
 ## Instalação
 

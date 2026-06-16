@@ -1,193 +1,267 @@
 # `adaface_embedding_simulator`
 
-## Documentação completa — gerador sintético de embeddings AdaFace-like (v0.3.0)
+## Manual completo do gerador sintético de embeddings AdaFace-like
 
-## 1. Finalidade do pacote
+## 1. Visão geral
 
-O arquivo `adaface_embedding_simulator.py` implementa um **gerador sintético configurável de embeddings AdaFace-like** para experimentos controlados com backends biométricos, especialmente:
+O pacote `adaface_embedding_simulator` é um **gerador sintético de embeddings no estilo
+AdaFace**, projetado para experimentos controlados de **PLDA, calibração de razões de
+verossimilhança (LR), tipicidade e backends de similaridade** (cosseno, LDA, whitening,
+alternativas esféricas). Ele produz diretamente os **vetores de embedding** e seus
+**metadados** — junto com tabelas de pares, escores e diagnósticos — sob um modelo
+generativo totalmente parametrizado, determinístico e auditável.
 
-- similaridade de cosseno;
-- normalização L2;
-- LDA;
-- *whitening*;
-- Gaussianização radial;
-- PLDA de duas covariâncias;
-- PSDA e outros modelos esféricos;
-- regressão logística para calibração;
-- mineração de pares;
-- modelos de tipicidade;
-- comparação entre estratégias cross-condition.
+### O que o pacote NÃO é
 
-O simulador **não implementa a rede neural AdaFace**. Ele também não afirma reproduzir automaticamente a distribuição de qualquer modelo AdaFace real. Seu objetivo é gerar dados artificiais com mecanismos geométricos conhecidos, configuráveis e auditáveis.
+A delimitação de escopo é essencial para a defensibilidade forense de qualquer estudo que
+use o simulador:
 
-A decomposição fundamental é:
+- **Não implementa a rede neural AdaFace.** Não há extração de features de imagens, nem
+  pesos de modelo, nem inferência de uma CNN/ViT. O pacote não "roda o AdaFace".
+- **Não gera imagens faciais.** Não há pixels, alinhamento, detecção, nem qualidade óptica
+  real. O que o simulador chama de "qualidade" (`latent_quality`) e de "pose"/"nuisance" são
+  variáveis **latentes** do modelo generativo, e não medidas físicas extraídas de uma face.
+- **Não é uma fonte de verdade biométrica.** Os embeddings são amostras de uma distribuição
+  paramétrica escolhida pelo usuário. Eles imitam *propriedades geométricas* plausíveis de
+  embeddings AdaFace reais (norma variável, dispersão intra-classe controlada, anisotropia,
+  domínios de aquisição), mas **não correspondem a indivíduos reais** a menos que a população
+  seja explicitamente ancorada em um dataset real (ver Seção 14) — e mesmo aí gera-se
+  *variação sintética em torno* de âncoras reais, nunca os próprios dados originais.
+
+### A decomposição central `x = r · u`
+
+Todo embedding sintético é construído pela fatoração geométrica fundamental
 
 \[
-\mathbf{x}_{ij}=r_{ij}\mathbf{u}_{ij},
+x = r \cdot u, \qquad r = \lVert x \rVert_2 > 0, \qquad u = \frac{x}{\lVert x \rVert_2} \in S^{D-1},
 \]
 
 em que:
 
-- \(\mathbf{x}_{ij}\in\mathbb{R}^{d}\) é o embedding bruto da amostra \(j\) da identidade \(i\);
-- \(r_{ij}=\lVert\mathbf{x}_{ij}\rVert_2\) é a norma;
-- \(\mathbf{u}_{ij}\in S^{d-1}\) é a direção normalizada;
-- \(d\) é a dimensão, normalmente 512.
+- **`r`** é a **norma radial** (a magnitude do vetor bruto), modelada em escala log via
+  `RadialConfig`. Em embeddings AdaFace reais a norma carrega sinal de qualidade/dificuldade
+  da amostra, e o simulador reproduz esse acoplamento.
+- **`u`** é a **direção** (o vetor unitário na hiperesfera \( S^{D-1} \)), modelado pela
+  geometria de população + dispersão intra-classe + perturbações tangenciais.
 
-A arquitetura herdada da versão 0.2.0 separa claramente:
+Os dois fatores variam **independentemente**: o `raw_embeddings` carrega `r·u`, enquanto o
+`normalized_embeddings` carrega apenas `u`. Isso permite estudar separadamente backends que
+usam a norma (ex.: detecção via norma) e backends puramente angulares (cosseno, PLDA esférico).
 
-1. o **mundo sintético estrutural**;
-2. a **população latente de identidades**;
-3. as **observações** produzidas em um ou mais domínios;
-4. as **políticas de geração de trials**;
-5. os **artefatos de rastreabilidade**.
+### As cinco camadas conceituais
 
-Essa separação evita um erro comum em experimentos sintéticos: interpretar como generalização real um resultado obtido em um cenário excessivamente cooperativo para o modelo avaliado.
+O modelo generativo é organizado em **cinco camadas que podem ser variadas de forma
+independente**, cada uma com sua própria seção de configuração. Essa separação é o que torna
+o simulador útil para **ablações causais**: pode-se ligar/desligar uma camada de cada vez e
+medir o efeito isolado sobre o backend.
 
-A versão 0.3.0 acrescenta três eixos sobre essa base, sem alterar o comportamento padrão: um mecanismo alternativo de **dispersão intra-classe por calota esférica** (com piso angular interpretável e citável em laudo), o **round-trip completo de configuração** em JSON e o **ancoramento da população em embeddings reais** do FaceAudit. Todo o foco continua sendo a **auditabilidade forense**: cada decisão geométrica é nomeada, configurável, registrada no manifesto e reproduzível por seed.
-
----
-
-## 2. Visão geral das capacidades 0.3
-
-A versão 0.3.0 organiza-se em **quatro áreas** que podem ser usadas isoladamente ou combinadas. Esta seção é o mapa de uma tela; cada área tem uma seção dedicada adiante.
-
-| Área | O que faz | Entrada principal | Seções |
+| # | Camada conceitual | Onde se configura | O que controla |
 |---|---|---|---|
-| **Amostragem intra-classe por calota** | Substitui (ou complementa) a dispersão vMF por uma calota esférica com **piso angular `lb`** — *"nenhuma observação foi gerada com cosseno menor que `lb` ao centro da identidade"*. Inclui guarda de bissetor anti-colisão. | `DirectionalConfig.intra_class_sampling_mode` | 6.x, 8.4, 15, 19, 21 |
-| **Round-trip JSON de config** | Serializa **e** reconstrói uma `SimulatorConfig` completa, fechando o ciclo que na 0.2 só tinha o lado de ida (`config_to_dict`). Permite reabrir um experimento a partir do manifesto. | `config_to_dict` / `config_from_dict` / `config_from_manifest` | 9, 17 |
-| **População ancorada em dataset real** | Gera variação sintética em torno de **âncoras biométricas reais** (Modo A: centros médios esféricos) ou de **centros-fantasma MoVMF** ajustados ao dataset (Modo B), com guardas explícitas de vazamento. | `faceaudit_seed` | 10, 12, 20 |
-| **Adapter concreto FaceAudit** | Converte o `SyntheticEmbeddingDataset` no DTO real `EmbeddingDataset` (float32, parquet, cross-condition), em vez do *scaffold* genérico de referência. | `faceaudit_concrete_adapter` | 18 |
+| 1 | **População de identidades** | `PopulationConfig` | Onde vivem os centros de identidade na hiperesfera — mistura de componentes (`component_count`), concentração dos centros (`identity_center_kappas`), espalhamento global das componentes (`component_mean_global_kappa`). |
+| 2 | **Norma radial** | `RadialConfig` | A distribuição de `r` (log-norma) por regime (central / cauda baixa / cauda alta) e seu acoplamento com a qualidade latente. |
+| 3 | **Dispersão intra-classe** | `DirectionalConfig` (campos de concentração e de calota) | Quão espalhadas ficam as amostras de uma mesma identidade em torno do seu centro — via vMF (`kappa`), calota esférica cosseno-uniforme (`IDPERTURB_CAP`) ou híbrido (ver Seção 6). |
+| 4 | **Perturbações tangenciais / anisotropia** | `DirectionalConfig` (campos `anisotropic_*`, `nuisance_structure_mode`, `tangent_update_mode`) | A estrutura direcional do ruído (global, por domínio, hierárquica) e a forma de mapeá-lo de volta à esfera (retração ou mapa exponencial). |
+| 5 | **Domínio de aquisição** | `AcquisitionDomainConfig` (uma ou mais) | Condições heterogêneas (ex.: `controlled` vs `surveillance`): probabilidade de regime, deslocamentos de norma e de κ, viés de domínio/sessão, distribuição de qualidade. |
 
-**O que NÃO mudou (garantia forense de regressão).** O modo padrão de dispersão intra-classe é `IntraClassSamplingMode.VMF` e reproduz a saída da 0.2.0 **bit a bit** — há um teste golden que trava essa invariância. Os modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP` são estritamente *opt-in*. Quem atualiza de 0.2 para 0.3 sem tocar na configuração obtém exatamente os mesmos números (mesma seed estrutural, mesmas seeds de população e observação).
+Acima dessas cinco camadas, o `CouplingConfig` funciona como um **painel de chaves causais**:
+liga/desliga acoplamentos entre as camadas (ex.: "a qualidade afeta a norma?", "a qualidade
+afeta a concentração?") para permitir experimentos contrafactuais limpos (ver Seção 9).
 
-Os três perfis da 0.2 (`SPHERICAL_BASELINE`, `COOPERATIVE_PLDA_BASELINE`, `CROSS_CONDITION_HETEROSCEDASTIC`) continuam disponíveis e inalterados. A 0.3 adiciona um **quarto perfil** pronto, `IDPERTURB_CAP` (`make_idperturb_cap_config`), descrito na Seção 7.
+### Propósito honesto
+
+O simulador existe para **experimentos controlados**: comparar backends, estressar
+calibradores, validar pipelines de tipicidade e estudar a sensibilidade de métricas forenses
+(Cllr, EER, ECE, Tippett) a propriedades geométricas conhecidas — porque aqui o
+*ground-truth* gerador é totalmente conhecido.
+
+> **Aviso de defensibilidade.** Nenhum parâmetro do simulador é, por si só, um valor
+> "correto" para AdaFace/PLDA/FaceAudit. Os perfis prontos e os valores como `lb = 0.6` são
+> **ilustrativos** e/ou **inspirados** na literatura, nunca ótimos comprovados. Para qualquer
+> alegação científica ou pericial: **calibre os parâmetros contra embeddings reais
+> representativos** (Seção 21) e **reporte explicitamente qual perfil sintético foi usado**
+> (o nome vive em `config.profile_name` e é persistido no manifesto). O simulador é uma
+> bancada de teste, não evidência.
 
 ---
 
-## 3. Instalação
+## 2. Instalação e dependências
 
-O simulador depende apenas de **NumPy** e **pandas**:
+### Dependências de runtime
+
+O núcleo do simulador depende de exatamente duas bibliotecas científicas:
+
+- **`numpy`** — toda a álgebra de embeddings, amostragem RNG e geometria esférica.
+- **`pandas`** — a tabela de metadados (`SyntheticEmbeddingDataset.metadata`), a tabela de
+  pares (`sample_pair_table`) e os diagnósticos de norma. O módulo importa `pandas` no topo e
+  falha com uma `ImportError` explicativa se ele não estiver disponível:
+
+```python
+try:
+    import pandas as pd
+except ImportError as exc:
+    raise ImportError(
+        "This module requires pandas. Install it with: pip install pandas"
+    ) from exc
+```
+
+O núcleo gerador (`adaface_embedding_simulator.py`), o adapter de referência
+(`faceaudit_adapter.py`) e os testes só exigem `numpy` + `pandas`. As funcionalidades de
+**ancoragem em dataset real** (`faceaudit_seed.py`, modo MoVMF) e o **adapter concreto**
+(`faceaudit_concrete_adapter.py`) importam, sob demanda, classes do projeto hospedeiro
+FaceAudit (`MoVMFTypicalityModel`, `EmbeddingDataset`, `EmbeddingInfo`) — esses imports só são
+acionados quando você usa essas funções específicas, então o núcleo permanece autossuficiente.
+
+### Instalação
 
 ```bash
 pip install numpy pandas
 ```
 
-O sampler von Mises–Fisher e o sampler de calota esférica foram implementados diretamente com NumPy. O SciPy **não** é uma dependência obrigatória.
+Para usar a ancoragem em dataset real e os adapters concretos, é necessário ter o pacote
+`faceaudit` instalado e importável no mesmo ambiente (no repositório, via
+`pip install -e .` na raiz).
 
-Para rodar os testes basta acrescentar o `pytest`:
+### `simulator/` não tem `__init__.py` — como importar
+
+A pasta `simulator/` é um **conjunto de módulos planos** (top-level), sem `__init__.py` e
+**não é um pacote Python**. Os módulos são importados sem prefixo de pacote — `import
+adaface_embedding_simulator`, `import faceaudit_seed`, etc. — espelhando o layout standalone.
+Há três formas suportadas de torná-los importáveis:
+
+**(a) Rodar a partir de dentro de `simulator/`.** Se o diretório de trabalho for a própria
+pasta `simulator/`, os imports planos resolvem naturalmente:
 
 ```bash
-pip install pytest
-python -m pytest -q
+cd simulator
+python -c "from adaface_embedding_simulator import make_cooperative_plda_config; print('ok')"
 ```
 
-### Modos B e adapter concreto exigem o FaceAudit
+**(b) Inserir a pasta no `sys.path` programaticamente.** Útil em scripts e notebooks fora da
+pasta:
 
-As funcionalidades que tocam o projeto hospedeiro têm dependências adicionais opcionais:
+```python
+import sys
+sys.path.insert(0, "/caminho/para/o/repo/simulator")
 
-- a **população ancorada em dataset real no Modo B** (`population_config_from_dataset` / `simulator_config_from_dataset`) usa o `MoVMFTypicalityModel` (MoVMF) do FaceAudit;
-- o **adapter concreto** (`faceaudit_concrete_adapter`) importa os DTOs reais `EmbeddingInfo` / `EmbeddingDataset` e usa parquet (via `pandas`/`pyarrow`, conforme o host).
+from adaface_embedding_simulator import AdaFaceEmbeddingSimulator, make_cooperative_plda_config
+```
 
-O **Modo A** (centros médios esféricos) e os helpers de extração/vazamento de `faceaudit_seed` funcionam **sem** o FaceAudit instalado — eles nunca importam o host no topo do módulo, apenas operam sobre arrays NumPy. Use o `.venv` do projeto FaceAudit quando precisar do Modo B ou do adapter concreto.
+**(c) Via `conftest.py` (automático sob pytest).** O `simulator/conftest.py` insere o próprio
+diretório no `sys.path` no momento da coleta, de modo que os imports planos resolvem tanto se
+os testes forem rodados da raiz do repositório quanto de dentro de `simulator/`:
 
-### Nota sobre `simulator/` sem `__init__.py`
+```python
+import os
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
+```
 
-A pasta `simulator/` **não é um pacote Python instalável**: ela ship como um conjunto de **módulos flat de nível superior** (`adaface_embedding_simulator`, `faceaudit_adapter`, `faceaudit_concrete_adapter`, `faceaudit_seed`), importados **sem prefixo de pacote** — espelhando o layout standalone original. Não há `__init__.py`, `setup.py`, `requirements*.txt` nem `pytest.ini` na pasta.
+### Rodando os testes
 
-Em consequência, os imports só resolvem se o diretório `simulator/` estiver no `sys.path`. Há duas formas de garantir isso:
+A suíte vive em `simulator/tests/`. Com o `conftest.py` na pasta acima, qualquer um dos
+comandos abaixo funciona:
 
-1. **Sob `pytest`**: o arquivo `conftest.py` insere o próprio diretório no `sys.path` no início da coleta, de modo que os testes resolvem `import adaface_embedding_simulator` tanto a partir da raiz do repositório quanto de dentro de `simulator/`:
+```bash
+# A partir da raiz do repositório
+python -m pytest simulator/tests/
 
-   ```python
-   import os, sys
-   sys.path.insert(0, os.path.dirname(__file__))
-   ```
+# Ou de dentro da pasta do simulador
+cd simulator
+python -m pytest tests/
 
-2. **Em scripts/notebooks próprios**: ou ajuste o **working directory** para `simulator/` antes de importar, ou insira o caminho explicitamente no início do script:
+# Um arquivo específico
+python -m pytest simulator/tests/test_idperturb_cap.py -v
+```
 
-   ```python
-   import sys
-   sys.path.insert(0, "/caminho/para/faceaudit/simulator")
-
-   from adaface_embedding_simulator import (
-       AdaFaceEmbeddingSimulator,
-       make_cooperative_plda_config,
-   )
-   ```
-
-Sem um desses passos, `import adaface_embedding_simulator` falha com `ModuleNotFoundError` mesmo com NumPy e pandas instalados — o problema é de caminho, não de dependência.
+A cobertura dos testes está detalhada na Seção 23.
 
 ---
 
-## 4. Estrutura do pacote
+## 3. Estrutura do pacote
 
-A árvore abaixo foi regenerada a partir da pasta `simulator/` real da versão 0.3.0.
+A árvore abaixo reflete o conteúdo real da pasta `simulator/`. O coração do pacote é um único
+módulo monolítico (`adaface_embedding_simulator.py`); os demais módulos são pontes opcionais
+para o FaceAudit, documentação, exemplo executável e testes.
 
-```text
+```
 simulator/
-├── adaface_embedding_simulator.py      ← módulo principal (núcleo gerativo + perfis)
-├── faceaudit_adapter.py                ← adapter genérico de referência (factories injetadas)
-├── faceaudit_concrete_adapter.py       ← adapter concreto: DTOs reais do FaceAudit
-├── faceaudit_seed.py                   ← população ancorada em dataset real (Modos A e B)
-├── example_generate_adaface_embeddings.py  ← script de exemplo executável
-├── conftest.py                         ← insere simulator/ no sys.path para os testes
-├── README.md
-├── DOCUMENTATION.md
-├── CHANGELOG.md
+├── adaface_embedding_simulator.py     ← NÚCLEO: enums, configs, funções geométricas,
+│                                          AdaFaceEmbeddingSimulator, dataset, pares, perfis
+├── faceaudit_seed.py                  ← Ancoragem em dataset real (Modo A e Modo B / MoVMF)
+├── faceaudit_adapter.py               ← Adapter de REFERÊNCIA (scaffold com injeção genérica)
+├── faceaudit_concrete_adapter.py      ← Adapter CONCRETO de produção (DTOs reais do FaceAudit)
+├── example_generate_adaface_embeddings.py  ← Script executável de ponta a ponta
+├── conftest.py                        ← Insere a pasta no sys.path para os imports planos
+├── DOCUMENTATION.md                   ← Documentação técnica de referência
+├── README.md                          ← Visão de entrada do pacote
 └── tests/
-    ├── test_adaface_embedding_simulator.py     ← geometria L2, vMF, regimes, reprodutibilidade, pares
-    ├── test_config_roundtrip.py                ← config_to_dict ↔ config_from_dict / manifesto
-    ├── test_idperturb_cap.py                   ← calota, modulação de lb, guarda do bissetor, híbrido, golden VMF
-    ├── test_core_population_injection.py        ← injeção de centros + bridge Modo A (sem faceaudit)
-    ├── test_faceaudit_seed.py                  ← Modo B (MoVMF) — requer faceaudit
-    ├── test_faceaudit_adapter.py               ← adapter genérico de referência
-    └── test_faceaudit_concrete_adapter.py      ← adapter concreto (importa DTOs reais)
+    ├── test_adaface_embedding_simulator.py   ← Núcleo: geometria, dataset, escores
+    ├── test_config_roundtrip.py              ← Serialização config → dict → config / manifesto
+    ├── test_core_population_injection.py     ← Injeção de centros/componentes na população
+    ├── test_idperturb_cap.py                 ← Calota cosseno-uniforme + guarda de overlap
+    ├── test_faceaudit_seed.py                ← Ancoragem em dataset real (A e B), disjunção
+    ├── test_faceaudit_adapter.py             ← Adapter de referência (injeção genérica)
+    └── test_faceaudit_concrete_adapter.py    ← Adapter concreto contra DTOs reais
 ```
 
-### `adaface_embedding_simulator.py`
+### Papel de cada módulo
 
-Módulo principal (`__version__ = "0.3.0"`). Contém:
+- **`adaface_embedding_simulator.py` (núcleo).** Contém tudo que é necessário para gerar
+  embeddings sem nenhuma dependência do FaceAudit. Define: os enums
+  (`NuisanceStructureMode`, `TangentUpdateMode`, `PairSamplingStrategy`,
+  `IntraClassSamplingMode`); os dataclasses de configuração (`SimulatorConfig`,
+  `PopulationConfig`, `RadialConfig`, `RadialReference`, `DirectionalConfig`,
+  `CouplingConfig`, `AcquisitionDomainConfig`); as funções geométricas (`l2_normalize_rows`,
+  `sample_uniform_directions`, `sample_vmf`, `sample_spherical_cap`, `sample_hybrid_vmf_cap`,
+  `cosine_scores`); a classe geradora `AdaFaceEmbeddingSimulator`; os contêineres de resultado
+  (`SyntheticIdentityPopulation`, `SyntheticEmbeddingDataset`); a geração de pares
+  (`sample_pair_table`); a serialização (`config_to_dict`/`config_from_dict`/
+  `config_from_manifest`); e os **perfis prontos** (`make_spherical_baseline_config`,
+  `make_cooperative_plda_config`, `make_cross_condition_stress_config`,
+  `make_idperturb_cap_config`, `make_example_config`).
 
-- funções numéricas e geométricas (`l2_normalize_rows`, bases ortonormais, rotação de Householder);
-- sampler vetorizado von Mises–Fisher (`sample_vmf`);
-- samplers de calota da 0.3 (`sample_spherical_cap`, `sample_hybrid_vmf_cap`);
-- enums (`NuisanceStructureMode`, `TangentUpdateMode`, `PairSamplingStrategy`, `IntraClassSamplingMode`);
-- classes de configuração (`PopulationConfig`, `RadialConfig`, `DirectionalConfig`, `CouplingConfig`, `AcquisitionDomainConfig`, `SimulatorConfig`);
-- serialização de config (`config_to_dict`, `config_from_dict`, `config_from_manifest`);
-- classes `RadialReference`, `SyntheticIdentityPopulation`, `SyntheticEmbeddingDataset`;
-- classe `AdaFaceEmbeddingSimulator`;
-- funções de score e amostragem de pares (`cosine_scores`, `sample_pair_table`);
-- os quatro perfis prontos (`make_spherical_baseline_config`, `make_cooperative_plda_config`, `make_cross_condition_stress_config`, `make_idperturb_cap_config`) e o alias legado `make_example_config`.
+- **`faceaudit_seed.py` (ancoragem em dataset real).** Funções que constroem populações e
+  configurações a partir de embeddings reais. **Modo A** (`identity_centers_from_dataset`,
+  `population_from_dataset`) usa os centros empíricos das identidades reais como centros
+  sintéticos. **Modo B** (`population_config_from_dataset`, `simulator_config_from_dataset`)
+  ajusta uma mistura de von Mises-Fisher (MoVMF, via `MoVMFTypicalityModel` do FaceAudit) à
+  distribuição dos centros e fabrica centros "fantasma". Inclui salvaguardas de disjunção
+  (`source_identity_set`, `assert_disjoint_source_identities`). Detalhado na Seção 14.
 
-### `faceaudit_adapter.py`
+- **`faceaudit_adapter.py` (adapter de referência / scaffold).** Helper de **referência** com
+  **injeção genérica de construtores**. Expõe `dataset_to_embedding_records` e
+  `to_faceaudit_embedding_dataset`, recebendo `embedding_info_factory` e
+  `embedding_dataset_factory` como parâmetros. **Importante:** assume a assinatura
+  `EmbeddingInfo(embedding=, identity=, metadata=)`, que **não corresponde** ao DTO real do
+  FaceAudit. Serve como andaime didático e não deve ser usado em produção — use o adapter
+  concreto. Detalhado na Seção 19.
 
-Adapter **genérico de referência**, desacoplado das classes concretas do FaceAudit. As factories de `EmbeddingInfo` e `EmbeddingDataset` são injetadas pelo usuário. **Atenção:** ele assume `EmbeddingInfo(metadata=...)`, que **não** corresponde ao DTO real do FaceAudit — serve apenas como scaffold ilustrativo. Para produção, use o adapter concreto (Seção 18).
+- **`faceaudit_concrete_adapter.py` (adapter concreto / produção).** A ponte real. Importa os
+  DTOs do hospedeiro (`EmbeddingDataset`, `EmbeddingInfo`) e mapeia as colunas de metadata do
+  simulador sobre os campos reais (`face_hash`, `image_path`, `quality_scores`, `source`,
+  etc.). Expõe `to_embedding_dataset` e `cross_condition_to_embedding_datasets`. É o caminho
+  recomendado para alimentar uma estratégia FaceAudit com dados sintéticos. Detalhado na
+  Seção 19.
 
-### `faceaudit_concrete_adapter.py`
+- **`example_generate_adaface_embeddings.py` (exemplo executável).** Script de ponta a ponta
+  que demonstra os fluxos principais — split train/dev/test via `sample_dataset` +
+  `save_bundle`, demo de calota, e ancoragem em dataset real. Executável diretamente
+  (`python example_generate_adaface_embeddings.py`).
 
-Adapter **concreto**: importa os DTOs reais do host e mapeia as colunas de metadata do simulador sobre os campos efetivos de `EmbeddingInfo`. Expõe `to_embedding_dataset` e `cross_condition_to_embedding_datasets` (float32, parquet, alinhamento cross-condition).
+- **`conftest.py`.** Apenas insere a pasta no `sys.path` para que os módulos planos resolvam
+  sob pytest (ver Seção 2).
 
-### `faceaudit_seed.py`
-
-Ancora a população do simulador em um `EmbeddingDataset` real, em dois modos (Modo A: centros médios esféricos; Modo B: centros-fantasma MoVMF via `MoVMFTypicalityModel`), com helpers de extração de centros, ajuste radial e verificação de vazamento (`source_identity_set`, `assert_disjoint_source_identities`).
-
-### `example_generate_adaface_embeddings.py`
-
-Exemplo executável que cria splits disjuntos, pares genuínos e impostores, bundles persistidos e datasets cross-condition alinhados por identidade.
-
-### `conftest.py`
-
-Insere o diretório `simulator/` no `sys.path` para que os testes resolvam os módulos flat independentemente do diretório de execução (ver Seção 3).
-
-### `tests/`
-
-Sete módulos de teste cobrindo geometria L2, vMF, regimes radiais, reprodutibilidade, alinhamento cross-condition, geração de pares, round-trip de configuração, amostragem por calota (incluindo o golden VMF que trava a regressão de saída), injeção de centros, Modo A/B de ancoramento e ambos os adapters.
+- **`tests/`.** Suíte de validação numérica e de contrato, descrita na Seção 23.
 
 ---
 
-## 5. Início rápido
+## 4. Início rápido
 
-### 5.1 Gerar um split e salvar o bundle completo
+O fluxo canônico de geração de um split é: **escolher um perfil → construir o simulador →
+amostrar um dataset → persistir um bundle auditável**. O exemplo abaixo usa o perfil
+cooperativo de PLDA (`make_cooperative_plda_config`), gera um split com identidades disjuntas
+via `sample_dataset`, e grava o pacote completo (NPZ + metadata CSV + diagnósticos de norma +
+manifesto JSON) com `save_bundle`.
 
 ```python
 from adaface_embedding_simulator import (
@@ -195,350 +269,396 @@ from adaface_embedding_simulator import (
     make_cooperative_plda_config,
 )
 
+# 1) Perfil pronto: baseline cooperativo de PLDA (dimensão 512).
 config = make_cooperative_plda_config(dimension=512)
 
-simulator = AdaFaceEmbeddingSimulator(
-    config,
-    random_seed=2026,  # seed estrutural do mundo sintético
-)
+# 2) Construa o simulador com uma semente estrutural explícita.
+#    A semente fixa população, anisotropia e vieses de domínio.
+simulator = AdaFaceEmbeddingSimulator(config, random_seed=42)
 
-test = simulator.sample_dataset(
-    identity_count=1_000,
-    samples_per_identity=(4, 10),
-    split_name="test",
-    identity_offset=200_000,
-    random_seed=103,             # observações
-    population_random_seed=1003, # identidades latentes
-)
-
-print(test.raw_embeddings.shape)
-print(test.normalized_embeddings.shape)
-print(test.metadata.head())
-
-test.save_bundle(
-    output_dir="synthetic_output",
-    stem="test",
-)
-```
-
-Arquivos produzidos pelo `save_bundle`:
-
-```text
-synthetic_output/
-├── test_embeddings.npz
-├── test_metadata.csv
-├── test_norm_diagnostics.csv
-└── test_manifest.json
-```
-
-O `save_bundle` é o método recomendado para experimentos auditáveis: além dos embeddings e metadados, ele grava o diagnóstico por faixa radial e um **manifesto JSON** com perfil, seeds, dimensão, contagem de amostras/identidades, SHA-256 do código-fonte e a **configuração completa**.
-
-### 5.2 Calota esférica com piso angular (`make_idperturb_cap_config`)
-
-Para impor um **limite geométrico interpretável** à variação intra-identidade — *"nenhuma observação foi gerada com cosseno menor que `lb` ao centro da identidade"* —, use o perfil `IDPERTURB_CAP` em vez da dispersão vMF padrão:
-
-```python
-from adaface_embedding_simulator import (
-    AdaFaceEmbeddingSimulator,
-    make_idperturb_cap_config,
-)
-
-# lb = 0.6 é INSPIRADO no regime do IDperturb (Boutros et al., CVPR 2026),
-# NÃO um ótimo para AdaFace/PLDA — calibre empiricamente antes de concluir.
-config = make_idperturb_cap_config(dimension=512, lower_bound=0.6)
-
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=2026)
-
-test = simulator.sample_dataset(
-    identity_count=1_000,
-    samples_per_identity=(4, 10),
-    split_name="test_cap",
-    identity_offset=200_000,
-    random_seed=103,
-    population_random_seed=1003,
-)
-
-# A guarda do bissetor (cap_overlap_guard) impõe um piso por identidade e TEM
-# PRIORIDADE: o lb efetivo pode exceder o nominal em regiões densas.
-# SEMPRE reporte os percentis do lb efetivo:
-eff = test.metadata["cap_lower_bound_effective"]
-print(eff.describe(percentiles=[0.1, 0.5, 0.9]))
-```
-
-O perfil `IDPERTURB_CAP` parte do baseline cooperativo, troca o modo de dispersão para `IDPERTURB_CAP` e liga a guarda anti-colisão. Detalhes da geometria da calota, da modulação de `lb` e das colunas de metadata novas estão nas Seções 6.x e 15.
-
-### 5.3 Round-trip de configuração: `save_manifest` → `config_from_manifest`
-
-Todo experimento pode ser **reaberto a partir do seu manifesto**, fechando o ciclo de serialização que na 0.2 só tinha o lado de ida:
-
-```python
-from adaface_embedding_simulator import (
-    AdaFaceEmbeddingSimulator,
-    make_idperturb_cap_config,
-    config_to_dict,
-    config_from_dict,
-    config_from_manifest,
-)
-
-# 1) Gera e persiste o manifesto (save_bundle também o escreve)
-config = make_idperturb_cap_config(dimension=512)
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=2026)
+# 3) Amostre um split com identidades disjuntas. A geração é
+#    independente da ordem de chamada (RNG nomeado por split).
 dataset = simulator.sample_dataset(
     identity_count=200,
-    samples_per_identity=(3, 6),
-    split_name="roundtrip",
+    samples_per_identity=(4, 12),   # intervalo [min, max] por identidade
+    split_name="train",
     identity_offset=0,
 )
-dataset.save_manifest("synthetic_output/roundtrip_manifest.json")
 
-# 2) Reconstrói a SimulatorConfig a partir do manifesto persistido
-restored = config_from_manifest("synthetic_output/roundtrip_manifest.json")
+# 4) Inspecione os artefatos em memória.
+print(dataset.raw_embeddings.shape)         # (n_amostras, 512)
+print(dataset.normalized_embeddings.shape)  # (n_amostras, 512), normas == 1
+print(dataset.metadata.columns.tolist())    # colunas de metadata (ver Seção 15)
 
-# 3) Round-trip puro em memória (dict <-> config)
-assert config_from_dict(config_to_dict(config)) == config
-
-# 4) A config reconstruída reproduz a geração com a mesma seed estrutural
-replay = AdaFaceEmbeddingSimulator(restored, random_seed=2026)
+# 5) Persista um bundle auditável em disco.
+#    Gera: train_embeddings.npz, train_metadata.csv,
+#          train_norm_diagnostics.csv, train_manifest.json
+paths = dataset.save_bundle("saida/synthetic", "train")
+print(paths)
 ```
 
-`config_from_dict` valida a configuração antes de devolvê-la; chaves ausentes caem para os defaults da dataclass (compatível com manifestos escritos por versões anteriores), enquanto chaves desconhecidas levantam erro — expondo *version drift* cedo, em vez de silenciá-lo. Mais detalhes na Seção 9.
+### Anatomia do que acabou de ser gerado
 
-## 6. Modelo generativo
+- **`dataset.raw_embeddings`** — a matriz \( N \times D \) dos vetores brutos \( x = r\,u \),
+  com a norma preservada (carrega o sinal radial).
+- **`dataset.normalized_embeddings`** — a mesma matriz após L2-normalização, portanto apenas
+  as direções \( u \in S^{D-1} \) (todas as linhas com norma 1).
+- **`dataset.metadata`** — um `pandas.DataFrame` com uma linha por amostra e colunas
+  totalmente auditáveis (identidade, índice de amostra, sessão, domínio de aquisição,
+  qualidade latente, regime radial, norma, concentração intra-classe, modo de dispersão e
+  diagnósticos de calota). O dicionário completo está na Seção 15.
+- **`save_bundle`** — grava NPZ (arrays), metadata CSV, diagnósticos de norma (o padrão
+  "U invertido" esperado entre quantis de norma) e um **manifesto JSON** com `profile_name`,
+  as três sementes (`structural_seed`, `population_sampling_seed`,
+  `observation_sampling_seed`), o hash SHA-256 do código-fonte do simulador e a configuração
+  completa serializada. O manifesto é a peça central da **rastreabilidade**: ele permite
+  reconstruir bit-a-bit a geração (ver Seções 11 e 18).
 
-O gerador possui seis níveis hierárquicos, do mundo compartilhado até o embedding bruto de cada observação:
+### Gerando um split de avaliação disjunto
 
-1. mundo estrutural;
-2. componentes populacionais;
-3. identidade latente;
-4. domínio, qualidade e regime radial;
-5. **dispersão intra-classe** (vMF, calota cosseno-uniforme ou híbrido);
-6. nuisance tangencial e embedding bruto.
-
-A decomposição fundamental permanece:
-
-\[
-\mathbf{x}_{ij}=r_{ij}\widetilde{\mathbf{u}}_{ij},
-\]
-
-em que \(r_{ij}=\lVert\mathbf{x}_{ij}\rVert_2\) é a norma e \(\widetilde{\mathbf{u}}_{ij}\in S^{d-1}\) é a direção final (já submetida à dispersão intra-classe e às perturbações tangenciais).
-
-### 6.1 Mundo estrutural
-
-Ao criar:
+Para um segundo split que **não compartilhe identidades** com o de treino, use o
+`identity_offset` para deslocar os rótulos de identidade:
 
 ```python
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=2026)
+eval_dataset = simulator.sample_dataset(
+    identity_count=100,
+    samples_per_identity=(4, 12),
+    split_name="test",
+    identity_offset=200,   # identidades 200..299, disjuntas de train (0..199)
+)
 ```
 
-são geradas estruturas compartilhadas pelo mundo sintético:
+### Ponteiros para os modos de uso principais
 
-- médias dos componentes populacionais;
-- base anisotrópica global;
-- bases anisotrópicas por domínio;
-- vetores médios de bias por domínio.
+O início rápido cobre apenas o caminho cooperativo padrão. Os modos especializados — cada um
+com sua própria seção — são:
 
-Essas estruturas dependem da seed estrutural, mas não do número nem da ordem de chamadas posteriores.
+- **Dispersão por calota esférica (`IDPERTURB_CAP` / `HYBRID_VMF_CAP`).** Em vez de vMF, use
+  `make_idperturb_cap_config(...)` para um teto angular interpretável (cosseno-uniforme).
+  Atenção à guarda de overlap, que pode elevar o `lb` efetivo. Detalhado na **Seção 6**.
 
-### 6.2 Mistura populacional de vMF
+- **Geração cross-condition (condições assimétricas pareadas).** Use
+  `simulator.sample_cross_condition_datasets(...)` para produzir datasets que **compartilham
+  as mesmas identidades** entre domínios (ex.: frontal vs lateral), garantindo pares genuínos
+  cross-condition. Detalhado na **Seção 13**.
 
-Cada identidade pertence a um componente populacional latente:
+- **Ancoragem em dataset real (Modo A e Modo B / MoVMF).** Use `faceaudit_seed` para construir
+  a população a partir de embeddings reais, mantendo as identidades-âncora **disjuntas** do
+  conjunto de avaliação via `assert_disjoint_source_identities`. Detalhado na **Seção 14**.
 
-\[
-z_i\sim\operatorname{Categorical}(\pi_1,\ldots,\pi_K).
-\]
+- **Round-trip de configuração e reprodutibilidade.** Serialize qualquer configuração com
+  `config_to_dict` / `config_from_dict` / `config_from_manifest` e reproduza uma geração a
+  partir do manifesto. Detalhado nas **Seções 11 e 18**.
 
-Cada componente possui uma direção média:
+- **Integração no FaceAudit.** Converta o `SyntheticEmbeddingDataset` em um
+  `EmbeddingDataset` real com `to_embedding_dataset` (adapter concreto). Detalhado na
+  **Seção 19**.
+## 5. Modelo generativo
 
-\[
-\boldsymbol{\mu}_k\in S^{d-1}.
-\]
-
-Quando as médias não são fornecidas, o simulador sorteia uma direção global \(\boldsymbol{\mu}_0\) e cria os componentes por:
-
-\[
-\boldsymbol{\mu}_k
-\sim
-\operatorname{vMF}
-\left(
-\boldsymbol{\mu}_0,
-\kappa_{\text{componentes}}
-\right).
-\]
-
-Se:
-
-```python
-component_mean_global_kappa=0.0
-```
-
-as médias dos componentes são amostradas uniformemente sobre a hiperesfera.
-
-### 6.3 Centro angular da identidade
-
-Cada centro de identidade é sorteado por:
+O `adaface_embedding_simulator` não implementa a rede neural AdaFace. Ele implementa um **mundo sintético configurável** cuja saída imita as propriedades geométricas de embeddings faciais reais (direção na hiperesfera unitária × norma euclidiana), de modo que backends como cosseno, LDA, whitening, PLDA e alternativas esféricas possam ser estudados sob causas conhecidas e auditáveis. Cada embedding bruto é o produto de uma **norma** por uma **direção**:
 
 \[
-\mathbf{c}_i
-\mid z_i=k
-\sim
-\operatorname{vMF}
-\left(
-\boldsymbol{\mu}_k,
-\kappa_{\text{identidade},k}
-\right).
+x \;=\; r \cdot u, \qquad r \in \mathbb{R}_{>0}, \quad u \in \mathbb{S}^{d-1},
 \]
 
-Quanto maior `identity_center_kappas`, mais próximas as identidades ficam da média do componente. Quanto menor o valor, mais espalhados ficam os centros.
+onde \( d \) é `SimulatorConfig.dimension` (padrão 512), \( r \) é a norma do embedding e \( u \) é a direção L2-normalizada. O simulador entrega **dois** arrays paralelos: `raw_embeddings` (\( x = r\,u \)) e `normalized_embeddings` (\( u \)). A coluna de metadata `embedding_norm` é exatamente \( r \); a validação do dataset confere \( \lVert x \rVert = r \) e \( \lVert u \rVert = 1 \).
 
-> Nota (0.3): este caminho de amostragem de centros pode ser **substituído por injeção direta**. Ao passar `centers=` para `sample_identity_population`, os centros vMF não são sorteados (o RNG não é consumido) e a população é ancorada em direções fornecidas externamente — por exemplo, médias esféricas reais por identidade extraídas de um dataset FaceAudit (Modo A, Seção 12). O caminho amostrado padrão permanece bit-a-bit idêntico ao v0.2.
+O ponto central de auditabilidade é que **cinco camadas conceituais variam independentemente**, cada uma controlada por um bloco de configuração distinto. A norma \( r \) e a direção \( u \) são geradas por mecanismos separados, mas **acoplados de forma explícita e desligável** (Seção 9). Isto permite atribuir qualquer efeito observado num backend a uma camada específica do gerador.
 
-### 6.4 Qualidade latente
+| Camada | O que produz | Bloco de configuração |
+|---|---|---|
+| Mistura populacional | centros de identidade na hiperesfera | `PopulationConfig` |
+| Centro angular da identidade | direção média \( \mu_i \) de cada identidade | `PopulationConfig.identity_center_kappas` |
+| Domínio de aquisição | regime de condição (controlado/vigilância/etc.) | `AcquisitionDomainConfig` |
+| Qualidade latente + regimes radiais | norma \( r \) por amostra | `RadialConfig` + Beta por domínio |
+| Confiabilidade angular (dispersão intra-classe) | desvio de \( u \) em torno de \( \mu_i \) | `DirectionalConfig` (Seção 6) |
 
-Para cada amostra:
+Esta seção descreve as quatro primeiras camadas (a quinta — dispersão intra-classe — é o capítulo central, Seção 6).
+
+### 5.1 Mistura populacional de von Mises-Fisher
+
+Os centros de identidade não são uniformes na hiperesfera: pertencem a uma **mistura de von Mises-Fisher (vMF)** com \( K \) componentes, espelhando a estrutura de subpopulações (etnia, gênero, faixa etária) que existe em galerias reais. Os parâmetros vivem em `PopulationConfig`:
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `component_count` | `int` | `8` | número \( K \) de componentes da mistura |
+| `component_weights` | `ArrayLike \| None` | `None` | pesos \( w_k \) (probabilidade de uma identidade vir da componente \( k \)); `None` ⇒ uniforme \( 1/K \) |
+| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração \( \kappa_k^{\mathrm{id}} \) dos centros de identidade dentro de cada componente (escalar ou um valor por componente) |
+| `component_means` | `ArrayLike \| None` | `None` | médias \( m_k \) das componentes \( (K, d) \); se dadas, são L2-normalizadas e usadas diretamente |
+| `component_mean_global_kappa` | `float` | `20.0` | concentração \( \kappa^{\mathrm{glob}} \) que dispersa as médias das componentes em torno de uma direção global |
+| `global_mean_direction` | `ArrayLike \| None` | `None` | direção global \( g \in \mathbb{S}^{d-1} \); `None` ⇒ amostrada uniformemente |
+
+A geração das médias das componentes \( m_k \) (em `_create_population_component_means`) segue:
+
+- se `component_means` é fornecido, usa-se \( m_k \) L2-normalizado;
+- senão, define-se a direção global \( g \) (de `global_mean_direction` ou amostrada uniformemente). Se \( \kappa^{\mathrm{glob}} \le 0 \), as \( K \) médias são uniformes na esfera; caso contrário, são amostradas de uma vMF concentrada em \( g \):
 
 \[
-q_{ij}
-\sim
-\operatorname{Beta}
-\left(
-\alpha_d,
-\beta_d
-\right),
+m_k \;\sim\; \mathrm{vMF}\!\left(g,\; \kappa^{\mathrm{glob}}\right), \qquad k = 1,\dots,K.
 \]
 
-em que \(d\) é o domínio de aquisição.
+Um \( \kappa^{\mathrm{glob}} \) alto agrupa as subpopulações numa calota comum (galeria homogênea); um \( \kappa^{\mathrm{glob}} \) baixo as espalha (galeria heterogênea).
 
-A qualidade é um índice sintético em \([0,1]\). Ela não deve ser interpretada automaticamente como uma medida objetiva de qualidade visual ou reconhecibilidade real.
+### 5.2 Centro angular da identidade
 
-### 6.5 Regimes radiais
-
-Cada amostra pertence a um dos estados:
-
-```text
-central
-low_tail
-high_tail
-```
-
-A probabilidade pode variar com a qualidade:
+Cada identidade sintética \( i \) recebe primeiro uma **componente** \( c_i \in \{1,\dots,K\} \) amostrada segundo os pesos \( w_k \), e depois um **centro angular** \( \mu_i \in \mathbb{S}^{d-1} \) amostrado de uma vMF em torno da média da sua componente, com concentração \( \kappa_{c_i}^{\mathrm{id}} \) (em `_sample_identity_centers`):
 
 \[
-P(s_{ij}=\text{low\_tail})
-\propto
-\exp
-\left[
-\ell_{\text{low},d}
-+
-\gamma_{\text{low},d}(0{,}5-q_{ij})
-\right].
+c_i \;\sim\; \mathrm{Categorical}(w_1,\dots,w_K), \qquad
+\mu_i \;\sim\; \mathrm{vMF}\!\left(m_{c_i},\; \kappa_{c_i}^{\mathrm{id}}\right).
 \]
 
-A mesma lógica é aplicada à cauda alta. O acoplamento qualidade → regime é controlado pelo switch `coupling.quality_affects_regime_probabilities`.
+O \( \mu_i \) é a **assinatura biométrica** da identidade — o alvo invariante em torno do qual todas as suas observações se dispersam. `identity_center_kappas` controla quão **separadas** as identidades de uma mesma subpopulação são entre si: \( \kappa^{\mathrm{id}} \) alto produz identidades vizinhas e difíceis (impostores próximos), \( \kappa^{\mathrm{id}} \) baixo produz identidades bem separadas. A amostragem vMF usada em todos esses passos é a função pública `sample_vmf` (amostrador por rejeição de Wood, 1994, com rotação de Householder vetorizada; \( \kappa = 0 \) recai em direção uniforme).
 
-### 6.6 Norma do embedding
+### 5.3 Domínio de aquisição
 
-A log-norma é gerada por:
+Cada observação é atribuída a um **domínio de aquisição** — uma condição de captura nomeada (ex.: `controlled`, `surveillance`). Os domínios são escolhidos por amostragem categórica segundo seus pesos `weight` (normalizados internamente), ou podem ser forçados via `forced_domain` em `sample_observations`. O domínio é o **interruptor mestre da heterocedasticidade**: ele modula simultaneamente a distribuição da qualidade latente, as probabilidades dos regimes radiais, a localização/escala da norma, a concentração angular, o ruído anisotrópico e os vieses. Os campos de `AcquisitionDomainConfig` relevantes ao modelo generativo da norma e da qualidade são:
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `name` | `str` | — | nome único do domínio |
+| `weight` | `float` | `1.0` | peso de seleção (probabilidade relativa do domínio) |
+| `quality_beta_alpha` | `float` | `4.0` | parâmetro \( \alpha \) da Beta de qualidade latente |
+| `quality_beta_beta` | `float` | `2.0` | parâmetro \( \beta \) da Beta de qualidade latente |
+| `central_regime_probability` | `float` | `0.86` | probabilidade base do regime radial central |
+| `low_tail_probability` | `float` | `0.08` | probabilidade base do regime radial de cauda baixa |
+| `high_tail_probability` | `float` | `0.06` | probabilidade base do regime radial de cauda alta |
+| `low_tail_quality_logit_slope` | `float` | `2.0` | inclinação que aumenta a chance de cauda baixa em qualidade baixa |
+| `high_tail_quality_logit_slope` | `float` | `0.0` | inclinação que aumenta a chance de cauda alta em qualidade baixa |
+| `log_norm_shift` | `float` | `0.0` | deslocamento aditivo da log-norma média do domínio |
+| `log_norm_sigma_multiplier` | `float` | `1.0` | multiplicador da escala da log-norma do domínio |
+| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de \( \log\kappa \) intra-classe do domínio (Seção 6) |
+
+(Os demais campos — `anisotropic_noise_multiplier`, vieses e `cap_lower_bound_offset` — pertencem às Seções 6, 7 e 9.)
+
+### 5.4 Qualidade latente (Beta por domínio)
+
+Cada observação recebe uma **qualidade latente** \( q \in [0,1] \), amostrada de uma distribuição Beta cujos parâmetros dependem do domínio (em `_sample_latent_quality`):
 
 \[
-\log r_{ij}
-=
-\mu_r
-+
-\beta_r(q_{ij}-0{,}5)
-+
-\Delta_{s_{ij}}
-+
-\Delta_d
-+
-\varepsilon_{ij},
+q \;\sim\; \mathrm{Beta}\!\left(\alpha_{\mathrm{dom}},\; \beta_{\mathrm{dom}}\right).
 \]
 
-com:
+A qualidade é a **variável causal oculta** que liga as três camadas seguintes: ela enviesa os regimes radiais, desloca a norma e modula a concentração angular. Um domínio controlado (ex.: \( \alpha = 5, \beta = 2 \)) gera qualidade tipicamente alta; um domínio de vigilância (ex.: \( \alpha = 2, \beta = 4{,}5 \)) gera qualidade tipicamente baixa. A qualidade é exportada como coluna de metadata `latent_quality` e é a porta de entrada de várias ablações causais (Seção 9).
+
+### 5.5 Regimes radiais e logits modulados por qualidade
+
+A norma de embeddings faciais reais exibe um padrão **não-monotônico** em relação à confiabilidade: faces nítidas e bem-pose tendem a normas centrais altas, mas tanto faces degradadas (baixa qualidade) quanto faces "saturadas" atípicas podem cair em caudas. O simulador modela isso com **três regimes radiais** — `central`, `low_tail`, `high_tail` — escolhidos por amostra (em `_sample_radial_regimes`).
+
+Partindo das probabilidades base \( (p_{\mathrm{cen}}, p_{\mathrm{low}}, p_{\mathrm{high}}) \) do domínio, formam-se logits \( \ell = \log p \). Quando o acoplamento `quality_affects_regime_probabilities` está ligado, a qualidade enviesa as caudas (centrado em \( q = 0{,}5 \)):
 
 \[
-\varepsilon_{ij}
-\sim
-\mathcal{N}
-\left(
-0,
-\sigma_{s_{ij}}^2 m_d^2
-\right).
+\ell_{\mathrm{low}} \mathrel{+}= s^{\mathrm{low}}_{\mathrm{dom}}\,(0{,}5 - q), \qquad
+\ell_{\mathrm{high}} \mathrel{+}= s^{\mathrm{high}}_{\mathrm{dom}}\,(0{,}5 - q),
 \]
 
-O modelo não impõe que norma alta seja sempre melhor. Existem uma faixa central, uma cauda inferior e uma cauda superior. A contribuição direta da qualidade à norma é governada por `coupling.quality_affects_log_norm`.
-
-### 6.7 Padronização radial
-
-O código calcula:
+onde \( s^{\mathrm{low}}_{\mathrm{dom}} \) e \( s^{\mathrm{high}}_{\mathrm{dom}} \) são `low_tail_quality_logit_slope` e `high_tail_quality_logit_slope`. Como \( (0{,}5 - q) > 0 \) para qualidade baixa, inclinações positivas **empurram amostras de baixa qualidade para as caudas**. Os logits são então normalizados via softmax estável:
 
 \[
-z_{r,ij}
-=
-\frac{
-\log r_{ij}-\mu_r
-}{
-\sigma_r
-}.
+P(\mathrm{regime}=g) \;=\; \frac{\exp(\ell_g - \max_{g'} \ell_{g'})}{\sum_{g'} \exp(\ell_{g'} - \max_{g''} \ell_{g''})}.
 \]
 
-A coluna principal se chama:
+O regime escolhido é exportado em `radial_regime`.
 
-```text
-reference_scaled_log_norm_z
-```
+### 5.6 Norma do embedding (log-normal por regime + domínio + qualidade)
 
-O nome é deliberadamente explícito. O valor só é robusto quando a referência foi estimada por uma regra robusta. A coluna legada `robust_norm_z` continua disponível como alias para preservar compatibilidade.
-
-### 6.8 Dispersão intra-classe
-
-A direção observada é dispersa em torno do centro latente \(\mathbf{c}_i\). A versão 0.3 introduz **três modos** de dispersão intra-classe — a subseção 6.13 descreve os três em detalhe. O modo padrão é `VMF`, idêntico ao v0.2:
+Dado o regime \( g \), a **log-norma** é amostrada de uma normal cuja média e escala combinam quatro contribuições (em `_sample_log_norms`). A média:
 
 \[
-\mathbf{u}_{ij}^{(0)}
-\mid
-\mathbf{c}_i,r_{ij},q_{ij},d
-\sim
-\operatorname{vMF}
-\left(
-\mathbf{c}_i,
-\kappa_{ij}
-\right).
+\mu_{\log r} \;=\; \underbrace{m_{\mathrm{ref}}}_{\text{referência}}
+\;+\; \underbrace{\beta_q\,(q - 0{,}5)}_{\text{efeito de qualidade}}
+\;+\; \underbrace{o_g}_{\text{offset de regime}}
+\;+\; \underbrace{\delta^{\log r}_{\mathrm{dom}}}_{\text{shift de domínio}},
 \]
 
-A concentração \(\kappa_{ij}\) segue:
+onde \( m_{\mathrm{ref}} = \) `reference_log_norm_mean`, \( \beta_q = \) `quality_log_norm_slope` (zerado se `quality_affects_log_norm` estiver desligado), \( o_g \in \{ \) `central_offset`, `low_tail_offset`, `high_tail_offset` \( \} \) e \( \delta^{\log r}_{\mathrm{dom}} = \) `log_norm_shift`. A escala:
 
 \[
-\log\kappa_{ij}
-=
-\log\kappa_{\text{pico}}
-+
-\beta_q(q_{ij}-0{,}5)
-+
-\Delta_{\kappa,d}
--
-\lambda_{\text{low}}
-\left[
-\max(0,z_0-z_{r,ij})
-\right]^2
--
-\lambda_{\text{high}}
-\left[
-\max(0,z_{r,ij}-z_0)
-\right]^2.
+\sigma_{\log r} \;=\; \sigma_g \cdot \rho_{\mathrm{dom}},
 \]
 
-Assim:
+com \( \sigma_g \in \{ \) `central_sigma`, `low_tail_sigma`, `high_tail_sigma` \( \} \) e \( \rho_{\mathrm{dom}} = \) `log_norm_sigma_multiplier`. A log-norma é \( \log r \sim \mathcal{N}(\mu_{\log r}, \sigma_{\log r}^2) \); a norma é \( r = e^{\log r} \), recortada em \( [\,\)`minimum_norm`\(,\,\)`maximum_norm`\(\,] \) (e a log-norma é recomputada após o clip para consistência). Os campos de `RadialConfig`:
 
-- a faixa radial central pode gerar maior estabilidade;
-- normas muito baixas reduzem \(\kappa\);
-- normas muito altas também podem reduzir \(\kappa\);
-- as duas caudas podem possuir penalizações assimétricas.
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `reference_log_norm_mean` | `float` | `log(25.0)` | localização de referência \( m_{\mathrm{ref}} \) da log-norma |
+| `reference_log_norm_scale` | `float` | `0.24` | escala de referência \( s_{\mathrm{ref}} \) da log-norma (usada na padronização, §5.7) |
+| `reference_method` | `str` | `"configured_reference"` | rótulo da procedência da referência (exportado em `radial_reference_method`) |
+| `quality_log_norm_slope` | `float` | `0.12` | inclinação \( \beta_q \) do efeito de qualidade na log-norma |
+| `central_offset` | `float` | `0.0` | offset \( o_g \) do regime central |
+| `central_sigma` | `float` | `0.10` | escala \( \sigma_g \) do regime central |
+| `low_tail_offset` | `float` | `-0.70` | offset do regime de cauda baixa |
+| `low_tail_sigma` | `float` | `0.16` | escala do regime de cauda baixa |
+| `high_tail_offset` | `float` | `0.70` | offset do regime de cauda alta |
+| `high_tail_sigma` | `float` | `0.16` | escala do regime de cauda alta |
+| `minimum_norm` | `float` | `1e-6` | piso de recorte da norma |
+| `maximum_norm` | `float` | `1e6` | teto de recorte da norma |
 
-As contribuições de qualidade e de norma sobre \(\kappa\) são respectivamente gatilhadas pelos switches `coupling.quality_affects_intra_kappa` e `coupling.norm_z_affects_intra_kappa`.
+### 5.7 Padronização radial: `reference_scaled_log_norm_z`
 
-### 6.9 Perturbações tangenciais
+Para que a posição radial de uma amostra seja **comparável entre domínios e datasets** (e para alimentar as penalidades não-monotônicas da concentração angular, §6), a log-norma é padronizada em torno de uma referência robusta:
 
-Após a dispersão intra-classe, o simulador adiciona uma perturbação estruturada:
+\[
+z \;=\; \frac{\log r - m_{\mathrm{ref}}}{s_{\mathrm{ref}}},
+\]
+
+com \( m_{\mathrm{ref}} = \) `reference_log_norm_mean` e \( s_{\mathrm{ref}} = \) `reference_log_norm_scale`. Esse \( z \) é exportado na coluna `reference_scaled_log_norm_z`, **também disponível como** `robust_norm_z` (alias com valor idêntico, presente para conveniência de consumidores que esperam esse nome). O valor \( z = 0 \) corresponde à norma de referência; \( z > 0 \) indica norma atipicamente alta e \( z < 0 \) atipicamente baixa.
+
+#### A classe `RadialReference` (mediana + MAD escalado)
+
+Quando a referência deve ser **estimada a partir de embeddings reais** (em vez de configurada), a classe `RadialReference` fornece um ajuste robusto. Ela guarda uma localização e uma escala da log-norma:
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `log_norm_location` | `float` | — | localização de referência \( m_{\mathrm{ref}} \) (mediana das log-normas) |
+| `log_norm_scale` | `float` | — | escala de referência \( s_{\mathrm{ref}} \) (MAD escalado) |
+| `method` | `str` | `"median_scaled_mad"` | rótulo do método de estimação |
+
+O método de classe `RadialReference.fit(raw_embeddings_or_norms)` aceita uma matriz de embeddings \( (N,d) \) (das quais extrai as normas por linha) ou um vetor de normas, e estima:
+
+\[
+m_{\mathrm{ref}} = \mathrm{median}\big(\log r_n\big), \qquad
+s_{\mathrm{ref}} = 1{,}4826 \cdot \mathrm{median}\big(\lvert \log r_n - m_{\mathrm{ref}} \rvert\big).
+\]
+
+O fator \( 1{,}4826 \) torna o MAD um estimador consistente do desvio-padrão sob normalidade. O ajuste falha (levanta exceção) se algum \( r_n \le 0 \) ou se o MAD escalado for nulo. A `RadialConfig` pode ser construída diretamente a partir de uma referência ajustada via `RadialConfig.from_reference(reference, **kwargs)`, que injeta `reference_log_norm_mean`, `reference_log_norm_scale` e `reference_method`. Este é o caminho recomendado para **calibrar a camada radial contra uma galeria real** (Seção 21), preservando a auditabilidade: o `method` registrado documenta a procedência da referência.
+
+---
+
+## 6. Dispersão intra-classe (VMF, IDPERTURB_CAP, HYBRID)
+
+A camada de **dispersão intra-classe** decide como cada observação de uma identidade se afasta angularmente do centro \( \mu_i \). É o capítulo mais consequente do simulador: ela governa diretamente a **distância genuína** (cosseno entre duas amostras da mesma pessoa) e, portanto, o grau de sobreposição entre as distribuições genuína e impostora — o substrato exato sobre o qual PLDA, cosseno e calibração de razão de verossimilhança operam.
+
+O simulador oferece **três modos** de dispersão, selecionados por `DirectionalConfig.intra_class_sampling_mode` (enum `IntraClassSamplingMode`): `VMF`, `IDPERTURB_CAP` e `HYBRID_VMF_CAP`. Os três produzem direções unitárias \( v \in \mathbb{S}^{d-1} \) em torno de \( \mu_i \), mas com **filosofias de controle diferentes**: um controla a *concentração* (cauda angular macia, sem piso), outro controla a *excursão máxima* (piso angular duro), e o terceiro combina os dois.
+
+A direção \( v \) produzida aqui é a direção **pré-ruído**: as perturbações tangenciais de domínio/sessão/identidade (Seção 7) são aplicadas em seguida, sobre \( v \). A coluna de metadata `pre_nuisance_center_cosine` registra \( \langle v, \mu_i \rangle \) antes do ruído (invariante \( \ge \) `cap_lower_bound_effective` nos modos com calota); a coluna `own_center_cosine` registra o cosseno final, pós-ruído (que pode cair ligeiramente abaixo do piso por efeito da perturbação tangencial).
+
+### 6.1 Modo VMF — concentração \( \kappa \)
+
+No modo `VMF`, a direção é amostrada de uma von Mises-Fisher centrada em \( \mu_i \) com concentração \( \kappa \):
+
+\[
+v \;\sim\; \mathrm{vMF}(\mu_i,\; \kappa), \qquad
+p(v) \;\propto\; \exp\!\big(\kappa\,\langle v, \mu_i\rangle\big).
+\]
+
+A amostragem é feita pela função pública `sample_vmf`. Não há **piso angular**: o cosseno \( \langle v, \mu_i \rangle \) tem uma cauda contínua que pode, em princípio, descer arbitrariamente perto de \( -1 \) (com probabilidade decrescente em \( \kappa \)). O \( \kappa \) por amostra é **modulado por covariáveis** (em `_calculate_intra_kappas`): qualidade, posição radial e domínio. Partindo do pico `peak_intra_kappa`:
+
+\[
+\log\kappa \;=\; \log(\kappa_{\mathrm{peak}})
+\;+\; \underbrace{s_\kappa\,(q - 0{,}5)}_{\text{qualidade}}
+\;+\; \underbrace{\delta^{\log\kappa}_{\mathrm{dom}}}_{\text{domínio}}
+\;\underbrace{-\; \lambda_{\mathrm{low}}\,d_{\mathrm{low}}^2 - \lambda_{\mathrm{high}}\,d_{\mathrm{high}}^2}_{\text{penalidades radiais não-monotônicas}},
+\]
+
+onde \( s_\kappa = \) `quality_log_kappa_slope`, \( \delta^{\log\kappa}_{\mathrm{dom}} = \) `log_kappa_shift`, \( \lambda_{\mathrm{low}/\mathrm{high}} = \) `low_tail_quadratic_penalty`/`high_tail_quadratic_penalty`, e as distâncias radiais ao ponto ótimo são:
+
+\[
+d_{\mathrm{low}} = \max(0,\; z^\star - z), \qquad d_{\mathrm{high}} = \max(0,\; z - z^\star),
+\]
+
+com \( z = \) `reference_scaled_log_norm_z` (§5.7) e \( z^\star = \) `optimal_reference_scaled_log_norm_z`. O termo de qualidade é zerado se `quality_affects_intra_kappa` estiver desligado; o termo radial é zerado se `norm_z_affects_intra_kappa` estiver desligado. Por fim, \( \kappa = e^{\log\kappa} \) é recortado em \( [\,\)`minimum_intra_kappa`\(,\,\)`maximum_intra_kappa`\(\,] \). O \( \kappa \) efetivo é exportado em `intra_kappa`.
+
+### 6.2 Modo IDPERTURB_CAP — calota esférica cosseno-uniforme
+
+No modo `IDPERTURB_CAP`, em vez de uma concentração, controla-se diretamente a **excursão angular máxima** via um piso de cosseno \( lb \) (lower bound). Para cada amostra, sorteia-se um cosseno-alvo uniforme em \( [lb, 1] \) e constrói-se a direção (em `sample_spherical_cap`):
+
+\[
+s \;\sim\; \mathcal{U}[\,lb,\; 1\,], \qquad
+v \;=\; s\,\mu_i \;+\; \sqrt{1 - s^2}\;u,
+\]
+
+onde \( u \in \mathbb{S}^{d-1} \) é uma direção tangente uniforme ortogonal a \( \mu_i \). Por construção \( \lVert v \rVert = 1 \) e \( \langle v, \mu_i \rangle = s \ge lb \) — ou seja, o piso é **garantido** na direção pré-ruído. O cosseno esperado é
+
+\[
+\mathbb{E}[\,\langle v, \mu_i\rangle\,] \;=\; \frac{1 + lb}{2},
+\]
+
+e \( lb = 1 \) colapsa \( v = \mu_i \) (sem perturbação). **Caveat essencial**: \( s \) é uniforme *em cosseno*, o que **não** é a distribuição uniforme sobre a área da calota em alta dimensão. Em \( \mathbb{S}^{d-1} \) com \( d \) grande, a maior parte da área de uma calota concentra-se perto da borda; uniformidade-em-cosseno coloca massa apreciável em cossenos altos que a uniformidade-em-área quase nunca visitaria. Esta é uma escolha deliberada de interpretabilidade (o parâmetro \( lb \) é a excursão máxima legível), não um modelo de difusão isotrópica na calota.
+
+### 6.3 Modo HYBRID_VMF_CAP — corpo vMF com piso duro
+
+O modo `HYBRID_VMF_CAP` combina o **corpo macio** da vMF com o **piso duro** da calota. Amostra-se \( v \sim \mathrm{vMF}(\mu_i, \kappa) \); qualquer linha cujo cosseno caia abaixo de \( lb \) é **re-sorteada** da vMF, até `hybrid_max_resample_rounds` vezes; as linhas que ainda violam o piso após todas as rodadas caem num **fallback de calota** via `sample_spherical_cap` no piso \( lb \), o que garante o piso. A função pública é `sample_hybrid_vmf_cap`, que retorna, além das amostras, dois diagnósticos por linha:
+
+- `hybrid_resample_count` — número de re-sorteios vMF que cada amostra precisou;
+- `hybrid_used_cap_fallback` — se a amostra acabou no fallback de calota.
+
+A interpretação destes diagnósticos é central para a auditoria: uma **alta taxa de fallback** significa que o piso \( lb \) está cortando uma fração grande do corpo vMF, de modo que o resultado é **dominado pela calota** e não mais pela vMF — sinal de que \( \kappa \) e \( lb \) estão em desacordo (vMF larga demais sob piso apertado). Neste regime, a forma da cauda angular efetiva é a da calota, não a da vMF, e isso deve ser reportado.
+
+### 6.4 Tabela comparativa dos três modos
+
+| Aspecto | `VMF` | `IDPERTURB_CAP` | `HYBRID_VMF_CAP` |
+|---|---|---|---|
+| Parâmetro de controle | concentração \( \kappa \) | piso de cosseno \( lb \) | \( \kappa \) **+** \( lb \) |
+| Função amostradora | `sample_vmf` | `sample_spherical_cap` | `sample_hybrid_vmf_cap` |
+| Distribuição do cosseno | \( p(\cos)\propto e^{\kappa\cos}\,(1-\cos^2)^{(d-3)/2} \) | \( \cos = s \sim \mathcal{U}[lb,1] \) | corpo vMF truncado em \( lb \); calota no fallback |
+| Cauda angular | macia, **sem piso** (cossenos baixos possíveis) | **piso duro** em \( lb \); cossenos altos sobre-representados | macia acima de \( lb \), **piso duro** em \( lb \) |
+| Cosseno esperado | \( A_d(\kappa) \) (razão de Bessel) | \( (1+lb)/2 \) | entre os dois, conforme taxa de fallback |
+| Interpretação do parâmetro | "quão concentrada" | "excursão máxima legível" | concentração com limite de segurança |
+| `intra_kappa` usado? | sim | não (campo presente, mas não dirige a calota) | sim (dirige o corpo vMF) |
+| `cap_lower_bound_effective` | `NaN` | preenchido | preenchido |
+| Diagnósticos híbridos | `0` / `False` | `0` / `False` | `hybrid_resample_count` / `hybrid_used_cap_fallback` |
+| Uso típico | baseline esférico; comparação cosseno/PLDA/PSDA | dispersão com garantia de separabilidade por design (estilo IDperturb) | vMF realista com salvaguarda anti-colisão dura |
+
+### 6.5 Quando escolher cada modo
+
+- **`VMF`** — quando se quer o modelo direcional canônico, sem piso artificial, e a métrica de interesse é a concentração. É o modo dos perfis de baseline e o que melhor casa com a teoria de PLDA esférico/PSDA. Use quando a pergunta for "como o backend se comporta sob uma cauda angular contínua".
+- **`IDPERTURB_CAP`** — quando se quer **garantir por construção** uma excursão angular máxima e estudar o efeito de uma separabilidade imposta (inspirado no regime experimental IDperturb de Boutros et al., 2026). O parâmetro \( lb \) é interpretável e auditável como "cosseno mínimo intra-classe". Lembre-se do caveat de uniformidade-em-cosseno (§6.2): não é difusão isotrópica na calota.
+- **`HYBRID_VMF_CAP`** — quando se quer o realismo da vMF **mais** uma salvaguarda dura contra amostras que colidem com outras identidades, monitorando via `hybrid_used_cap_fallback` se o piso está distorcendo o corpo. É a escolha mais conservadora forensicamente quando se teme que a cauda vMF gere genuínos artificialmente difíceis.
+
+### 6.6 O piso \( lb \) e sua modulação
+
+Nos modos com calota (`IDPERTURB_CAP` e `HYBRID_VMF_CAP`), o piso \( lb \) **não é uma constante**: ele é modulado por amostra pelas mesmas covariáveis que modulam \( \kappa \), espelhando `_calculate_intra_kappas`. O cálculo (em `_calculate_cap_lower_bounds`) opera **em escala de cosseno** (não de \( \log\kappa \)):
+
+\[
+lb \;=\; lb_{\mathrm{base}}
+\;+\; \underbrace{\Delta^{lb}_{\mathrm{dom}}}_{\text{offset de domínio}}
+\;+\; \underbrace{s_{lb}\,(q - 0{,}5)}_{\text{qualidade}}
+\;\underbrace{-\; \pi_{\mathrm{low}}\,d_{\mathrm{low}}^2 - \pi_{\mathrm{high}}\,d_{\mathrm{high}}^2}_{\text{penalidades radiais não-monotônicas}},
+\]
+
+onde \( lb_{\mathrm{base}} = \) `cap_base_lower_bound`, \( \Delta^{lb}_{\mathrm{dom}} = \) `cap_lower_bound_offset` (campo de `AcquisitionDomainConfig`, de qualquer sinal: positivo aperta a identidade — condição controlada; negativo afrouxa — vigilância), \( s_{lb} = \) `cap_quality_lower_bound_slope`, e \( \pi_{\mathrm{low}/\mathrm{high}} = \) `cap_low_tail_penalty`/`cap_high_tail_penalty`. As distâncias radiais \( d_{\mathrm{low}}, d_{\mathrm{high}} \) e o ponto ótimo \( z^\star \) são os mesmos da §6.1.
+
+Crucialmente, **os mesmos switches de `CouplingConfig`** que governam \( \kappa \) governam \( lb \), apesar do nome historicamente centrado em kappa: o termo de qualidade é desligado por `quality_affects_intra_kappa` e o termo radial por `norm_z_affects_intra_kappa`. Nos modos de calota, esses switches portam-se como "a qualidade/posição radial afeta a dispersão intra-classe". As penalidades agem **na escala de cosseno** — uma penalidade radial subtrai diretamente do cosseno-piso, não de \( \log\kappa \). Após a soma, \( lb \) é recortado em \( [\,\)`cap_minimum_lower_bound`\(,\,\)`cap_maximum_lower_bound`\(\,] \).
+
+Os campos de `DirectionalConfig` que controlam a calota:
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `intra_class_sampling_mode` | `IntraClassSamplingMode \| str` | `VMF` | modo de dispersão intra-classe |
+| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base \( lb_{\mathrm{base}} \) |
+| `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação \( s_{lb} \) do efeito de qualidade no piso (qualquer sinal) |
+| `cap_low_tail_penalty` | `float` | `0.0` | penalidade quadrática \( \pi_{\mathrm{low}} \) de cauda baixa, em escala de cosseno |
+| `cap_high_tail_penalty` | `float` | `0.0` | penalidade quadrática \( \pi_{\mathrm{high}} \) de cauda alta, em escala de cosseno |
+| `cap_minimum_lower_bound` | `float` | `0.0` | piso de recorte do \( lb \) nominal |
+| `cap_maximum_lower_bound` | `float` | `0.999` | teto de recorte do \( lb \) **nominal** (não do efetivo, §6.7) |
+| `cap_overlap_guard` | `bool` | `True` | ativa a regra do bissetor (§6.7) |
+| `hybrid_max_resample_rounds` | `int` | `8` | rodadas máximas de re-sorteio vMF no modo híbrido |
+
+### 6.7 A regra do bissetor (`cap_overlap_guard`) e o caveat do piso efetivo
+
+Mesmo com um \( lb \) nominal modulado, identidades em **regiões densas da população** (centros mutuamente próximos) podem gerar perturbações que ultrapassam o ponto médio angular até a identidade vizinha mais próxima — criando, por construção, genuínos que estão mais perto de outra pessoa do que da própria. Para impedir isso, a **regra do bissetor** (`cap_overlap_guard=True`, inspirada em Boutros et al., 2026, Eq. 6) impõe um **piso por identidade**: o cosseno do semi-ângulo até o centro mais próximo. Para a identidade \( i \), com vizinho mais próximo dado por \( \max_{j\neq i} \langle \mu_i, \mu_j \rangle \):
+
+\[
+\mathrm{floor}_i \;=\; \sqrt{\frac{1 + \max_{j \neq i}\, \langle \mu_i, \mu_j \rangle}{2}} \;=\; \cos\!\left(\frac{\text{ângulo ao vizinho mais próximo}}{2}\right).
+\]
+
+Este piso é calculado em blocos de linhas (em `_overlap_lower_bound_floor`), sem materializar a matriz \( C \times C \) inteira (custo \( O(C^2 d) \) em tempo, \( O(\text{bloco}\times C) \) em memória); identidades singleton recebem piso \( 0 \). O piso é **cacheado** na população para reuso entre observações cross-condition.
+
+**Caveat crítico de auditoria**: a regra do bissetor é aplicada **após** o recorte do \( lb \) nominal e **tem prioridade** sobre ele:
+
+\[
+lb_{\mathrm{efetivo},\,n} \;=\; \min\!\Big(1,\; \max\big(lb_{\mathrm{nominal},\,n},\; \mathrm{floor}_{i(n)}\big)\Big).
+\]
+
+Como a anti-colisão tem prioridade, o **\( lb \) efetivo pode exceder `cap_maximum_lower_bound`**. Em outras palavras, o `cap_base_lower_bound`/`cap_maximum_lower_bound` nominais são um **piso de pedido, não o valor realizado**. Por isso, ao reportar uma configuração, **nunca** se deve apresentar apenas o \( lb \) nominal: deve-se reportar percentis empíricos da coluna `cap_lower_bound_effective`, que é a única descrição fiel da excursão angular efetivamente imposta a cada amostra. Em populações densas, o piso efetivo pode estar consistentemente acima do nominal para muitas identidades, e isso muda materialmente a dificuldade dos pares genuínos.
+
+Quando `cap_overlap_guard=False`, o piso do bissetor não é aplicado e \( lb_{\mathrm{efetivo}} = \min(1, lb_{\mathrm{nominal}}) \) — útil para ablações que querem isolar o efeito da modulação por covariáveis sem a salvaguarda anti-colisão, mas com o risco de gerar genuínos que colidem com identidades vizinhas.
+## 7. Perturbações tangenciais e atualização
+
+Depois que a dispersão intra-classe produz uma direção \(\mathbf{u}_{ij}^{(0)}\) em torno do centro de identidade \(\mathbf{c}_i\) (Seção 6), o simulador adiciona uma **perturbação estruturada** que modela ruído de aquisição, viés de domínio e efeitos de sessão. Essa perturbação é montada em coordenadas ambientais, projetada no plano tangente da hiperesfera e mapeada de volta para a superfície unitária. Todo o cálculo vive em `AdaFaceEmbeddingSimulator._apply_anisotropic_nuisance`.
+
+O passo bruto somado é
 
 \[
 \boldsymbol{\delta}_{ij}
@@ -549,918 +669,602 @@ Após a dispersão intra-classe, o simulador adiciona uma perturbação estrutur
 +
 \mathbf{b}_{d,i}
 +
-\mathbf{b}_{d,s}.
+\mathbf{b}_{d,s},
 \]
 
-Componentes:
+com quatro termos de natureza distinta:
 
-| Termo | Interpretação |
-|---|---|
-| \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) | nuisance anisotrópico |
-| \(\mathbf{b}_d\) | deslocamento médio do domínio |
-| \(\mathbf{b}_{d,i}\) | interação domínio × identidade |
-| \(\mathbf{b}_{d,s}\) | deslocamento de sessão |
+| Termo | Coluna de diagnóstico | Interpretação forense |
+|---|---|---|
+| \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) | `anisotropic_noise_norm` | nuisance anisotrópico de baixo posto (ruído estruturado, dependente de qualidade) |
+| \(\mathbf{b}_d\) | `fixed_domain_bias_norm` | deslocamento médio **fixo** do domínio \(d\) (mesmo para todas as identidades) |
+| \(\mathbf{b}_{d,i}\) | `domain_identity_bias_norm` | interação **domínio × identidade** (deslocamento próprio de cada identidade naquele domínio) |
+| \(\mathbf{b}_{d,s}\) | `session_bias_norm` | deslocamento de **sessão** (compartilhado por todas as observações da mesma tripla identidade × domínio × sessão) |
 
-O passo é projetado no plano tangente antes da atualização esférica.
+Cada termo é auditável individualmente pela sua coluna de norma na metadata, e o passo tangencial efetivo é reportado em `combined_tangent_step_norm` (Seção 7.4). Essa decomposição é deliberada: em laudo é possível afirmar qual parcela do deslocamento angular vem de ruído puro, de viés sistemático de domínio, de idiossincrasia identidade-em-domínio ou de efeito de sessão.
 
-> Interação com a calota (0.3): o piso de cosseno `lb` é garantido sobre a direção **pré-nuisance** \(\mathbf{u}_{ij}^{(0)}\). O passo tangencial de nuisance/viés pode empurrar o cosseno realizado (pós-nuisance) ligeiramente abaixo de `lb`. Para auditar a calota, use sempre a coluna `pre_nuisance_center_cosine` (Seção 6.13), não `own_center_cosine`.
+### 7.1 Nuisance anisotrópico — base de baixo posto
 
-### 6.10 Atualização por retração
+O nuisance anisotrópico \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) não é ruído isotrópico: ele vive num **subespaço de baixo posto** \(r\), modelando o fato empírico de que erros de aquisição concentram-se em poucas direções estruturadas (iluminação, pose residual, compressão). Uma base ortonormal \(\mathbf{B} \in \mathbb{R}^{D \times r}\) é amostrada uma única vez no construtor (via decomposição QR de uma matriz Gaussiana, em `_orthonormal_basis`) e fixada na seed estrutural. A cada observação, coeficientes Gaussianos \(\mathbf{z} \sim \mathcal{N}(0, I_r)\) são projetados pela base:
 
-Modo:
+\[
+\boldsymbol{\delta}^{\text{base}} = \mathbf{z}\,\mathbf{B}^{\top}.
+\]
 
-```text
-retraction
-```
+O posto \(r\) é controlado por `DirectionalConfig.anisotropic_rank` (deve satisfazer \(0 \le r < D\)); a magnitude base por `anisotropic_base_scale`. Se qualquer um dos dois for zero, **nenhuma** base é construída (`anisotropic_basis is None`) e o nuisance anisotrópico é integralmente desligado.
 
-Fórmula:
+#### Escala dependente de qualidade e domínio
+
+A magnitude de cada amostra é modulada por qualidade e domínio antes da projeção tangencial:
+
+\[
+s_{ij}
+=
+\underbrace{\texttt{anisotropic\_base\_scale}}_{\text{base}}
+\cdot
+\underbrace{m_{d}}_{\substack{\texttt{anisotropic\_}\\\texttt{noise\_multiplier}}}
+\cdot
+\Bigl(
+1 + \texttt{anisotropic\_quality\_slope}\cdot(1 - q_{ij})
+\Bigr),
+\]
+
+onde \(q_{ij} \in [0,1]\) é a qualidade latente e \(m_d\) é o multiplicador por domínio. **Quanto menor a qualidade, maior o nuisance** — o fator \((1 - q_{ij})\) faz a perturbação crescer em imagens ruins, reproduzindo a degradação de confiabilidade angular sob baixa qualidade. Domínios de vigilância recebem `anisotropic_noise_multiplier > 1` para ampliar esse efeito.
+
+### 7.2 Os três modos de estrutura do nuisance (`NuisanceStructureMode`)
+
+O atributo `DirectionalConfig.nuisance_structure_mode` (enum `NuisanceStructureMode`) decide **como o subespaço de nuisance é compartilhado** entre amostras. Há três modos:
+
+| Modo | Valor | Subespaços ativos | Quando usar |
+|---|---|---|---|
+| `GLOBAL_SHARED` | `"global_shared"` | uma única base global, comum a todos os domínios | um cenário homogêneo; viés de nuisance correlacionado entre condições |
+| `PER_DOMAIN` | `"per_domain"` | uma base **independente por domínio** (sem base global) | cada condição de aquisição tem suas próprias direções de ruído, descorrelacionadas |
+| `HIERARCHICAL` | `"hierarchical"` | base global **mais** base por domínio, com pesos | parte do nuisance é compartilhada entre condições, parte é específica do domínio |
+
+A combinação concreta segue a lógica de `_apply_anisotropic_nuisance`:
+
+- **Componente global** (ativa em `GLOBAL_SHARED` e `HIERARCHICAL`):
+  \[
+  \boldsymbol{\delta}^{\text{global}}_{ij}
+  =
+  w_{\text{global}}\,\bigl(\mathbf{z}_{ij}\,\mathbf{B}_{\text{global}}^{\top}\bigr),
+  \qquad
+  w_{\text{global}} = \texttt{global\_nuisance\_weight}.
+  \]
+- **Componente por domínio** (ativa em `PER_DOMAIN` e `HIERARCHICAL`): para cada domínio \(d\) com base própria \(\mathbf{B}_d\),
+  \[
+  \boldsymbol{\delta}^{\text{domínio}}_{ij}
+  =
+  w_d\,\bigl(\mathbf{z}_{ij}\,\mathbf{B}_d^{\top}\bigr),
+  \qquad
+  w_d =
+  \begin{cases}
+  \texttt{domain\_nuisance\_weight}, & \text{modo } \mathtt{HIERARCHICAL},\\
+  1, & \text{modo } \mathtt{PER\_DOMAIN}.
+  \end{cases}
+  \]
+
+Em `HIERARCHICAL` os dois pesos coexistem: `global_nuisance_weight` pondera a parcela comum e `domain_nuisance_weight` a parcela específica, permitindo controlar exatamente quanto do ruído é correlacionado entre condições (importante para estressar backends PLDA cross-condition).
+
+### 7.3 Nuisance específico de identidade (`identity_specific_*`)
+
+Independentemente do modo acima, é possível adicionar um subespaço de nuisance **próprio de cada identidade**. Para cada identidade da população, uma base ortonormal de posto `identity_specific_nuisance_rank` é amostrada (em `_sample_identity_specific_bases`) e armazenada na `SyntheticIdentityPopulation`. A contribuição é
+
+\[
+\boldsymbol{\delta}^{\text{id}}_{ij}
+=
+\texttt{identity\_specific\_nuisance\_scale}\cdot
+\bigl(\mathbf{B}_{i}\,\mathbf{z}_{ij}\bigr),
+\]
+
+aplicada via `np.einsum("ndr,nr->nd", ...)` linha a linha, selecionando a base \(\mathbf{B}_i\) da identidade correta. Esse termo modela variação angular intrínseca e idiossincrática de cada sujeito (por exemplo, um traço facial que sistematicamente desloca os embeddings daquela pessoa numa direção própria). Como as bases pertencem à população, elas são **compartilhadas entre condições cross-condition** — a mesma identidade carrega a mesma idiossincrasia em todos os domínios. Se o posto ou a escala forem zero, o termo é integralmente desligado (`identity_specific_nuisance_bases is None`).
+
+A soma \(\boldsymbol{\delta}^{\text{global}} + \boldsymbol{\delta}^{\text{domínio}} + \boldsymbol{\delta}^{\text{id}}\) é então multiplicada, linha a linha, pela escala \(s_{ij}\) da Seção 7.1, produzindo o nuisance anisotrópico final \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) reportado em `anisotropic_noise_norm`.
+
+### 7.4 Viés de domínio, domínio × identidade e de sessão
+
+Aos termos estocásticos somam-se três **vieses determinísticos** (na seed) que modelam deslocamentos sistemáticos:
+
+| Viés | Como é gerado | Escala | Escopo de compartilhamento |
+|---|---|---|---|
+| \(\mathbf{b}_d\) — domínio fixo | direção uniforme amostrada uma vez no construtor (`_create_domain_bias_vectors`) | `AcquisitionDomainConfig.domain_bias_scale` | **idêntico** para todas as observações daquele domínio |
+| \(\mathbf{b}_{d,i}\) — domínio × identidade | direção uniforme por identidade dentro do domínio (em `sample_identity_population`) | `AcquisitionDomainConfig.domain_identity_bias_scale` | próprio de cada par (domínio, identidade), constante entre observações dessa identidade no domínio |
+| \(\mathbf{b}_{d,s}\) — sessão | direção uniforme por tripla (identidade, domínio, sessão), em `_sample_session_bias_matrix` | `AcquisitionDomainConfig.session_bias_scale` | compartilhado por todas as observações da mesma sessão |
+
+O viés fixo de domínio \(\mathbf{b}_d\) é a fonte canônica de **mismatch sistemático entre condições** num estudo cross-condition: ele desloca *toda* a nuvem de embeddings de um domínio numa direção comum, exatamente o tipo de viés que um PLDA two-covariance cross-condition deve absorver. O viés de sessão modela correlação dentro de uma mesma captura (várias imagens de uma sessão compartilham um deslocamento), o que infla a similaridade genuína intra-sessão de forma realista. Todos os três têm escala padrão `0.0` (desligados) e qualquer escala negativa é rejeitada na validação.
+
+### 7.5 Projeção tangente e atualização: retração vs. mapa exponencial
+
+O passo bruto \(\boldsymbol{\delta}_{ij}\) é primeiro **projetado no plano tangente** de um vetor de referência \(\mathbf{t}\), removendo sua componente radial:
+
+\[
+\boldsymbol{\delta}_{ij}^{\top}
+=
+\boldsymbol{\delta}_{ij}
+-
+\bigl(\boldsymbol{\delta}_{ij}\cdot \mathbf{t}\bigr)\,\mathbf{t}.
+\]
+
+A escolha do vetor de referência \(\mathbf{t}\) e da fórmula de retorno à hiperesfera é governada por `DirectionalConfig.tangent_update_mode` (enum `TangentUpdateMode`), e essa escolha tem uma **diferença geométrica concreta** — ela muda inclusive qual ponto define o plano tangente:
+
+| Modo | Valor | Plano tangente em | Retorno à esfera |
+|---|---|---|---|
+| `RETRACTION` | `"retraction"` | **centro de identidade** \(\mathbf{c}_i\) | soma e renormalização |
+| `EXPONENTIAL_MAP` | `"exponential_map"` | **direção atual** \(\mathbf{u}_{ij}^{(0)}\) | deslocamento geodésico exato |
+
+#### Retração
+
+No modo `RETRACTION`, o passo é projetado no tangente do **centro de identidade** \(\mathbf{c}_i\), somado à direção corrente e renormalizado:
 
 \[
 \widetilde{\mathbf{u}}_{ij}
 =
 \frac{
-\mathbf{u}_{ij}^{(0)}
-+
-\boldsymbol{\delta}_{ij}^{\top}
+\mathbf{u}_{ij}^{(0)} + \boldsymbol{\delta}_{ij}^{\top}
 }{
-\left\|
-\mathbf{u}_{ij}^{(0)}
-+
-\boldsymbol{\delta}_{ij}^{\top}
-\right\|_2
+\bigl\lVert \mathbf{u}_{ij}^{(0)} + \boldsymbol{\delta}_{ij}^{\top}\bigr\rVert_2
 }.
 \]
 
-Esse modo preserva a aproximação utilizada na versão inicial. É apropriado para passos pequenos.
+É uma aproximação de primeira ordem, rápida e adequada quando os passos são pequenos. Como o tangente é definido em \(\mathbf{c}_i\), o deslocamento é coerente com a geometria da identidade, mas a renormalização introduz uma leve compressão não-geodésica para passos grandes.
 
-### 6.11 Atualização por mapa exponencial
+#### Mapa exponencial
 
-Modo:
-
-```text
-exponential_map
-```
-
-Fórmula:
+No modo `EXPONENTIAL_MAP`, o passo é projetado no tangente da **direção corrente** \(\mathbf{u}_{ij}^{(0)}\) e mapeado de volta pelo mapa exponencial Riemanniano exato da esfera:
 
 \[
-\operatorname{Exp}_{\mathbf{u}}
-(\boldsymbol{\delta})
+\widetilde{\mathbf{u}}_{ij}
 =
-\cos
-\left(
-\lVert\boldsymbol{\delta}\rVert
-\right)
-\mathbf{u}
+\operatorname{Exp}_{\mathbf{u}_{ij}^{(0)}}\!\bigl(\boldsymbol{\delta}_{ij}^{\top}\bigr)
+=
+\cos\!\bigl(\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert\bigr)\,\mathbf{u}_{ij}^{(0)}
 +
-\sin
-\left(
-\lVert\boldsymbol{\delta}\rVert
-\right)
-\frac{
-\boldsymbol{\delta}
-}{
-\lVert\boldsymbol{\delta}\rVert
-}.
+\sin\!\bigl(\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert\bigr)\,
+\frac{\boldsymbol{\delta}_{ij}^{\top}}{\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert}.
 \]
 
-O mapa exponencial é recomendado quando os passos deixam de ser desprezíveis.
+Esse é o deslocamento geodésico exato: a norma do passo tangente vira, literalmente, o **ângulo geodésico** percorrido na esfera, preservando comprimento de arco. Passos de norma \(\le 10^{-12}\) são tratados de forma degenerada (a direção permanece inalterada). Recomenda-se o mapa exponencial quando os passos deixam de ser desprezíveis — em perfis com nuisance forte ou vieses grandes (por exemplo, o perfil de estresse cross-condition), o mapa exponencial preserva melhor a métrica angular do que a retração.
 
-### 6.12 Embedding bruto
+> **Diferença geométrica resumida.** A retração mede o deslocamento no plano tangente do *centro de identidade* e volta por soma+renormalização (aproximação de 1ª ordem); o mapa exponencial mede no plano tangente da *direção atual* e volta pelo arco geodésico exato (a norma do passo é o ângulo percorrido). Para passos pequenos os dois coincidem em 1ª ordem; para passos grandes divergem, e só o mapa exponencial preserva comprimento de arco.
 
-Por fim:
+### 7.6 Coluna `combined_tangent_step_norm`
 
-\[
-\mathbf{x}_{ij}
-=
-r_{ij}\widetilde{\mathbf{u}}_{ij}.
-\]
+Em ambos os modos, o simulador registra a norma do passo tangencial efetivo, \(\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert\), na coluna de metadata **`combined_tangent_step_norm`**. Essa é a quantidade auditável central desta etapa:
 
-O objeto retornado expõe simultaneamente:
+- Em `EXPONENTIAL_MAP`, é **exatamente** o ângulo geodésico (em radianos) que a perturbação afastou a observação da sua direção pré-nuisance.
+- Em `RETRACTION`, é o comprimento do passo tangente antes da renormalização (aproxima o ângulo para passos pequenos).
 
-```python
-dataset.raw_embeddings
-dataset.normalized_embeddings
-```
+Ela agrega os quatro termos (anisotrópico + domínio + domínio×identidade + sessão) *após* a projeção tangente, então funciona como medida única do quanto o nuisance/viés total moveu cada amostra. O diagnóstico de bins de norma (`norm_bin_diagnostics`) reporta a média dessa coluna por quantil de norma sob o nome `tangent_step_norm_mean`, permitindo verificar se o passo tangencial cresce nas caudas de norma (como esperado quando a qualidade cai).
 
-### 6.13 Dispersão intra-classe: VMF, IDPERTURB_CAP e HYBRID_VMF_CAP
-
-A dispersão das observações em torno do centro de identidade \(\mathbf{c}_i\) (nível 5 do modelo generativo) tem três modos, escolhidos por `DirectionalConfig.intra_class_sampling_mode` (enum `IntraClassSamplingMode`):
-
-| Modo | Função geradora | Controle | Interpretação |
-|---|---|---|---|
-| `VMF` (padrão) | `sample_vmf` | \(\kappa\) | concentração angular média (distribuição direcional, sem piso angular rígido) |
-| `IDPERTURB_CAP` | `sample_spherical_cap` | `lb` | **afastamento angular máximo** permitido (garante cosseno ≥ `lb`) |
-| `HYBRID_VMF_CAP` | `sample_hybrid_vmf_cap` | \(\kappa\) + `lb` | corpo vMF com **piso rígido** de identidade em `lb` |
-
-O modo padrão é `VMF` — a saída do v0.2 permanece **bit-a-bit idêntica** (um teste golden trava isso). Os modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP` são **opt-in**.
-
-#### A construção da calota (IDperturb, Boutros et al., CVPR 2026)
-
-Para cada amostra, a função `sample_spherical_cap` sorteia um cosseno-alvo \(s\sim U[lb,1]\), gera um ruído \(\mathbf{n}\sim\mathcal{N}(\mathbf{0},\mathbf{I})\) projetado no hiperplano tangente ortogonal a \(\mathbf{c}_i\) (mesma projeção tangencial do nuisance), produzindo \(\mathbf{u}\perp\mathbf{c}_i\) com \(\lVert\mathbf{u}\rVert=1\), e constrói:
-
-\[
-\widetilde{\mathbf{v}} = s\,\mathbf{c}_i + \sqrt{1 - s^2}\;\mathbf{u}, \qquad \mathbf{u}\perp\mathbf{c}_i,\ \lVert\mathbf{u}\rVert=1.
-\]
-
-Isso garante \(\lVert\widetilde{\mathbf{v}}\rVert=1\) e \(\langle\widetilde{\mathbf{v}},\mathbf{c}_i\rangle = s \ge lb\). O caso `lb = 1` produz \(\widetilde{\mathbf{v}}=\mathbf{c}_i\) (sem perturbação).
-
-**Cuidado de nomenclatura crítico:** isto é **uniforme em cosseno** (\(s\) uniforme), **não** uniforme na área da calota — em alta dimensão essas duas distribuições são radicalmente diferentes. Como consequência direta:
-
-\[
-\mathbb{E}\!\left[\langle\widetilde{\mathbf{v}},\mathbf{c}_i\rangle\right] = \frac{1 + lb}{2}.
-\]
-
-Interprete `lb` como um limite geométrico de excursão angular, não como uma medida de densidade da calota.
-
-#### Interpretação de `lb` para laudo
-
-`lb` é muito mais transparente que \(\kappa\) em 512-D: *"nenhuma observação sintética desta identidade foi gerada com cosseno menor que `lb` em relação ao centro latente, antes dos ruídos de domínio/sessão."* `lb` baixo ⇒ mais diversidade intra-classe (e EER maior); `lb` perto de 1 ⇒ identidade mais rígida.
-
-#### O caminho generativo de `lb` e a modulação por coupling
-
-`lb` é modulado pelas mesmas covariáveis do \(\kappa\), espelhando `_calculate_intra_kappas`. A construção, em escala de cosseno, é:
-
-\[
-lb_{ij} = \underbrace{\text{base}}_{\texttt{cap\_base\_lower\_bound}}
-        + \underbrace{\Delta_{\text{domínio}}}_{\texttt{cap\_lower\_bound\_offset}}
-        + \beta_q\,(q_{ij} - 0{,}5)
-        - \lambda_{\text{low}}\,d_{\text{low}}^2
-        - \lambda_{\text{high}}\,d_{\text{high}}^2,
-\]
-
-com \(d_{\text{low}}=\max(0, z_0 - z_{r,ij})\) e \(d_{\text{high}}=\max(0, z_{r,ij} - z_0)\). Em seguida o valor é cortado para `[cap_minimum_lower_bound, cap_maximum_lower_bound]`.
-
-Os termos de qualidade e de norma são governados pelos **mesmos switches** de `CouplingConfig` usados para \(\kappa\):
-
-- `coupling.quality_affects_intra_kappa` gatilha o termo \(\beta_q\,(q_{ij}-0{,}5)\) (slope `cap_quality_lower_bound_slope`);
-- `coupling.norm_z_affects_intra_kappa` gatilha as penalidades de cauda \(\lambda_{\text{low}}\), \(\lambda_{\text{high}}\) (`cap_low_tail_penalty`, `cap_high_tail_penalty`).
-
-Nos modos de calota, esses switches controlam a **dispersão intra-classe**, apesar de o nome histórico mencionar `kappa`. Quando ambos estão desligados, `lb` depende apenas da base, do offset de domínio e da guarda de bissetor.
-
-**Escala — não reaproveite as penalidades de \(\kappa\):** as penalidades de calota agem em **escala de cosseno**, não em \(\log\kappa\). Uma penalidade de `0.15` com \(z=2\) derruba `lb` em `0.6` diretamente no cosseno. Calibre `cap_low_tail_penalty`/`cap_high_tail_penalty` de forma independente das penalidades quadráticas direcionais (`low_tail_quadratic_penalty`/`high_tail_quadratic_penalty`), que entram em \(\log\kappa\).
-
-**Offset por domínio** (`AcquisitionDomainConfig.cap_lower_bound_offset`) — aperta ou afrouxa a identidade por condição de aquisição, espelhando `log_kappa_shift` para a parametrização de calota:
-
-```text
-controlled:   cap_lower_bound_offset = +0.10   # identidade mais rígida
-surveillance: cap_lower_bound_offset = -0.15   # mais dispersão intra-classe
-```
-
-#### Regra do bissetor (`cap_overlap_guard`)
-
-Para evitar que a perturbação de uma identidade fique angularmente mais próxima de outra identidade do que do próprio centro, define-se um **piso** por identidade a partir da densidade local dos centros (Boutros et al. 2026, Eq. 6):
-
-\[
-\text{floor}_i = \cos\!\Big(\tfrac{1}{2}\min_{j \ne i} \angle(\mathbf{c}_i, \mathbf{c}_j)\Big)
-              = \sqrt{\tfrac{1 + \max_{j \ne i} \mathbf{c}_i^\top \mathbf{c}_j}{2}}.
-\]
-
-O `lb` efetivo é \(\max(lb_{\text{modulado}}, \text{floor}_i)\). **A guarda tem prioridade e é aplicada DEPOIS do clip**, podendo produzir um `lb` efetivo `> cap_maximum_lower_bound` em regiões densas — isso é intencional, não bug (anticolisão tem prioridade sobre o teto configurado). Singletons recebem piso `0`. O cálculo é feito em blocos de linhas (`chunk_size=2048`), sem materializar a matriz C×C de cossenos (tempo \(O(C^2 d)\), memória \(O(\text{chunk}\cdot C)\)); o vetor é cacheado em `SyntheticIdentityPopulation.overlap_lower_bound_floor` para reuso entre observações cross-condition.
-
-Em 512-D, mesmo centros aleatórios têm vizinhos relativamente próximos. Logo, com `cap_overlap_guard=True`, um `lb` nominal de `0.4` **não** significa que as amostras foram geradas com piso `0.4`: o piso efetivo pode ser bem maior para identidades densas. **Sempre reporte `cap_lower_bound_effective` (mean/p10/p50/p90)** junto do `lb` nominal — a separação intra-classe realizada difere da `lb` nominal configurada. Ligação com tipicidade: regiões densas (identidades típicas) toleram menos variação; regiões raras toleram mais.
-
-#### Modo HYBRID_VMF_CAP
-
-A função `sample_hybrid_vmf_cap` amostra vMF e, por rejeição, reamostra as observações cuja \(\cos < lb\) (até `hybrid_max_resample_rounds` rodadas). As observações que ainda violam o piso após as rodadas **caem para a calota** (`sample_spherical_cap`) em `lb`, garantindo o piso rígido. A função retorna, por amostra, o número de reamostragens vMF e se o fallback de calota foi usado.
-
-As colunas `hybrid_resample_count` e `hybrid_used_cap_fallback` permitem **auditar a taxa de fallback**: com `lb` alto e \(\kappa\) baixo, grande parte das amostras pode acabar vindo da calota — nesse caso o modo deixa de ser, na prática, "vMF truncado" e passa a ser dominado pela geometria da calota. Reporte a taxa de fallback ao usar este modo.
-
-#### Colunas de metadata da dispersão intra-classe
-
-| Coluna | Significado |
-|---|---|
-| `intra_class_sampling_mode` | modo usado (`vmf` / `idperturb_cap` / `hybrid_vmf_cap`) |
-| `cap_lower_bound_effective` | `lb` efetivo por amostra (NaN no modo `VMF`) |
-| `pre_nuisance_center_cosine` | cosseno ao centro **logo após** vMF/cap/hybrid, antes do passo tangencial |
-| `hybrid_resample_count` | reamostragens vMF (0 fora de `HYBRID_VMF_CAP`) |
-| `hybrid_used_cap_fallback` | usou fallback de calota (False fora de `HYBRID_VMF_CAP`) |
-
-**Invariante a verificar:** `pre_nuisance_center_cosine ≥ cap_lower_bound_effective` (a calota é garantida na direção pré-nuisance). O `own_center_cosine` (pós-nuisance) **pode cair abaixo** de `lb` por causa do passo tangencial de nuisance/viés — para auditar a calota use `pre_nuisance_center_cosine`.
-
-#### Caveat metodológico
-
-O IDperturb original gera **imagens** via difusão e treina um reconhecedor facial; o nosso simulador gera **embeddings diretamente**. O elo é **geométrico, não quantitativo**. O `lb = 0.6` do perfil `IDPERTURB_CAP` é **inspirado** no regime do artigo, **não** um ótimo para AdaFace/PLDA/FaceAudit sem calibração empírica. Formulação recomendada para laudo: *MoVMF modela população/tipicidade; vMF modela a dispersão estatística; IDPERTURB-cap impõe um limite geométrico interpretável e citável para a variação intra-identidade.*
-
----
-
-## 7. Perfis prontos
-
-A versão 0.3 fornece **quatro** perfis prontos (a v0.2 tinha três; o quarto, `IDPERTURB_CAP`, é novo). Todos retornam um `SimulatorConfig` validado.
-
-### 7.1 `SPHERICAL_BASELINE`
-
-Factory:
-
-```python
-make_spherical_baseline_config(dimension=512)
-```
-
-Características:
-
-- mistura populacional vMF (`component_count=8`, `identity_center_kappas=70`);
-- variação intraidentidade vMF;
-- sem nuisance anisotrópico (`anisotropic_rank=0`, `anisotropic_base_scale=0.0`);
-- domínio único `default`, sem bias cross-condition.
-
-Uso recomendado:
-
-- comparar cosseno, PLDA e PSDA em cenário esférico simples;
-- verificar se um backend introduz ganho quando não existe estrutura anisotrópica relevante.
-
-### 7.2 `COOPERATIVE_PLDA_BASELINE`
-
-Factory:
-
-```python
-make_cooperative_plda_config(dimension=512)
-```
-
-Alias legado:
-
-```python
-make_example_config(dimension=512)
-```
-
-Características:
-
-- base anisotrópica global compartilhada (`anisotropic_rank=min(24, d-1)`, `anisotropic_base_scale=0.010`);
-- relação não monotônica norma ↔ estabilidade;
-- domínios `controlled` e `surveillance`;
-- bias médio pequeno para vigilância (`domain_bias_scale=0.008`);
-- atualização por retração.
-
-Interpretação correta:
-
-> cenário cooperativo no qual PLDA, LDA e whitening conseguem aprender uma estrutura compartilhada.
-
-Não use esse perfil isoladamente para inferir desempenho quantitativo em embeddings AdaFace reais.
-
-### 7.3 `CROSS_CONDITION_HETEROSCEDASTIC`
-
-Factory:
-
-```python
-make_cross_condition_stress_config(dimension=512)
-```
-
-Características:
-
-- nuisance hierárquico (`nuisance_structure_mode=HIERARCHICAL`, `global_nuisance_weight=0.55`, `domain_nuisance_weight=0.90`);
-- bases diferentes por domínio;
-- bases específicas por identidade (`identity_specific_nuisance_rank=min(2, d-1)`, `identity_specific_nuisance_scale=0.40`);
-- bias médio de domínio, bias domínio × identidade e bias de sessão;
-- mapa exponencial;
-- domínio `surveillance` com maior dispersão (`anisotropic_noise_multiplier=1.85`, `log_kappa_shift=-0.35`).
-
-Uso recomendado:
-
-- comparar merge ingênuo, `PER_CONDITION` e `BALANCED_IDENTITY`;
-- estudar robustez fora de domínio;
-- medir inflação ou subestimação de \(W\);
-- testar calibração sob heterocedasticidade.
-
-### 7.4 `IDPERTURB_CAP`
-
-Factory:
-
-```python
-make_idperturb_cap_config(dimension=512, lower_bound=0.6)
-```
-
-Este perfil parte do `COOPERATIVE_PLDA_BASELINE` e **troca o modo de dispersão intra-classe** para a calota cosseno-uniforme (`IntraClassSamplingMode.IDPERTURB_CAP`), via `replace` no bloco `directional`. Diferenças em relação ao cooperativo:
-
-| Campo | Valor no perfil |
-|---|---:|
-| `intra_class_sampling_mode` | `IDPERTURB_CAP` |
-| `cap_base_lower_bound` | `lower_bound` (default `0.6`) |
-| `cap_quality_lower_bound_slope` | `0.10` |
-| `cap_low_tail_penalty` | `0.15` |
-| `cap_high_tail_penalty` | `0.20` |
-| `cap_overlap_guard` | `True` |
-
-O parâmetro `lower_bound` é o **piso de cosseno base** para a dispersão intra-classe. Como `cap_overlap_guard=True`, o `lb` efetivo pode **exceder** `lower_bound` para identidades em regiões densas da população (ver Seção 6.13).
-
-Uso recomendado:
-
-- impor um limite geométrico interpretável e citável para a variação intra-identidade;
-- executar um *sweep* de `lb` para mapear a relação dispersão genuína ↔ EER (ver Seção 19);
-- contrastar calota cosseno-uniforme contra vMF como eixo de ablação (ver Seção 21).
-
-> Lembrete: o `lb = 0.6` é inspirado no regime do IDperturb (Boutros et al. 2026), **não** um ótimo calibrado para AdaFace/PLDA/FaceAudit. Calibre empiricamente antes de qualquer afirmação quantitativa.
+> **Interação com a calota (modos de cap).** O piso de cosseno `lb` dos modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP` é garantido sobre a direção **pré-nuisance** \(\mathbf{u}_{ij}^{(0)}\). O passo tangencial desta seção pode empurrar o cosseno realizado (pós-nuisance) ligeiramente abaixo de `lb`. Para auditar a calota, use sempre a coluna invariante `pre_nuisance_center_cosine` (que satisfaz \(\ge\) `cap_lower_bound_effective`), nunca `own_center_cosine`.
 
 ---
 
 ## 8. Referência completa da configuração
 
-### 8.1 `SimulatorConfig`
+Esta seção tabula **todos** os campos de **todas** as dataclasses de configuração. Toda configuração é uma `@dataclass(frozen=True)` (imutável; clone com `dataclasses.replace`). A árvore de configuração é:
 
-```python
-@dataclass(frozen=True)
-class SimulatorConfig:
-    dimension: int = 512
-    profile_name: str = "custom"
-    population: PopulationConfig = ...
-    radial: RadialConfig = ...
-    directional: DirectionalConfig = ...
-    coupling: CouplingConfig = ...
-    acquisition_domains: tuple[AcquisitionDomainConfig, ...] = ...
+```
+SimulatorConfig
+├── population: PopulationConfig
+├── radial: RadialConfig            (referência via RadialReference)
+├── directional: DirectionalConfig
+├── coupling: CouplingConfig
+└── acquisition_domains: tuple[AcquisitionDomainConfig, ...]
 ```
 
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `dimension` | `int` | `512` | dimensão dos embeddings (mínimo 3) |
-| `profile_name` | `str` | `custom` | nome persistido no manifesto |
-| `population` | `PopulationConfig` | default | estrutura populacional |
-| `radial` | `RadialConfig` | default | distribuição das normas |
-| `directional` | `DirectionalConfig` | default | dispersão angular, calota e nuisance |
-| `coupling` | `CouplingConfig` | default | switches de ablação |
-| `acquisition_domains` | `tuple[AcquisitionDomainConfig, ...]` | `(default,)` | parâmetros por domínio (nomes únicos) |
+Todo objeto expõe `validate()`, chamado automaticamente por `SimulatorConfig.validate()` (que o construtor do simulador invoca). Enums podem ser passados como membro do enum **ou** como seu valor `str` — ambos são aceitos pelas DTOs e pelo simulador.
 
----
+### 8.1 `SimulatorConfig`
+
+Configuração de topo do gerador.
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dimension` | `int` | `512` | dimensionalidade \(D\) do embedding; deve ser \(\ge 3\) |
+| `profile_name` | `str` | `"custom"` | rótulo do perfil, gravado no manifesto; deve ser não-vazio |
+| `population` | `PopulationConfig` | `PopulationConfig()` | distribuição dos centros de identidade |
+| `radial` | `RadialConfig` | `RadialConfig()` | modelo de norma não-monotônico |
+| `directional` | `DirectionalConfig` | `DirectionalConfig()` | confiabilidade angular + nuisance + modos |
+| `coupling` | `CouplingConfig` | `CouplingConfig()` | switches de acoplamento causal |
+| `acquisition_domains` | `tuple[AcquisitionDomainConfig, ...]` | `(AcquisitionDomainConfig(name="default"),)` | domínios de aquisição; nomes devem ser únicos e não-vazios; pelo menos um |
 
 ### 8.2 `PopulationConfig`
 
-```python
-@dataclass(frozen=True)
-class PopulationConfig:
-    component_count: int = 8
-    component_weights: ArrayLike | None = None
-    identity_center_kappas: ArrayLike | float = 70.0
-    component_means: ArrayLike | None = None
-    component_mean_global_kappa: float = 20.0
-    global_mean_direction: ArrayLike | None = None
-```
+Distribuição dos centros de identidade sintéticos na hiperesfera unitária (uma mistura vMF de componentes).
 
 | Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `component_count` | `int` | `8` | quantidade de regiões populacionais |
-| `component_weights` | vetor ou `None` | `None` | pesos da mistura; `None` usa pesos uniformes |
-| `identity_center_kappas` | escalar ou vetor | `70.0` | concentração dos centros de identidade dentro de cada componente |
-| `component_means` | matriz `(K, d)` ou `None` | `None` | médias explícitas dos componentes |
-| `component_mean_global_kappa` | `float` | `20.0` | proximidade dos componentes em torno da média global |
-| `global_mean_direction` | vetor ou `None` | `None` | média global explícita |
+|---|---|---|---|
+| `component_count` | `int` | `8` | número de componentes (sub-populações) da mistura; deve ser positivo |
+| `component_weights` | `ArrayLike \| None` | `None` | pesos da mistura (normalizados internamente); `None` ⇒ uniforme; se dado, um valor por componente |
+| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração vMF dos centros em torno da média do componente; escalar ou um valor por componente; finito e \(\ge 0\) |
+| `component_means` | `ArrayLike \| None` | `None` | médias dos componentes \((C, D)\) fornecidas explicitamente; `None` ⇒ amostradas |
+| `component_mean_global_kappa` | `float` | `20.0` | concentração das médias dos componentes em torno de uma média global; \(\ge 0\); `0` ⇒ médias uniformes na esfera |
+| `global_mean_direction` | `ArrayLike \| None` | `None` | direção global em torno da qual os componentes se concentram; `None` ⇒ amostrada uniformemente |
 
-#### Como interpretar `identity_center_kappas`
+### 8.3 `RadialReference`
 
-Valor maior: identidades mais agrupadas dentro do componente; maior densidade local; impostores potencialmente mais semelhantes. Valor menor: centros mais dispersos; população mais espalhada; menor densidade local.
+Localização e escala de referência para normas logarítmicas padronizadas. Usada para padronizar \(\log\lVert\mathbf{x}\rVert\) em z-scores robustos. Frozen.
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `log_norm_location` | `float` | — (obrigatório) | locação de referência da log-norma (tipicamente a mediana) |
+| `log_norm_scale` | `float` | — (obrigatório) | escala de referência da log-norma (tipicamente MAD escalado por 1.4826) |
+| `method` | `str` | `"median_scaled_mad"` | rótulo do método de estimativa, propagado para a metadata |
+
+O classmethod `RadialReference.fit(raw_embeddings_or_norms)` estima uma referência **robusta** a partir de embeddings reais (ou de um vetor de normas): calcula a mediana e o MAD escalado das log-normas. O z-score padronizado resultante é gravado na coluna `reference_scaled_log_norm_z` (também disponível como `robust_norm_z`, alias da mesma coluna).
+
+### 8.4 `RadialConfig`
+
+Modelo de norma não-monotônico com três regimes (central, cauda baixa, cauda alta), reproduzindo a relação em U invertido entre norma e confiabilidade dos embeddings AdaFace.
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `reference_log_norm_mean` | `float` | `log(25.0)` | média de referência da log-norma central |
+| `reference_log_norm_scale` | `float` | `0.24` | escala de referência da log-norma (denominador do z); deve ser positiva |
+| `reference_method` | `str` | `"configured_reference"` | rótulo do método de referência, gravado em `radial_reference_method` |
+| `quality_log_norm_slope` | `float` | `0.12` | inclinação do efeito de qualidade sobre a log-norma |
+| `central_offset` | `float` | `0.0` | deslocamento da log-norma no regime central |
+| `central_sigma` | `float` | `0.10` | desvio-padrão da log-norma no regime central; positivo |
+| `low_tail_offset` | `float` | `-0.70` | deslocamento da log-norma na cauda baixa (normas pequenas) |
+| `low_tail_sigma` | `float` | `0.16` | desvio-padrão na cauda baixa; positivo |
+| `high_tail_offset` | `float` | `0.70` | deslocamento da log-norma na cauda alta (normas grandes) |
+| `high_tail_sigma` | `float` | `0.16` | desvio-padrão na cauda alta; positivo |
+| `minimum_norm` | `float` | `1e-6` | piso físico da norma (clipping) |
+| `maximum_norm` | `float` | `1e6` | teto físico da norma; deve satisfazer \(0 < \texttt{minimum} < \texttt{maximum}\) |
+
+O classmethod `RadialConfig.from_reference(reference, **kwargs)` constrói um `RadialConfig` a partir de uma `RadialReference` ajustada em dados reais, copiando locação, escala e método e aceitando overrides dos demais campos via `kwargs`.
+
+### 8.5 `DirectionalConfig`
+
+Modelo de confiabilidade angular (κ intra-classe), modelo opcional de nuisance tangencial e seleção dos modos de dispersão/atualização. É a dataclass mais rica. Os campos agrupam-se em quatro blocos.
+
+#### Bloco A — confiabilidade angular (κ intra-classe)
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `peak_intra_kappa` | `float` | `1400.0` | κ de pico (máxima concentração angular, na qualidade/norma ótimas); positivo |
+| `quality_log_kappa_slope` | `float` | `0.90` | inclinação do efeito de qualidade sobre \(\log\kappa\) |
+| `optimal_reference_scaled_log_norm_z` | `float` | `0.0` | z de norma padronizada onde κ é máximo (ápice do U invertido) |
+| `low_tail_quadratic_penalty` | `float` | `0.55` | penalidade quadrática de \(\log\kappa\) para z **abaixo** do ótimo; \(\ge 0\) |
+| `high_tail_quadratic_penalty` | `float` | `0.75` | penalidade quadrática de \(\log\kappa\) para z **acima** do ótimo; \(\ge 0\) |
+| `minimum_intra_kappa` | `float` | `20.0` | piso de κ (clipping); positivo |
+| `maximum_intra_kappa` | `float` | `10000.0` | teto de κ (clipping); \(\ge\) `minimum_intra_kappa` |
+
+A property `optimal_robust_norm_z` é alias de `optimal_reference_scaled_log_norm_z` (mesmo valor, leitura apenas).
+
+#### Bloco B — nuisance anisotrópico e estrutura
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `anisotropic_rank` | `int` | `0` | posto \(r\) da base de nuisance global/por-domínio; \(0 \le r < D\); `0` desliga |
+| `anisotropic_base_scale` | `float` | `0.0` | magnitude base do nuisance anisotrópico; \(\ge 0\); `0` desliga |
+| `anisotropic_quality_slope` | `float` | `1.0` | inclinação do crescimento do nuisance com a baixa qualidade; \(\ge 0\) |
+| `nuisance_structure_mode` | `NuisanceStructureMode \| str` | `GLOBAL_SHARED` | compartilhamento da base: `global_shared` / `per_domain` / `hierarchical` |
+| `global_nuisance_weight` | `float` | `1.0` | peso da base global (modos `global_shared`/`hierarchical`); \(\ge 0\) |
+| `domain_nuisance_weight` | `float` | `0.0` | peso da base por domínio em `hierarchical`; \(\ge 0\) |
+| `identity_specific_nuisance_rank` | `int` | `0` | posto da base de nuisance **própria de cada identidade**; \(0 \le r < D\); `0` desliga |
+| `identity_specific_nuisance_scale` | `float` | `0.0` | magnitude do nuisance específico de identidade; \(\ge 0\); `0` desliga |
+| `tangent_update_mode` | `TangentUpdateMode \| str` | `RETRACTION` | retorno à hiperesfera: `retraction` / `exponential_map` |
+
+#### Bloco C — modo de dispersão intra-classe e parâmetros da calota
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `intra_class_sampling_mode` | `IntraClassSamplingMode \| str` | `VMF` | dispersão intra-classe: `vmf` / `idperturb_cap` / `hybrid_vmf_cap` |
+| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base `lb` da calota (modos de cap); \([0,1]\) |
+| `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação do efeito de qualidade sobre `lb` (qualquer sinal; maior qualidade ⇒ maior `lb`) |
+| `cap_low_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda baixa de norma; \(\ge 0\) |
+| `cap_high_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda alta de norma; \(\ge 0\) |
+| `cap_minimum_lower_bound` | `float` | `0.0` | piso de clipping de `lb`; \([0,1]\); \(\le\) `cap_maximum_lower_bound` |
+| `cap_maximum_lower_bound` | `float` | `0.999` | teto de clipping de `lb`; \([0,1]\) (o overlap guard PODE excedê-lo) |
+| `cap_overlap_guard` | `bool` | `True` | aplica o piso da bissetriz por identidade (anti-colisão), com **prioridade** sobre o clipping |
+| `hybrid_max_resample_rounds` | `int` | `8` | número de redraws vMF no modo `hybrid_vmf_cap` antes do fallback de calota; \(\ge 1\) |
+
+> As penalidades de calota (`cap_low_tail_penalty`, `cap_high_tail_penalty`) e a inclinação de qualidade atuam na **escala de cosseno**, não em \(\log\kappa\). O overlap guard tem prioridade sobre o teto: o `lb` *efetivo* pode exceder `cap_maximum_lower_bound`, por isso sempre se reporta percentis de `cap_lower_bound_effective` (Seção 6/16) — o `lb` nominal é um piso, não o valor realizado.
+
+A modulação de κ (Bloco A) e de `lb` (Bloco C) é controlada pelos switches de qualidade/norma do `CouplingConfig` (Seção 9). Nos modos de cap, os switches `quality_affects_intra_kappa` e `norm_z_affects_intra_kappa` continuam sendo os que liberam, respectivamente, o efeito de qualidade e o efeito de norma sobre `lb` (apesar do nome centrado em κ, eles regem a dispersão intra-classe em qualquer modo).
+
+### 8.6 `CouplingConfig`
+
+Switches booleanos para ablações causais dos caminhos qualidade → regime/norma/κ e norma → κ. Todos `True` por padrão (mundo totalmente acoplado).
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `quality_affects_regime_probabilities` | `bool` | `True` | qualidade desloca as probabilidades dos regimes radiais (central/cauda) |
+| `quality_affects_log_norm` | `bool` | `True` | qualidade desloca a média da log-norma |
+| `quality_affects_intra_kappa` | `bool` | `True` | qualidade modula κ intra-classe (e `lb` nos modos de cap) |
+| `norm_z_affects_intra_kappa` | `bool` | `True` | a posição radial (z padronizado) modula κ via penalidades de cauda (e `lb` nos modos de cap) |
+
+O uso desses switches para isolar caminhos causais está detalhado na Seção 9.
+
+### 8.7 `AcquisitionDomainConfig`
+
+Parâmetros de um domínio de aquisição — a unidade que cria mismatch controlado entre condições (ex.: `controlled` vs. `surveillance`). Cada domínio define sua distribuição de qualidade, seus regimes radiais, seus deslocamentos de norma/κ e suas escalas de nuisance/viés.
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `name` | `str` | — (obrigatório) | nome único do domínio; não-vazio |
+| `weight` | `float` | `1.0` | peso de amostragem do domínio (normalizado entre domínios); positivo |
+| `quality_beta_alpha` | `float` | `4.0` | α da Beta da qualidade latente; positivo |
+| `quality_beta_beta` | `float` | `2.0` | β da Beta da qualidade latente; positivo |
+| `central_regime_probability` | `float` | `0.86` | probabilidade base do regime radial central |
+| `low_tail_probability` | `float` | `0.08` | probabilidade base do regime de cauda baixa |
+| `high_tail_probability` | `float` | `0.06` | probabilidade base do regime de cauda alta (os três somam 1 após normalização) |
+| `low_tail_quality_logit_slope` | `float` | `2.0` | quanto a baixa qualidade aumenta o logit da cauda baixa |
+| `high_tail_quality_logit_slope` | `float` | `0.0` | quanto a baixa qualidade aumenta o logit da cauda alta |
+| `log_norm_shift` | `float` | `0.0` | deslocamento aditivo da média da log-norma neste domínio |
+| `log_norm_sigma_multiplier` | `float` | `1.0` | multiplicador do desvio da log-norma; positivo |
+| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de \(\log\kappa\) neste domínio |
+| `anisotropic_noise_multiplier` | `float` | `1.0` | multiplicador da magnitude do nuisance anisotrópico; \(\ge 0\) |
+| `domain_bias_scale` | `float` | `0.0` | escala do viés **fixo** de domínio \(\mathbf{b}_d\); \(\ge 0\) |
+| `domain_identity_bias_scale` | `float` | `0.0` | escala do viés **domínio × identidade** \(\mathbf{b}_{d,i}\); \(\ge 0\) |
+| `session_bias_scale` | `float` | `0.0` | escala do viés de **sessão** \(\mathbf{b}_{d,s}\); \(\ge 0\) |
+| `cap_lower_bound_offset` | `float` | `0.0` | deslocamento aditivo de `lb` da calota neste domínio (qualquer sinal; positivo aperta a identidade — controlado; negativo afrouxa — vigilância); espelha `log_kappa_shift` para a parametrização de calota |
 
 ---
 
-### 8.3 `RadialConfig`
+## 9. Acoplamentos e ablações causais
 
-```python
-@dataclass(frozen=True)
-class RadialConfig:
-    reference_log_norm_mean: float = log(25.0)
-    reference_log_norm_scale: float = 0.24
-    reference_method: str = "configured_reference"
-    quality_log_norm_slope: float = 0.12
-    central_offset: float = 0.0
-    central_sigma: float = 0.10
-    low_tail_offset: float = -0.70
-    low_tail_sigma: float = 0.16
-    high_tail_offset: float = 0.70
-    high_tail_sigma: float = 0.16
-    minimum_norm: float = 1e-6
-    maximum_norm: float = 1e6
+O `CouplingConfig` é o que permite usar o simulador como **bancada de ablação causal**: cada switch liga ou desliga uma aresta do grafo gerador. Desligando arestas seletivamente, isola-se o efeito de cada caminho sobre os scores, algo impossível com dados reais, onde os fatores são confundidos.
+
+### 9.1 O grafo causal e os quatro switches
+
+O mundo padrão (todos os switches `True`) tem o grafo:
+
+```
+qualidade ──(quality_affects_regime_probabilities)──▶ regime radial
+qualidade ──(quality_affects_log_norm)─────────────▶ log-norma  ─▶ norma ─▶ z padronizado
+qualidade ──(quality_affects_intra_kappa)──────────▶ κ intra-classe (e lb nos modos de cap)
+z padronizado ─(norm_z_affects_intra_kappa)────────▶ κ intra-classe (e lb nos modos de cap)
 ```
 
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `reference_log_norm_mean` | `float` | `log(25)` | centro da padronização radial |
-| `reference_log_norm_scale` | `float` | `0.24` | escala da padronização |
-| `reference_method` | `str` | `configured_reference` | descrição persistida nos metadados |
-| `quality_log_norm_slope` | `float` | `0.12` | contribuição direta da qualidade à log-norma |
-| `central_offset` | `float` | `0.0` | deslocamento do regime central |
-| `central_sigma` | `float` | `0.10` | dispersão do regime central |
-| `low_tail_offset` | `float` | `-0.70` | deslocamento da cauda inferior |
-| `low_tail_sigma` | `float` | `0.16` | dispersão da cauda inferior |
-| `high_tail_offset` | `float` | `0.70` | deslocamento da cauda superior |
-| `high_tail_sigma` | `float` | `0.16` | dispersão da cauda superior |
-| `minimum_norm` | `float` | `1e-6` | clipping inferior |
-| `maximum_norm` | `float` | `1e6` | clipping superior |
+| Switch | Aresta controlada | Onde atua no código |
+|---|---|---|
+| `quality_affects_regime_probabilities` | qualidade → probabilidades de regime radial | `_sample_radial_regimes` (ajuste de logits das caudas pela qualidade) |
+| `quality_affects_log_norm` | qualidade → média da log-norma | `_sample_log_norms` (termo `quality_log_norm_slope·(q−0.5)`) |
+| `quality_affects_intra_kappa` | qualidade → κ (e `lb`) | `_calculate_intra_kappas` / `_calculate_cap_lower_bounds` (termo de qualidade) |
+| `norm_z_affects_intra_kappa` | posição radial → κ (e `lb`) | `_calculate_intra_kappas` / `_calculate_cap_lower_bounds` (penalidades de cauda) |
 
-#### Ajustar referência radial contra dados reais
+Quando um switch é `False`, o termo correspondente é substituído por zero, então o restante da geração segue idêntico — a ablação é **cirúrgica**, sem alterar dimensão, população ou nuisance.
 
-```python
-from adaface_embedding_simulator import RadialReference, RadialConfig
+### 9.2 Padrão de ablação
 
-reference = RadialReference.fit(real_raw_embeddings)
-
-radial = RadialConfig.from_reference(
-    reference,
-    quality_log_norm_slope=0.12,
-    low_tail_offset=-0.70,
-    high_tail_offset=0.70,
-)
-```
-
-`RadialReference.fit()` usa \(\operatorname{mediana}(\log r)\) como localização e \(1{,}4826\cdot\operatorname{MAD}(\log r)\) como escala.
-
----
-
-### 8.4 `DirectionalConfig`
-
-Esta dataclass concentra o modelo de confiabilidade angular (\(\kappa\)), o **modo de dispersão intra-classe e os parâmetros da calota cosseno-uniforme (0.3)**, e o modelo opcional de nuisance tangencial.
-
-```python
-@dataclass(frozen=True)
-class DirectionalConfig:
-    peak_intra_kappa: float = 1400.0
-    quality_log_kappa_slope: float = 0.90
-    optimal_reference_scaled_log_norm_z: float = 0.0
-    low_tail_quadratic_penalty: float = 0.55
-    high_tail_quadratic_penalty: float = 0.75
-    minimum_intra_kappa: float = 20.0
-    maximum_intra_kappa: float = 10000.0
-
-    anisotropic_rank: int = 0
-    anisotropic_base_scale: float = 0.0
-    anisotropic_quality_slope: float = 1.0
-    nuisance_structure_mode: str = "global_shared"
-    global_nuisance_weight: float = 1.0
-    domain_nuisance_weight: float = 0.0
-    identity_specific_nuisance_rank: int = 0
-    identity_specific_nuisance_scale: float = 0.0
-    tangent_update_mode: str = "retraction"
-
-    # Dispersão intra-classe e calota cosseno-uniforme (0.3)
-    intra_class_sampling_mode: str = "vmf"
-    cap_base_lower_bound: float = 0.6
-    cap_quality_lower_bound_slope: float = 0.10
-    cap_low_tail_penalty: float = 0.0
-    cap_high_tail_penalty: float = 0.0
-    cap_minimum_lower_bound: float = 0.0
-    cap_maximum_lower_bound: float = 0.999
-    cap_overlap_guard: bool = True
-    hybrid_max_resample_rounds: int = 8
-```
-
-#### Parâmetros da dispersão vMF (\(\kappa\))
-
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `peak_intra_kappa` | `float` | `1400` | estabilidade máxima em condições favoráveis |
-| `quality_log_kappa_slope` | `float` | `0.90` | efeito direto da qualidade sobre \(\log\kappa\) |
-| `optimal_reference_scaled_log_norm_z` | `float` | `0.0` | faixa radial ótima \(z_0\) (compartilhada com a calota) |
-| `low_tail_quadratic_penalty` | `float` | `0.55` | penalização de \(\log\kappa\) na cauda baixa |
-| `high_tail_quadratic_penalty` | `float` | `0.75` | penalização de \(\log\kappa\) na cauda alta |
-| `minimum_intra_kappa` | `float` | `20` | clipping inferior de \(\kappa\) |
-| `maximum_intra_kappa` | `float` | `10000` | clipping superior de \(\kappa\) |
-
-> Alias de leitura: a property `optimal_robust_norm_z` retorna `optimal_reference_scaled_log_norm_z` (compat com a documentação 0.1).
-
-#### Parâmetros da dispersão intra-classe e da calota cosseno-uniforme (0.3)
-
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `intra_class_sampling_mode` | `IntraClassSamplingMode` ou `str` | `vmf` | modo de dispersão: `vmf` / `idperturb_cap` / `hybrid_vmf_cap` |
-| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base `lb` antes da modulação (em `[0, 1]`) |
-| `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação do termo de qualidade sobre `lb` (qualquer sinal); gatilhado por `quality_affects_intra_kappa` |
-| `cap_low_tail_penalty` | `float` | `0.0` | penalidade de `lb` na cauda baixa, **em escala de cosseno**; gatilhada por `norm_z_affects_intra_kappa` |
-| `cap_high_tail_penalty` | `float` | `0.0` | penalidade de `lb` na cauda alta, **em escala de cosseno**; gatilhada por `norm_z_affects_intra_kappa` |
-| `cap_minimum_lower_bound` | `float` | `0.0` | clip inferior de `lb` (antes da guarda) |
-| `cap_maximum_lower_bound` | `float` | `0.999` | clip superior de `lb` (antes da guarda; a guarda pode ultrapassá-lo) |
-| `cap_overlap_guard` | `bool` | `True` | aplica o piso de bissetor por identidade (anticolisão) |
-| `hybrid_max_resample_rounds` | `int` | `8` | rodadas máximas de reamostragem vMF no modo `HYBRID_VMF_CAP` (mínimo 1) |
-
-**Semântica da guarda de bissetor.** Quando `cap_overlap_guard=True`, o `lb` modulado e cortado é elevado para o piso por identidade \(\text{floor}_i=\sqrt{(1+\max_{j\ne i}\mathbf{c}_i^\top\mathbf{c}_j)/2}\). A guarda é aplicada **após** o clip e tem **prioridade**: o `lb` efetivo realizado pode **exceder** `cap_maximum_lower_bound` em regiões densas (comportamento intencional — anticolisão prevalece sobre o teto). Por isso, a separação intra-classe efetiva difere da `lb` nominal configurada; reporte sempre os percentis de `cap_lower_bound_effective`. Detalhamento completo, fórmulas e cuidados em Seção 6.13.
-
-#### Parâmetros de nuisance anisotrópico
-
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `anisotropic_rank` | `int` | `0` | posto das bases global e por domínio (`0 <= rank < dimension`) |
-| `anisotropic_base_scale` | `float` | `0.0` | amplitude base do nuisance |
-| `anisotropic_quality_slope` | `float` | `1.0` | aumenta nuisance quando a qualidade cai |
-| `nuisance_structure_mode` | `NuisanceStructureMode` ou `str` | `global_shared` | compartilhamento da base |
-| `global_nuisance_weight` | `float` | `1.0` | peso da base global |
-| `domain_nuisance_weight` | `float` | `0.0` | peso das bases por domínio no modo hierárquico |
-| `identity_specific_nuisance_rank` | `int` | `0` | posto da base específica por identidade |
-| `identity_specific_nuisance_scale` | `float` | `0.0` | amplitude da parcela específica por identidade |
-| `tangent_update_mode` | `TangentUpdateMode` ou `str` | `retraction` | retorno à hiperesfera |
-
-#### Modos de nuisance
-
-```python
-from adaface_embedding_simulator import NuisanceStructureMode
-```
-
-| Valor | Descrição |
-|---|---|
-| `global_shared` | uma base compartilhada pelo dataset inteiro |
-| `per_domain` | uma base diferente para cada domínio |
-| `hierarchical` | combinação de base global, base por domínio e parcela específica da identidade |
-
-#### Modos de atualização tangencial
-
-```python
-from adaface_embedding_simulator import TangentUpdateMode
-```
-
-| Valor | Descrição |
-|---|---|
-| `retraction` | soma e renormalização; rápida e compatível com v0.1 |
-| `exponential_map` | deslocamento geodésico exato no plano tangente da direção atual |
-
-#### Modos de dispersão intra-classe
-
-```python
-from adaface_embedding_simulator import IntraClassSamplingMode
-```
-
-| Valor | Descrição |
-|---|---|
-| `vmf` | concentração angular von Mises-Fisher (padrão; comportamento v0.2 bit-a-bit) |
-| `idperturb_cap` | calota cosseno-uniforme com piso `lb` (afastamento angular máximo) |
-| `hybrid_vmf_cap` | corpo vMF com piso rígido em `lb` e fallback de calota |
-
----
-
-### 8.5 `CouplingConfig`
-
-```python
-@dataclass(frozen=True)
-class CouplingConfig:
-    quality_affects_regime_probabilities: bool = True
-    quality_affects_log_norm: bool = True
-    quality_affects_intra_kappa: bool = True
-    norm_z_affects_intra_kappa: bool = True
-```
-
-| Parâmetro | Tipo | Padrão | Caminho causal |
-|---|---|---:|---|
-| `quality_affects_regime_probabilities` | `bool` | `True` | qualidade → regime radial |
-| `quality_affects_log_norm` | `bool` | `True` | qualidade → norma |
-| `quality_affects_intra_kappa` | `bool` | `True` | qualidade → dispersão intra-classe (\(\kappa\) **e** `lb`) |
-| `norm_z_affects_intra_kappa` | `bool` | `True` | norma → dispersão intra-classe (\(\kappa\) **e** `lb`) |
-
-> Nota (0.3): nos modos de calota, os dois últimos switches gatilham a modulação de `lb` exatamente como gatilham a de \(\kappa\) no modo vMF — apesar do nome histórico `intra_kappa`. Desligá-los nas configurações de calota torna `lb` insensível a qualidade/norma.
-
-#### Exemplo de ablação puramente radial
+Toda ablação parte de um perfil e clona o `CouplingConfig` com `dataclasses.replace`, mexendo só nos switches de interesse:
 
 ```python
 from dataclasses import replace
-from adaface_embedding_simulator import CouplingConfig, make_cooperative_plda_config
-
-base = make_cooperative_plda_config()
-config = replace(
-    base,
-    profile_name="ABLATION_RADIAL_ONLY",
-    coupling=CouplingConfig(
-        quality_affects_regime_probabilities=True,
-        quality_affects_log_norm=True,
-        quality_affects_intra_kappa=False,
-        norm_z_affects_intra_kappa=False,
-    ),
+from adaface_embedding_simulator import (
+    make_cooperative_plda_config,
+    AdaFaceEmbeddingSimulator,
+    CouplingConfig,
 )
+
+base = make_cooperative_plda_config(dimension=128)
+
+# Mundo totalmente acoplado (referência)
+full = base
+
+# Ablação: corta TODO efeito da norma sobre a confiabilidade angular
+no_norm_kappa = replace(
+    base,
+    coupling=replace(base.coupling, norm_z_affects_intra_kappa=False),
+)
+
+# Gera os dois e compara as distribuições de score
+for tag, cfg in [("full", full), ("no_norm->kappa", no_norm_kappa)]:
+    sim = AdaFaceEmbeddingSimulator(cfg, random_seed=7)
+    ds = sim.sample_dataset(identity_count=200, samples_per_identity=(4, 8), split_name=tag)
+    print(tag, ds.metadata["intra_kappa"].mean(), ds.metadata["own_center_cosine"].mean())
 ```
 
-Nesse cenário, normalização L2 deve remover praticamente todo o efeito radial direto.
+A seed estrutural fixa garante que população, bases de nuisance e vieses sejam os mesmos entre as duas execuções — a única diferença observável vem da aresta cortada.
 
-#### Exemplo de ablação norma → direção
+### 9.3 Exemplos de ablação isolando caminhos
+
+**Isolar o efeito da qualidade sobre a norma (relação norma↔confiabilidade).** Desligando `quality_affects_log_norm`, a norma deixa de carregar informação de qualidade; comparando com o mundo cheio, mede-se quanto da estrutura em U invertido vem desse caminho específico:
 
 ```python
-config = replace(
-    base,
-    profile_name="ABLATION_NORM_TO_DIRECTION",
-    coupling=CouplingConfig(
-        quality_affects_regime_probabilities=True,
-        quality_affects_log_norm=True,
-        quality_affects_intra_kappa=False,
-        norm_z_affects_intra_kappa=True,
-    ),
-)
+no_q_norm = replace(base, coupling=replace(base.coupling, quality_affects_log_norm=False))
 ```
+
+**Isolar o caminho qualidade → κ do caminho norma → κ.** Os dois alimentam κ. Para atribuir a confiabilidade angular a um ou a outro, gere quatro mundos no grid \(2\times 2\):
+
+```python
+grid = {}
+for q_kappa in (True, False):
+    for z_kappa in (True, False):
+        cfg = replace(base, coupling=replace(
+            base.coupling,
+            quality_affects_intra_kappa=q_kappa,
+            norm_z_affects_intra_kappa=z_kappa,
+        ))
+        grid[(q_kappa, z_kappa)] = cfg
+```
+
+O mundo `(False, False)` produz κ **constante** (sem dependência de covariáveis), servindo de baseline homocedástico angular; comparado com `(True, False)` isola o caminho qualidade→κ, e com `(False, True)` isola o caminho norma→κ.
+
+**Mundo totalmente desacoplado (controle negativo).** Com os quatro switches `False`, qualidade vira um fator puramente nominal: não afeta regime, norma nem κ. Útil como controle negativo — qualquer correlação score↔qualidade observada nesse mundo é artefato de amostragem, não causal:
+
+```python
+fully_decoupled = replace(base, coupling=CouplingConfig(
+    quality_affects_regime_probabilities=False,
+    quality_affects_log_norm=False,
+    quality_affects_intra_kappa=False,
+    norm_z_affects_intra_kappa=False,
+))
+```
+
+**Ablação nos modos de calota.** Nos modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP`, os mesmos dois switches de κ regem a modulação de `lb`. Desligar `norm_z_affects_intra_kappa` num perfil de calota remove as penalidades `cap_low_tail_penalty`/`cap_high_tail_penalty` (o piso de cosseno deixa de depender da posição radial); desligar `quality_affects_intra_kappa` remove o termo `cap_quality_lower_bound_slope`. Assim, a mesma maquinaria de ablação vale para a parametrização angular por κ e por calota.
 
 ---
 
-### 8.6 `AcquisitionDomainConfig`
+## 10. Perfis prontos
+
+O pacote oferece quatro construtores de configuração prontos, cada um retornando um `SimulatorConfig` completo e validável. São pontos de partida documentados e auditáveis — o nome do perfil é gravado no manifesto (`profile_name`), tornando explícito em laudo qual mundo sintético gerou os dados. Todos aceitam `dimension` por keyword.
+
+### 10.1 `make_spherical_baseline_config`
 
 ```python
-@dataclass(frozen=True)
-class AcquisitionDomainConfig:
-    name: str
-    weight: float = 1.0
-    quality_beta_alpha: float = 4.0
-    quality_beta_beta: float = 2.0
-
-    central_regime_probability: float = 0.86
-    low_tail_probability: float = 0.08
-    high_tail_probability: float = 0.06
-    low_tail_quality_logit_slope: float = 2.0
-    high_tail_quality_logit_slope: float = 0.0
-
-    log_norm_shift: float = 0.0
-    log_norm_sigma_multiplier: float = 1.0
-    log_kappa_shift: float = 0.0
-
-    anisotropic_noise_multiplier: float = 1.0
-    domain_bias_scale: float = 0.0
-    domain_identity_bias_scale: float = 0.0
-    session_bias_scale: float = 0.0
-
-    # Offset de calota por domínio (0.3)
-    cap_lower_bound_offset: float = 0.0
+make_spherical_baseline_config(*, dimension: int = 512) -> SimulatorConfig
 ```
 
-#### Domínio e qualidade
+**Perfil `SPHERICAL_BASELINE`.** Baseline esférico isotrópico para comparar backends cosine / PLDA / PSDA num mundo limpo. Características:
 
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `name` | `str` | obrigatório | nome do domínio (não vazio, único) |
-| `weight` | `float` | `1.0` | peso quando domínios são sorteados em conjunto |
-| `quality_beta_alpha` | `float` | `4.0` | parâmetro \(\alpha\) da Beta da qualidade |
-| `quality_beta_beta` | `float` | `2.0` | parâmetro \(\beta\) da Beta da qualidade |
+- População de 8 componentes (`identity_center_kappas=70.0`, `component_mean_global_kappa=20.0`).
+- **Sem nuisance anisotrópico** (`anisotropic_rank=0`, `anisotropic_base_scale=0.0`) — toda a dispersão intra-classe é vMF isotrópica em torno do centro.
+- Um único domínio (`default`), sem viés de domínio, sessão ou identidade.
+- `DirectionalConfig` no padrão: modo vMF, atualização por retração.
 
-#### Probabilidades radiais
+**Quando usar:** como controle de referência para isolar o efeito de qualquer estrutura adicional. É o mundo mais simples; qualquer dificuldade de um backend aqui é intrínseca, não causada por nuisance ou mismatch de domínio.
 
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `central_regime_probability` | `float` | `0.86` | probabilidade-base do regime central |
-| `low_tail_probability` | `float` | `0.08` | probabilidade-base da cauda baixa |
-| `high_tail_probability` | `float` | `0.06` | probabilidade-base da cauda alta |
-| `low_tail_quality_logit_slope` | `float` | `2.0` | aumenta a cauda baixa quando a qualidade cai |
-| `high_tail_quality_logit_slope` | `float` | `0.0` | efeito análogo na cauda alta |
-
-#### Efeitos de domínio
-
-| Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `log_norm_shift` | `float` | `0.0` | deslocamento radial médio |
-| `log_norm_sigma_multiplier` | `float` | `1.0` | multiplicador da dispersão radial |
-| `log_kappa_shift` | `float` | `0.0` | deslocamento da estabilidade angular \(\log\kappa\) |
-| `anisotropic_noise_multiplier` | `float` | `1.0` | multiplicador do nuisance anisotrópico |
-| `domain_bias_scale` | `float` | `0.0` | bias médio do domínio |
-| `domain_identity_bias_scale` | `float` | `0.0` | heterogeneidade domínio × identidade |
-| `session_bias_scale` | `float` | `0.0` | variação entre sessões |
-| `cap_lower_bound_offset` | `float` | `0.0` | **(0.3)** deslocamento aditivo do piso de calota `lb` por domínio |
-
-**Sobre `cap_lower_bound_offset` (0.3).** Espelha `log_kappa_shift` para a parametrização de calota: nos modos `IDPERTURB_CAP`/`HYBRID_VMF_CAP`, esse offset é somado ao `lb` base de cada amostra do domínio antes do clip e da guarda. Aceita **qualquer sinal**: positivo aperta a identidade (condição controlada, menos dispersão intra-classe), negativo a afrouxa (vigilância, mais dispersão). No modo `VMF` o campo não tem efeito.
-
-```text
-controlled:   cap_lower_bound_offset = +0.10
-surveillance: cap_lower_bound_offset = -0.15
-```
-
-## 9. Serialização de configuração e round-trip
-
-Um experimento sintético só é auditável se a **configuração exata** que o gerou puder ser
-recuperada bit-a-bit a partir de um artefato em disco. A versão 0.3 fecha esse ciclo com três
-funções de módulo — `config_to_dict`, `config_from_dict` e `config_from_manifest` — todas
-operando sobre `SimulatorConfig` e suas DTOs aninhadas (`PopulationConfig`, `RadialConfig`,
-`DirectionalConfig`, `CouplingConfig`, `AcquisitionDomainConfig`).
-
-### 9.1 `config_to_dict`
+### 10.2 `make_cooperative_plda_config`
 
 ```python
-from adaface_embedding_simulator import config_to_dict, make_cooperative_plda_config
-
-config = make_cooperative_plda_config(dimension=512)
-payload = config_to_dict(config)
+make_cooperative_plda_config(*, dimension: int = 512) -> SimulatorConfig
 ```
 
-`config_to_dict` chama `dataclasses.asdict(config)` e passa o resultado por um normalizador
-JSON-ready (`_json_ready`) que:
+**Perfil `COOPERATIVE_PLDA_BASELINE`.** Baseline cooperativo de PLDA — um mundo realista mas benigno, com dois domínios e nuisance moderado. Características:
 
-- converte qualquer `Enum` em seu **valor de string** (ex.: `IntraClassSamplingMode.VMF → "vmf"`,
-  `TangentUpdateMode.RETRACTION → "retraction"`, `NuisanceStructureMode.GLOBAL_SHARED →
-  "global_shared"`);
-- converte `np.ndarray` em listas Python e `np.generic` em escalares nativos;
-- recursa em `Mapping`, `tuple` e `list`.
+- Mesma população de 8 componentes do baseline esférico.
+- `RadialConfig` com U invertido explícito: normas central, cauda baixa (`offset=-0.70`) e cauda alta (`offset=0.70`), inclinação de qualidade `0.12`.
+- `DirectionalConfig` com κ de pico `1400`, penalidades de cauda `0.55`/`0.75`, **nuisance anisotrópico global** de posto `min(24, D−1)` e escala `0.010`, modo `GLOBAL_SHARED`, atualização por retração.
+- **Dois domínios:** `controlled` (peso `0.65`, qualidade alta via Beta(5,2), regime majoritariamente central, multiplicador de nuisance `0.7`) e `surveillance` (peso `0.35`, qualidade baixa via Beta(2,4.5), caudas mais prováveis, `log_kappa_shift=-0.30`, multiplicador de nuisance `1.7`, `domain_bias_scale=0.008`).
 
-A saída é um dicionário aninhado puramente serializável (sem objetos NumPy, sem enums), pronto
-para `json.dumps`. Os campos opcionais que aceitam arrays — `component_weights`,
-`component_means`, `global_mean_direction`, `identity_center_kappas` — são emitidos como listas
-(ou `None`), nunca como `ndarray`.
+**Quando usar:** experimento PLDA representativo de operação cotidiana, com mismatch suave entre uma condição controlada e uma de vigilância. É o perfil padrão ilustrativo do pacote.
 
-### 9.2 `config_from_dict`
+#### `make_example_config` — alias do baseline cooperativo
 
 ```python
-from adaface_embedding_simulator import config_from_dict
-
-config = config_from_dict(payload)
+make_example_config(*, dimension: int = 512) -> SimulatorConfig
 ```
 
-`config_from_dict` reconstrói o `SimulatorConfig` a partir da saída de `config_to_dict`,
-reinstanciando cada DTO aninhada e a tupla de `AcquisitionDomainConfig`. Antes de retornar, ele
-chama `config.validate()`, de forma que **uma configuração inválida nunca atravessa o
-round-trip silenciosamente**.
+`make_example_config` é **alias de** `make_cooperative_plda_config`: chama-o diretamente e retorna a mesma configuração (perfil `COOPERATIVE_PLDA_BASELINE`). Existe apenas como nome amigável de entrada; prefira `make_cooperative_plda_config` em código novo para deixar o perfil explícito.
 
-Pontos importantes do contrato:
+### 10.3 `make_cross_condition_stress_config`
 
-- **Arrays permanecem listas.** Os campos de array não são reconvertidos para `np.ndarray` na
-  desserialização — todo consumidor interno chama `np.asarray` no ponto de uso, então a geração
-  reproduz idêntica.
-- **Enums permanecem strings.** Os campos `intra_class_sampling_mode`, `tangent_update_mode` e
-  `nuisance_structure_mode` voltam como seu valor de string; tanto as DTOs quanto o simulador
-  aceitam string ou membro de enum (a normalização interna usa `_enum_value`).
+```python
+make_cross_condition_stress_config(*, dimension: int = 512) -> SimulatorConfig
+```
 
-### 9.3 Semântica de chaves: faltantes-default vs desconhecidas-erro
+**Perfil `CROSS_CONDITION_HETEROSCEDASTIC`.** Perfil heterogêneo de estresse cross-condition, projetado para forçar os limites de backends sob mismatch forte. Características:
 
-A política de chaves do `config_from_dict` é deliberada e assimétrica:
+- `RadialConfig` igual ao baseline cooperativo.
+- `DirectionalConfig` agressivo: nuisance **hierárquico** (`nuisance_structure_mode=HIERARCHICAL`, `global_nuisance_weight=0.55`, `domain_nuisance_weight=0.90`), posto `min(20, D−1)`; **nuisance específico de identidade** (`identity_specific_nuisance_rank=min(2, D−1)`, escala `0.40`); atualização pelo **mapa exponencial** (passos grandes, métrica preservada).
+- **Dois domínios de peso igual** (`0.5`/`0.5`), com `controlled` carregando viés domínio×identidade (`0.002`) e sessão (`0.001`), e `surveillance` carregando viés de domínio (`0.006`), domínio×identidade (`0.012`), sessão (`0.006`), `log_kappa_shift=-0.35` e multiplicador de nuisance `1.85`.
 
-| Situação | Comportamento | Razão de design |
+**Quando usar:** estudos cross-condition exigentes — avaliar PLDA two-covariance cross-condition, robustez de calibração sob mismatch sistemático, ou estresse de modelos de tipicidade. O mapa exponencial e o nuisance hierárquico tornam este o mundo mais difícil dos quatro.
+
+### 10.4 `make_idperturb_cap_config`
+
+```python
+make_idperturb_cap_config(*, dimension: int = 512, lower_bound: float = 0.6) -> SimulatorConfig
+```
+
+**Perfil `IDPERTURB_CAP`.** Baseline cooperativo de PLDA usando a **calota esférica uniforme em cosseno** (IDperturb) como dispersão intra-classe, em vez de vMF. Parte de `make_cooperative_plda_config` e troca apenas o bloco de dispersão:
+
+- `intra_class_sampling_mode=IDPERTURB_CAP`.
+- `cap_base_lower_bound=lower_bound` (piso de cosseno base `lb`).
+- `cap_quality_lower_bound_slope=0.10`, `cap_low_tail_penalty=0.15`, `cap_high_tail_penalty=0.20` — `lb` cresce com a qualidade e cai nas caudas de norma.
+- `cap_overlap_guard=True` — o piso da bissetriz por identidade está ativo, de modo que o `lb` **efetivo** pode exceder `lower_bound` para identidades em regiões densas da população.
+
+O `lower_bound` padrão `0.6` é **inspirado** no regime experimental do IDperturb (Boutros et al., 2026), **não** um ótimo para AdaFace/PLDA/FaceAudit — calibre empiricamente antes de tirar conclusões.
+
+**Quando usar:** quando o experimento exige um **afastamento angular máximo interpretável** por identidade (piso de cosseno garantido), em vez de uma concentração média vMF sem piso rígido. Útil para estudar o impacto de um piso de dispersão sobre PLDA/calibração e para reproduzir o paradigma de perturbação por calota. Reporte sempre os percentis de `cap_lower_bound_effective`, pois o `lb` nominal é um piso, não o valor realizado.
+
+### 10.5 Resumo comparativo dos perfis
+
+| Construtor | `profile_name` | Domínios | Dispersão intra-classe | Nuisance | Atualização |
+|---|---|---|---|---|---|
+| `make_spherical_baseline_config` | `SPHERICAL_BASELINE` | 1 (`default`) | vMF isotrópico | nenhum | retração |
+| `make_cooperative_plda_config` (= `make_example_config`) | `COOPERATIVE_PLDA_BASELINE` | 2 (`controlled`/`surveillance`) | vMF | global, moderado | retração |
+| `make_cross_condition_stress_config` | `CROSS_CONDITION_HETEROSCEDASTIC` | 2 (peso igual) | vMF | hierárquico + identidade, forte | mapa exponencial |
+| `make_idperturb_cap_config` | `IDPERTURB_CAP` | 2 (`controlled`/`surveillance`) | calota (IDPERTURB_CAP) | global, moderado | retração |
+## 11. Reprodutibilidade
+
+A reprodutibilidade é tratada como requisito de auditabilidade forense, não como conveniência. Toda a aleatoriedade do `AdaFaceEmbeddingSimulator` deriva de uma **única semente raiz** (`structural_seed`, passada como `random_seed` ao construtor, padrão `42`) através de uma função de derivação determinística e independente da ordem das chamadas. Isso garante que dois experimentos com a mesma configuração e a mesma semente produzam embeddings bit-a-bit idênticos — uma propriedade indispensável para reproduzir um laudo ou uma ablação meses depois.
+
+### 11.1 Semente raiz e derivação estável
+
+O construtor armazena `self.structural_seed = int(random_seed)`. A partir daí, cada fluxo aleatório recebe sua própria semente derivada via `_stable_seed`:
+
+\[
+\text{seed}(\text{root}, p_1, \dots, p_n) = \text{blake2b}_{64}\bigl(\text{root} \,|\, p_1 \,|\, \dots \,|\, p_n\bigr)
+\]
+
+```python
+def _stable_seed(root_seed: int, *parts: object) -> int:
+    """Deriva uma semente de 64 bits determinística e independente da ordem das chamadas."""
+    payload = "|".join([str(int(root_seed)), *(str(part) for part in parts)])
+    digest = blake2b(payload.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="little", signed=False)
+```
+
+A propriedade central é a **independência da ordem das chamadas**: a semente de um fluxo depende apenas do conjunto de `parts` que o nomeiam, nunca de quantos outros `Generator` já foram criados antes. Não há um único `np.random.Generator` global cujo estado seja consumido sequencialmente; cada operação cria seu próprio gerador via `np.random.default_rng(seed)`. Consequência prática: você pode reordenar a geração de splits, pular uma condição, gerar apenas o split de calibração hoje e o de avaliação amanhã — e cada um sai idêntico ao que sairia se todos tivessem sido gerados de uma vez na ordem canônica.
+
+### 11.2 Os três fluxos de semente de um dataset
+
+Cada `SyntheticEmbeddingDataset` carrega três sementes explícitas, persistidas no manifesto (Seção 18) e expostas como atributos:
+
+| Atributo | Origem | Papel |
 |---|---|---|
-| Chave **faltante** | recai no **default** da dataclass | compatibilidade futura: um config escrito por uma versão antiga (sem os campos `cap_*`, por exemplo) ainda carrega; os campos novos assumem o default 0.3 |
-| Chave **desconhecida** | **levanta `TypeError`** | os campos chegam às DTOs frozen via `**data["..."]`; uma chave inexistente vira argumento inválido do construtor e aborta — expondo *version drift* cedo, em vez de descartar parâmetros silenciosamente |
+| `structural_seed` | `random_seed` do construtor | Fixa a **geometria estrutural**: médias dos componentes da população (`population_component_means`), bases anisotrópicas globais/por-domínio, vetores de viés fixo de domínio. Computada uma vez no `__init__` a partir do stream `"structure"`. |
+| `population_sampling_seed` | `sampling_seed` da `SyntheticIdentityPopulation` | Fixa **quais identidades latentes existem**: centros por identidade, bases de ruído específicas por identidade, vieses domínio×identidade. |
+| `observation_sampling_seed` | semente do stream de observação | Fixa **como cada identidade é observada**: domínio, qualidade, regime radial, norma, dispersão intra-classe, perturbações tangenciais. |
 
-Concretamente, `population`, `radial`, `directional` e cada `acquisition_domains[i]` são
-instanciados via `*Config(**bloco)`, então qualquer chave extra no bloco quebra a chamada. Os
-blocos `coupling` e `profile_name` toleram ausência via `data.get(...)`; `dimension`,
-`population`, `radial`, `directional` e `acquisition_domains` são acessados diretamente
-(`data["..."]`) e são, portanto, obrigatórios.
+Essa tripartição permite ablações causais limpas: fixar `structural_seed` + `population_sampling_seed` e variar apenas a observação isola o efeito do ruído de aquisição mantendo idênticos a geometria e o elenco de identidades.
 
-> **Implicação forense.** Se um manifesto antigo for lido por uma versão mais nova do simulador,
-> os parâmetros de calota (`cap_base_lower_bound`, `cap_overlap_guard`, etc.) e o modo
-> `intra_class_sampling_mode` recebem seus defaults 0.3 — e como o default é `VMF`, o
-> comportamento herdado permanece o do v0.2. Já um manifesto novo lido por um binário antigo que
-> desconhecesse esses campos falharia ruidosamente, em vez de gerar dados com uma configuração
-> diferente da declarada.
+### 11.3 Streams nomeados
 
-### 9.4 `config_from_manifest`
+Cada API de geração recebe um `stream_name` que entra na derivação da semente, isolando fluxos logicamente distintos mesmo sob a mesma `structural_seed`:
 
-```python
-from adaface_embedding_simulator import config_from_manifest
+- **Estrutura** — stream fixo `"structure"`, derivado no construtor.
+- **População** — `sample_identity_population(stream_name=...)`, padrão `"population"`. A semente combina `("population", stream_name, identity_offset, count)`.
+- **Observação** — `sample_observations(stream_name=...)`. A semente combina `("observations", stream, forced_domain or "mixed")`.
 
-config = config_from_manifest("synthetic_output/test_manifest.json")
-```
+Os atalhos de alto nível compõem nomes determinísticos. `sample_dataset(split_name="train")` usa `"train:population"` e `"train:observations"`; `sample_cross_condition_datasets(split_name="case")` usa `"case:population"` e `"case:observations:<domínio>"` por condição. Dois splits com `split_name` distinto recebem, portanto, fluxos disjuntos automaticamente, sem o experimentador precisar gerenciar sementes manualmente.
 
-`config_from_manifest` lê o arquivo de manifesto produzido por `save_manifest`/`save_bundle`,
-extrai o bloco `"config"` e delega a `config_from_dict`. Se o manifesto não tiver um bloco
-`"config"`, levanta `ValueError`. Esse é o caminho recomendado para **reabrir um experimento
-inteiro** a partir do bundle persistido: o manifesto guarda, além do bloco de configuração, o
-perfil, as seeds estrutural/população/observação, o stream, a dimensão, a contagem de
-identidades e o SHA-256 do código-fonte (ver Seção 17).
+### 11.4 Override explícito de semente
+
+Qualquer fluxo aceita um `random_seed`/`population_random_seed`/`observation_random_seeds` explícito que **substitui** a derivação `_stable_seed` para aquele fluxo:
 
 ```python
-# Reprodução completa a partir do disco
-config = config_from_manifest("synthetic_output/test_manifest.json")
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=2026)
+def _resolved_seed(self, *parts, explicit_seed: int | None = None) -> int:
+    return int(explicit_seed) if explicit_seed is not None else _stable_seed(self.structural_seed, *parts)
 ```
 
-### 9.5 `RadialReference.fit` + `RadialConfig.from_reference` — a ponte de dados reais
+Override explícito é útil para forçar duas execuções a divergirem ou convergirem deliberadamente (por exemplo, repetir uma observação com semente fixa enquanto se varia outro parâmetro). Para máxima auditabilidade, prefira deixar as sementes derivadas e registrar apenas a `structural_seed` — o manifesto reconstrói todo o resto.
 
-A serialização garante reprodutibilidade *dentro* do mundo sintético. Para ancorar a escala
-radial em **dados reais**, o par `RadialReference.fit` + `RadialConfig.from_reference` permite
-substituir a referência configurada por uma estimada empiricamente.
+### 11.5 Garantia: injetar centros NÃO consome o RNG de amostragem de centros
+
+Quando uma população é **injetada** (forma `centers=` de `sample_identity_population`, Seção 12), o método pula `_sample_identity_centers` por completo — o gerador de números aleatórios **não é consumido** para sortear centros:
 
 ```python
-from adaface_embedding_simulator import RadialReference, RadialConfig
-
-reference = RadialReference.fit(real_raw_embeddings)  # aceita (N, d) ou vetor de normas
-
-radial = RadialConfig.from_reference(
-    reference,
-    quality_log_norm_slope=0.12,
-    low_tail_offset=-0.70,
-    high_tail_offset=0.70,
-)
+if injected:
+    # centros validados/normalizados; _sample_identity_centers NÃO é chamado
+    ...
+else:
+    components, centers = self._sample_identity_centers(count, rng)
 ```
 
-`RadialReference.fit` aceita tanto a matriz bruta `(N, d)` (calcula `‖x‖₂` por linha) quanto um
-vetor 1-D de normas. A estimativa é **robusta**:
+Isso tem duas consequências de reprodutibilidade que devem ser entendidas:
 
-\[
-\text{location} = \operatorname{mediana}(\log r),
-\qquad
-\text{scale} = 1{,}4826 \cdot \operatorname{MAD}(\log r).
-\]
+1. **O caminho amostrado permanece bit-a-bit idêntico.** Como a injeção desvia antes de tocar o `rng` para centros, a sequência de consumo do gerador no caminho sorteado (`identity_count=`) é exatamente a mesma independentemente de a feature de injeção existir.
+2. **O `rng` da população ainda avança após os centros.** Mesmo no caminho injetado, o gerador é usado em seguida para `identity_specific_nuisance_bases` e para os vieses domínio×identidade. Portanto, populações injetadas continuam determinísticas e auditáveis sob a mesma `structural_seed` + `stream_name`, mas seu estado de RNG difere do caminho sorteado a partir do ponto em que os centros teriam sido consumidos.
 
-O `method` resultante é gravado como `"median_scaled_mad"` e propaga para o metadado
-`radial_reference_method` de cada amostra. `RadialConfig.from_reference` copia `location`,
-`scale` e `method` para os campos `reference_log_norm_mean`, `reference_log_norm_scale` e
-`reference_method`, e repassa por `**kwargs` quaisquer offsets/sigmas de regime que você queira
-ajustar separadamente.
-
-> **Cuidado com embeddings já L2-normalizados.** `RadialReference.fit` levanta
-> `ValueError("Cannot fit a robust radial reference: scaled MAD is zero.")` quando as normas não
-> têm dispersão suficiente — exatamente o caso de embeddings já normalizados em L2 (todas as
-> normas ≈ 1). O helper de mais alto nível `simulator_config_from_dataset` (ver Seção 12) trata
-> esse caso de forma graciosa: detecta normas quase constantes
-> (`|mean(‖x‖) − 1| < tol ∧ std(‖x‖) < tol`), **emite um `UserWarning`**, mantém a referência
-> radial base e pula o ajuste, registrando `radial_fitted=False` no `fit_summary`. Sempre
-> alimente a ponte radial com embeddings **brutos** (pré-normalização).
+Recomendação de laudo: registre sempre a `structural_seed`, os `stream_name` usados e (para Modo A/B) a proveniência da base-âncora, junto com o `source_sha256` do manifesto. Esses cinco itens reconstroem o experimento integralmente.
 
 ---
 
-## 10. Reprodutibilidade
+## 12. População e observações
 
-A reprodutibilidade é uma propriedade de primeira classe do simulador, não um efeito colateral.
-Existem **três seeds independentes**, cada uma controlando um eixo distinto da geração, e um
-sistema de **streams nomeados** que torna a saída independente da ordem das chamadas.
+O simulador separa rigidamente **população** (quais identidades latentes existem, sua geometria na hiperesfera) de **observação** (como cada identidade é capturada sob condições de aquisição). Essa separação é o que torna possível observar a mesma população sob múltiplas condições alinhadas por identidade (Seção 13) e ancorar a população em dados reais (Seção 14).
 
-### 10.1 Seed estrutural
+- `sample_identity_population(...)` → produz uma `SyntheticIdentityPopulation` (latente, sem observações).
+- `sample_observations(population, ...)` → observa uma população existente, produzindo um `SyntheticEmbeddingDataset`.
+- `sample_dataset(...)` → atalho que encadeia os dois para um split isolado de uma só vez.
 
-A seed fornecida ao construtor controla o **mundo sintético** — as estruturas compartilhadas por
-todos os splits:
-
-```python
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=2026)
-```
-
-Ela determina, no `__init__`, via o stream estrutural `_rng("structure")`:
-
-- as médias dos componentes populacionais (`population_component_means`);
-- a base anisotrópica global (`anisotropic_basis`);
-- as bases anisotrópicas por domínio (`domain_anisotropic_bases`);
-- os vetores médios de bias por domínio (`domain_bias_vectors`).
-
-Essas estruturas dependem da seed estrutural, mas **não** do número nem da ordem das chamadas
-posteriores de amostragem.
-
-### 10.2 Seeds de população e observação
-
-Cada split pode receber duas seeds explícitas, controlando eixos distintos:
-
-```python
-train = simulator.sample_dataset(
-    identity_count=2_000,
-    samples_per_identity=(5, 12),
-    split_name="train",
-    identity_offset=0,
-    population_random_seed=1001,  # identidades latentes
-    random_seed=101,              # observações
-)
-```
-
-- **`population_random_seed`** governa os centros angulares latentes, os componentes
-  populacionais, as bases específicas por identidade e os vetores de bias domínio × identidade
-  (tudo o que vive em `SyntheticIdentityPopulation`);
-- **`random_seed`** governa as observações: domínio, qualidade, regime radial, normas, sessões,
-  a dispersão intra-classe (vMF/cap/hybrid) e o ruído tangencial de nuisance.
-
-### 10.3 Streams nomeados independentes da ordem
-
-Quando as seeds explícitas são omitidas, o simulador **deriva uma seed estável** a partir da seed
-estrutural e de um conjunto de partes nomeadas, via `_stable_seed`:
-
-\[
-\text{seed} = \operatorname{blake2b}\big(\text{structural\_seed} \,\|\, \text{parte}_1
-\,\|\, \cdots \,\|\, \text{parte}_n\big)_{64\text{ bits}}.
-\]
-
-As partes incluem o **namespace** (`"population"` ou `"observations"`), o **nome do stream**, o
-domínio forçado, o `identity_offset` e a contagem de identidades. Como a seed depende apenas
-desses identificadores semânticos — e **não** de um RNG estatal consumido sequencialmente —
-inserir uma geração intermediária **não altera** silenciosamente um split posterior.
-
-```python
-first_dev = simulator.sample_dataset(
-    identity_count=500, samples_per_identity=4,
-    split_name="dev", identity_offset=100_000,
-)
-
-# Geração intercalada — não deve afetar o split "dev"
-_ = simulator.sample_dataset(
-    identity_count=10, samples_per_identity=2,
-    split_name="diagnostic", identity_offset=999_000,
-)
-
-second_dev = simulator.sample_dataset(
-    identity_count=500, samples_per_identity=4,
-    split_name="dev", identity_offset=100_000,
-)
-
-assert (first_dev.raw_embeddings == second_dev.raw_embeddings).all()
-```
-
-Tanto `_rng(...)` quanto `_resolved_seed(...)` retornam imediatamente a seed explícita quando ela
-é fornecida, ou derivam a seed estável caso contrário — de modo que seeds explícitas e streams
-nomeados coexistem sem ambiguidade.
-
-### 10.4 Garantia de paridade bit-a-bit em 0.3 (e a injeção de centros)
-
-A versão 0.3 introduz os modos de dispersão intra-classe `IDPERTURB_CAP` e `HYBRID_VMF_CAP`, além
-do caminho de **injeção de centros** em `sample_identity_population`. Ambas as adições foram
-projetadas para **não perturbar** o caminho sorteado herdado:
-
-- O modo padrão `IntraClassSamplingMode.VMF` reproduz a saída do v0.2 **bit-a-bit** — um *golden
-  test* trava essa invariante. Os modos de calota são estritamente *opt-in*.
-- Quando se **injeta** uma população via `centers=` (Seção 11), o método
-  `_sample_identity_centers` **não é chamado**, e portanto **o RNG da população não é consumido**
-  por ele. As demais consultas ao RNG (bases específicas por identidade, biases domínio ×
-  identidade) ocorrem na mesma ordem de antes. O resultado é que o caminho **sorteado** (com
-  `identity_count=`) permanece bit-a-bit idêntico ao comportamento anterior à introdução da
-  injeção — a nova capacidade não desloca o stream de números aleatórios do caminho legado.
-
-> **Auditabilidade.** Para reproduzir um experimento exatamente, registre as três seeds (a
-> estrutural no construtor; população e observação por split), o perfil, a configuração completa
-> e a versão/hash do simulador. O manifesto de `save_bundle` (Seção 17) já captura todos esses
-> campos. Os campos `structural_seed`, `population_sampling_seed` e `observation_sampling_seed`
-> também ficam expostos no próprio `SyntheticEmbeddingDataset`.
-
----
-
-## 11. Separação entre população e observações
-
-A separação entre **identidades latentes** e **observações** é a peça arquitetural central que
-permite os experimentos cross-condition. Uma população é amostrada (ou injetada) uma vez e pode
-então ser observada em múltiplos domínios, mantendo os **mesmos centros** `c_i` em todas as
-condições. Os dois métodos envolvidos são `sample_identity_population` e `sample_observations`.
-
-### 11.1 `sample_identity_population` — assinatura completa
+### 12.1 `sample_identity_population` — assinatura completa
 
 ```python
 def sample_identity_population(
@@ -1475,43 +1279,22 @@ def sample_identity_population(
     random_seed: int | None = None,
     stream_name: str = "population",
 ) -> SyntheticIdentityPopulation:
-    ...
 ```
 
-O método tem **duas formas mutuamente exclusivas**, selecionadas por qual dos dois parâmetros
-ancorantes é fornecido:
+O método tem **duas formas mutuamente exclusivas**, selecionadas pela presença de `identity_count` (forma sorteada) ou de `centers` (forma injetada).
 
-**Forma A — `identity_count` (centros sorteados, padrão).** Amostra os centros da mistura vMF
-configurada (`PopulationConfig`), exatamente como no v0.2. `components` e `centers` são
-calculados internamente por `_sample_identity_centers`.
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `identity_count` | `int \| None` | `None` | **Forma sorteada.** Número de identidades a sortear da mistura vMF configurada (`PopulationConfig`). Exatamente um entre `identity_count` e `centers` deve ser informado. |
+| `centers` | `ArrayLike \| None` | `None` | **Forma injetada.** Matriz `(M, dimension)` de direções de centro fornecidas externamente (ex.: médias esféricas reais por identidade). Re-normalizada por linha; a dimensão deve bater com `config.dimension`. |
+| `components` | `ArrayLike \| None` | `None` | (Apenas injetada) Rótulo de componente populacional por centro `(M,)`, inteiros em `[0, component_count)`. Se omitido, todos recebem componente `0`. |
+| `identity_labels` | `Sequence[str] \| None` | `None` | (Apenas injetada) Rótulo de identidade de origem por centro `(M,)`. Armazenado como `source_identity_labels`; alimenta as colunas de proveniência e os helpers anti-vazamento (Seção 14). |
+| `source_sample_counts` | `ArrayLike \| None` | `None` | (Apenas injetada) Número de imagens reais que formaram cada centro `(M,)`, inteiros positivos. Armazenado como `source_sample_counts`. |
+| `identity_offset` | `int` | `0` | Deslocamento somado aos `identity_ids` gerados (`np.arange(count) + identity_offset`). Garante IDs disjuntos entre populações geradas separadamente. |
+| `random_seed` | `int \| None` | `None` | Override explícito da semente da população. Se `None`, a semente é derivada de `("population", stream_name, identity_offset, count)`. |
+| `stream_name` | `str` | `"population"` | Nome do fluxo, entra na derivação da semente e é registrado em `SyntheticIdentityPopulation.stream_name`. |
 
-```python
-population = simulator.sample_identity_population(
-    identity_count=800,
-    identity_offset=300_000,
-    random_seed=4001,
-    stream_name="cross_condition_population",
-)
-```
-
-**Forma B — `centers=` (centros injetados).** Ancora a população em direções fornecidas
-externamente — por exemplo, médias esféricas por identidade extraídas de embeddings reais (ver
-Modo A, Seção 12). Os centros são L2-normalizados internamente.
-
-```python
-population = simulator.sample_identity_population(
-    centers=real_per_identity_centers,        # (M, dimension)
-    components=cluster_labels,                 # opcional
-    identity_labels=real_identity_labels,      # opcional (proveniência)
-    source_sample_counts=images_per_identity,  # opcional (proveniência)
-    identity_offset=900_000,
-    stream_name="anchored_population",
-)
-```
-
-#### Regra "exatamente um de `identity_count` | `centers`"
-
-O método valida logo de início:
+**Regra de exclusividade e validações.** O método exige exatamente um entre `identity_count` e `centers`:
 
 ```python
 injected = centers is not None
@@ -1519,46 +1302,16 @@ if injected == (identity_count is not None):
     raise ValueError("Provide exactly one of identity_count or centers.")
 ```
 
-Ou seja: fornecer **ambos** ou **nenhum** levanta `ValueError`. A contagem efetiva de
-identidades (`count`) vem de `centers.shape[0]` na forma injetada ou de `identity_count` na forma
-sorteada.
+Validações por forma:
 
-#### Validações por parâmetro
+- **Sorteada (`identity_count=`):** `identity_count` deve ser positivo; os centros são sorteados via `_sample_identity_centers`, que escolhe um componente por identidade segundo `component_weights` e amostra uma direção vMF em torno da média do componente com concentração `identity_center_kappas`.
+- **Injetada (`centers=`):** `centers` é re-normalizada por linha; `centers.shape[1]` deve igualar `config.dimension`. Se `components` for dado, deve ter forma `(M,)`, ser de tipo inteiro e estar em `[0, component_count)`. Se `identity_labels` for dado, deve ter comprimento `M`. Se `source_sample_counts` for dado, deve ter forma `(M,)` e conter apenas inteiros positivos.
 
-| Parâmetro | Tipo | Padrão | Significado e validação |
-|---|---|---:|---|
-| `identity_count` | `int \| None` | `None` | número de identidades a sortear (forma A). Deve ser positivo. Exatamente um entre este e `centers`. |
-| `centers` | `ArrayLike \| None` | `None` | direções injetadas `(M, dimension)` (forma B). L2-normalizadas internamente; `centers.shape[1]` deve igualar `config.dimension`, senão `ValueError`. |
-| `components` | `ArrayLike \| None` | `None` | rótulo de componente populacional por identidade injetada. Só usado na forma B. Se omitido, todas recebem componente `0`. Se fornecido: shape `(count,)`, dtype inteiro, valores em `[0, population.component_count)`. |
-| `identity_labels` | `Sequence[str] \| None` | `None` | rótulo de identidade de origem (proveniência, Modo A). Comprimento deve ser `count`. Armazenado em `source_identity_labels`. |
-| `source_sample_counts` | `ArrayLike \| None` | `None` | número de imagens reais que formaram cada centro (proveniência, Modo A). Shape `(count,)`, valores estritamente positivos. |
-| `identity_offset` | `int` | `0` | deslocamento aplicado aos `identity_ids` (`arange(count) + offset`); garante disjunção entre splits. |
-| `random_seed` | `int \| None` | `None` | seed explícita da população; se omitida, deriva-se via stream nomeado (Seção 10.3). |
-| `stream_name` | `str` | `"population"` | nome do stream para derivação estável de seed. |
+Em ambas as formas, após determinar os centros, o `rng` da população continua sendo usado para `identity_specific_nuisance_bases` (se `identity_specific_nuisance_rank > 0` e escala positiva) e para os vetores de viés domínio×identidade por domínio. O resultado passa por `population.validate()` antes de retornar (verifica formas e que os centros são unitários).
 
-Na forma sorteada (A), `components` e `centers` são produzidos por
-`_sample_identity_centers(count, rng)`. Na forma injetada (B), esse método **não é chamado** —
-preservando a paridade bit-a-bit do caminho sorteado (Seção 10.4). Independentemente da forma,
-as bases específicas por identidade e os biases domínio × identidade são amostrados do mesmo RNG
-de população, e o objeto retornado passa por `population.validate()` antes de retornar
-(verifica unitariedade dos centros, shapes consistentes etc.).
+**A `SyntheticIdentityPopulation` resultante** contém: `identity_ids`, `population_components`, `identity_centers` (unitários), `identity_specific_nuisance_bases`, `domain_identity_bias_vectors`, `sampling_seed`, `stream_name`, mais o `overlap_lower_bound_floor` (piso de bissetriz, computado preguiçosamente e cacheado para reuso entre condições — Seção 6) e, no caso injetado, `source_identity_labels`/`source_sample_counts`.
 
-#### O objeto `SyntheticIdentityPopulation`
-
-| Campo | Conteúdo |
-|---|---|
-| `identity_ids` | ids globais (`arange(count) + identity_offset`) |
-| `population_components` | componente populacional por identidade |
-| `identity_centers` | centros angulares latentes `(count, dimension)`, unitários |
-| `identity_specific_nuisance_bases` | base específica por identidade, quando habilitada (senão `None`) |
-| `domain_identity_bias_vectors` | mapping domínio → vetores de bias `(count, dimension)` |
-| `sampling_seed` | seed efetiva usada |
-| `stream_name` | nome do stream |
-| `overlap_lower_bound_floor` | piso de calota por identidade (regra do bissetor), preenchido sob demanda no primeiro uso de um modo de calota; **não serializado** |
-| `source_identity_labels` | rótulos de origem (Modo A); `None` em populações sorteadas; não serializado |
-| `source_sample_counts` | contagem de imagens reais por centro (Modo A); `None` em populações sorteadas; não serializado |
-
-### 11.2 `sample_observations`
+### 12.2 `sample_observations` — observar uma população existente
 
 ```python
 def sample_observations(
@@ -1572,450 +1325,386 @@ def sample_observations(
     random_seed: int | None = None,
     stream_name: str | None = None,
 ) -> SyntheticEmbeddingDataset:
-    ...
 ```
-
-`sample_observations` recebe uma população já materializada e produz um
-`SyntheticEmbeddingDataset` observando-a em um domínio (forçado ou misto).
 
 | Parâmetro | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `population` | `SyntheticIdentityPopulation` | obrigatório | população latente a observar; revalidada na entrada |
-| `samples_per_identity` | `int \| tuple[int, int]` | obrigatório | número fixo, ou faixa `(min, max)` sorteada por identidade |
-| `split_name` | `str` | `"synthetic"` | nome do split (gravado em metadata); deve ser não-vazio |
-| `forced_domain` | `str \| None` | `None` | força todas as observações num domínio; `None` sorteia por `weight` |
-| `sessions_per_identity` | `int \| tuple[int, int]` | `1` | número de sessões sintéticas por identidade |
-| `random_seed` | `int \| None` | `None` | seed explícita das observações; se omitida, deriva-se via stream nomeado |
-| `stream_name` | `str \| None` | `None` | nome do stream; se omitido, usa `split_name` |
+|---|---|---|---|
+| `population` | `SyntheticIdentityPopulation` | — | População latente a observar (de `sample_identity_population`). Revalidada na entrada. |
+| `samples_per_identity` | `int \| tuple[int, int]` | — | Número de observações por identidade. Inteiro fixo, ou faixa `(mínimo, máximo)` sorteada uniformemente por identidade (`0 < mínimo ≤ máximo`). |
+| `split_name` | `str` | `"synthetic"` | Rótulo gravado na coluna `split` do metadata. Não pode ser vazio. |
+| `forced_domain` | `str \| None` | `None` | Se informado, todas as observações vêm do domínio de aquisição nomeado (deve existir em `acquisition_domains`). Se `None`, os domínios são sorteados segundo seus pesos. |
+| `sessions_per_identity` | `int \| tuple[int, int]` | `1` | Número de sessões por identidade (fixo ou faixa). Cada observação recebe um índice de sessão; o viés de sessão (`session_bias_scale`) é compartilhado dentro de uma mesma `(identidade, domínio, sessão)`. |
+| `random_seed` | `int \| None` | `None` | Override explícito da semente de observação. Se `None`, deriva de `("observations", stream, forced_domain or "mixed")`. |
+| `stream_name` | `str \| None` | `None` | Nome do fluxo de observação; se `None`, usa `split_name`. Registrado em `dataset.stream_name`. |
 
-A seed efetiva é resolvida via `_resolved_seed("observations", stream, forced_domain or "mixed",
-explicit_seed=random_seed)`. O pipeline interno percorre, em ordem: expansão de
-`samples_per_identity` → sessões → domínios → qualidade latente → regimes radiais → log-normas →
-`intra_kappa` → dispersão intra-classe (vMF, cap ou hybrid, conforme `intra_class_sampling_mode`)
-→ nuisance tangencial → embedding bruto. O dataset retornado carrega os centros da população
-(compartilhados) e expõe `population_sampling_seed` e `observation_sampling_seed` para
-rastreabilidade.
+O método executa o pipeline gerativo completo de cinco camadas (Seção 5): expande contagens por identidade, sorteia domínios, qualidade latente, regime radial, log-normas e o `reference_scaled_log_norm_z`; calcula `intra_kappa` (e, em modos de cap, `cap_lower_bound_effective`); aplica a dispersão intra-classe (VMF, IDPERTURB_CAP ou HYBRID_VMF_CAP — Seção 6); aplica as perturbações tangenciais de ruído (Seção 7); e monta `raw_embeddings = embedding_norm · direção_normalizada`. Produz um `SyntheticEmbeddingDataset` validado, com o `DataFrame` de metadata completo (Seção 15) e as três sementes registradas.
 
-### 11.3 Observar a mesma população em dois domínios
+### 12.3 `sample_dataset` — split isolado em uma chamada
 
 ```python
-population = simulator.sample_identity_population(
-    identity_count=800, identity_offset=300_000, random_seed=4001,
-)
-
-controlled = simulator.sample_observations(
-    population,
-    samples_per_identity=(3, 6),
-    split_name="test:controlled",
-    forced_domain="controlled",
-    sessions_per_identity=(1, 3),
-    random_seed=4002,
-)
-
-surveillance = simulator.sample_observations(
-    population,
-    samples_per_identity=(3, 6),
-    split_name="test:surveillance",
-    forced_domain="surveillance",
-    sessions_per_identity=(1, 3),
-    random_seed=4003,
-)
+def sample_dataset(
+    self,
+    *,
+    identity_count: int,
+    samples_per_identity: int | tuple[int, int],
+    split_name: str = "synthetic",
+    identity_offset: int = 0,
+    sessions_per_identity: int | tuple[int, int] = 1,
+    random_seed: int | None = None,
+    population_random_seed: int | None = None,
+) -> SyntheticEmbeddingDataset:
 ```
 
-As duas bases compartilham os centros latentes:
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `identity_count` | `int` | — | Número de identidades a sortear para o split. |
+| `samples_per_identity` | `int \| tuple[int, int]` | — | Observações por identidade (fixo ou faixa). |
+| `split_name` | `str` | `"synthetic"` | Rótulo do split; também compõe os `stream_name` (`"{split}:population"`, `"{split}:observations"`). |
+| `identity_offset` | `int` | `0` | Deslocamento de IDs — use valores distintos por split para garantir identidades disjuntas. |
+| `sessions_per_identity` | `int \| tuple[int, int]` | `1` | Sessões por identidade. |
+| `random_seed` | `int \| None` | `None` | Override da semente de observação. |
+| `population_random_seed` | `int \| None` | `None` | Override da semente da população. |
 
-\[
-\mathbf{c}_i^{\text{controlled}} = \mathbf{c}_i^{\text{surveillance}},
-\]
-
-mas suas observações diferem:
-
-\[
-\mathbf{x}_{ij}^{\text{controlled}} \neq \mathbf{x}_{ik}^{\text{surveillance}}.
-\]
-
-Esse desenho é a base dos experimentos que comparam merge ingênuo, `PER_CONDITION` e
-`BALANCED_IDENTITY` (Seção 19). Para o caso comum de gerar todos os domínios alinhados numa única
-chamada, prefira o helper `sample_cross_condition_datasets` (Seção 13), que internamente amostra a
-população uma vez e itera `sample_observations` por domínio.
+`sample_dataset` encadeia `sample_identity_population(identity_count=...)` e `sample_observations(...)` com nomes de stream derivados do `split_name`. Como as sementes são independentes da ordem de chamada (Seção 11), gerar `train`, `cal` e `eval` com `split_name` distinto e `identity_offset` distinto produz splits com identidades disjuntas e fluxos aleatórios disjuntos — sem necessidade de gerenciar sementes manualmente.
 
 ---
 
-## 12. População ancorada em dataset real + vazamento
+## 13. Geração cross-condition
 
-A população de identidades amostrada nos capítulos anteriores nasce de uma mistura genérica de
-vMF (seção 6.2): os centros angulares `μ_i` são *sintéticos* e não respeitam a geometria empírica
-fina de embeddings faciais reais. Para experimentos que exigem maior fidelidade — calibração
-contra dados reais, validação metodológica de PLDA, *augmentation* — o módulo
-`simulator/faceaudit_seed.py` ancora a população em um `EmbeddingDataset` real do FaceAudit, em
-**dois modos complementares**:
+A geração cross-condition observa **uma única população** sob **múltiplas condições de aquisição forçadas**, com as observações **alinhadas por identidade**. É o modo canônico para estudar comparações forenses entre condições assimétricas (por exemplo, padrão cooperativo frontal versus questionada de vigilância), pois garante que cada identidade aparece em todas as condições, gerando pares genuínos cross-condition legítimos.
 
-- **Modo A (ancorado)** — `population_from_dataset`: cada centro de identidade É a média esférica
-  por identidade dos embeddings reais. As identidades são reais; apenas a dispersão intra-classe
-  (e a norma) é sintética.
-- **Modo B (distribuição-pareada)** — `population_config_from_dataset` /
-  `simulator_config_from_dataset`: ajusta-se uma mistura de von Mises–Fisher (MoVMF) aos centros
-  reais por identidade (via `MoVMFTypicalityModel` do próprio FaceAudit) e usam-se `μ_k`/`κ_k`/`π_k`
-  como `PopulationConfig`. O simulador então amostra centros-fantasma NOVOS dessa aproximação
-  angular da distribuição empírica.
+### 13.1 `sample_cross_condition_datasets`
 
-> **Caveat de import.** `faceaudit` é importado **preguiçosamente** apenas dentro das funções que
-> precisam dele (Modo B). Portanto `import faceaudit_seed` funciona sem o FaceAudit instalado, e
-> toda a cadeia de extração de centros, Modo A e helpers anti-vazamento roda *faceaudit-free*.
+```python
+def sample_cross_condition_datasets(
+    self,
+    *,
+    identity_count: int,
+    samples_per_identity_by_domain: Mapping[str, int | tuple[int, int]],
+    split_name: str = "cross_condition",
+    identity_offset: int = 0,
+    sessions_per_identity: int | tuple[int, int] = 1,
+    population_random_seed: int | None = None,
+    observation_random_seeds: Mapping[str, int] | None = None,
+) -> dict[str, SyntheticEmbeddingDataset]:
+```
 
-### 12.1 Extração de centros por identidade — `identity_centers_from_dataset`
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `identity_count` | `int` | — | Número de identidades latentes — compartilhadas por **todas** as condições. |
+| `samples_per_identity_by_domain` | `Mapping[str, int \| tuple[int, int]]` | — | Mapa `nome_do_domínio → observações por identidade` (fixo ou faixa). As chaves devem nomear domínios existentes em `acquisition_domains`; cada uma vira uma condição forçada. |
+| `split_name` | `str` | `"cross_condition"` | Prefixo dos rótulos e dos `stream_name`. |
+| `identity_offset` | `int` | `0` | Deslocamento de IDs para a população compartilhada. |
+| `sessions_per_identity` | `int \| tuple[int, int]` | `1` | Sessões por identidade, aplicado em cada condição. |
+| `population_random_seed` | `int \| None` | `None` | Override da semente da população compartilhada. |
+| `observation_random_seeds` | `Mapping[str, int] \| None` | `None` | Override por domínio da semente de observação. Domínios ausentes do mapa usam a semente derivada. |
 
-O bloco fundamental, compartilhado pelos dois modos, computa **um centro de média esférica por
-identidade**:
+O método sorteia **uma** `SyntheticIdentityPopulation` (stream `"{split_name}:population"`) e, para cada domínio do mapa, chama `sample_observations` com `forced_domain=<domínio>`, `split_name=f"{split_name}:{domínio}"` e `stream_name=f"{split_name}:observations:{domínio}"`. Retorna um `dict[str, SyntheticEmbeddingDataset]` indexado pelo nome do domínio.
+
+**Garantia de alinhamento por identidade.** Como todas as condições observam a mesma população, os `identity_id` são idênticos entre os datasets retornados. Cada identidade produz, portanto, pares genuínos *cross-condition* legítimos (mesma identidade, condições diferentes) — exatamente o material necessário para treinar/avaliar PLDA cross-condition e calibradores que enxergam a assimetria entre condições. O `overlap_lower_bound_floor` da população é computado uma vez e reutilizado entre as condições (cacheado na própria `SyntheticIdentityPopulation`), garantindo que o piso de guarda anti-colisão seja consistente entre os domínios.
+
+### 13.2 Exportação para o FaceAudit
+
+Para transformar a saída cross-condition em datasets reais do FaceAudit, use `cross_condition_to_embedding_datasets` do **adapter concreto** (`simulator/faceaudit_concrete_adapter.py`, detalhado na Seção 19):
+
+```python
+from faceaudit_concrete_adapter import cross_condition_to_embedding_datasets
+
+datasets_by_domain = simulator.sample_cross_condition_datasets(
+    identity_count=300,
+    samples_per_identity_by_domain={"controlled": 4, "surveillance": (2, 5)},
+)
+faceaudit_datasets = cross_condition_to_embedding_datasets(datasets_by_domain)
+# -> {"controlled": EmbeddingDataset, "surveillance": EmbeddingDataset}
+```
+
+`cross_condition_to_embedding_datasets` mapeia cada `SyntheticEmbeddingDataset` via `to_embedding_dataset`, preservando os mesmos valores de `identity` entre as condições. Os datasets resultantes formam um conjunto cross-condition pareado pronto para `PAIRED_DATASET_SPLIT` ou para treino de PLDA two-covariance cross-condition no FaceAudit. (O scaffold genérico `faceaudit_adapter.py` **não** deve ser usado em produção — ver Seção 19.)
+
+---
+
+## 14. População ancorada em dataset real
+
+Os centros sorteados por uma mistura vMF genérica não respeitam a geometria empírica fina dos embeddings faciais reais. O módulo `simulator/faceaudit_seed.py` é a ponte que alimenta a população a partir de um `EmbeddingDataset` real do FaceAudit, em dois modos. Para que `import simulator.faceaudit_seed` funcione sem o FaceAudit instalado, `faceaudit` é importado preguiçosamente apenas dentro das funções que dele precisam.
+
+> **Caveat de vazamento — proeminente.** Em ambos os modos, a base usada para ancorar/ajustar **deve ser disjunta em identidades** de qualquer conjunto de avaliação. Use `assert_disjoint_source_identities` (Seção 14.5). O Modo A **não é anonimização**.
+
+### 14.1 `identity_centers_from_dataset` — centros esféricos por identidade
+
+Computa um centro de média esférica por identidade:
 
 \[
-\hat{c}_i \;=\; \operatorname{normalize}\!\left( \sum_{j \in i} w_j \, u_{ij} \right),
-\qquad u_{ij} \;=\; \frac{x_{ij}}{\lVert x_{ij} \rVert}.
+\hat{c}_i = \text{normalize}\!\left(\sum_{j \in i} w_j\, u_{ij}\right), \qquad u_{ij} = \frac{x_{ij}}{\lVert x_{ij}\rVert}
 \]
 
 ```python
-import faceaudit_seed as fs
-
-extraction = fs.identity_centers_from_dataset(
-    dataset,
-    min_samples=2,           # 1 = âncora ruidosa, 2+ mais estável, 5+ ideal
-    weight_by_quality=False,
-)
-print(extraction.centers.shape)   # (M, D) — direções unitárias
-print(extraction.labels)          # rótulo FaceAudit original por centro
-print(extraction.counts)          # nº de imagens reais que formaram cada centro
+def identity_centers_from_dataset(
+    dataset: Any,
+    *,
+    min_samples: int = 1,
+    weight_by_quality: bool = False,
+    eps: float = 1e-12,
+) -> IdentityCenterExtractionResult:
 ```
 
-Detalhes forensicamente relevantes do agrupamento e da ponderação:
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dataset` | `Any` | — | `EmbeddingDataset` real (expõe `matrix`, `identities` e, se `weight_by_quality`, `items` com `quality_score`). |
+| `min_samples` | `int` | `1` | Mínimo de imagens por identidade para formar um centro. Identidades com menos são descartadas. Padrão `1` é flexível; prefira `2–3` (`1` = âncora ruidosa, `2+` mais estável, `5+` ideal). |
+| `weight_by_quality` | `bool` | `False` | Pondera cada imagem pelo seu `quality_score` na média esférica. |
+| `eps` | `float` | `1e-12` | Limiar numérico de degeneração da norma. |
 
-- **Agrupa pelo valor ORIGINAL de `identity`**, não por `str(identity)`. Isso evita fundir uma
-  identidade `1` (int) com `"1"` (str) — elas permanecem dois grupos distintos, ainda que ambos os
-  rótulos finais sejam serializados como `"1"`. A ordem de primeira ocorrência é preservada.
-- **Identidades `None` são ignoradas**; identidades com menos de `min_samples` amostras são
-  descartadas. Se *nenhuma* identidade atinge o piso, levanta-se `ValueError`.
-- **Ponderação por qualidade (`weight_by_quality=True`)** pondera cada imagem pelo seu
-  `quality_score` (exige `dataset.items`), com tratamento explícito de borda:
-  - `None` ou `NaN` → peso `1.0`;
-  - valor **negativo** → `ValueError` (pesos não podem ser negativos);
-  - todos os pesos do grupo nulos (`0`) → cai para a **média não-ponderada** do grupo.
-- **Fallback de média degenerada.** Se a soma ponderada das direções tem norma ≈ 0 (ex.: imagens
-  antípodas que se cancelam), a média esférica não está definida; emite-se um `UserWarning` e o
-  centro cai para a **imagem de melhor qualidade** (ou a primeira, se não houver pesos positivos).
-  O centro resultante permanece unitário.
+Comportamento de agrupamento e robustez:
 
-#### `IdentityCenterExtractionResult`
+- **Agrupa pelo valor ORIGINAL de `identity`**, não por `str(identity)` — evita fundir `1` (int) e `"1"` (str). Preserva a ordem de primeira ocorrência. Identidades `None` são ignoradas.
+- **Ponderação por qualidade** (`weight_by_quality=True`): exige `dataset.items` com `quality_score`. Tratamento de casos: `None` ou `NaN` → peso `1.0`; valor **negativo** → erro (`ValueError`); se todos os pesos de uma identidade forem zero → cai para a média **não ponderada** do bloco.
+- **Fallback degenerado**: se a média ponderada tiver norma `≤ eps` (vetores quase se cancelando), emite um `UserWarning` e cai para a imagem de **melhor qualidade** (ou a primeira, se não houver pesos positivos) daquela identidade.
+- Se nenhuma identidade atingir `min_samples`, levanta `ValueError`.
 
-Dataclass de retorno, com a procedência completa da extração:
+**`IdentityCenterExtractionResult`** (dataclass) carrega o produto da extração:
 
 | Campo | Tipo | Significado |
 |---|---|---|
-| `centers` | `FloatArray` `(M, D)` | direções unitárias — uma média esférica por identidade |
-| `labels` | `list[str]` | rótulo de identidade FaceAudit original de cada centro |
-| `counts` | `IntArray` `(M,)` | número de imagens reais que formaram cada centro |
-| `quality_weighted` | `bool` | se a média foi ponderada por `quality_score` |
+| `centers` | `FloatArray` `(M, D)` | Direções unitárias dos centros por identidade. |
+| `labels` | `list[str]` | Rótulo original de identidade do FaceAudit por centro. |
+| `counts` | `IntArray` `(M,)` | Número de imagens reais que formaram cada centro. |
+| `quality_weighted` | `bool` | Se a extração usou ponderação por qualidade. |
 
-### 12.2 Modo A — `population_from_dataset`
+### 14.2 Modo A — `population_from_dataset` (ancorado)
 
-O Modo A injeta os centros extraídos diretamente como centros da população, via o caminho de
-injeção `sample_identity_population(centers=..., identity_labels=..., source_sample_counts=...)`
-(seção 11). As identidades resultantes são **reais**; o simulador adiciona apenas a variação
-intra-classe sintética e a norma.
+No Modo A, **os centros da população SÃO as médias esféricas reais por identidade**. As identidades são reais; apenas a dispersão intra-identidade (e a norma) é sintética.
 
 ```python
-population = fs.population_from_dataset(
-    simulator,
-    dataset,
-    min_samples=2,
-    weight_by_quality=False,
-    identity_offset=0,
-    random_seed=None,
-    stream_name="dataset_seeded",
-)
-# population.source_identity_labels e population.source_sample_counts ficam preenchidos
+def population_from_dataset(
+    simulator: Any,
+    dataset: Any,
+    *,
+    min_samples: int = 1,
+    identity_offset: int = 0,
+    random_seed: int | None = None,
+    weight_by_quality: bool = False,
+    stream_name: str = "dataset_seeded",
+) -> SyntheticIdentityPopulation:
 ```
 
-As observações geradas a partir dessa população carregam duas colunas de procedência adicionais —
-`source_identity` e `source_sample_count` (seção 14) — que ligam cada amostra sintética de volta à
-identidade real e ao número de imagens que originaram o centro.
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `simulator` | `AdaFaceEmbeddingSimulator` | — | Simulador cuja `config.dimension` deve bater com a dimensão dos embeddings. |
+| `dataset` | `Any` | — | `EmbeddingDataset` real a ancorar. |
+| `min_samples` | `int` | `1` | Repassado a `identity_centers_from_dataset`. |
+| `identity_offset` | `int` | `0` | Deslocamento de IDs sintéticos. |
+| `random_seed` | `int \| None` | `None` | Override da semente da população injetada. |
+| `weight_by_quality` | `bool` | `False` | Repassado a `identity_centers_from_dataset`. |
+| `stream_name` | `str` | `"dataset_seeded"` | Nome do fluxo da população. |
 
-> ### ⚠️ CAVEAT FORENSE PROEMINENTE — Modo A **NÃO é anonimização**
->
-> O Modo A **gera variação sintética em torno de âncoras biométricas REAIS**. As identidades não
-> são fabricadas: os centros são médias esféricas de embeddings de pessoas reais, e cada amostra
-> sintética rastreia, via `source_identity`, exatamente de qual identidade real ela deriva.
-> Tratar a saída do Modo A como dado anonimizado é um **erro de procedência**.
->
-> **Use o Modo A apenas para** *augmentation*, validação metodológica ou experimentos internos
-> sobre uma base autorizada — **nunca** como substituto de anonimização. E, sob qualquer uso, o
-> **conjunto de âncoras DEVE permanecer disjunto de qualquer conjunto de avaliação** (seção 12.5).
+A função extrai os centros e os **injeta** via `simulator.sample_identity_population(centers=..., identity_labels=..., source_sample_counts=...)` (forma injetada da Seção 12.1). As observações subsequentes (`sample_observations`) ganham as colunas de proveniência `source_identity` e `source_sample_count` no metadata (Seção 15).
 
-### 12.3 Modo B — `population_config_from_dataset`
+> **Caveat proeminente — Modo A NÃO é anonimização.** Ele produz variação sintética em torno de **âncoras biométricas reais**. As identidades resultantes são reais. Use apenas para augmentação, validação metodológica ou experimentos internos sobre uma base autorizada, e **mantenha o conjunto-âncora disjunto de qualquer conjunto de avaliação** (`assert_disjoint_source_identities`).
 
-O Modo B ajusta uma MoVMF aos centros reais por identidade e devolve um `PopulationConfig` pronto
-para amostrar centros-fantasma novos, mais um dicionário `fit_summary` com a procedência completa
-do ajuste.
+### 14.3 Modo B — `population_config_from_dataset` (distribution-matched)
+
+No Modo B, ajusta-se uma MoVMF (mistura de von Mises-Fisher) aos centros reais por identidade e usam-se os `μ_k/κ_k/π_k` ajustados como `PopulationConfig`. O simulador então sorteia **novos centros fantasma** de uma aproximação MoVMF da distribuição empírica de centros.
 
 ```python
-population_config, fit_summary = fs.population_config_from_dataset(
-    dataset,
-    n_components=None,                  # None → seleção automática por critério
-    component_candidates=(1, 2, 4, 8, 16),
-    max_k=None,                         # teto opcional do K
-    criterion="bic",                    # "bic" ou "aic"
-    min_samples=2,
-    weight_by_quality=False,
-    random_state=42,
-    n_init=5,
-)
+def population_config_from_dataset(
+    dataset: Any,
+    *,
+    n_components: int | None = None,
+    component_candidates: Iterable[int] = (1, 2, 4, 8, 16),
+    max_k: int | None = None,
+    criterion: str = "bic",
+    min_samples: int = 1,
+    weight_by_quality: bool = False,
+    random_state: int = 42,
+    n_init: int = 5,
+) -> tuple[PopulationConfig, dict]:
 ```
 
-Pontos essenciais:
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dataset` | `Any` | — | `EmbeddingDataset` real. |
+| `n_components` | `int \| None` | `None` | Se informado, ajusta esse `K` fixo. Se `None`, seleciona `K` por critério. |
+| `component_candidates` | `Iterable[int]` | `(1, 2, 4, 8, 16)` | Candidatos de `K` na seleção, restringidos a `[1, min(M, max_k)]`. |
+| `max_k` | `int \| None` | `None` | Teto de `K` na seleção. Se `None`, usa `max(component_candidates)`. |
+| `criterion` | `str` | `"bic"` | Critério de seleção de `K`: `"bic"` ou `"aic"`. |
+| `min_samples` | `int` | `1` | Repassado a `identity_centers_from_dataset`. |
+| `weight_by_quality` | `bool` | `False` | Repassado a `identity_centers_from_dataset`. |
+| `random_state` | `int` | `42` | Semente do ajuste da MoVMF. |
+| `n_init` | `int` | `5` | Número de reinícios (restarts) do EM. |
 
-- **Ajusta sobre os CENTROS por identidade**, não sobre todas as observações. Ajustar sobre as
-  observações brutas misturaria variância intra e inter-identidade — o alvo aqui é a distribuição
-  *dos centros*.
-- **MoVMF via `MoVMFTypicalityModel` com `centering="none"`.** O `MoVMFTypicalityModel` do FaceAudit é
-  reutilizado como estimador MoVMF; a centralização é desligada deliberadamente, pois os centros
-  já estão na esfera unitária e qualquer recentragem distorceria a geometria angular.
-- **Seleção de K por BIC/AIC.** Com `n_components` fixo, ajusta-se aquele K. Caso contrário,
-  avaliam-se os `component_candidates` *clampados* ao intervalo `[1, min(M, max_k)]` (onde `M` é o
-  número de centros e `max_k` o teto opcional), escolhendo-se o K que minimiza o critério
-  (`bic_`/`aic_` do modelo). Ajustes que falham numericamente para um dado K são registrados como
-  `None` em `criterion_values` e pulados; se **nenhum** K converge, levanta-se `RuntimeError`
-  reportando o critério por K.
-- **Resultado.** Os `μ_k`/`κ_k`/`π_k` ajustados viram `component_means`/`identity_center_kappas`/
-  `component_weights` de um `PopulationConfig` com `component_count = K`.
+Pontos-chave:
 
-#### Dicionário `fit_summary`
+- **Ajusta nos CENTROS por identidade**, não em todas as observações (que misturariam variância intra e inter-classe).
+- Usa `MoVMFTypicalityModel` do FaceAudit com **`centering="none"`** (importado preguiçosamente). Exige `M ≥ 2` centros.
+- **Seleção de `K`**: itera os candidatos válidos, ajusta uma MoVMF por `K`, lê `bic_`/`aic_` e escolhe o menor valor finito. Falhas numéricas/EM por `K` são capturadas (o valor do critério vira `None`) e o `K` é pulado. Se nenhuma MoVMF convergir, levanta `RuntimeError` com o dicionário de critérios por `K`.
+- Constrói a `PopulationConfig` com `component_count=K`, `component_means=μ_k`, `component_weights=π_k`, `identity_center_kappas=κ_k`.
+
+**Dicionário `fit_summary`** retornado (segundo elemento da tupla) — registro de auditoria do ajuste:
 
 | Chave | Significado |
 |---|---|
-| `population_source` | sempre `"faceaudit_movmf"` |
-| `selected_k` | K efetivamente ajustado |
-| `n_components_fixed` | K fixo solicitado, ou `None` se houve seleção automática |
-| `candidate_k` | lista de candidatos avaliados (`None` se K fixo) |
-| `criterion` | `"bic"` ou `"aic"` |
-| `criterion_values` | mapa `{K: valor}` por candidato (`None` para K que falharam) |
-| `fit_seed` | `random_state` usado no ajuste |
-| `n_identity_centers` | número de centros reais usados no ajuste |
-| `dimension` | dimensão do embedding |
-| `n_degenerate` | número de componentes degeneradas detectadas |
-| `min_component_weight` | menor peso de componente `π_k` |
-| `max_component_kappa` | maior concentração `κ_k` |
-| `component_weight_entropy` | entropia dos pesos das componentes |
-| `weight_by_quality` | se a extração de centros foi ponderada por qualidade |
-| `min_samples` | piso de amostras por identidade na extração |
+| `population_source` | Sempre `"faceaudit_movmf"`. |
+| `selected_k` | `K` efetivamente ajustado. |
+| `n_components_fixed` | `K` fixo, ou `None` se houve seleção. |
+| `candidate_k` | Lista de `K` candidatos avaliados (ou `None` se `K` fixo). |
+| `criterion` | `"bic"` ou `"aic"`. |
+| `criterion_values` | Valor do critério por `K` candidato (`None` para `K` que falhou). |
+| `fit_seed` | `random_state` usado. |
+| `n_identity_centers` | `M`, número de centros ajustados. |
+| `dimension` | Dimensão dos embeddings. |
+| `n_degenerate` | Número de componentes degenerados da MoVMF. |
+| `min_component_weight` | Menor `π_k`. |
+| `max_component_kappa` | Maior `κ_k`. |
+| `component_weight_entropy` | Entropia dos pesos dos componentes. |
+| `weight_by_quality` | Se a extração de centros usou qualidade. |
+| `min_samples` | `min_samples` usado na extração. |
 
-### 12.4 Modo B completo — `simulator_config_from_dataset`
+### 14.4 Modo B completo — `simulator_config_from_dataset` (com ajuste radial)
 
-Envolve `population_config_from_dataset` em uma configuração de simulador completa: parte de um
-`base_config` (por padrão `make_cooperative_plda_config` na dimensão do dataset), substitui a
-população pela MoVMF ajustada, marca `profile_name = "FACEAUDIT_MOVMF"` e — quando `fit_norm=True`
-— substitui também a referência radial por uma ajustada às normas reais.
+Monta uma `SimulatorConfig` completa de Modo B: população MoVMF ajustada aos centros reais **mais** um ajuste radial (de norma) opcional.
 
 ```python
-config, fit_summary = fs.simulator_config_from_dataset(
-    dataset,
-    base_config=None,                  # default: make_cooperative_plda_config(dimension)
-    fit_norm=True,
-    embedding_view_for_norm="raw",     # único suportado: dataset.matrix
-    warn_if_unit_norms=True,
-    norm_tol=1e-3,
-    # **movmf_kwargs repassados a population_config_from_dataset
-    component_candidates=(1, 2, 4, 8, 16),
-    criterion="bic",
-)
-config.validate()
-assert config.profile_name == "FACEAUDIT_MOVMF"
+def simulator_config_from_dataset(
+    dataset: Any,
+    *,
+    base_config: SimulatorConfig | None = None,
+    fit_norm: bool = True,
+    embedding_view_for_norm: str = "raw",
+    warn_if_unit_norms: bool = True,
+    norm_tol: float = 1e-3,
+    **movmf_kwargs: Any,
+) -> tuple[SimulatorConfig, dict]:
 ```
 
-**Ajuste radial com aviso de L2-normalizado.** O ajuste radial via `RadialReference.fit` (seção 6.7)
-precisa que as **log-normas variem** (MAD escalado > 0). Se o dataset parece L2-normalizado —
-`|mean(‖x‖) − 1| < norm_tol` **e** `std(‖x‖) < norm_tol`, ou, mais geralmente, MAD escalado das
-log-normas ≈ 0 — o ajuste radial seria não-informativo. Nesse caso o módulo emite um `UserWarning`
-e **mantém a referência radial do `base_config`** em vez de falhar. O bloco `norm_summary` no
-`fit_summary` registra o diagnóstico:
-
-| Chave de `norm_summary` | Significado |
-|---|---|
-| `norm_mean` | média das normas reais |
-| `norm_std` | desvio-padrão das normas |
-| `norm_min` / `norm_max` | extremos das normas |
-| `unit_norm_warning` | `True` se o dataset parece L2-normalizado |
-| `radial_fitted` | `True` se a referência radial foi efetivamente reajustada |
-
-Quando `fit_norm=False`, `norm_summary` é `None`.
-
-> ### ⚠️ CAVEAT FORENSE — Modo B é aproximação angular de 1ª ordem
->
-> Os centros-fantasma do Modo B são uma **aproximação angular de primeira ordem da distribuição
-> empírica dos centros** (uma mistura isotrópica por componente), **NÃO o manifold real dos
-> embeddings**. A MoVMF captura apenas a densidade angular agregada dos centros por identidade;
-> ela ignora estrutura anisotrópica local, correlações de alta ordem e a geometria fina do
-> manifold facial. Em laudo, a saída do Modo B deve ser descrita como população *sintética inspirada
-> em* dados reais, jamais como reprodução fiel da população real.
-
-### 12.5 Helpers anti-vazamento — `source_identity_set` / `assert_disjoint_source_identities`
-
-Ambos os modos rastreiam de qual base real cada população foi ancorada. Esses dois helpers
-(*faceaudit-free*) fecham o risco de vazamento âncora↔avaliação:
-
-```python
-ids = fs.source_identity_set(population)          # set[str] dos rótulos de origem; vazio se amostrada
-
-fs.assert_disjoint_source_identities(pop_train, pop_eval)  # ValueError se compartilham origem
-```
-
-- `source_identity_set(population)` devolve o conjunto de rótulos de identidade originais sobre os
-  quais a população foi ancorada (Modo A), ou um conjunto **vazio** se a população foi puramente
-  amostrada (sem ancoragem).
-- `assert_disjoint_source_identities(a, b)` levanta `ValueError` — reportando quantas identidades
-  são compartilhadas e uma amostra dos rótulos — se as duas populações ancoradas têm **qualquer**
-  identidade de origem em comum.
-
-> **Nota forense de uso obrigatório.** A base usada para ancorar (Modo A) ou ajustar (Modo B)
-> **DEVE ser disjunta em identidades de qualquer conjunto de avaliação**. Ancorar treino e avaliação
-> na mesma identidade real é vazamento direto e invalida toda métrica de calibração/discriminação
-> a jusante. Em qualquer pipeline forense que use `faceaudit_seed`, a chamada a
-> `assert_disjoint_source_identities` entre a população de desenvolvimento e a de avaliação é
-> **etapa obrigatória**, não opcional.
-
----
-
-## 13. Helper cross-condition
-
-Para *stress testing* de estratégias cross-condition (ex.: PLDA frontal × lateral), o simulador
-oferece `sample_cross_condition_datasets`: ele amostra **uma única população latente** e a observa
-em **múltiplos domínios de aquisição alinhados por identidade**. Como todos os domínios partilham as
-mesmas identidades, cada identidade rende pares genuínos cross-condition — exatamente o material que
-um estimador PLDA two-covariance precisa.
-
-```python
-aligned = simulator.sample_cross_condition_datasets(
-    identity_count=800,
-    identity_offset=300_000,
-    split_name="cross_condition_test",
-    samples_per_identity_by_domain={
-        "controlled": (3, 6),
-        "surveillance": (3, 6),
-    },
-    sessions_per_identity=(1, 3),
-    population_random_seed=4001,
-    observation_random_seeds={
-        "controlled": 4002,
-        "surveillance": 4003,
-    },
-)
-
-controlled = aligned["controlled"]
-surveillance = aligned["surveillance"]
-```
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dataset` | `Any` | — | `EmbeddingDataset` real. |
+| `base_config` | `SimulatorConfig \| None` | `None` | Config base. Se `None`, usa `make_cooperative_plda_config(dimension=<dim do dataset>)`. Sua `dimension` deve bater com a do dataset. |
+| `fit_norm` | `bool` | `True` | Se `True`, substitui a referência radial por uma ajustada às normas reais. |
+| `embedding_view_for_norm` | `str` | `"raw"` | Visão usada para a norma. Apenas `"raw"` (`dataset.matrix`) é suportado; outro valor levanta `ValueError`. |
+| `warn_if_unit_norms` | `bool` | `True` | Emite aviso se o dataset parecer L2-normalizado. |
+| `norm_tol` | `float` | `1e-3` | Tolerância para detectar normas ~unitárias. |
+| `**movmf_kwargs` | `Any` | — | Repassados a `population_config_from_dataset` (ex.: `n_components`, `criterion`, `max_k`, `weight_by_quality`). |
 
 Comportamento:
 
-- A população é amostrada **uma vez** (via `sample_identity_population`, stream
-  `f"{split_name}:population"`), com `identity_offset` e `population_random_seed` aplicados a ela.
-- Para cada domínio em `samples_per_identity_by_domain`, observa-se a *mesma* população com
-  `forced_domain=domain_name`, número de amostras por identidade próprio do domínio, e uma seed de
-  observação opcional via `observation_random_seeds[domain_name]`.
-- O retorno é um `dict[str, SyntheticEmbeddingDataset]` cujas chaves são os nomes de domínio e cujos
-  valores compartilham os mesmos `identity_id` — garantindo pares genuínos cross-condition.
+- Parte do `base_config` (padrão `make_cooperative_plda_config` na dimensão do dataset), substitui a população pela MoVMF ajustada e define `profile_name="FACEAUDIT_MOVMF"`.
+- **Ajuste radial** (`fit_norm=True`): computa as normas reais e a escala robusta (MAD escalado) dos log-normas. Se a escala robusta for desprezível (`≤ 1e-9`) — caso de normas constantes ou L2-normalizadas — **mantém a referência radial base e pula o ajuste**, emitindo um `UserWarning` quando `warn_if_unit_norms`. Caso contrário, substitui o radial por `RadialConfig.from_reference(RadialReference.fit(matrix))`.
 
-Esse desenho foi criado para comparar estratégias como:
+  > **Aviso de normas ~unitárias.** Uma referência radial robusta precisa que os log-normas variem. Um dataset L2-normalizado (`|média(‖x‖) − 1| < tol` e `desvio(‖x‖) < tol`) é degenerado para esse ajuste — daí o aviso e a manutenção do radial base em vez de uma falha.
 
-```text
-PER_CONDITION
-BALANCED_IDENTITY
+- O `fit_summary` retornado é o de `population_config_from_dataset` acrescido da chave `norm_summary` (média/desvio/mín/máx das normas, `unit_norm_warning`, `radial_fitted`), ou `norm_summary=None` se `fit_norm=False`.
+
+> **Caveat de aproximação de 1ª ordem.** Os centros fantasma do Modo B são amostrados de uma **mistura isotrópica por componente** — uma densidade angular de **primeira ordem** da distribuição empírica de centros, **não** a variedade real dos embeddings faciais. O Modo B reproduz a estrutura angular grosseira da população real, não sua geometria fina.
+
+### 14.5 Helpers anti-vazamento — `source_identity_set` / `assert_disjoint_source_identities`
+
+Independentes do FaceAudit (puro numpy/conjuntos):
+
+```python
+def source_identity_set(population: SyntheticIdentityPopulation) -> set[str]:
+    """Conjunto de rótulos de identidade de origem em que uma população Modo-A foi ancorada
+    (vazio se a população foi sorteada)."""
+
+def assert_disjoint_source_identities(
+    population_a: SyntheticIdentityPopulation,
+    population_b: SyntheticIdentityPopulation,
+) -> None:
+    """Levanta ValueError se duas populações ancoradas compartilharem qualquer identidade de
+    origem (vazamento âncora↔avaliação)."""
 ```
 
-**Ponte para o FaceAudit.** Para converter o dicionário cross-condition diretamente em
-`EmbeddingDataset`s reais — preservando `identity` idêntico entre as condições (e portanto o
-caráter pareado) — use o export dedicado do adapter concreto,
-`cross_condition_to_embedding_datasets` (seção 18.2). Ele mapeia cada `SyntheticEmbeddingDataset`
-do dicionário para um `EmbeddingDataset` nomeado `synthetic_{domain}`, com embeddings em `float32`
-e os covariáveis forensicamente acionáveis preservados.
+- `source_identity_set` lê `population.source_identity_labels`; retorna conjunto vazio para populações sorteadas (sem proveniência).
+- `assert_disjoint_source_identities` intersecta os dois conjuntos de origem e, se houver qualquer identidade em comum, levanta `ValueError` informando a contagem e exemplos (até cinco). É a guarda canônica para garantir que a base-âncora de treino/calibração não vaze para a avaliação — invoque-a sempre que ancorar populações distintas a partir de bases reais.
+## 15. O dataset e o dicionário de colunas de metadata
 
----
+Toda chamada de geração (`sample_observations`, `sample_dataset`,
+`sample_cross_condition_datasets`) devolve um objeto `SyntheticEmbeddingDataset`. Ele empacota,
+em um único bundle auditável, as matrizes de embedding (bruta e normalizada), os centros
+latentes, a tabela de metadados por observação, os artefatos estruturais usados na geração
+(bases anisotrópicas, vetores de bias de domínio) e a procedência reproducível (config + três
+seeds + nome do stream). É a fronteira entre o mundo gerativo e qualquer experimento a jusante:
+PLDA, calibração, tipicidade, ou os adapters do FaceAudit (Seção 19).
 
-## 14. `SyntheticEmbeddingDataset` e dicionário de colunas de metadata
+### 15.1 Campos do `SyntheticEmbeddingDataset`
 
-O objeto `SyntheticEmbeddingDataset` é o produto de `AdaFaceEmbeddingSimulator.sample_observations`
-(e dos atalhos `sample_dataset` e `sample_cross_condition_datasets`). Ele carrega
-simultaneamente os embeddings brutos, as direções normalizadas, a estrutura latente do mundo
-sintético e o `DataFrame` de metadados por observação. Toda a rastreabilidade forense do
-experimento — perfil, seeds e configuração — viaja acoplada a esse objeto e é persistida pelos
-métodos da Seção 17.
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `raw_embeddings` | `FloatArray` `(N, D)` | obrigatório | embeddings brutos \(x_{ij}=r_{ij}\,u_{ij}\) (direção × norma); a norma carrega o sinal radial usado em calibração/qualidade |
+| `normalized_embeddings` | `FloatArray` `(N, D)` | obrigatório | direções unitárias \(u_{ij}\) (cada linha com \(\lVert u\rVert=1\)); base dos escores de cosseno |
+| `identity_centers` | `FloatArray` `(M, D)` | obrigatório | centros angulares latentes \(\mathbf{c}_i\) das \(M\) identidades observadas |
+| `metadata` | `pandas.DataFrame` | obrigatório | uma linha por observação; dicionário completo de colunas na Seção 15.2 |
+| `population_component_means` | `FloatArray` | obrigatório | médias \(\mu_k\) dos componentes populacionais (artefato estrutural) |
+| `anisotropic_basis` | `FloatArray` ou `None` | obrigatório | base ortonormal do nuisance anisotrópico global (`None` quando desativado) |
+| `domain_anisotropic_bases` | `Mapping[str, FloatArray\|None]` | obrigatório | base anisotrópica por domínio (`None` por domínio quando desativada) |
+| `domain_bias_vectors` | `Mapping[str, FloatArray]` | obrigatório | vetor de bias fixo por domínio (zeros quando `domain_bias_scale=0`) |
+| `config` | `SimulatorConfig` | obrigatório | a configuração integral que gerou o dataset (serializável, Seção 18) |
+| `structural_seed` | `int` | obrigatório | seed estrutural do simulador (artefatos estáveis: componentes, bases, bias de domínio) |
+| `population_sampling_seed` | `int` | obrigatório | seed efetiva da amostragem da população latente |
+| `observation_sampling_seed` | `int` | obrigatório | seed efetiva da amostragem das observações |
+| `stream_name` | `str` | obrigatório | nome do stream nomeado de RNG usado nas observações |
 
-### 14.1 Campos do `SyntheticEmbeddingDataset`
+O método `validate()` reverifica os invariantes físicos do bundle antes de qualquer uso:
+`normalized_embeddings` tem o mesmo shape de `raw_embeddings`, o `metadata` tem exatamente \(N\)
+linhas, todas as direções normalizadas são unitárias (`atol=1e-8`), e as normas observadas de
+`raw_embeddings` batem com a coluna `embedding_norm` do metadata (`rtol=1e-8`). `validate()` é
+chamado internamente ao final de cada geração — uma falha aqui sinaliza corrupção do estado, não
+configuração imprópria.
 
-| Campo | Shape ou tipo | Conteúdo |
+### 15.2 Dicionário completo das colunas de metadata por observação
+
+A tabela abaixo é a referência completa do `DataFrame` `dataset.metadata`. As colunas estão na
+ordem em que são construídas dentro de `sample_observations`. Toda observação (uma linha) carrega
+sua proveniência gerativa completa — é o que torna cada amostra sintética rastreável e o dataset
+inteiro reauditável.
+
+| Coluna | Tipo | Significado |
 |---|---|---|
-| `raw_embeddings` | `(N, d)` | embeddings brutos \(\mathbf{x}_{ij}=r_{ij}\widetilde{\mathbf{u}}_{ij}\) |
-| `normalized_embeddings` | `(N, d)` | direções unitárias |
-| `identity_centers` | `(I, d)` | centros latentes das identidades |
-| `metadata` | `pd.DataFrame` | metadados por observação (Seção 14.2) |
-| `population_component_means` | `(K, d)` | médias dos componentes populacionais |
-| `anisotropic_basis` | `(d, r)` ou `None` | base anisotrópica global |
-| `domain_anisotropic_bases` | mapping | bases anisotrópicas por domínio |
-| `domain_bias_vectors` | mapping | bias médio por domínio |
-| `config` | `SimulatorConfig` | configuração completa |
-| `structural_seed` | `int` | seed estrutural do mundo sintético |
-| `population_sampling_seed` | `int` | seed efetiva da população |
-| `observation_sampling_seed` | `int` | seed efetiva das observações |
-| `stream_name` | `str` | nome do stream efetivo |
+| `split` | `str` | nome do split passado em `split_name` |
+| `identity_id` | `int` | identidade sintética (com `identity_offset` aplicado) |
+| `local_identity_index` | `int` | índice local na população (0-based, antes do offset) |
+| `sample_index` | `int` | índice da observação dentro da identidade |
+| `session_index` | `int` | sessão sintética da observação |
+| `population_component` | `int` | componente populacional latente \(k\) da identidade |
+| `acquisition_domain` | `str` | domínio de aquisição amostrado (ou forçado via `forced_domain`) |
+| `radial_regime` | `str` | regime radial: `central`, `low_tail` ou `high_tail` |
+| `latent_quality` | `float` | qualidade sintética em \([0,1]\) |
+| `embedding_norm` | `float` | norma do embedding bruto \(r_{ij}\) |
+| `log_embedding_norm` | `float` | log-norma \(\log r_{ij}\) (após clipping de `minimum_norm`/`maximum_norm`) |
+| `reference_scaled_log_norm_z` | `float` | posição radial padronizada \(z=(\log r-\mu_{\log})/\sigma_{\log}\) |
+| `robust_norm_z` | `float` | **alias de** `reference_scaled_log_norm_z` (mesma coluna, também disponível sob este nome) |
+| `radial_reference_method` | `str` | método da referência radial (`RadialConfig.reference_method`) |
+| `intra_kappa` | `float` | concentração vMF intra-identidade \(\kappa_{ij}\) |
+| `own_center_cosine` | `float` | cosseno ao centro latente **após** o passo de nuisance/viés |
+| `pre_nuisance_center_cosine` | `float` | cosseno ao centro latente **antes** do passo de nuisance/viés |
+| `intra_class_sampling_mode` | `str` | modo de dispersão usado: `vmf`, `idperturb_cap` ou `hybrid_vmf_cap` |
+| `cap_lower_bound_effective` | `float` | piso de cosseno `lb` efetivo por amostra (`NaN` no modo `vmf`) |
+| `hybrid_resample_count` | `int` | nº de reamostragens vMF por rejeição (`0` fora de `hybrid_vmf_cap`) |
+| `hybrid_used_cap_fallback` | `bool` | indicador de uso do fallback de calota (`False` fora de `hybrid_vmf_cap`) |
+| `tangent_update_mode` | `str` | `retraction` ou `exponential_map` |
+| `anisotropic_noise_norm` | `float` | magnitude do nuisance anisotrópico aplicado |
+| `fixed_domain_bias_norm` | `float` | magnitude do bias médio (fixo) de domínio |
+| `domain_identity_bias_norm` | `float` | magnitude da interação domínio × identidade |
+| `session_bias_norm` | `float` | magnitude do bias de sessão |
+| `combined_tangent_step_norm` | `float` | tamanho do passo tangencial total que moveu a direção |
+| `source_identity` | `str` | rótulo de identidade real de origem (**somente** em populações ancoradas, Seção 14) |
+| `source_sample_count` | `int` | nº de imagens reais que formaram o centro (**somente** em populações ancoradas) |
 
-O método `validate()` checa as invariantes estruturais: `normalized_embeddings` contém vetores
-unitários, o número de linhas dos metadados casa com `raw_embeddings`, e as normas de
-`raw_embeddings` coincidem com a coluna `embedding_norm` dos metadados. A validação roda
-automaticamente ao final de `sample_observations`.
-
-### 14.2 Metadados por observação
-
-A tabela abaixo é a referência completa e atualizada das colunas do `DataFrame`
-`dataset.metadata`. As colunas estão na ordem em que são construídas em `sample_observations`.
-
-| Coluna | Significado |
-|---|---|
-| `split` | nome do split |
-| `identity_id` | identidade sintética (com `identity_offset` aplicado) |
-| `local_identity_index` | índice local na população |
-| `sample_index` | índice da observação dentro da identidade |
-| `session_index` | sessão sintética |
-| `population_component` | componente populacional latente |
-| `acquisition_domain` | domínio de aquisição |
-| `radial_regime` | `central`, `low_tail` ou `high_tail` |
-| `latent_quality` | qualidade sintética em \([0,1]\) |
-| `embedding_norm` | norma do embedding bruto \(r_{ij}\) |
-| `log_embedding_norm` | log-norma |
-| `reference_scaled_log_norm_z` | posição radial padronizada |
-| `robust_norm_z` | alias legado de `reference_scaled_log_norm_z` |
-| `radial_reference_method` | método da referência radial |
-| `intra_kappa` | concentração vMF intra-identidade \(\kappa_{ij}\) |
-| `own_center_cosine` | cosseno ao centro latente **após** o passo de nuisance |
-| `pre_nuisance_center_cosine` | cosseno ao centro latente **antes** do passo de nuisance |
-| `intra_class_sampling_mode` | modo de dispersão intra-classe usado (`vmf`, `idperturb_cap`, `hybrid_vmf_cap`) |
-| `cap_lower_bound_effective` | piso de cosseno `lb` efetivo por amostra (`NaN` em `VMF`) |
-| `hybrid_resample_count` | número de reamostragens vMF por rejeição (`0` fora de `HYBRID_VMF_CAP`) |
-| `hybrid_used_cap_fallback` | indicador booleano de fallback de calota (`False` fora de `HYBRID_VMF_CAP`) |
-| `tangent_update_mode` | `retraction` ou `exponential_map` |
-| `anisotropic_noise_norm` | magnitude do nuisance anisotrópico |
-| `fixed_domain_bias_norm` | magnitude do bias médio de domínio |
-| `domain_identity_bias_norm` | magnitude da interação domínio × identidade |
-| `session_bias_norm` | magnitude do bias de sessão |
-| `combined_tangent_step_norm` | tamanho do passo tangencial total |
-| `source_identity` | rótulo de identidade real de origem (**somente** em populações ancoradas em dataset) |
-| `source_sample_count` | nº de imagens reais que formaram o centro (**somente** em populações ancoradas) |
-
-#### Colunas novas de dispersão intra-classe (v0.3)
+#### Colunas de dispersão intra-classe e da calota
 
 As cinco colunas `intra_class_sampling_mode`, `cap_lower_bound_effective`,
-`pre_nuisance_center_cosine`, `hybrid_resample_count` e `hybrid_used_cap_fallback` foram
-introduzidas na versão 0.3 e estão **sempre presentes**, inclusive no modo `VMF` padrão. No
-modo `VMF`, `cap_lower_bound_effective` é `NaN`, `hybrid_resample_count` é `0` e
-`hybrid_used_cap_fallback` é `False` — o que torna os três campos auditáveis como
-"calota não utilizada" sem ambiguidade. Já `pre_nuisance_center_cosine` é populada nos três
-modos: ela registra o cosseno ao centro **imediatamente após** a amostragem vMF/calota/híbrido
-e **antes** da aplicação do passo tangencial de nuisance/viés.
+`pre_nuisance_center_cosine`, `hybrid_resample_count` e `hybrid_used_cap_fallback` estão
+**sempre presentes**, inclusive no modo `vmf`. No modo `vmf`, `cap_lower_bound_effective` é
+`NaN`, `hybrid_resample_count` é `0` e `hybrid_used_cap_fallback` é `False` — o que torna os três
+campos auditáveis como "calota não utilizada" sem ambiguidade. Já `pre_nuisance_center_cosine` é
+populada nos três modos: registra o cosseno ao centro **imediatamente após** a amostragem
+vMF/calota/híbrido e **antes** da aplicação do passo tangencial de nuisance/viés.
+
+`hybrid_resample_count` e `hybrid_used_cap_fallback` são os auditores específicos do modo
+`hybrid_vmf_cap`. Uma taxa alta de `hybrid_used_cap_fallback=True` significa que o piso `lb` está
+ativo a ponto de o corpo vMF raramente respeitá-lo por conta própria — o resultado é então
+dominado pela calota, não pela concentração vMF configurada. Reportar a fração de fallback e a
+distribuição de `hybrid_resample_count` é o diagnóstico que separa "vMF com piso de segurança" de
+"calota disfarçada".
 
 #### Invariante crítico para auditar a calota
 
@@ -2027,62 +1716,75 @@ Esse é o invariante que prova que o piso geométrico `lb` foi respeitado na ger
 garantido **na direção pré-nuisance**. O passo tangencial de nuisance/viés aplicado em seguida
 pode empurrar o `own_center_cosine` (pós-nuisance) **abaixo** de `lb` — isso é esperado e não
 viola nada. Por isso, **para auditar a calota use sempre `pre_nuisance_center_cosine`**, nunca
-`own_center_cosine`. Em laudo, a frase defensável é: *"nenhuma observação sintética desta
-identidade foi gerada com cosseno menor que `cap_lower_bound_effective` ao centro latente,
-antes dos ruídos de domínio/sessão."*
+`own_center_cosine`. A frase defensável em laudo é: *"nenhuma observação sintética desta
+identidade foi gerada com cosseno menor que `cap_lower_bound_effective` ao centro latente, antes
+dos ruídos de domínio/sessão."*
 
-#### Colunas de proveniência (somente populações ancoradas)
+#### Colunas de proveniência (somente populações ancoradas em dataset real)
 
 As colunas `source_identity` e `source_sample_count` aparecem **apenas** quando o dataset foi
-observado a partir de uma população ancorada em dataset real (Modo A, Seção 12), ou seja,
-quando `SyntheticIdentityPopulation.source_identity_labels` / `source_sample_counts` estão
-preenchidos. Em populações puramente amostradas da mistura vMF essas colunas estão **ausentes**
-— o que mantém os metadados de populações sintéticas inalterados em relação à v0.2 e sinaliza,
-pela simples presença/ausência da coluna, se há âncoras biométricas reais por trás do dataset.
+observado a partir de uma população ancorada em dataset real (Modo A, Seção 14), ou seja, quando
+`SyntheticIdentityPopulation.source_identity_labels` / `source_sample_counts` estão preenchidos.
+Em populações puramente amostradas da mistura vMF essas colunas estão **ausentes** — pela simples
+presença/ausência da coluna o auditor sabe se há âncoras biométricas reais por trás do dataset.
 
-`source_identity` carrega o rótulo de identidade real do FaceAudit que originou cada centro, e
+`source_identity` carrega o rótulo de identidade real do FaceAudit que originou cada centro;
 `source_sample_count` registra quantas imagens reais formaram a média esférica daquele centro.
-Como populações ancoradas geram variação sintética em torno de âncoras biométricas **reais** —
-e não anonimizam nada —, essas duas colunas são o gancho de cadeia de custódia para verificar
-que o conjunto de âncoras permanece disjunto de qualquer conjunto de avaliação (ver
-`assert_disjoint_source_identities`, Seção 12).
+Como populações ancoradas geram variação sintética em torno de âncoras biométricas **reais** — e
+não anonimizam nada —, essas duas colunas são o gancho de cadeia de custódia para verificar que o
+conjunto de âncoras permanece disjunto de qualquer conjunto de avaliação (ver
+`assert_disjoint_source_identities`, Seção 14).
 
-### 14.3 Campos de proveniência e overlap do `SyntheticIdentityPopulation`
+### 15.3 Campos do `SyntheticIdentityPopulation`
 
-O objeto latente `SyntheticIdentityPopulation` (Seção 11) ganhou, na v0.3, campos auxiliares
-opcionais que sustentam tanto a guarda do bissetor quanto a proveniência. Eles **não** são
-serializados (ficam fora de `asdict`/`save_manifest`/`save_npz`), por serem vetores grandes ou
-caches derivados.
+O objeto latente `SyntheticIdentityPopulation` (Seção 12) é a população de identidades que pode
+ser observada sob uma ou mais condições. Além dos campos estruturais obrigatórios, carrega campos
+auxiliares opcionais que sustentam a guarda do bissetor (cache de overlap) e a proveniência. Esses
+campos opcionais **não** são serializados — ficam fora de `asdict`/`save_manifest`/`save_npz` por
+serem vetores grandes ou caches derivados (`repr=False`, `compare=False`).
 
-| Campo | Tipo | Padrão | Significado |
-|---|---|---:|---|
-| `identity_ids` | `IntArray` | obrigatório | ids das identidades (com `identity_offset`) |
-| `population_components` | `IntArray` | obrigatório | componente populacional por identidade |
-| `identity_centers` | `FloatArray` | obrigatório | centro angular latente \(\mathbf{c}_i\) |
-| `identity_specific_nuisance_bases` | `FloatArray` ou `None` | obrigatório | base específica por identidade (quando habilitada) |
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `identity_ids` | `IntArray` | obrigatório | ids das identidades (com `identity_offset` aplicado) |
+| `population_components` | `IntArray` | obrigatório | componente populacional \(k\) por identidade |
+| `identity_centers` | `FloatArray` | obrigatório | centro angular latente \(\mathbf{c}_i\) por identidade (unitário) |
+| `identity_specific_nuisance_bases` | `FloatArray` ou `None` | obrigatório | base de nuisance específica por identidade (quando habilitada) |
 | `domain_identity_bias_vectors` | `Mapping[str, FloatArray]` | obrigatório | bias domínio × identidade |
-| `sampling_seed` | `int` | obrigatório | seed efetiva da população |
-| `stream_name` | `str` | obrigatório | nome do stream |
-| `overlap_lower_bound_floor` | `FloatArray` ou `None` | `None` | piso de cosseno do bissetor por identidade (cache preguiçoso) |
-| `source_identity_labels` | `list[str]` ou `None` | `None` | rótulo de identidade real por centro (Modo A) |
-| `source_sample_counts` | `IntArray` ou `None` | `None` | nº de imagens reais por centro (Modo A) |
+| `sampling_seed` | `int` | obrigatório | seed efetiva da amostragem da população |
+| `stream_name` | `str` | obrigatório | nome do stream nomeado de RNG |
+| `overlap_lower_bound_floor` | `FloatArray` ou `None` | `None` | piso de cosseno do bissetor por identidade (cache preguiçoso, não serializado) |
+| `source_identity_labels` | `list[str]` ou `None` | `None` | rótulo de identidade real por centro (Modo A; não serializado) |
+| `source_sample_counts` | `IntArray` ou `None` | `None` | nº de imagens reais por centro (Modo A; não serializado) |
 
-O campo `overlap_lower_bound_floor` é calculado preguiçosamente na primeira observação em modo
-de calota (via `_overlap_lower_bound_floor`, em blocos, sem materializar a matriz \(C\times C\))
-e **cacheado** para reuso entre observações cross-condition da mesma população — garantindo que
-o piso anti-colisão seja idêntico em todos os domínios alinhados. Os campos
-`source_identity_labels` e `source_sample_counts` são `None` em populações amostradas e
+O campo `overlap_lower_bound_floor` é calculado preguiçosamente na primeira observação em modo de
+calota (via `_overlap_lower_bound_floor`, em blocos de linhas, sem materializar a matriz
+\(C\times C\) de cossenos) e **cacheado** para reuso entre observações cross-condition da mesma
+população — isso garante que o piso anti-colisão seja idêntico em todos os domínios alinhados. Os
+campos `source_identity_labels` e `source_sample_counts` são `None` em populações amostradas e
 preenchidos apenas no caminho de injeção de centros (Modo A); é deles que `sample_observations`
-deriva as colunas `source_identity` e `source_sample_count` da Seção 14.2.
+deriva as colunas `source_identity` e `source_sample_count` da Seção 15.2.
+
+`validate()` reverifica que `identity_ids` e `population_components` têm uma entrada por
+identidade, que `identity_centers` são unitários (`atol=1e-8`), e que as formas das bases de
+nuisance e dos vetores de bias domínio × identidade são compatíveis com `(identity_count,
+dimension)`.
 
 ---
 
-## 15. Diagnóstico radial e por cap
+## 16. Diagnósticos
 
-### 15.1 `norm_bin_diagnostics`
+O `SyntheticEmbeddingDataset` carrega diagnósticos pensados para auditoria. Dois são centrais: o
+resumo radial em U-invertido (`norm_bin_diagnostics`) e a regra de ouro dos percentis de
+`cap_lower_bound_effective`.
 
-O método `norm_bin_diagnostics` estratifica as observações por quantis de norma e resume o
-padrão esperado de U-invertido entre norma, qualidade e estabilidade angular.
+### 16.1 `norm_bin_diagnostics` — o padrão de U-invertido
+
+O método `norm_bin_diagnostics` estratifica as observações por quantis de norma e resume o padrão
+esperado de **U-invertido** entre norma, qualidade e estabilidade angular: as observações de norma
+intermediária tendem a ter maior qualidade latente e maior \(\kappa\) intra-classe (direções mais
+estáveis, mais próximas do centro), enquanto as caudas radiais (`low_tail`/`high_tail`) tendem a
+ser de menor qualidade e direção mais dispersa. É o diagnóstico que confirma que o acoplamento
+não-monotônico norma↔confiabilidade está ativo conforme configurado.
 
 ```python
 diagnostics = test.norm_bin_diagnostics(bin_count=10)
@@ -2095,7 +1797,7 @@ Colunas retornadas:
 |---|---|
 | `requested_bin_count` | quantidade de bins solicitada |
 | `actual_bin_count` | quantidade efetivamente produzida |
-| `norm_quantile_bin` | faixa de norma |
+| `norm_quantile_bin` | faixa de norma (intervalo) |
 | `sample_count` | tamanho do grupo |
 | `norm_mean` | norma média |
 | `reference_scaled_log_norm_z_mean` | posição radial média |
@@ -2106,350 +1808,302 @@ Colunas retornadas:
 | `tangent_step_norm_mean` | passo tangencial médio |
 
 O método usa `pd.qcut(..., duplicates="drop")`. Se existirem bordas de quantil repetidas, o
-pandas produzirá menos bins do que solicitado; nesse caso o método **emite um warning** e
-informa tanto `requested_bin_count` quanto `actual_bin_count`, evitando que um diagnóstico
-silenciosamente degradado seja interpretado como completo. Esse diagnóstico também é gravado
-automaticamente por `save_bundle` no CSV `<stem>_norm_diagnostics.csv` (Seção 17).
+pandas produzirá **menos** bins do que o solicitado; nesse caso o método **emite um `UserWarning`**
+e informa tanto `requested_bin_count` quanto `actual_bin_count`, evitando que um diagnóstico
+silenciosamente degradado seja interpretado como completo. O parâmetro `bin_count` deve ser
+\(\ge 2\). Esse diagnóstico também é gravado automaticamente por `save_bundle` no CSV
+`<stem>_norm_diagnostics.csv` (Seção 18), usando `bin_count=10`.
 
-### 15.2 Diagnóstico por cap: sempre reporte os percentis de `cap_lower_bound_effective`
+### 16.2 Sempre reporte os percentis de `cap_lower_bound_effective`
 
-Nos modos de calota (`IDPERTURB_CAP` e `HYBRID_VMF_CAP`), o piso `lb` **nominal** configurado
-em `DirectionalConfig.cap_base_lower_bound` **não** é, em geral, o piso realmente aplicado. Com
+Nos modos de calota (`IDPERTURB_CAP` e `HYBRID_VMF_CAP`), o piso `lb` **nominal** configurado em
+`DirectionalConfig.cap_base_lower_bound` **não** é, em geral, o piso realmente aplicado. Com
 `cap_overlap_guard=True` (padrão), a regra do bissetor impõe um piso por identidade a partir da
-densidade local dos centros, e **essa guarda tem prioridade**: o `lb` efetivo pode exceder
-`cap_maximum_lower_bound` em regiões densas da população. Em 512-D, mesmo centros aleatórios têm
-vizinhos relativamente próximos, então um `lower_bound` nominal de, por exemplo, `0.4` pode
-corresponder a um piso efetivo bem maior para identidades típicas.
+densidade local dos centros, e **essa guarda tem prioridade**: aplicada **após** o clip, ela pode
+empurrar o `lb` efetivo **acima** de `cap_maximum_lower_bound` em regiões densas da população. Em
+512-D, mesmo centros aleatórios têm vizinhos relativamente próximos, então um `lower_bound`
+nominal de, por exemplo, `0.4` pode corresponder a um piso efetivo bem maior para identidades
+típicas.
 
 Por isso, a regra de ouro do diagnóstico por cap é: **sempre reporte os percentis empíricos de
 `cap_lower_bound_effective` (mean / p10 / p50 / p90) lado a lado com o `lb` nominal.** O `lb`
 nominal documenta a *intenção*; os percentis do efetivo documentam a *realização*. A separação
-genuína entre identidades reflete o efetivo, não o nominal.
+genuína entre identidades reflete o efetivo, não o nominal. O `lb` nominal é um piso, não o valor
+realizado.
 
 ```python
 import numpy as np
 
-lb_eff = test.metadata["cap_lower_bound_effective"].to_numpy()
+eff = test.metadata["cap_lower_bound_effective"].to_numpy()
+eff = eff[~np.isnan(eff)]  # ignora linhas do modo vmf
 print({
-    "lb_nominal": test.config.directional.cap_base_lower_bound,
-    "lb_eff_mean": float(np.nanmean(lb_eff)),
-    "lb_eff_p10": float(np.nanpercentile(lb_eff, 10)),
-    "lb_eff_p50": float(np.nanpercentile(lb_eff, 50)),
-    "lb_eff_p90": float(np.nanpercentile(lb_eff, 90)),
+    "nominal_lb": test.config.directional.cap_base_lower_bound,
+    "effective_mean": float(eff.mean()),
+    "p10": float(np.percentile(eff, 10)),
+    "p50": float(np.percentile(eff, 50)),
+    "p90": float(np.percentile(eff, 90)),
 })
 ```
 
-No modo `HYBRID_VMF_CAP`, complemente o relatório com a **taxa de fallback de calota**: a
-fração de `hybrid_used_cap_fallback == True` e a distribuição de `hybrid_resample_count`. Com
-`lb` alto e `κ` baixo, grande parte das amostras pode acabar vindo da calota por fallback — e
-nesse caso o modo deixa de ser, na prática, "vMF truncado". Auditar essa taxa evita descrever o
-dataset com uma geometria que ele não tem.
+No modo `hybrid_vmf_cap`, acrescente ao relatório a fração de
+`hybrid_used_cap_fallback == True` e a distribuição de `hybrid_resample_count` (Seção 15.2): juntos,
+eles revelam se o resultado foi de fato dominado pelo corpo vMF ou pela calota de segurança.
 
 ---
 
-## 16. Geração de pares
+## 17. Geração de pares
 
-### 16.1 Uso básico
-
-A função `sample_pair_table` amostra pares genuínos e impostores aleatórios, calcula o cosseno
-de cada par e devolve um `DataFrame` de trials anotado.
+A função `sample_pair_table` produz uma tabela de pares (genuínos e impostores aleatórios) já
+escorada por cosseno, pronta para alimentar avaliação de backend (PLDA, calibração, EER, Cllr).
+Ela consome um `SyntheticEmbeddingDataset` e devolve um `pandas.DataFrame`.
 
 ```python
-from adaface_embedding_simulator import sample_pair_table
+from adaface_embedding_simulator import sample_pair_table, PairSamplingStrategy
 
 pairs = sample_pair_table(
     test,
-    genuine_pair_count=50_000,
-    random_impostor_pair_count=50_000,
-    random_seed=202,
-)
-```
-
-Os pares genuínos são sempre balanceados por identidade. A amostragem de impostores depende da
-estratégia escolhida.
-
-### 16.2 Estratégia `BALANCED_IDENTITY`
-
-```python
-from adaface_embedding_simulator import PairSamplingStrategy
-
-pairs = sample_pair_table(
-    test,
-    genuine_pair_count=50_000,
-    random_impostor_pair_count=50_000,
+    genuine_pair_count=20_000,
+    random_impostor_pair_count=20_000,
+    random_seed=123,
     strategy=PairSamplingStrategy.BALANCED_IDENTITY,
+    unique_pairs=False,
 )
 ```
 
-É a estratégia padrão. Interpretação:
+### 17.1 Parâmetros
 
-- genuínos: a identidade é escolhida aproximadamente de forma uniforme, e duas observações
-  distintas dela são sorteadas;
-- impostores: duas identidades distintas são escolhidas aproximadamente de forma uniforme, e
-  uma observação de cada uma é sorteada.
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dataset` | `SyntheticEmbeddingDataset` | obrigatório | dataset cujas observações serão pareadas |
+| `genuine_pair_count` | `int` | obrigatório | nº de pares genuínos (mesma identidade) a amostrar |
+| `random_impostor_pair_count` | `int` | obrigatório | nº de pares impostores (identidades distintas) a amostrar |
+| `random_seed` | `int` | `123` | seed do RNG local da amostragem de pares |
+| `strategy` | `PairSamplingStrategy` ou `str` | `BALANCED_IDENTITY` | estratégia de ponderação dos impostores |
+| `unique_pairs` | `bool` | `False` | se `True`, deduplica pares não-ordenados após a amostragem |
 
-Esse modo evita que identidades com muitas amostras dominem os trials.
+Contagens negativas levantam erro. Os genuínos exigem ao menos uma identidade com \(\ge 2\)
+amostras; os impostores exigem ao menos duas identidades — caso contrário a função levanta erro
+explícito.
 
-### 16.3 Estratégia `BALANCED_OBSERVATION`
+### 17.2 Estratégias de amostragem (`PairSamplingStrategy`)
 
-```python
-pairs = sample_pair_table(
-    test,
-    genuine_pair_count=50_000,
-    random_impostor_pair_count=50_000,
-    strategy=PairSamplingStrategy.BALANCED_OBSERVATION,
-)
-```
+Em ambas as estratégias os **pares genuínos são identity-balanced**: cada identidade elegível
+(com \(\ge 2\) amostras) recebe peso aproximadamente igual, e os dois índices internos são
+sorteados sem repetição dentro da identidade. As estratégias diferem apenas na ponderação dos
+**impostores**:
 
-Interpretação:
+- **`BALANCED_IDENTITY`** (padrão) — atribui peso de trial aproximadamente igual a cada
+  identidade. Os impostores são formados sorteando primeiro duas identidades distintas (com peso
+  uniforme por identidade) e, em seguida, uma observação dentro de cada uma. Resultado: identidades
+  com poucas amostras não ficam sub-representadas nos impostores.
+- **`BALANCED_OBSERVATION`** — amostra impostores aproximadamente em proporção ao número de
+  embeddings observados, sorteando duas linhas quaisquer do dataset e rejeitando colisões de
+  identidade. Resultado: identidades com muitas observações dominam os impostores, refletindo a
+  distribuição empírica de observações.
 
-- genuínos continuam balanceados por identidade;
-- impostores são amostrados aproximadamente em proporção ao número de observações (linhas) — o
-  par é formado por duas linhas aleatórias de identidades distintas.
+### 17.3 `unique_pairs`
 
-### 16.4 Trials únicos (`unique_pairs`)
+Quando `unique_pairs=True`, a tabela é deduplicada por par não-ordenado \(\{i,j\}\) (ordena
+`min`/`max` das linhas e remove duplicatas, preservando o rótulo). Como a deduplicação remove
+trials repetidos, o `DataFrame` retornado pode conter **menos** linhas do que
+`genuine_pair_count + random_impostor_pair_count`; nesse caso a função **emite um `UserWarning`**.
+Use `unique_pairs=True` quando a independência entre trials importar (por exemplo, para não
+inflar artificialmente a contagem efetiva de pares distintos numa métrica).
 
-```python
-pairs = sample_pair_table(
-    test,
-    genuine_pair_count=50_000,
-    random_impostor_pair_count=50_000,
-    unique_pairs=True,
-)
-```
-
-A deduplicação trata pares como simétricos:
-
-\[
-(a,b)\equiv(b,a).
-\]
-
-Se duplicatas forem removidas, o método emite um warning e a tabela retornada pode conter
-menos trials do que solicitado. As escolhas de estratégia e de unicidade ficam registradas em
-`pairs.attrs["sampling_strategy"]` e `pairs.attrs["unique_pairs"]` para rastreabilidade.
-
-### 16.5 Colunas dos trials
+### 17.4 Colunas de saída
 
 | Coluna | Significado |
 |---|---|
-| `left_row`, `right_row` | índices das observações no dataset |
-| `is_genuine` | `1` genuíno (Hp), `0` impostor (Hd) |
-| `cosine_score` | cosseno entre as direções normalizadas |
-| `left_identity_id`, `right_identity_id` | identidades dos dois lados |
-| `left_norm`, `right_norm` | normas dos embeddings brutos |
-| `left_reference_scaled_log_norm_z`, `right_reference_scaled_log_norm_z` | posições radiais padronizadas |
-| `left_robust_norm_z`, `right_robust_norm_z` | aliases legados das posições radiais |
-| `left_quality`, `right_quality` | qualidades sintéticas |
+| `left_row` | índice da linha esquerda no `dataset.metadata` |
+| `right_row` | índice da linha direita |
+| `is_genuine` | `1` para par genuíno (mesma identidade), `0` para impostor |
+| `cosine_score` | escore de cosseno entre as duas direções normalizadas |
+| `left_identity_id` / `right_identity_id` | ids de identidade dos dois lados |
+| `left_norm` / `right_norm` | normas dos embeddings brutos dos dois lados |
+| `left_reference_scaled_log_norm_z` / `right_reference_scaled_log_norm_z` | posição radial padronizada de cada lado |
+| `left_robust_norm_z` / `right_robust_norm_z` | **alias** das colunas `*_reference_scaled_log_norm_z` (mesmo valor sob nome alternativo) |
+| `left_quality` / `right_quality` | qualidade latente de cada lado |
 
-O cosseno é computado por `cosine_scores`, que re-normaliza as linhas selecionadas de
-`dataset.normalized_embeddings` antes do produto interno. As colunas radiais e de qualidade dos
-dois lados permitem estratificar diretamente o desempenho dos trials por norma e por qualidade.
-
----
-
-## 17. Persistência e manifesto
-
-Todos os métodos de persistência do `SyntheticEmbeddingDataset` foram desenhados para serem
-**round-trippáveis**: o manifesto carrega a configuração completa, e
-`config_from_manifest` (Seção 9) reconstrói o `SimulatorConfig` exato a partir dele, de modo que
-um experimento pode ser re-gerado bit-a-bit a partir dos artefatos persistidos somados às seeds
-registradas.
-
-### 17.1 `save_npz()`
-
-```python
-dataset.save_npz("test_embeddings.npz")
-```
-
-Salva, em arquivo NumPy comprimido:
-
-- embeddings brutos e normalizados;
-- centros de identidade;
-- médias dos componentes populacionais;
-- base anisotrópica global (matriz `(d, 0)` quando ausente);
-- nomes dos domínios;
-- matriz de vetores médios de bias por domínio;
-- os metadados estruturados (`metadata.to_records`).
-
-### 17.2 `save_metadata_csv()`
-
-```python
-dataset.save_metadata_csv("test_metadata.csv")
-```
-
-Grava o `DataFrame` de metadados (Seção 14.2) como CSV, incluindo as colunas de cap e de
-proveniência quando presentes.
-
-### 17.3 `save_manifest()`
-
-```python
-dataset.save_manifest("test_manifest.json")
-```
-
-O manifesto JSON contém:
-
-- `simulator_version`;
-- `profile_name`;
-- `structural_seed`;
-- `population_sampling_seed`;
-- `observation_sampling_seed`;
-- `stream_name`;
-- `row_count`, `dimension`, `identity_count`;
-- `source_sha256` (SHA-256 do código-fonte do simulador);
-- o bloco `config` completo (via `config_to_dict`);
-- um bloco `extra` opcional para metadados arbitrários do experimento.
-
-O bloco `config` é exatamente o que `config_from_manifest` lê para fechar o round-trip:
-
-```python
-from adaface_embedding_simulator import config_from_manifest
-
-restored_config = config_from_manifest("test_manifest.json")
-# restored_config reproduz o SimulatorConfig original (validado).
-```
-
-### 17.4 `save_bundle()`
-
-```python
-dataset.save_bundle("synthetic_output", "test")
-```
-
-É o método recomendado para experimentos auditáveis. Produz, de uma vez, os quatro artefatos:
-
-```text
-synthetic_output/
-├── test_embeddings.npz
-├── test_metadata.csv
-├── test_norm_diagnostics.csv
-└── test_manifest.json
-```
-
-O CSV de diagnóstico é gerado por `norm_bin_diagnostics(bin_count=10)` (Seção 15). O dicionário
-retornado por `save_bundle` mapeia cada chave (`npz`, `metadata`, `manifest`, `norm_diagnostics`)
-para o `Path` correspondente, facilitando o registro dos caminhos no log do experimento.
+Além das colunas, o `DataFrame` registra dois metadados em `result.attrs`: `sampling_strategy`
+(o valor da estratégia efetivamente usada) e `unique_pairs` (booleano). Os pares de colunas de
+covariáveis (`norm`, `reference_scaled_log_norm_z`, `quality`) por lado existem justamente para
+permitir calibração e diagnóstico condicionados em norma e qualidade.
 
 ---
 
-## 18. Adapters FaceAudit
+## 18. Serialização e persistência
 
-O simulador é um pacote independente e oferece dois caminhos de integração com o FaceAudit. Eles
-têm propósitos distintos: um é um **scaffold genérico de referência** desacoplado dos DTOs reais;
-o outro é o **adapter concreto de produção**, que importa os DTOs reais do FaceAudit. **Para
-qualquer uso real, utilize o adapter concreto da Seção 18.2.**
+A persistência é desenhada para ser **round-trippável e auditável**: a configuração inteira
+sobrevive a um ciclo JSON sem perda semântica, e o bundle de saída combina arrays, metadados,
+diagnóstico radial e um manifesto JSON com seeds e hash de fonte.
 
-### 18.1 Scaffold genérico de referência — `faceaudit_adapter.py`
-
-> **Caveat (obrigatório ler antes de usar):** o `faceaudit_adapter.py` é um scaffold de
-> **referência apenas**. Ele assume uma assinatura `EmbeddingInfo(embedding=, identity=,
-> metadata=)` que **NÃO corresponde ao DTO real do FaceAudit** — o `EmbeddingInfo` de produção
-> tem campos como `embedding`, `face_hash`, `image_path`, `identity`, `file_name`, `source`,
-> `origin`, `quality_scores`, e **não** aceita um kwarg `metadata`. Não use este módulo em
-> produção; ele existe para documentar o padrão de injeção de factories e para casos em que o
-> usuário injeta os próprios construtores compatíveis com a assinatura assumida.
-
-O scaffold expõe duas funções, ambas com as factories de DTO **injetadas** pelo chamador.
-
-`dataset_to_embedding_records` converte o dataset sintético em registros simples (sem qualquer
-DTO):
+### 18.1 Round-trip da configuração
 
 ```python
-from faceaudit_adapter import dataset_to_embedding_records
+from adaface_embedding_simulator import config_to_dict, config_from_dict, config_from_manifest
 
-records = dataset_to_embedding_records(
-    test,
-    embedding_view="normalized",   # "raw" ou "normalized"
-    domain_filter="surveillance",  # opcional
-)
-# cada item: {"embedding": ..., "identity": ..., "metadata": {...}}
+blob = config_to_dict(config)          # dicts JSON-ready (enums como string, arrays como listas)
+config_again = config_from_dict(blob)  # reconstrói e VALIDA
+config_from_disk = config_from_manifest("run_manifest.json")  # lê o bloco "config" do manifesto
 ```
 
-`to_faceaudit_embedding_dataset` monta DTOs a partir de factories injetadas. Como o construtor
-real difere da assinatura assumida, os parâmetros de factory são explícitos:
+- **`config_to_dict(config)`** — converte um `SimulatorConfig` em dicionários aninhados
+  JSON-ready: enums viram seus valores string, arrays NumPy viram listas Python, escalares NumPy
+  viram escalares Python nativos. O resultado é diretamente serializável com `json.dumps`.
+- **`config_from_dict(data)`** — fecha o round-trip: reconstrói o `SimulatorConfig` a partir do
+  dicionário e **chama `validate()` antes de retornar**. Campos de array permanecem como listas
+  (todo consumidor chama `np.asarray` internamente, então a geração reproduz); campos enum
+  permanecem como string (os DTOs e o simulador aceitam ambos).
+  - **Chaves faltantes caem em default**: a reconstrução usa os defaults do dataclass para chaves
+    ausentes (por exemplo o bloco `coupling` inteiro é opcional). Isso torna a leitura tolerante a
+    configurações escritas com menos campos.
+  - **Chaves desconhecidas erram**: passar uma chave que nenhum dataclass reconhece levanta
+    `TypeError`, surfaceando incompatibilidades cedo em vez de ignorá-las silenciosamente.
+- **`config_from_manifest(path)`** — abre um manifesto JSON escrito por `save_manifest`, extrai o
+  bloco `"config"` e delega a `config_from_dict`. Levanta erro se o manifesto não tiver o bloco
+  `config`. É o caminho canônico para reconstruir a configuração exata de uma execução passada a
+  partir do seu manifesto.
+
+### 18.2 Persistência do dataset
+
+Quatro métodos do `SyntheticEmbeddingDataset` cobrem desde a gravação granular até o bundle
+completo:
 
 ```python
-from faceaudit_adapter import to_faceaudit_embedding_dataset
-
-faceaudit_dataset = to_faceaudit_embedding_dataset(
-    test,
-    embedding_info_factory=EmbeddingInfo,        # injetado pelo usuário
-    embedding_dataset_factory=EmbeddingDataset,  # injetado pelo usuário
-    embedding_view="normalized",
-    dataset_factory_keyword="embeddings",        # se o construtor espera um kwarg
-    include_metadata=True,                       # exige metadata= no EmbeddingInfo
-)
+test.save_npz("out/test_embeddings.npz")
+test.save_metadata_csv("out/test_metadata.csv")
+test.save_manifest("out/test_manifest.json", extra={"experiment": "exp_42"})
+paths = test.save_bundle("out", stem="test")   # npz + csv + manifesto + diagnóstico radial
 ```
 
-Se a factory injetada não aceitar metadados, passe `include_metadata=False`. Reforçando: por
-não casar com o DTO real, este caminho serve só como referência — a ponte real é o adapter
-concreto.
-
-### 18.2 Adapter concreto de produção — `faceaudit_concrete_adapter.py`
-
-Este módulo importa os DTOs reais (`from faceaudit.models.embedding_dataset import
-EmbeddingDataset` e `from faceaudit.models.embedding_info import EmbeddingInfo`) e mapeia as
-colunas de metadados do simulador sobre os campos reais do `EmbeddingInfo`. É o adapter a usar
-em qualquer pipeline FaceAudit.
-
-```python
-from faceaudit_concrete_adapter import to_embedding_dataset
-
-ds = to_embedding_dataset(
-    test,
-    name="synthetic_test",        # default: f"synthetic_{split}"
-    embedding_view="raw",         # default "raw" (norma preservada)
-    quality_key="generic",        # bucket lido por quality_score / BY_QUALITY
-    origin="adaface_simulator",
-    domain_filter=None,           # opcional, filtra por acquisition_domain
-    dtype=np.float32,             # cast para casar com datasets reais extraídos
-)
-```
-
-#### Mapeamento de campos
-
-| Campo do `EmbeddingInfo` | Fonte no dataset sintético |
+| Método | O que grava |
 |---|---|
-| `embedding` | `raw_embeddings` (default, norma preservada) ou `normalized_embeddings`, **cast para `float32`** |
-| `identity` | `str(identity_id)` |
-| `quality_scores[quality_key]` | `latent_quality` (bucket `"generic"` por padrão) |
-| `source` | `acquisition_domain` (handle por amostra para splits cross-condition) |
-| `origin` | tag de proveniência (default `"adaface_simulator"`) |
-| `face_hash` | SHA-256 **determinístico** de `(split, identity_id, sample_index, session_index)` |
-| `image_path` | caminho sintético determinístico `synthetic/{split}/{identity}/{sample}.png` |
-| `file_name` | nome sintético determinístico `{identity}_{sample}.png` |
-| `face_image` | `None` |
-| `pose` | vazio (o simulador modela nuisance, não pose literal de cabeça) |
+| `save_npz(path)` | arquivo NumPy comprimido com `raw_embeddings`, `normalized_embeddings`, `identity_centers`, `population_component_means`, `anisotropic_basis` (matriz vazia `(D, 0)` quando `None`), os nomes de domínio ordenados, a matriz empilhada de `domain_bias_vectors` e os registros do metadata |
+| `save_metadata_csv(path)` | apenas o `DataFrame` `metadata` como CSV (sem índice) |
+| `save_manifest(path, extra=None)` | manifesto JSON com proveniência completa (ver Seção 18.3) |
+| `save_bundle(output_dir, stem)` | conveniência: grava `<stem>_embeddings.npz`, `<stem>_metadata.csv`, `<stem>_manifest.json` e o diagnóstico radial `<stem>_norm_diagnostics.csv` (`norm_bin_diagnostics(bin_count=10)`); retorna um `dict` com os quatro `Path` sob as chaves `npz`, `metadata`, `manifest`, `norm_diagnostics` |
 
-Pontos de projeto importantes:
+Todos os métodos criam os diretórios pais que faltarem e retornam o `Path` (ou `dict` de
+`Path`) escrito.
 
-- **`embedding_view="raw"` é o default.** Diferentemente do scaffold genérico (que usa
-  `"normalized"`), o adapter concreto entrega por padrão o embedding bruto com a norma
-  preservada, pois é o formato que casa com datasets reais extraídos e permite ao FaceAudit
-  recuperar a norma L2 quando necessário.
-- **Cast determinístico para `float32`** alinha o tipo com os datasets de embeddings reais
-  extraídos pelo FaceAudit.
-- **`face_hash` é um SHA-256 determinístico** dos identificadores da amostra, garantindo hashes
-  estáveis e reproduzíveis entre execuções (mesmo `(split, identity_id, sample_index,
-  session_index)` ⇒ mesmo hash).
-- Covariáveis contínuas não mapeadas (`reference_scaled_log_norm_z`, `intra_kappa`,
-  `radial_regime`, diagnósticos de passo tangencial, e as colunas de cap da v0.3) **permanecem**
-  nos metadados do simulador e são persistidas pelos sidecars CSV de `save_bundle` (Seção 17) —
-  nada essencial para estratificação é perdido, já que a norma é recuperável do embedding bruto.
+### 18.3 O manifesto como artefato de proveniência
 
-#### `loaded_metadata` de proveniência
+`save_manifest` escreve um JSON indentado com o seguinte conteúdo, projetado como o **artefato de
+cadeia de custódia** de uma execução:
 
-Cada `EmbeddingDataset` produzido recebe um `loaded_metadata` com a proveniência do experimento:
-`generator`, `simulator_version`, `profile_name`, `split`, `embedding_view`, `dimension`,
-`n_samples`, `n_identities` e, quando aplicável, `domain_filter`. Esse bloco é o registro de
-cadeia de custódia do lado FaceAudit.
+| Chave | Significado |
+|---|---|
+| `simulator_version` | versão do gerador |
+| `profile_name` | nome do perfil da configuração |
+| `structural_seed` | seed estrutural |
+| `population_sampling_seed` | seed da amostragem da população |
+| `observation_sampling_seed` | seed da amostragem das observações |
+| `stream_name` | nome do stream de RNG das observações |
+| `row_count` / `dimension` | nº de observações e dimensão dos embeddings |
+| `identity_count` | nº de identidades distintas no metadata |
+| `source_sha256` | SHA-256 do próprio arquivo-fonte do simulador (quando acessível) |
+| `config` | a configuração integral via `config_to_dict` (re-lível por `config_from_manifest`) |
+| `extra` | dicionário arbitrário do usuário, normalizado para JSON (`_json_ready`) |
 
-#### Cross-condition
+Como o manifesto carrega o bloco `config` completo e as três seeds, ele é **round-trippável**:
+`config_from_manifest` reconstrói a configuração exata, e reinstanciar o simulador com a mesma
+`structural_seed` reproduz os artefatos estruturais; com as mesmas seeds de população e observação
+o dataset inteiro é reproduzido bit-a-bit. O `source_sha256` permite verificar que o código-fonte
+usado na geração não mudou entre a execução e a auditoria.
+
+---
+
+## 19. Adapters para o FaceAudit
+
+O pacote oferece dois caminhos de integração com o FaceAudit, com papéis distintos: um **scaffold
+genérico de referência** (`faceaudit_adapter`), que mostra a forma da conversão sem acoplar ao
+projeto hospedeiro, e o **adapter concreto** (`faceaudit_concrete_adapter`), que é a ponte real de
+produção, importando os DTOs do FaceAudit e mapeando os campos corretamente.
+
+### 19.1 O scaffold genérico `faceaudit_adapter` (referência, NÃO usar em produção)
+
+`faceaudit_adapter` é um scaffold de **referência por injeção de dependência**: os construtores do
+FaceAudit (`EmbeddingInfo`, `EmbeddingDataset`) não são importados; são **injetados** como
+callables. Ele expõe:
+
+- **`dataset_to_embedding_records(dataset, *, embedding_view="normalized", domain_filter=None)`**
+  — converte o dataset sintético em uma lista de `dict`s simples (`embedding`, `identity`,
+  `metadata`), opcionalmente filtrando por domínio de aquisição. `embedding_view` escolhe a matriz
+  bruta (`"raw"`) ou normalizada (`"normalized"`).
+- **`to_faceaudit_embedding_dataset(dataset, *, embedding_info_factory, embedding_dataset_factory,
+  ...)`** — monta DTOs chamando os construtores injetados.
+
+> **Caveat decisivo — não casa com o DTO real.** O scaffold assume
+> `EmbeddingInfo(embedding=, identity=, metadata=)`, isto é, um `EmbeddingInfo` que aceita um
+> kwarg `metadata`. **O `EmbeddingInfo` real do FaceAudit NÃO tem esse kwarg** (sua assinatura é
+> `EmbeddingInfo(embedding, face_hash, image_path, identity, file_name, ...)`). Portanto
+> `faceaudit_adapter` serve **apenas como referência didática** da forma da conversão — não deve
+> ser usado para produzir datasets reais do FaceAudit. Para produção, use o adapter concreto
+> (Seção 19.2).
+
+### 19.2 O adapter concreto `faceaudit_concrete_adapter` (produção)
+
+`faceaudit_concrete_adapter` é a ponte real: importa `EmbeddingDataset` e `EmbeddingInfo` do
+FaceAudit e mapeia as colunas de metadata do simulador sobre os campos reais do `EmbeddingInfo`.
+Expõe duas funções.
+
+#### `to_embedding_dataset`
 
 ```python
-from faceaudit_concrete_adapter import cross_condition_to_embedding_datasets
+from simulator.faceaudit_concrete_adapter import to_embedding_dataset
 
-aligned = simulator.sample_cross_condition_datasets(...)  # Seção 13
-ds_by_domain = cross_condition_to_embedding_datasets(
-    aligned,
+fa_dataset = to_embedding_dataset(
+    test,
+    name="synthetic_test",
+    embedding_view="raw",      # padrão; norma preservada
+    quality_key="generic",
+    origin="adaface_simulator",
+    domain_filter=None,
+    dtype=np.float32,           # cast padrão para casar com datasets extraídos reais
+)
+```
+
+| Parâmetro | Tipo | Padrão | Significado |
+|---|---|---|---|
+| `dataset` | `SyntheticEmbeddingDataset` | obrigatório | saída de `sample_observations` / `sample_dataset` |
+| `name` | `str` ou `None` | `None` | nome do dataset (default `f"synthetic_{split}"`) |
+| `embedding_view` | `"raw"` ou `"normalized"` | `"raw"` | matriz fonte; `"raw"` preserva a norma |
+| `quality_key` | `str` | `"generic"` | chave sob a qual `latent_quality` é gravada em `quality_scores` |
+| `origin` | `str` | `"adaface_simulator"` | valor do campo `origin` de cada item |
+| `domain_filter` | `str` ou `None` | `None` | se definido, mantém só as linhas cujo `acquisition_domain` casa |
+| `dtype` | `np.dtype` ou `type` | `np.float32` | dtype dos embeddings gravados |
+
+Mapeamento de campos (covariáveis forensicamente acionáveis preservadas):
+
+- **`embedding`** ← `raw_embeddings` (padrão, norma preservada) ou `normalized_embeddings`,
+  **cast para `float32`** por padrão para casar com datasets reais extraídos.
+- **`identity`** ← `str(identity_id)`.
+- **`quality_scores[quality_key]`** ← `latent_quality` (bucket `"generic"` por padrão, que é o que
+  a property `quality_score` e o balanceamento BY_QUALITY do FaceAudit leem).
+- **`source`** ← `acquisition_domain` (handle por amostra usado em splits cross-condition).
+- **`origin`** ← tag de proveniência (`"adaface_simulator"` por padrão).
+- **`face_hash`** ← **SHA-256 determinístico** de `(split, identity_id, sample_index,
+  session_index)` — um hash estável e reproduzível por observação, não um valor aleatório.
+- **`image_path`** / **`file_name`** ← caminhos sintéticos determinísticos
+  (`synthetic/{split}/{identity_id}/{sample_index}.png` e `{identity_id}_{sample_index}.png`).
+- **`face_image`** ← `None`; **`pose`** deixado vazio (o simulador modela nuisance, não pose
+  literal de cabeça).
+
+O `EmbeddingDataset` resultante recebe um `loaded_metadata` de proveniência com `generator`,
+`simulator_version`, `profile_name`, `split`, `embedding_view`, `dimension`, `n_samples`,
+`n_identities` (e `domain_filter`, quando aplicado). As covariáveis contínuas que não entram no
+`EmbeddingInfo` (`reference_scaled_log_norm_z`, `intra_kappa`, `radial_regime`, diagnósticos de
+passo tangencial, etc.) permanecem nos metadados do simulador e são persistidas pelo `save_bundle`
+como sidecars CSV (Seção 18) — nada essencial para estratificação se perde, pois a norma L2 é
+recuperável a partir do embedding bruto.
+
+#### `cross_condition_to_embedding_datasets`
+
+```python
+from simulator.faceaudit_concrete_adapter import cross_condition_to_embedding_datasets
+
+fa_by_domain = cross_condition_to_embedding_datasets(
+    datasets_by_domain,        # saída de sample_cross_condition_datasets
     embedding_view="raw",
     quality_key="generic",
     origin="adaface_simulator",
@@ -2457,14 +2111,13 @@ ds_by_domain = cross_condition_to_embedding_datasets(
 )
 ```
 
-`cross_condition_to_embedding_datasets` mapeia a saída de `sample_cross_condition_datasets`
-(Seção 13) para um dicionário de `EmbeddingDataset` por domínio. Como os valores de `identity`
-são **idênticos** entre as condições, os datasets resultantes formam um conjunto cross-condition
-pareado: cada identidade rende pares genuínos cross-condition — exatamente o que estratégias como
-`PER_CONDITION` e `BALANCED_IDENTITY` precisam para comparações forenses entre condições
-assimétricas.
-
-## 19. Experimentos recomendados com PLDA
+Mapeia o `dict` de saída de `sample_cross_condition_datasets` (Seção 13) para um `dict` de
+`EmbeddingDataset` do FaceAudit, aplicando `to_embedding_dataset` a cada domínio com nome
+`f"synthetic_{domain_name}"`. Os datasets resultantes mantêm valores de **`identity` idênticos
+entre condições**, formando um conjunto cross-condition pareado: cada identidade produz pares
+genuínos cross-condition, exatamente o insumo de que o treino e a calibração PLDA cross-condition
+do FaceAudit precisam.
+## 20. Experimentos recomendados
 
 Esta seção descreve um conjunto de experimentos canônicos. O objetivo nunca é
 obter um único número sintético para "provar" que um backend funciona, e sim
@@ -2472,9 +2125,13 @@ obter um único número sintético para "provar" que um backend funciona, e sim
 hipóteses homocedásticas começam a falhar, e quanto a dispersão intra-classe
 afeta a separabilidade. Sempre use identidades disjuntas entre treino,
 desenvolvimento e teste, e sempre registre o perfil + a configuração completa
-(ver Seção 28).
+(ver Seção 25).
 
-### 19.1 Baseline esférico
+Os perfis prontos citados aqui — `make_spherical_baseline_config`,
+`make_cooperative_plda_config`, `make_cross_condition_stress_config` e
+`make_idperturb_cap_config` — estão descritos em detalhe na Seção 10.
+
+### 20.1 Baseline esférico (PLDA / calibração)
 
 Objetivo:
 
@@ -2498,9 +2155,11 @@ Comparar:
 Interpretação: no `SPHERICAL_BASELINE` não existe estrutura anisotrópica
 relevante nem heterocedasticidade de domínio. Se um backend introduz ganho
 expressivo aqui, suspeite de vazamento ou de superajuste ao próprio mundo
-sintético.
+sintético. Para a calibração, esse é o cenário onde a curva de calibração
+(raw × log-LR) deve ficar próxima de afim e o `Cllr` próximo do `Cllr_min`
+in-sample — qualquer desvio grande sugere problema de pipeline, não do mundo.
 
-### 19.2 Baseline cooperativo
+### 20.2 Baseline cooperativo (PLDA / calibração)
 
 Objetivo:
 
@@ -2523,7 +2182,7 @@ O perfil `COOPERATIVE_PLDA_BASELINE` é um cenário potencialmente otimista e
 cooperativo para PLDA — ele **não** é um limite superior matemático (ver Seção
 22.1).
 
-### 19.3 Stress cross-condition
+### 20.3 Stress cross-condition (PLDA / calibração)
 
 Objetivo:
 
@@ -2558,7 +2217,7 @@ aligned = simulator.sample_cross_condition_datasets(
 )
 ```
 
-Comparar:
+Comparar estratégias de estimação cross-condition do PLDA:
 
 ```text
 merge ingênuo
@@ -2582,9 +2241,11 @@ Métricas:
 O perfil `CROSS_CONDITION_HETEROSCEDASTIC` usa nuisance hierárquico, bases por
 domínio, bases específicas por identidade, viés de domínio, viés domínio ×
 identidade, viés de sessão e mapa exponencial. É o cenário projetado para
-**quebrar** o PLDA homocedástico de forma controlada.
+**quebrar** o PLDA homocedástico de forma controlada — exatamente onde a
+calibração afim sozinha tende a falhar e a estratificação por domínio passa a
+importar.
 
-### 19.4 Tipicidade
+### 20.4 Tipicidade
 
 Compare estimadores de tipicidade sobre uma mesma população:
 
@@ -2600,16 +2261,19 @@ Pergunta importante:
 > contaminados por amostras extremas (caudas radiais, baixa qualidade)?
 
 A tipicidade-oráculo é a única que conhece os centros verdadeiros; toda a
-distância entre ela e os estimadores empíricos é viés de estimação.
+distância entre ela e os estimadores empíricos é viés de estimação. Como a coluna
+`pre_nuisance_center_cosine` registra o cosseno ao centro **antes** do passo de
+nuisance, ela serve de referência interna para medir o quanto o nuisance degrada
+a tipicidade observada.
 
-### 19.5 Experimento de sweep de `lb` (modos de calota)
+### 20.5 Experimento de sweep de `lb` (modos de calota)
 
 Este experimento usa o eixo `intra_class_sampling_mode` para varrer a **dispersão
 intra-classe** de forma interpretável. Em vez de varrer `κ` (difícil de
 interpretar em 512-D), varre-se o piso de cosseno `lb` do modo
 `IDPERTURB_CAP`.
 
-Gere a varredura em duas versões, exatamente como na Seção 15:
+Gere a varredura em duas versões, exatamente como na Seção 16:
 
 **(A) guarda desligada + sem nuisance** — a tendência é limpa:
 
@@ -2677,16 +2341,22 @@ então a guarda do bissetor eleva o `lb` efetivo. **Sempre reporte os percentis 
 forma de mostrar a separação realizada. Com a guarda ligada, um `lb` nominal de
 `0.4` **não** significa que as amostras foram geradas com piso `0.4`.
 
-Comparação esperada entre as duas versões:
+Comparação esperada entre as duas versões da varredura:
 
-| Versão | Guarda | Curva `EER × lb` | `lb` efetivo |
+| Variante | Guarda | Curva `EER × lb` | `lb` efetivo |
 |---|---|---|---|
 | A | off | monotônica e limpa | ≈ `lb` nominal |
 | B | on | achatada em regiões densas | ≥ `lb` nominal (reportar percentis) |
 
-### 19.6 Experimento Modo B vs Modo A
+O piso por densidade é exatamente o que liga a calota à tipicidade: identidades
+em regiões densas (típicas) recebem piso maior e toleram menos variação intra;
+identidades raras toleram mais. O sweep com a guarda ligada mede esse efeito de
+forma realista; o sweep com a guarda desligada mede o efeito geométrico puro de
+`lb`.
 
-Compare as duas formas de ancoragem em dados reais (ver Seção 12) no MESMO
+### 20.6 Experimento Modo A vs Modo B
+
+Compare as duas formas de ancoragem em dados reais (ver Seção 14) no MESMO
 backend, mantendo as identidades de ancoragem disjuntas das de avaliação:
 
 - **Modo A** (`population_from_dataset`): os centros das identidades **são** as
@@ -2697,7 +2367,10 @@ backend, mantendo as identidades de ancoragem disjuntas das de avaliação:
   ordem.
 
 ```python
-from adaface_embedding_simulator import AdaFaceEmbeddingSimulator
+from adaface_embedding_simulator import (
+    AdaFaceEmbeddingSimulator,
+    make_cooperative_plda_config,
+)
 from faceaudit_seed import (
     population_from_dataset,
     simulator_config_from_dataset,
@@ -2733,23 +2406,32 @@ Divergências grandes entre A e B sinalizam que a **estrutura populacional** —
 não apenas a dispersão intra-classe — está dirigindo o resultado, e que a MoVMF
 de primeira ordem não captura a geometria empírica relevante (ver Seção 22.2).
 
+### 20.7 Matriz de ablações causais
+
+Para atribuir causalmente cada mudança de desempenho, cruze este eixo
+experimental com a matriz de acoplamentos e modos de dispersão descrita na
+Seção 9 (`CouplingConfig` + `intra_class_sampling_mode`). O cruzamento
+recomendado para um relatório completo é `{VMF, IDPERTURB_CAP, HYBRID_VMF_CAP} ×
+{A0, A4, A6}`, reportando por célula as métricas da Seção 20.3 mais os percentis
+de `cap_lower_bound_effective` nos modos de calota.
+
 ---
 
-## 20. Calibração contra embeddings AdaFace reais
+## 21. Calibração contra embeddings reais
 
 > Os valores padrão dos perfis são ilustrativos. Antes de usar resultados
 > sintéticos para afirmações quantitativas, ancore o simulador em uma base real
 > representativa.
 
-A partir da versão 0.3, o procedimento manual da v0.2 (estimar centros e
-referência radial "na mão") foi **substituído por ferramentas dedicadas** no
-módulo `faceaudit_seed`. Use-as em vez de reproduzir as fórmulas manualmente —
-elas tratam pesos por qualidade, médias degeneradas, seleção de K e o caso L2.
+A calibração do gerador contra estatísticas reais é feita por ferramentas
+dedicadas do módulo `faceaudit_seed` e por `RadialReference.fit`. Use-as em vez
+de reproduzir as fórmulas manualmente — elas tratam pesos por qualidade, médias
+degeneradas, seleção de K e o caso L2.
 
-### 20.1 Estimar a referência radial real
+### 21.1 Estimar a referência radial real — `RadialReference.fit`
 
 `RadialReference.fit` aceita diretamente a matriz `(N, D)` de embeddings brutos
-reais e estima localização e escala robustas:
+reais (ou um vetor de normas) e estima localização e escala robustas:
 
 \[
 \text{localização} = \operatorname{mediana}(\log r),
@@ -2769,12 +2451,17 @@ radial = RadialConfig.from_reference(
 )
 ```
 
+`RadialConfig.from_reference` propaga `log_norm_location`, `log_norm_scale` e
+`method` da referência para os campos `reference_log_norm_mean`,
+`reference_log_norm_scale` e `reference_method` do `RadialConfig`, aceitando
+overrides dos demais campos por keyword.
+
 **Aviso L2:** se a base já estiver L2-normalizada (normas ≈ 1, dispersão ≈ 0), o
 MAD escalado é zero e o ajuste é indefinido. Passe embeddings **brutos**, não
-normalizados. O caminho automático (Seção 20.3) detecta esse caso e mantém a
+normalizados. O caminho automático (Seção 21.3) detecta esse caso e mantém a
 referência radial-base com um warning, em vez de quebrar.
 
-### 20.2 Estimar centros por identidade (Modo A)
+### 21.2 Estimar centros por identidade (Modo A) — `identity_centers_from_dataset`
 
 Em vez de calcular a média esférica manualmente, use
 `identity_centers_from_dataset`, que computa
@@ -2794,10 +2481,11 @@ extraction = identity_centers_from_dataset(
 # extraction.centers (M, D), extraction.labels, extraction.counts
 ```
 
-Esses centros alimentam diretamente uma população ancorada via
-`population_from_dataset` (ver Seção 12, Modo A).
+O retorno é um `IdentityCenterExtractionResult` (campos `centers`, `labels`,
+`counts`, `quality_weighted`). Esses centros alimentam diretamente uma população
+ancorada via `population_from_dataset` (Modo A — Seção 14).
 
-### 20.3 Ajuste automático completo (Modo B)
+### 21.3 Ajuste automático completo (Modo B) — `simulator_config_from_dataset`
 
 Para um config completo distribuição-matched — população MoVMF ajustada aos
 centros reais **mais** referência radial ajustada às normas reais — use o
@@ -2815,13 +2503,16 @@ print(fit_summary["selected_k"], fit_summary["norm_summary"])
 ```
 
 Esse caminho parte do `make_cooperative_plda_config` na dimensão do dataset,
-substitui a `PopulationConfig` pela MoVMF ajustada (perfil renomeado para
-`FACEAUDIT_MOVMF`) e, quando `fit_norm=True`, substitui a referência radial. O
-`fit_summary` traz K selecionado, valores de critério por K, número de componentes
-degenerados, entropia dos pesos e o resumo das normas — tudo persistível no
-manifesto para auditoria.
+substitui a `PopulationConfig` pela MoVMF ajustada (perfil `FACEAUDIT_MOVMF`) e,
+quando `fit_norm=True`, substitui a referência radial via
+`RadialConfig.from_reference(RadialReference.fit(matrix))`. O `fit_summary` traz
+K selecionado, valores de critério por K, número de componentes degenerados,
+entropia dos pesos e o `norm_summary` (mean/std/min/max das normas,
+`unit_norm_warning`, `radial_fitted`) — tudo persistível no manifesto para
+auditoria. A subfunção `population_config_from_dataset` retorna o par
+`(PopulationConfig, fit_summary)` quando só a população importa.
 
-### 20.4 Estatísticas mínimas a reproduzir
+### 21.4 Estatísticas mínimas a reproduzir
 
 Mesmo com as ferramentas automáticas, valide visualmente que o mundo sintético
 reproduz as estatísticas reais de interesse:
@@ -2840,12 +2531,12 @@ reproduz as estatísticas reais de interesse:
 | população | espectro de covariância entre identidades |
 | tipicidade | densidade e vizinhanças |
 
-### 20.5 Ajuste incremental e separação ajuste/avaliação
+### 21.5 Ajuste incremental e separação ajuste/avaliação
 
 Não ajuste tudo simultaneamente. Sequência recomendada:
 
-1. distribuição radial (Seção 20.1);
-2. distribuição populacional impostora (Seção 20.3);
+1. distribuição radial (Seção 21.1);
+2. distribuição populacional impostora (Seção 21.3);
 3. dispersão genuína central (`κ` ou `lb`);
 4. penalizações de cauda;
 5. diferenças de domínio;
@@ -2864,78 +2555,8 @@ Use identidades **disjuntas** para cada papel:
 | teste | avaliação final |
 
 No Modo A, garanta explicitamente a disjunção entre a base de ancoragem e a de
-avaliação com `assert_disjoint_source_identities` (Seção 12) — é uma asserção
-obrigatória do checklist da Seção 28.
-
----
-
-## 21. Matriz de ablações
-
-A matriz de ablações tem dois eixos. O **eixo de acoplamento/nuisance** (A0–A6)
-controla os caminhos causais qualidade → regime → norma → direção e o tipo de
-nuisance. O **eixo `intra_class_sampling_mode`** controla a mecânica de
-dispersão intra-classe. Os dois eixos são ortogonais e podem ser cruzados.
-
-### 21.1 Eixo de acoplamento e nuisance (A0–A6)
-
-| Cenário | Qualidade → regime | Qualidade → norma | Qualidade → direção | Norma → direção | Nuisance |
-|---|---:|---:|---:|---:|---|
-| A0 | não | não | não | não | nenhum |
-| A1 | sim | sim | não | não | nenhum |
-| A2 | não | não | sim | não | nenhum |
-| A3 | sim | sim | não | sim | nenhum |
-| A4 | sim | sim | sim | sim | global |
-| A5 | sim | sim | sim | sim | por domínio |
-| A6 | sim | sim | sim | sim | hierárquico |
-
-As três primeiras colunas mapeiam diretamente para `CouplingConfig`:
-
-| Coluna | Campo |
-|---|---|
-| Qualidade → regime | `quality_affects_regime_probabilities` |
-| Qualidade → norma | `quality_affects_log_norm` |
-| Qualidade → direção | `quality_affects_intra_kappa` |
-| Norma → direção | `norm_z_affects_intra_kappa` |
-
-A coluna Nuisance mapeia para `DirectionalConfig.nuisance_structure_mode`
-(`global_shared` / `per_domain` / `hierarchical`).
-
-Objetivo:
-
-- atribuir causalmente alterações de desempenho;
-- evitar interpretar um resultado agregado como efeito isolado de um único
-  mecanismo.
-
-### 21.2 Eixo `intra_class_sampling_mode`
-
-Este eixo varia **apenas** o modo de dispersão intra-classe, mantendo o resto da
-configuração fixo. Ver Seção 6.x para a mecânica.
-
-| Modo | Controle | Pergunta experimental |
-|---|---|---|
-| `VMF` | `κ` | baseline direcional sem piso angular rígido |
-| `IDPERTURB_CAP` | `lb` | o piso geométrico interpretável muda a separabilidade? |
-| `HYBRID_VMF_CAP` | `κ` + `lb` | quanto o piso rígido distorce o corpo vMF? |
-
-Observações ao cruzar este eixo com A0–A6:
-
-- nos modos de calota, os switches `quality_affects_intra_kappa` e
-  `norm_z_affects_intra_kappa` continuam ativos, mas gateiam a modulação do `lb`
-  (dispersão intra-classe), apesar do nome histórico mencionar `kappa`;
-- as penalidades de cauda da calota (`cap_low_tail_penalty`,
-  `cap_high_tail_penalty`) agem em **escala de cosseno**, não em `logκ` — não
-  reaproveite os mesmos valores das penalidades de `κ`;
-- para uma ablação limpa do eixo, desligue `cap_overlap_guard` (a guarda eleva o
-  `lb` efetivo de forma dependente da densidade populacional, contaminando a
-  varredura — ver Seção 19.5);
-- no `HYBRID_VMF_CAP`, audite `hybrid_used_cap_fallback`: com `lb` alto e `κ`
-  baixo, grande parte das amostras vem da calota e o modo deixa de ser "vMF
-  truncado" na prática.
-
-Cruzamento recomendado para um relatório completo: rodar `{VMF, IDPERTURB_CAP,
-HYBRID_VMF_CAP} × {A0, A4, A6}`, reportando para cada célula as métricas da
-Seção 19.3 mais os percentis de `cap_lower_bound_effective` (nos modos de
-calota).
+avaliação com `assert_disjoint_source_identities` (Seção 14) — é uma asserção
+obrigatória do checklist da Seção 25.
 
 ---
 
@@ -2958,7 +2579,7 @@ Evite:
 
 > limite superior garantido do PLDA.
 
-### 22.2 MoVMF não reproduz a rede AdaFace nem a variedade real
+### 22.2 O gerador não reproduz a rede AdaFace nem a variedade real
 
 O gerador modela propriedades **selecionadas**: direção, concentração angular,
 norma, caudas, qualidade latente, domínios e nuisance. Ele **não** reproduz
@@ -2999,8 +2620,9 @@ da densidade local dos centros e **tem prioridade** sobre o clipping. Por isso o
 é intencional, não bug. Em 512-D, um `lb` nominal de `0.4` com guarda ligada
 **não** significa que as amostras foram geradas com piso `0.4`. **Sempre reporte
 os percentis de `cap_lower_bound_effective` (mean/p10/p50/p90)** junto do `lb`
-nominal. Ligação com tipicidade: regiões densas (identidades típicas) toleram
-menos variação; regiões raras toleram mais.
+nominal — o `lb` nominal é apenas um piso, não o valor realizado. Ligação com
+tipicidade: regiões densas (identidades típicas) toleram menos variação; regiões
+raras toleram mais.
 
 Note ainda que `cap_lower_bound_effective` é o piso garantido na direção
 **pré-nuisance**. O passo tangencial de nuisance/viés pode empurrar o
@@ -3042,95 +2664,125 @@ Executar a partir da raiz do repositório:
 .venv/Scripts/python.exe -m pytest simulator/tests/ -q
 ```
 
-A suíte está organizada em sete módulos.
+A suíte está organizada em sete módulos. Os módulos de Modo B e do adapter
+concreto fazem `pytest.importorskip("faceaudit")` e são automaticamente pulados
+quando o FaceAudit não está instalado; os demais rodam sem o host.
 
-### 23.1 `test_adaface_embedding_simulator.py` — núcleo v0.2
+### 23.1 `test_adaface_embedding_simulator.py` — núcleo
 
 Valida a geometria e a reprodutibilidade básicas:
 
-- normas unitárias e alinhamento da média empírica da vMF;
+- normas unitárias e alinhamento da média empírica da vMF (`sample_vmf`);
 - crescimento do comprimento resultante com \(\kappa\);
-- consistência entre embeddings brutos e metadados;
-- independência da ordem das chamadas e seeds explícitas;
-- compartilhamento de população em cross-condition;
-- bases distintas por domínio;
-- probabilidades dos regimes radiais quando desacoplados;
-- rótulos e estratégia `balanced_observation` dos pares;
-- diagnóstico de bins do `qcut`.
+- consistência entre embeddings brutos e metadados (norma bate com
+  `embedding_norm`, presença de `combined_tangent_step_norm`);
+- independência da ordem das chamadas e seeds explícitas reproduzíveis;
+- compartilhamento de população em cross-condition (centros e conjunto de
+  `identity_id` idênticos entre domínios);
+- bases anisotrópicas distintas por domínio;
+- probabilidades dos regimes radiais batem com a configuração quando o
+  acoplamento qualidade→regime está desligado;
+- rótulos corretos dos pares (genuínos com mesma identidade, impostores com
+  identidades distintas) e estratégia `BALANCED_OBSERVATION`;
+- diagnóstico de bins do `qcut` reporta `requested_bin_count`/`actual_bin_count`.
 
 ### 23.2 `test_idperturb_cap.py` — calota, guarda e golden VMF
 
-O módulo mais extenso da v0.3, cobrindo:
+O módulo mais extenso, cobrindo:
 
-- norma unitária da calota e preservação do cosseno sorteado;
+- norma unitária da calota e preservação do cosseno sorteado, com
+  \(\mathbb{E}[s] = (1+lb)/2\) (`sample_spherical_cap`);
 - `lb = 1` retorna a direção média;
 - pisos vetoriais respeitados por linha;
-- ortogonalidade e norma unitária dos tangentes determinístico e aleatório;
-- modulação de `lb` por qualidade/norma quando acoplado, e `lb` plano quando
-  desacoplado;
+- ortogonalidade e norma unitária dos tangentes (`_deterministic_orthogonal`,
+  `_sample_tangent_directions`);
+- modulação de `lb` por qualidade/norma quando acoplado (correlação positiva com
+  qualidade, negativa com `|z|`), e `lb` plano quando desacoplado;
 - offset de `lb` por domínio (`cap_lower_bound_offset`);
-- piso do bissetor exclui o próprio centro e cresce com a densidade;
-- versão em blocos do piso bate com a versão completa;
-- a guarda mantém a perturbação mais próxima do próprio centro;
-- **`lb` efetivo pode exceder o máximo configurado sob a guarda**;
-- piso exato sem nuisance e invariante pré/pós-nuisance
-  (`test_nuisance_can_push_post_cosine_below_lb_but_pre_holds`);
+- piso do bissetor (`_overlap_lower_bound_floor`) exclui o próprio centro, vale
+  `sqrt(0.5)` para centros ortogonais, cresce com a densidade, dá 0 para
+  singletons, e a implementação em blocos bate com a completa;
+- a guarda mantém a perturbação mais próxima do próprio centro que do vizinho;
+- **`lb` efetivo pode exceder o máximo configurado sob a guarda**, com percentis
+  reportáveis;
+- piso exato sem nuisance (`own_center_cosine == pre_nuisance_center_cosine`) e
+  invariante pré/pós-nuisance: o nuisance empurra parte das amostras abaixo do
+  piso geométrico, mas `pre_nuisance_center_cosine ≥ cap_lower_bound_effective`
+  sempre vale;
 - piso do overlap **não** serializado no manifesto;
 - modo HYBRID respeita o piso em todas as amostras;
-- taxa de fallback do HYBRID sobe com `lb` alto e `κ` baixo;
-- determinismo de cada modo;
+- taxa de fallback do HYBRID (`hybrid_used_cap_fallback`) sobe com `lb` alto e
+  `κ` baixo, e fica baixa com `lb` baixo e `κ` alto;
+- determinismo de **cada** modo de `IntraClassSamplingMode` (parametrizado);
 - **golden VMF** (`test_golden_vmf_core_arrays_unchanged`): trava a saída do modo
-  `VMF` bit-a-bit em relação à v0.2.0;
+  `VMF` por hash SHA-256 dos arrays `raw`/`normalized`/`centers`;
 - round-trip do config do perfil `IDPERTURB_CAP`.
 
 ### 23.3 `test_config_roundtrip.py` — serialização
 
-- `config_to_dict`/`config_from_dict` idempotente e JSON-safe;
-- round-trip funcional bate bit-a-bit na geração;
-- enums sobrevivem como strings;
+- `config_to_dict`/`config_from_dict` idempotente e JSON-safe nos quatro perfis;
+- round-trip funcional bate bit-a-bit na geração (arrays e metadata);
+- enums sobrevivem como strings (`tangent_update_mode`,
+  `nuisance_structure_mode`);
 - arrays NumPy serializam e reproduzem;
 - `config_from_manifest` lê o bloco `config` do manifesto;
-- chaves ausentes caem em defaults; chave desconhecida é rejeitada.
+- chaves ausentes caem em defaults; chave desconhecida é rejeitada (`TypeError`).
 
 ### 23.4 `test_core_population_injection.py` — injeção e extração de centros
 
-- injeção de `centers` usa e normaliza os vetores;
+Roda sem FaceAudit (a extração, o Modo A e os helpers de leakage nunca importam
+o host em runtime):
+
+- injeção de `centers` usa e normaliza os vetores e atribui `identity_ids`;
 - rejeição de "ambos" e "nenhum" entre `identity_count` e `centers`;
-- validação de dimensão, componentes e comprimentos;
-- **a injeção não altera o golden da população amostrada**;
+- validação de dimensão, componentes inteiros dentro de
+  `[0, component_count)`, e comprimentos de `identity_labels` /
+  `source_sample_counts`;
+- **a injeção não altera o golden da população amostrada** (caminho amostrado
+  permanece bit-a-bit idêntico);
 - extração: norma unitária, contagens, média esférica manual, agrupamento pelo
-  valor original de identidade, filtro `min_samples`, identidades `None`
-  ignoradas;
-- qualidade NaN/None e rejeição de pesos negativos;
-- `weight_by_quality` exige `items`;
-- fallback de média degenerada;
-- população Modo A e colunas de proveniência;
-- helpers de leakage;
+  valor original de identidade (`1` ≠ `"1"`), filtro `min_samples`, identidades
+  `None` ignoradas;
+- qualidade NaN/None vira peso 1 e rejeição de pesos negativos;
+- `weight_by_quality=True` exige `items`;
+- fallback de média degenerada (centros antipodais) com warning;
+- população Modo A produz colunas de proveniência `source_identity` /
+  `source_sample_count`;
+- helpers de leakage (`source_identity_set`, `assert_disjoint_source_identities`);
 - import do módulo sem disparar o import do `MoVMFTypicalityModel`.
 
 ### 23.5 `test_faceaudit_seed.py` — Modo B (MoVMF)
 
-- K fixo constrói config válido;
-- K automático seleciona dentro dos candidatos;
-- aviso quando as normas são unitárias (caso L2);
+Requer FaceAudit (`MoVMFTypicalityModel` + `EmbeddingDataset`):
+
+- K fixo constrói config válido (`FACEAUDIT_MOVMF`, médias unitárias, pesos
+  somando 1, `κ > 0`);
+- K automático seleciona dentro dos candidatos (`criterion_values` ⊆ candidatos);
+- aviso quando as normas são unitárias (caso L2), com
+  `unit_norm_warning is True`;
 - config do Modo B faz round-trip;
 - **ghost centres do Modo B se parecem mais com os reais do que centros
-  genéricos**;
+  genéricos** (cosseno do vizinho mais próximo fica mais perto do real);
 - exige ao menos dois centros;
-- round-trip com um `EmbeddingDataset` real.
+- round-trip completo: gerar sintético → adaptar para `EmbeddingDataset` real →
+  re-semear pela ponte.
 
 ### 23.6 `test_faceaudit_adapter.py` — adapter genérico
 
-- registros simples e adapter por factory injetada.
+- registros simples (`dataset_to_embedding_records`) e adapter por factory
+  injetada (`to_faceaudit_embedding_dataset`) usando DTOs dummy.
 
 ### 23.7 `test_faceaudit_concrete_adapter.py` — adapter concreto
 
-- mapeamento básico para `EmbeddingInfo`/`EmbeddingDataset`;
+Requer FaceAudit:
+
+- mapeamento básico para `EmbeddingInfo`/`EmbeddingDataset` (identity, quality,
+  source, origin, pose vazio, dtype `float32`);
 - `raw` preserva norma e `normalized` é unitário;
-- face hashes únicos e proveniência;
+- face hashes únicos e proveniência em `loaded_metadata`;
 - filtro de domínio;
 - round-trip por parquet;
-- cross-condition compartilha identidades.
+- cross-condition compartilha identidades entre condições.
 
 Para produção, acrescente testes específicos do seu pipeline FaceAudit.
 
@@ -3140,8 +2792,18 @@ Para produção, acrescente testes específicos do seu pipeline FaceAudit.
 
 ### `ValueError: anisotropic_rank must satisfy 0 <= rank < dimension`
 
-Reduza `anisotropic_rank`. As factories prontas já limitam o posto para
-dimensões reduzidas usadas em testes.
+Reduza `anisotropic_rank` (ou `identity_specific_nuisance_rank`). As factories
+prontas já limitam o posto para dimensões reduzidas usadas em testes. O posto tem
+de ser estritamente menor que a dimensão.
+
+### `ValueError: centers have dimension X, expected Y` (dimensão dos centros)
+
+A matriz de centros injetada em `sample_identity_population(centers=...)` — ou os
+centros extraídos por `identity_centers_from_dataset` — tem dimensão diferente da
+`SimulatorConfig.dimension`. Construa o simulador com
+`dimension=anchor_dataset.matrix.shape[1]` antes de ancorar. O mesmo vale para
+`simulator_config_from_dataset`, que rejeita `base_config` com dimensão
+divergente do dataset.
 
 ### O PLDA está performando bem demais
 
@@ -3155,12 +2817,21 @@ Verifique se está usando `make_cooperative_plda_config()`. Troque para
 Reduza gradualmente os mesmos parâmetros. Não conclua que o backend é inadequado
 apenas com base em um cenário extremo artificial.
 
+### Calota com `lb` degenerado (`lb = 1` ou faixa vazia)
+
+Se `cap_base_lower_bound = 1.0` (ou a modulação levar o `lb` efetivo a 1), a
+calota colapsa ao próprio centro e não há dispersão intra-classe — todas as
+amostras viram cópias do centro. Inversamente, se `cap_minimum_lower_bound >
+cap_maximum_lower_bound` a validação rejeita o config. Confira a faixa
+`[cap_minimum_lower_bound, cap_maximum_lower_bound]` e o sinal das penalidades.
+
 ### `qcut()` produziu menos bins
 
-O método emite warning e informa os dois contadores. Examine clipping radial,
-quantidade de valores idênticos, tamanho da base e parâmetros degenerados.
+O método `norm_bin_diagnostics` emite warning e informa os dois contadores
+(`requested_bin_count`/`actual_bin_count`). Examine clipping radial, quantidade de
+valores idênticos, tamanho da base e parâmetros degenerados.
 
-### `RadialReference.fit()` falhou com "scaled MAD is zero"
+### `RadialReference.fit()` falhou com "scaled MAD is zero" (normas ~unitárias)
 
 As normas fornecidas não têm dispersão suficiente. A causa mais comum é passar
 embeddings **já normalizados em L2** (normas ≈ 1). Passe embeddings **brutos**.
@@ -3179,7 +2850,7 @@ prática. Soluções: aumente `κ`, reduza `lb`, ou aumente
 `hybrid_max_resample_rounds` (custa tempo). Se o objetivo é a calota pura, use
 `IDPERTURB_CAP` diretamente.
 
-### `lb` efetivo excedendo `cap_maximum_lower_bound`
+### `lb` efetivo acima de `cap_maximum_lower_bound` via guarda
 
 **Não é bug.** A guarda do bissetor (`cap_overlap_guard=True`) tem prioridade
 sobre o clipping e impõe um piso por densidade local. Em regiões densas o `lb`
@@ -3195,6 +2866,15 @@ de cosseno**, **não** em `logκ`. Uma penalidade de `0.1` com `z = 2` derruba o
 (`low_tail_quadratic_penalty` / `high_tail_quadratic_penalty`), que entram em
 `logκ`.
 
+### Média esférica degenerada / pesos de qualidade
+
+Em `identity_centers_from_dataset`, uma identidade cuja média esférica colapsa
+para ≈0 (ex.: imagens antipodais) gera warning e fallback para a melhor imagem
+por qualidade (ou a primeira). Pesos de qualidade negativos são rejeitados;
+None/NaN viram peso 1; todos-zero caem para média não-ponderada. Se o aviso de
+degeneração aparecer com frequência, aumente `min_samples` (1 é ruidoso; 2+ é
+mais estável) ou revise a coluna `quality_score`.
+
 ### Devo usar o adapter genérico ou o concreto?
 
 Use **sempre o concreto** (`faceaudit_concrete_adapter.to_embedding_dataset`) em
@@ -3205,243 +2885,88 @@ produção: ele importa os DTOs reais e mapeia os campos corretos. O genérico
 `metadata`). O genérico é apenas referência/scaffold para projetos com outra
 assinatura de DTO.
 
-### `ValueError: Degenerate spherical mean` / pesos de qualidade
-
-Em `identity_centers_from_dataset`, uma identidade cuja média esférica colapsa
-para ≈0 gera warning e fallback para a melhor imagem por qualidade (ou a
-primeira). Pesos de qualidade negativos são rejeitados; None/NaN viram peso 1;
-todos-zero caem para média não-ponderada. Se o aviso de degeneração aparecer com
-frequência, aumente `min_samples` (1 é ruidoso; 2+ é mais estável) ou revise a
-coluna `quality_score`.
-
 ---
 
-## 25. Exemplo completo recomendado
+## 25. API pública resumida e checklist de experimento auditável
 
-Este exemplo end-to-end exercita as capacidades centrais da v0.3: modo de
-calota, round-trip de configuração, ancoragem Modo A/B, export pelo adapter
-concreto e asserção de vazamento.
+### 25.1 API pública resumida
 
-```python
-from pathlib import Path
+**Enums** (`adaface_embedding_simulator`):
 
-import numpy as np
+| Nome | Membros |
+|---|---|
+| `NuisanceStructureMode` | `GLOBAL_SHARED`, `PER_DOMAIN`, `HIERARCHICAL` |
+| `TangentUpdateMode` | `RETRACTION`, `EXPONENTIAL_MAP` |
+| `PairSamplingStrategy` | `BALANCED_IDENTITY`, `BALANCED_OBSERVATION` |
+| `IntraClassSamplingMode` | `VMF`, `IDPERTURB_CAP`, `HYBRID_VMF_CAP` |
 
-from adaface_embedding_simulator import (
-    AdaFaceEmbeddingSimulator,
-    config_from_manifest,
-    make_idperturb_cap_config,
-    sample_pair_table,
-)
-from faceaudit_seed import (
-    population_from_dataset,
-    simulator_config_from_dataset,
-    assert_disjoint_source_identities,
-)
-from faceaudit_concrete_adapter import to_embedding_dataset
+**Configs (dataclasses frozen):** `SimulatorConfig`, `PopulationConfig`,
+`RadialConfig`, `RadialReference` (com `fit`), `DirectionalConfig`,
+`CouplingConfig`, `AcquisitionDomainConfig`.
 
-output_dir = Path("synthetic_faceaudit_experiment")
-output_dir.mkdir(exist_ok=True)
+**Funções numéricas / amostragem:** `l2_normalize_rows`,
+`sample_uniform_directions`, `sample_vmf`, `sample_spherical_cap`,
+`sample_hybrid_vmf_cap`, `cosine_scores`, `sample_pair_table`.
 
-# 1) Mundo sintético com calota (IDPERTURB_CAP, lb = 0.6, guarda ligada)
-config = make_idperturb_cap_config(dimension=512, lower_bound=0.6)
-simulator = AdaFaceEmbeddingSimulator(config, random_seed=3030)
+**Serialização:** `config_to_dict`, `config_from_dict`, `config_from_manifest`.
 
-test = simulator.sample_dataset(
-    identity_count=1_000,
-    samples_per_identity=(4, 8),
-    split_name="cap_test",
-    identity_offset=300_000,
-    population_random_seed=4001,
-    random_seed=4002,
-)
+**Perfis prontos:** `make_spherical_baseline_config` (`SPHERICAL_BASELINE`),
+`make_cooperative_plda_config` (`COOPERATIVE_PLDA_BASELINE`; também disponível
+como `make_example_config`), `make_cross_condition_stress_config`
+(`CROSS_CONDITION_HETEROSCEDASTIC`), `make_idperturb_cap_config`
+(`IDPERTURB_CAP`).
 
-# Reporte a separação realizada: lb efetivo (a guarda pode elevá-lo)
-eff = test.metadata["cap_lower_bound_effective"]
-print("lb efetivo p10/p50/p90:", eff.quantile([0.10, 0.50, 0.90]).round(3).tolist())
+**Objetos de população/dataset:** `SyntheticIdentityPopulation`,
+`SyntheticEmbeddingDataset` (métodos `save_npz`, `save_metadata_csv`,
+`save_manifest`, `save_bundle`, `norm_bin_diagnostics`).
 
-# Bundle auditável (npz + metadata CSV + diagnostics CSV + manifesto JSON)
-paths = test.save_bundle(output_dir=output_dir, stem="cap_test")
+**Classe principal:** `AdaFaceEmbeddingSimulator` (métodos
+`sample_identity_population` — forma amostrada e forma de injeção via
+`centers=`/`components=`/`identity_labels=`/`source_sample_counts=`, mutuamente
+exclusiva com `identity_count`; `sample_observations`; `sample_dataset`;
+`sample_cross_condition_datasets`).
 
-# 2) Round-trip de configuração: reconstruir o config a partir do manifesto
-reloaded_config = config_from_manifest(paths["manifest"])
-assert reloaded_config.profile_name == "IDPERTURB_CAP"
+**Ponte com dados reais** (`faceaudit_seed`): `identity_centers_from_dataset`,
+`IdentityCenterExtractionResult`, `population_from_dataset` (Modo A),
+`population_config_from_dataset`, `simulator_config_from_dataset` (Modo B),
+`source_identity_set`, `assert_disjoint_source_identities`.
 
-# 3) Pares + scores de cosseno
-pairs = sample_pair_table(
-    test,
-    genuine_pair_count=50_000,
-    random_impostor_pair_count=50_000,
-    random_seed=5001,
-)
-pairs.to_csv(output_dir / "cap_test_pairs.csv", index=False)
+**Adapters:** `faceaudit_concrete_adapter.to_embedding_dataset` /
+`cross_condition_to_embedding_datasets` (produção, DTOs reais);
+`faceaudit_adapter.dataset_to_embedding_records` /
+`to_faceaudit_embedding_dataset` (scaffold de referência por injeção).
 
-# 4) Ancoragem em dados reais (requer faceaudit + datasets reais DISJUNTOS)
-#    anchor_dataset  -> base autorizada para ancorar
-#    eval_dataset    -> base de avaliação (NUNCA usada para ancorar)
-sim_anchor = AdaFaceEmbeddingSimulator(
-    make_idperturb_cap_config(dimension=anchor_dataset.matrix.shape[1], lower_bound=0.6),
-    random_seed=11,
-)
+### 25.2 Checklist de experimento auditável
 
-# Modo A — centros = médias esféricas reais por identidade
-pop_anchor = population_from_dataset(sim_anchor, anchor_dataset, min_samples=3)
-pop_eval = population_from_dataset(sim_anchor, eval_dataset, min_samples=3)
+Anexe estes itens a qualquer relatório que use saída sintética. Sem todos eles, o
+resultado não é reproduzível nem defensável.
 
-# 4a) ASSERÇÃO DE VAZAMENTO: âncora e avaliação devem ser disjuntas
-assert_disjoint_source_identities(pop_anchor, pop_eval)
-
-mode_a = sim_anchor.sample_observations(
-    pop_anchor,
-    samples_per_identity=(4, 8),
-    split_name="mode_a",
-    random_seed=4100,
-)
-
-# Modo B — população distribuição-matched (MoVMF ajustada aos centros reais)
-config_b, fit_summary = simulator_config_from_dataset(anchor_dataset, criterion="bic")
-print("Modo B — K selecionado:", fit_summary["selected_k"])
-sim_b = AdaFaceEmbeddingSimulator(config_b, random_seed=11)
-mode_b = sim_b.sample_dataset(
-    identity_count=len(pop_anchor.identity_ids),
-    samples_per_identity=(4, 8),
-    split_name="mode_b",
-    identity_offset=900_000,
-    population_random_seed=4200,
-    random_seed=4201,
-)
-
-# 5) Export via adapter CONCRETO (DTOs reais, float32)
-faceaudit_mode_a = to_embedding_dataset(mode_a, embedding_view="raw")
-faceaudit_mode_b = to_embedding_dataset(mode_b, embedding_view="raw")
-```
-
----
-
-## 26. Migração da versão 0.2 para 0.3
-
-### 26.1 O modo `VMF` mantém a saída bit-a-bit
-
-O padrão de `DirectionalConfig.intra_class_sampling_mode` é `IntraClassSamplingMode.VMF`,
-e a saída do modo `VMF` é **idêntica bit-a-bit** à v0.2.0. Um teste golden
-(`test_golden_vmf_core_arrays_unchanged`) trava esse contrato. Scripts da v0.2
-continuam produzindo exatamente os mesmos números, sem qualquer mudança.
-
-### 26.2 Os novos modos, campos e colunas são opt-in
-
-Tudo que é novo na 0.3 só entra em ação quando explicitamente solicitado:
-
-- **Modos de calota**: `IDPERTURB_CAP` e `HYBRID_VMF_CAP` exigem alterar
-  `intra_class_sampling_mode`. Os campos `cap_*` do `DirectionalConfig` e o
-  `cap_lower_bound_offset` do `AcquisitionDomainConfig` só têm efeito nesses
-  modos.
-- **Colunas novas de metadata** aparecem sempre (`intra_class_sampling_mode`,
-  `pre_nuisance_center_cosine`, `cap_lower_bound_effective`,
-  `hybrid_resample_count`, `hybrid_used_cap_fallback`), mas no modo `VMF` a
-  coluna `cap_lower_bound_effective` é `NaN`, `hybrid_resample_count` é `0` e
-  `hybrid_used_cap_fallback` é `False`. As colunas de proveniência
-  `source_identity` / `source_sample_count` aparecem **apenas** em populações
-  ancoradas em dataset (Modo A).
-
-### 26.3 Helpers de serialização
-
-A v0.3 fecha o round-trip de configuração que a v0.2 só tinha pela metade:
-
-- `config_from_dict` reconstrói um `SimulatorConfig` a partir da saída de
-  `config_to_dict` (valida, aceita defaults para chaves ausentes, rejeita chaves
-  desconhecidas);
-- `config_from_manifest` lê o bloco `config` de um manifesto escrito por
-  `save_manifest`.
-
-Isso permite reproduzir um experimento inteiro a partir do manifesto persistido.
-
-### 26.4 Ferramentas de ancoragem em dados reais
-
-O módulo `faceaudit_seed` é novo e substitui o procedimento manual de calibração
-da v0.2:
-
-- `identity_centers_from_dataset` — médias esféricas por identidade;
-- `population_from_dataset` — população ancorada (Modo A);
-- `population_config_from_dataset` / `simulator_config_from_dataset` — população
-  e config distribuição-matched (Modo B, MoVMF via `MoVMFTypicalityModel`);
-- `assert_disjoint_source_identities` — guarda de vazamento âncora↔avaliação.
-
-O adapter concreto `faceaudit_concrete_adapter` (DTOs reais, float32, parquet,
-cross-condition) também é novo e deve substituir o adapter genérico em produção.
-
-### 26.5 Itens herdados da migração 0.1 → 0.2 (ainda válidos)
-
-- prefira `reference_scaled_log_norm_z`; `robust_norm_z` segue como alias;
-- prefira `optimal_reference_scaled_log_norm_z`; `optimal_robust_norm_z` segue
-  como alias de leitura;
-- streams nomeados tornam a geração independente da ordem das chamadas.
-
----
-
-## 27. Roadmap
-
-Melhorias futuras úteis (os itens de ajuste automático e adapter concreto da v0.2
-foram **concluídos** na 0.3 e removidos desta lista):
-
-1. serialização explícita das bases por domínio no `.npz`;
-2. carregamento completo de bundles — incluindo reconstrução de
-   `SimulatorConfig` direto do manifesto via `config_from_manifest` (o lado de
-   config já existe; falta reidratar arrays e bases do `.npz`);
-3. enumeração eficiente de todos os trials;
-4. mineração de impostores difíceis por centro latente ou backend;
-5. modelo temporal de sessão (substituir o viés de sessão simples por
-   correlação temporal contínua);
-6. métricas prontas de divergência entre dados reais e sintéticos;
-7. geração de relatórios diagnósticos;
-8. testes de propriedade adicionais para regimes extremos de \(\kappa\) e de
-   `lb`.
-
----
-
-## 28. Conclusão e checklist
-
-A versão 0.3 mantém a família de cenários explícitos da 0.2 e adiciona um eixo
-ortogonal de **dispersão intra-classe geometricamente interpretável**:
-
-\[
-\boxed{
-\underbrace{\text{esférico} \rightarrow \text{cooperativo} \rightarrow \text{stress cross-condition}}_{\text{eixo de cenário (perfis)}}
-\;\times\;
-\underbrace{\text{VMF} \;|\; \text{IDPERTURB\_CAP} \;|\; \text{HYBRID\_VMF\_CAP}}_{\text{eixo de dispersão intra-classe}}
-}
-\]
-
-O uso correto não é buscar um único número sintético para "provar" que um backend
-funciona. O objetivo é identificar em quais regimes o PLDA ganha do cosseno,
-quando as hipóteses homocedásticas falham, em quais intensidades
-`BALANCED_IDENTITY` supera alternativas ingênuas, quanto tipicidade e qualidade
-ficam acopladas, e quais propriedades dos embeddings reais precisam ser medidas
-antes de qualquer conclusão quantitativa.
-
-### Checklist de experimento auditável
-
-Para todo experimento destinado a embasar uma afirmação, registre:
-
-- [ ] **perfil** usado (`profile_name`);
-- [ ] **configuração completa** (`config_to_dict` ou o bloco `config` do
-  manifesto);
-- [ ] **seed estrutural** + **seeds de população e observações** (por split e por
-  condição);
-- [ ] **política de trials** (estratégia de pares, `unique_pairs`, contagens);
-- [ ] **versão do simulador** (`__version__`, atualmente `0.3.0`);
-- [ ] **hash do código** (`source_sha256` no manifesto);
-- [ ] **métricas estratificadas** (por domínio, por quantil de norma, por
-  tipicidade);
-- [ ] **`intra_class_sampling_mode`** usado;
-- [ ] **distribuição realizada de `cap_lower_bound_effective`**
-  (mean/p10/p50/p90) sempre que o modo for de calota — especialmente com
-  `cap_overlap_guard=True`, em que o `lb` efetivo pode exceder o máximo nominal;
-- [ ] **asserção de disjunção no Modo A** (`assert_disjoint_source_identities`
-  passou) sempre que a população for ancorada em dados reais, registrando que as
-  âncoras são disjuntas de qualquer conjunto de avaliação.
-
-O manifesto JSON produzido por `save_bundle` / `save_manifest` cobre
-automaticamente perfil, configuração completa, seeds, versão e hash do código. As
-métricas estratificadas, o modo de amostragem, os percentis de `lb` efetivo e a
-asserção de disjunção são responsabilidade do script de experimento — inclua-os
-no relatório.
+- [ ] **Perfil** nomeado (`profile_name`) e justificativa de escolha.
+- [ ] **Configuração completa** serializada via `config_to_dict` / manifesto
+      (`save_manifest` ou `save_bundle`), incluindo todos os blocos
+      (`population`, `radial`, `directional`, `coupling`, `acquisition_domains`).
+- [ ] **Todas as seeds** registradas: `random_seed` estrutural,
+      `population_random_seed` e `random_seed`/`observation_random_seeds` de
+      observação. As seeds são derivadas de forma independente da ordem das
+      chamadas; registre as explícitas usadas.
+- [ ] **Política de trials**: contagens de pares genuínos/impostores, `strategy`
+      (`BALANCED_IDENTITY` vs `BALANCED_OBSERVATION`), `unique_pairs` e a seed de
+      `sample_pair_table`.
+- [ ] **Hash do código**: `source_sha256` do manifesto (SHA-256 do módulo
+      gerador) registrado, para fixar o código-fonte exato do gerador.
+- [ ] **Métricas estratificadas**, não só agregadas: por domínio, por quantil de
+      norma e por tipicidade (ver Seção 20.3).
+- [ ] **Modo de dispersão intra-classe** (`intra_class_sampling_mode`)
+      explicitado E, nos modos de calota, a **distribuição realizada de
+      `cap_lower_bound_effective`** (mean/p10/p50/p90) — o `lb` nominal é apenas
+      um piso; a guarda pode elevá-lo (Seção 22.4).
+- [ ] No `HYBRID_VMF_CAP`, reportar `hybrid_used_cap_fallback` e
+      `hybrid_resample_count` para mostrar quanto da amostra veio da calota vs do
+      corpo vMF.
+- [ ] **Asserção de disjunção** quando ancorado em dados reais (Modo A):
+      `assert_disjoint_source_identities(pop_anchor, pop_eval)` executada e as
+      colunas `source_identity` / `source_sample_count` preservadas.
+- [ ] Quando ancorado via Modo B, registrar o `fit_summary`
+      (`selected_k`, `criterion`, `criterion_values`, `n_degenerate`,
+      `norm_summary`).
+- [ ] Limites interpretativos da Seção 22 reproduzidos explicitamente no laudo.
