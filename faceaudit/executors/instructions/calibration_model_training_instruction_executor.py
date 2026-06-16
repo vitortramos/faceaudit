@@ -98,13 +98,41 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
 
             scores, labels = self._extract_scores_and_labels(input_payload)
 
-            if instruction.uses_logistic_regression:
+            # Extrai identidades por par (probe/reference) quando o input
+            # é SimilarityScoreDataset — usado por calibradores piecewise
+            # para reportar segment_unique_identities_hp/hd no metadata.
+            train_probe_identities, train_reference_identities = (
+                self._extract_identities(input_payload)
+            )
+
+            # PR 3: detecta input vetorizado com sinalização "defer_to_
+            # calibrator_per_fold" do LR_ARCHITECTURE_VECTORIZATION em modo
+            # FIT_PER_FOLD. Nesse caso, ignora a matriz pré-vetorizada e
+            # treina via Pipeline+GridSearchCV com transformer interno —
+            # s₀/r̄ aprendidos por fold, eliminando leakage residual.
+            input_meta = getattr(input_payload, "metadata", {}) or {}
+            per_fold_active = (
+                instruction.uses_logistic_regression
+                and bool(input_meta.get("defer_to_calibrator_per_fold"))
+                and input_meta.get("raw_input_resource_id")
+            )
+
+            if per_fold_active:
+                trained_model = self._train_logreg_per_fold_with_transformer(
+                    instruction=instruction,
+                    input_payload=input_payload,
+                    context=context,
+                )
+
+            elif instruction.uses_logistic_regression:
                 # Config embutida no DTO da instrução.
                 trained_model = self._train_logistic_regression_calibrator(
                     scores=scores,
                     labels=labels,
                     config_payload=instruction.logreg_config,
                     context=context,
+                    train_probe_identities=train_probe_identities,
+                    train_reference_identities=train_reference_identities,
                 )
 
             elif instruction.calibration_model_type == CalibrationModelType.KDE:
@@ -169,6 +197,36 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 if model_ids is not None:
                     setattr(trained_model, "score_vector_model_ids", list(model_ids))
 
+            # PR 2: gate de capacidade multivariada do calibrador
+            input_dim = self._infer_input_dim(input_payload)
+            self._gate_calibrator_capacity(trained_model, input_dim)
+
+            # PR 2: binding do contract fingerprint para vincular
+            # dataset vetorizado ↔ calibrador (CalibrationModelMetadataService).
+            try:
+                from faceaudit.services.calibration_model_metadata_service import (
+                    CalibrationModelMetadataService,
+                )
+                if hasattr(trained_model, "metadata") and trained_model.metadata is not None:
+                    CalibrationModelMetadataService.bind_architecture_state(
+                        trained_model.metadata,
+                        getattr(input_payload, "metadata", {}) or {},
+                    )
+            except Exception as exc:  # bind é best-effort — não bloqueia treinar
+                self._log(context, f"  ⚠ binding fingerprint falhou: {exc}")
+
+            # V1.5 — proveniência do raw_input para auditoria de monotonicidade
+            # condicional. O calibrator precisa saber qual recurso
+            # LR_ARCHITECTURE_RAW_INPUT no contexto bate com seu contract
+            # fingerprint — esse lookup é feito aqui e o nome é persistido no
+            # metadata do calibrador. Permite que a regra CONDITIONAL_MONOTONICITY
+            # resolva o dataset automaticamente em runs posteriores e que a
+            # auditoria pós-refit (logo abaixo) encontre o raw_input correto.
+            try:
+                self._bind_training_raw_input(trained_model, input_payload, context)
+            except Exception as exc:
+                self._log(context, f"  ⚠ bind raw_input resource_id falhou: {exc}")
+
             output_resource_id = instruction.trained_calibration_model_resource_id
             trained_resource = StrategyResource(
                 resource_id=output_resource_id,
@@ -178,6 +236,22 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
                 artifact_ref=None,
             )
             context.set_resource(trained_resource)
+
+            # V1.5 — auditoria CONDITIONAL_MONOTONICITY pós-refit. Roda
+            # programaticamente sobre o calibrador recém-treinado e persiste
+            # `monotonicity_audit` em seu metadata. Cobre arquiteturas
+            # declarativas de LR_ARCHITECTURE_VECTORIZATION com architecture_state
+            # persistido. Em outras arquiteturas (KDE, BiGauss, LogReg legado
+            # sem architecture_state), pula silenciosamente.
+            try:
+                self._run_monotonicity_audit(
+                    trained_model, output_resource_id, context,
+                )
+            except Exception as exc:
+                self._log(
+                    context,
+                    f"  ⚠ auditoria CONDITIONAL_MONOTONICITY falhou: {exc}",
+                )
 
             self._log(
                 context,
@@ -397,19 +471,364 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
 
         return scores, labels
 
+    def _extract_identities(
+        self, payload,
+    ) -> tuple[Optional[list], Optional[list]]:
+        """Extrai listas de probe_identity e reference_identity por par.
+
+        Retorna `(None, None)` quando o payload não é `SimilarityScoreDataset`
+        ou não contém identidades (e.g. dict com só scores + labels).
+        Usado pelos calibradores piecewise para reportar
+        `segment_unique_identities_hp/hd` no metadata.
+        """
+        if not isinstance(payload, SimilarityScoreDataset):
+            return None, None
+        try:
+            probe_ids = [s.probe.identity for s in payload.items]
+            ref_ids = [s.reference.identity for s in payload.items]
+            return probe_ids, ref_ids
+        except Exception:
+            return None, None
+
+    # =========================================================================
+    # V1.5 — proveniência + auditoria pós-refit (CONDITIONAL_MONOTONICITY)
+    # =========================================================================
+
+    def _bind_training_raw_input(
+        self,
+        trained_model: Any,
+        input_payload: Any,
+        context: StrategyExecutionContextProtocol,
+    ) -> None:
+        """Localiza o recurso LR_ARCHITECTURE_RAW_INPUT no contexto cujo
+        `raw_input_matrix_fingerprint` bate com o do training do calibrador,
+        e persiste seu nome no metadata como `training_raw_input_resource_id`.
+        Permite que a auditoria CONDITIONAL_MONOTONICITY resolva o dataset
+        automaticamente.
+
+        Estratégia de fallback (best-effort):
+        1. Match exato por `raw_input_matrix_fingerprint` (após bind_architecture_state).
+        2. Match por `vectorization_contract_fingerprint` (alguns payloads expõem).
+        3. Match por `schema.fingerprint()`.
+        4. Heurística: único recurso LR_ARCHITECTURE_RAW_INPUT no contexto.
+        """
+        if not hasattr(trained_model, "metadata") or trained_model.metadata is None:
+            return
+
+        cal_md = trained_model.metadata
+        target_matrix_fp = cal_md.get("training_raw_input_matrix_fingerprint")
+        input_md = getattr(input_payload, "metadata", None) or {}
+        target_contract_fp = (
+            cal_md.get("vectorization_contract_fingerprint")
+            or input_md.get("vectorization_contract_fingerprint")
+        )
+
+        raw_input_resources = [
+            r for r in context.list_resources()
+            if r.resource_type == StrategyResourceType.LR_ARCHITECTURE_RAW_INPUT
+            and r.payload is not None
+        ]
+
+        for resource in raw_input_resources:
+            payload = resource.payload
+            # Tenta match exato por matrix fingerprint primeiro (mais preciso)
+            if target_matrix_fp:
+                fp = getattr(payload, "raw_input_matrix_fingerprint", None)
+                if fp == target_matrix_fp:
+                    cal_md["training_raw_input_resource_id"] = resource.resource_id
+                    return
+            # Fallback: contract fingerprint via vários campos
+            if target_contract_fp:
+                fp = getattr(payload, "vectorization_contract_fingerprint", None)
+                if fp is None and hasattr(payload, "schema"):
+                    schema = payload.schema
+                    if hasattr(schema, "fingerprint"):
+                        try:
+                            fp = schema.fingerprint()
+                        except Exception:
+                            fp = None
+                if fp == target_contract_fp:
+                    cal_md["training_raw_input_resource_id"] = resource.resource_id
+                    return
+
+        # Heurística final — único raw_input no contexto
+        if len(raw_input_resources) == 1:
+            cal_md["training_raw_input_resource_id"] = raw_input_resources[0].resource_id
+
+    def _run_monotonicity_audit(
+        self,
+        trained_model: Any,
+        calibrator_resource_id: str,
+        context: StrategyExecutionContextProtocol,
+    ) -> None:
+        """Roda CONDITIONAL_MONOTONICITY pós-refit sobre o calibrador
+        recém-treinado e persiste resultado no metadata. Silenciosamente
+        pula se o calibrador não tem architecture_state (KDE, BiGauss,
+        LogReg legado).
+        """
+        if not hasattr(trained_model, "metadata") or trained_model.metadata is None:
+            return
+        if "architecture_state" not in trained_model.metadata:
+            return
+
+        from faceaudit.enums.validation_rule_type import ValidationRuleType
+        from faceaudit.factories.validation_rule_factory import ValidationRuleFactory
+        from faceaudit.models.validation.validation_rule_config import (
+            ValidationRuleConfig,
+        )
+
+        cfg = ValidationRuleConfig(
+            rule_type=ValidationRuleType.CONDITIONAL_MONOTONICITY,
+            params={"calibrator_resource_id": calibrator_resource_id},
+        )
+        rule = ValidationRuleFactory.create(cfg, instruction_id="post_refit_audit")
+        result = rule.validate(target=None, context=context)
+
+        # Log do status para a UI/telemetria
+        audit = trained_model.metadata.get("monotonicity_audit") or {}
+        status = audit.get("audit_status", "?")
+        if status == "OK":
+            self._log(context, f"  🛡️ Auditoria de monotonicidade: OK")
+        elif status == "NOT_AUDITED":
+            self._log(context, f"  ⚠ Auditoria de monotonicidade: NOT_AUDITED")
+        elif status == "WARNING":
+            self._log(context, f"  ⚠ Auditoria de monotonicidade: WARNING")
+        elif status == "CRITICAL":
+            self._log(context, f"  ❌ Auditoria de monotonicidade: CRITICAL")
+
     def _train_logistic_regression_calibrator(
         self,
         scores: np.ndarray,
         labels: np.ndarray,
         config_payload: LogisticRegressionCalibrationModelConfig,
         context: StrategyExecutionContextProtocol,
+        train_probe_identities: Optional[list] = None,
+        train_reference_identities: Optional[list] = None,
     ) -> LogisticRegressionCalibrationModel:
         """
         Instancia e treina um LogisticRegressionCalibrationModel, encaminhando
         os logs para o contexto de execução.
+
+        Quando `train_probe_identities` e `train_reference_identities` são
+        fornecidos (caso típico: input é `SimilarityScoreDataset`), são
+        injetados em `model.metadata` antes do `fit` para que o calibrador
+        reporte `segment_unique_identities_hp/hd` no metadata persistido.
         """
         model = LogisticRegressionCalibrationModel(config=config_payload)
+        if train_probe_identities is not None:
+            model.metadata["train_probe_identities"] = list(train_probe_identities)
+        if train_reference_identities is not None:
+            model.metadata["train_reference_identities"] = list(train_reference_identities)
         model.fit(scores=scores, labels=labels, logger_callback=context.log)
+        # Após fit, removemos as listas brutas — só os campos derivados
+        # (segment_unique_identities_*) permanecem persistidos. Evita
+        # inflar o pickle do calibrador com cópia integral das identidades.
+        model.metadata.pop("train_probe_identities", None)
+        model.metadata.pop("train_reference_identities", None)
+        return model
+
+    def _train_logreg_per_fold_with_transformer(
+        self,
+        instruction,
+        input_payload,
+        context: StrategyExecutionContextProtocol,
+    ) -> LogisticRegressionCalibrationModel:
+        """
+        PR 3 — Treina LogReg com FIT_PER_FOLD via Pipeline sklearn.
+
+        Carrega o LR_ARCHITECTURE_RAW_INPUT referenciado pelo
+        `input_payload.metadata['raw_input_resource_id']`, constrói o
+        pipeline `[ArchitectureVectorizerTransformer → StandardScaler →
+        LogReg]`, roda `GridSearchCV(cv=IdentityDisjointPairKFold(...))`
+        com identidades disjuntas dos dois lados, e extrai o `state_`
+        final do transformer pós-refit em D_cal completo.
+
+        O state final é persistido no `model.metadata` para suportar
+        INHERIT em VALIDATION/CASEWORK — o LR_ARCHITECTURE_VECTORIZATION
+        de validação detecta o calibrador como fonte de architecture_state.
+        """
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.model_selection import GridSearchCV
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
+        from faceaudit.enums.lr_calibration_architecture import (
+            LRCalibrationArchitecture,
+        )
+        from faceaudit.enums.pair_role_orientation import PairRoleOrientation
+        from faceaudit.services.architecture_vectorizer_transformer import (
+            ArchitectureVectorizerTransformer,
+        )
+        from faceaudit.services.identity_disjoint_pair_kfold import (
+            IdentityDisjointPairKFold,
+        )
+
+        meta = input_payload.metadata or {}
+        raw_resource_id = meta["raw_input_resource_id"]
+        context.ensure_payload(raw_resource_id)
+        raw_resource = context.get_resource(raw_resource_id)
+        if raw_resource is None or raw_resource.payload is None:
+            raise RuntimeError(
+                f"Recurso LR_ARCHITECTURE_RAW_INPUT ausente: {raw_resource_id}"
+            )
+        raw_payload = raw_resource.payload
+
+        if raw_payload.same_person is None:
+            raise RuntimeError(
+                "LR_ARCHITECTURE_RAW_INPUT sem same_person; FIT_PER_FOLD "
+                "exige rótulos para AUTO_LOGREG"
+            )
+        if (
+            raw_payload.probe_identity_ids is None
+            or raw_payload.reference_identity_ids is None
+        ):
+            raise RuntimeError(
+                "LR_ARCHITECTURE_RAW_INPUT sem identidades por par; "
+                "FIT_PER_FOLD exige PairIdentityMetadata para CV "
+                "identidade-disjunta"
+            )
+
+        # Resolve arquitetura herdada do metadata vetorizado
+        arch = LRCalibrationArchitecture.from_str(meta["lr_architecture"])
+
+        # Captura proveniência de tipicidade para o state final
+        state_dict = meta.get("architecture_state") or {}
+        probe_role_str = (
+            state_dict.get("pair_role_orientation")
+            or meta.get("pair_role_orientation")
+            or "PROBE_REFERENCE"
+        )
+        role_orientation = PairRoleOrientation.from_str(probe_role_str)
+
+        # Constrói pipeline
+        # s0_logreg_config foi persistido no state do vetorizador (LR_ARCH_VECT)
+        s0_cfg = state_dict.get("s0_logreg_config") or None
+
+        transformer = ArchitectureVectorizerTransformer(
+            architecture=arch,
+            schema=raw_payload.schema,
+            s0_logreg_config=s0_cfg,
+            base_score_kind=state_dict.get("base_score_kind") or "cosine",
+            pair_role_orientation=role_orientation,
+            rarity_probe_score_type=state_dict.get("rarity_probe_score_type"),
+            rarity_reference_score_type=state_dict.get("rarity_reference_score_type"),
+            rarity_single_score_type=state_dict.get("rarity_single_score_type"),
+        )
+
+        cfg = instruction.logreg_config
+        c_grid = getattr(cfg, "c_grid", None) or [getattr(cfg, "C", 1.0)]
+        cv_folds = max(2, int(getattr(cfg, "cv_folds", 5) or 5))
+        solver = str(getattr(cfg, "solver", "liblinear") or "liblinear")
+        class_weight = getattr(cfg, "class_weight", "balanced") or "balanced"
+        max_iter = int(getattr(cfg, "max_iter", 1000) or 1000)
+
+        steps = [
+            ("arch_vec", transformer),
+            ("scaler", StandardScaler()),
+            ("logreg", LogisticRegression(
+                solver=solver, class_weight=class_weight, max_iter=max_iter,
+            )),
+        ]
+        pipe = Pipeline(steps)
+
+        # CV identidade-disjunta dos dois lados
+        splitter = IdentityDisjointPairKFold(
+            probe_identities=list(raw_payload.probe_identity_ids),
+            reference_identities=list(raw_payload.reference_identity_ids),
+            n_splits=cv_folds,
+            random_state=42,
+        )
+
+        X_raw = raw_payload.matrix  # (N, K) já em <f8
+        y = np.asarray(raw_payload.same_person, dtype=int)
+
+        self._log(
+            context,
+            f"  ↻ FIT_PER_FOLD: Pipeline[Transformer→Scaler→LogReg] em "
+            f"GridSearchCV(cv={cv_folds}, splitter=IdentityDisjointPairKFold) "
+            f"sobre {len(X_raw)} pares; C_grid={c_grid}",
+        )
+
+        # Mesma função objetivo do caminho legacy: NEG_CLLR_BALANCED por
+        # default (forense; equivalente a −Cllr balanceado por classe).
+        # Permite override via `instruction.logreg_config.scoring`. Sem
+        # isso, `neg_log_loss` ficaria dominado pela classe majoritária
+        # em datasets desbalanceados (Hd >> Hp) e selecionaria C subótimo.
+        from faceaudit.enums.logreg_grid_scoring_metric import LogRegGridScoringMetric
+        scoring_enum = getattr(cfg, "scoring", None) or LogRegGridScoringMetric.NEG_CLLR_BALANCED
+        scoring_obj = LogisticRegressionCalibrationModel._resolve_scoring(scoring_enum)
+
+        grid = GridSearchCV(
+            estimator=pipe,
+            param_grid={"logreg__C": list(c_grid)},
+            cv=splitter,
+            scoring=scoring_obj,
+            refit=True,
+            n_jobs=1,
+        )
+        grid.fit(np.asarray(X_raw), y)
+
+        # Após refit em todo D_cal, extrai os componentes finais
+        best_pipe = grid.best_estimator_
+        transformer_final: ArchitectureVectorizerTransformer = best_pipe.named_steps["arch_vec"]
+        scaler_final: StandardScaler = best_pipe.named_steps["scaler"]
+        logreg_final: LogisticRegression = best_pipe.named_steps["logreg"]
+
+        state_final = transformer_final.state_
+
+        # Empacota num LogisticRegressionCalibrationModel para preservar
+        # contrato downstream (SCORE_CALIBRATION consome este wrapper).
+        model = LogisticRegressionCalibrationModel(config=cfg)
+        model.logreg = logreg_final
+        model._is_fitted = True
+        model.best_C_ = float(grid.best_params_["logreg__C"])
+        model._feature_mean = np.asarray(scaler_final.mean_, dtype=np.float64)
+        model._feature_std = np.asarray(scaler_final.scale_, dtype=np.float64)
+
+        # Persiste fingerprints + state no metadata (consumidos por
+        # CalibrationModelMetadataService.bind_architecture_state e por
+        # LR_ARCHITECTURE_VECTORIZATION em modo INHERIT na validação)
+        model.metadata.update({
+            "vectorization_contract_fingerprint":
+                state_final.vectorization_contract_fingerprint,
+            "lr_architecture": state_final.architecture.value,
+            "lr_architecture_formula_version": state_final.formula_version,
+            "architecture_spec_fingerprint":
+                state_final.architecture_spec_fingerprint,
+            "architecture_state": state_final.to_dict(),
+            # Provenance do treino per-fold (PR 3)
+            "fit_per_fold": True,
+            "inner_cv_splitter": "IdentityDisjointPairKFold",
+            "inner_cv_fold_count": cv_folds,
+            "strict_identity_disjoint": True,
+            "final_refit_on_full_calibration": True,
+            "selected_C": model.best_C_,
+            # Coefs em escala bruta (consumidos pela auditoria de
+            # monotonicidade condicional — vide §10.5 do relatório)
+            "standardized_coefficients": logreg_final.coef_.ravel().tolist(),
+            "scaler_mean": model._feature_mean.tolist(),
+            "scaler_scale": model._feature_std.tolist(),
+            "raw_scale_coefficients": (
+                logreg_final.coef_.ravel() / model._feature_std
+            ).tolist(),
+            "raw_scale_intercept": float(
+                logreg_final.intercept_.ravel()[0]
+                - float(np.sum(
+                    logreg_final.coef_.ravel() * model._feature_mean
+                    / model._feature_std
+                ))
+            ),
+        })
+
+        s0_str = f"{state_final.s0:.4f}" if state_final.s0 is not None else "—"
+        r0p_str = f"{state_final.r0_probe:.4f}" if state_final.r0_probe is not None else "—"
+        r0r_str = f"{state_final.r0_reference:.4f}" if state_final.r0_reference is not None else "—"
+        self._log(
+            context,
+            f"  ✅ FIT_PER_FOLD concluído: C={model.best_C_}, "
+            f"s₀={s0_str}, r̄_F={r0p_str}, r̄_P={r0r_str}",
+        )
+
         return model
 
     def _train_kde_calibrator(
@@ -573,3 +992,52 @@ class CalibrationModelTrainingInstructionExecutor(StrategyInstructionExecutorBas
             return np.asarray(groups)
         except Exception:
             return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PR 2: Gate de capacidade multivariada
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _infer_input_dim(self, input_payload) -> int:
+        """Inferência mínima da dimensão do dataset de entrada.
+
+        Retorna 1 quando o payload é escalar (raw_score), ou D quando há
+        `score_vector_matrix` no metadata. Calibradores são treinados via
+        `fit(scores, labels)` com `scores` 1D em escalares ou 2D em vetor.
+        """
+        meta = getattr(input_payload, "metadata", {}) or {}
+        sv_dim = meta.get("score_vector_dim") or meta.get("score_vector_n_features")
+        if sv_dim:
+            try:
+                return int(sv_dim)
+            except Exception:
+                pass
+        matrix = meta.get("score_vector_matrix")
+        if matrix is not None:
+            try:
+                return int(matrix.shape[1])
+            except Exception:
+                pass
+        return 1
+
+    def _gate_calibrator_capacity(self, calibrator, input_dim: int) -> None:
+        """Levanta ValueError se o calibrador não aceita a dimensão atual.
+
+        Calibradores declaram `supports_score_vector` e `max_input_dim`
+        como class attributes (PR 2). Modelos antigos sem essas
+        declarações são tratados como `supports_score_vector=False,
+        max_input_dim=1` (escalar apenas) — compat conservador.
+        """
+        supports = getattr(calibrator, "supports_score_vector", False)
+        max_dim = getattr(calibrator, "max_input_dim", 1)
+        if input_dim > 1 and not supports:
+            raise ValueError(
+                f"Calibrador {type(calibrator).__name__} não suporta "
+                f"score vector (input_dim={input_dim}). Use LogReg para "
+                f"multivariado."
+            )
+        if max_dim is not None and input_dim > max_dim:
+            raise ValueError(
+                f"Calibrador {type(calibrator).__name__} aceita max_input_dim="
+                f"{max_dim}, mas dataset tem D={input_dim}. Use LogReg para "
+                f"D > 1."
+            )

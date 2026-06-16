@@ -114,7 +114,7 @@ def test_fit_per_identity_requires_identities():
     m = KNNTypicalityModel(
         k=10, reference_mode=TypicalityReferenceMode.PER_IDENTITY,
     )
-    with pytest.raises(ValueError, match="PER_IDENTITY exige"):
+    with pytest.raises(ValueError, match="IDENTITY_CENTROIDS exige"):
         m.fit(X)
 
 
@@ -293,14 +293,26 @@ def test_per_identity_neutralizes_imbalance():
     assert 0.0 <= big_centroid_typicality <= 100.0
 
 
-def test_self_match_is_handled():
+def test_inference_external_does_not_exclude_self_match():
+    """P1-R2-8 (revisão externa round 2): inferência externa NÃO
+    descarta vizinho próximo com cos ≈ 1. A heurística antiga
+    `if top_sim[0] > 1 - 1e-6: drop` eliminava também vizinhos
+    LEGÍTIMOS quase-idênticos.
+
+    Inferência externa = consulta sobre face nova. Se o caller passar
+    uma face que coincide com uma da referência, isso é caso legítimo
+    (re-scoring) e o vizinho com cos=1 conta. LOO interno do fit é
+    tratado por exclusão de índice na diagonal, em caminho separado.
+    """
     rng = np.random.default_rng(9)
     X = _normalize(rng.normal(size=(300, 32)))
     m = KNNTypicalityModel(
         k=30, reference_mode=TypicalityReferenceMode.PER_FACE,
     ).fit(X)
     info = m.get_typicality_info(X[42])
-    assert info.knn_similarities[0] < 0.999
+    # Quando query coincide com uma face de referência, vizinho mais
+    # próximo é a própria face (cos ≈ 1).
+    assert info.knn_similarities[0] > 0.999
 
 
 def test_dim_mismatch_raises():
@@ -327,7 +339,10 @@ def test_to_dict_v2_roundtrip_per_identity():
     ).fit(embs, identities=ids)
 
     data = m1.to_dict()
-    assert data["format_version"] == 2
+    # PR 5: format_version 3 (PR 4 era 2). Revisão externa 2026-06-09
+    # bumpou para v4 com estado ponderado + proveniência da referência;
+    # tolerar >=3.
+    assert data["format_version"] >= 3
     assert data["hyperparameters"]["reference_mode"] == "PER_IDENTITY"
 
     m2 = KNNTypicalityModel.from_dict(data)
@@ -388,12 +403,15 @@ def test_from_dict_rejects_unnormalized_reference():
 # ─────────────────────────── summary / diagnóstico ─────────────
 
 
-def test_summary_unfitted_returns_status():
-    s = KNNTypicalityModel().summary()
+def test_summary_legacy_unfitted_returns_status():
+    # P0-5 (revisão externa 2026-06-09): `summary()` canônico agora
+    # devolve TypicalityModelSummary; `summary_legacy()` preserva o dict
+    # ad-hoc consumido pela UI.
+    s = KNNTypicalityModel().summary_legacy()
     assert s == {"status": "unfitted"}
 
 
-def test_summary_fitted_per_identity_includes_diagnostics():
+def test_summary_legacy_fitted_per_identity_includes_diagnostics():
     rng = np.random.default_rng(0)
     embs_grouped, ids_grouped = _make_population_with_ids(
         n_identities=20, samples_per_id=3, d=16, rng=rng,
@@ -408,7 +426,7 @@ def test_summary_fitted_per_identity_includes_diagnostics():
     m = KNNTypicalityModel(
         k=5, reference_mode=TypicalityReferenceMode.PER_IDENTITY,
     ).fit(embs, identities=ids)
-    s = m.summary()
+    s = m.summary_legacy()
     assert s["status"] == "fitted"
     assert s["reference_mode"] == "PER_IDENTITY"
     assert s["sample_count"] == 30  # 20 grouped + 10 singletons

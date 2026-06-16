@@ -334,6 +334,28 @@ class ValidationRuleFactory:
                 ),
             )
 
+        if rule_type == ValidationRuleType.CONDITIONAL_MONOTONICITY:
+            from faceaudit.validation_rules.conditional_monotonicity_rule import (
+                ConditionalMonotonicityRule,
+            )
+            return ConditionalMonotonicityRule(
+                rule_id=rule_id,
+                calibrator_resource_id=ValidationRuleFactory._req_str(
+                    params, "calibrator_resource_id", rule_type
+                ),
+                numerical_epsilon=float(params.get("numerical_epsilon", 1e-12)),
+                operational_min_slope=(
+                    float(params["operational_min_slope"])
+                    if params.get("operational_min_slope") is not None else None
+                ),
+                box_quantile_low=float(params.get("box_quantile_low", 0.05)),
+                box_quantile_high=float(params.get("box_quantile_high", 0.95)),
+                reportable_box=ValidationRuleFactory._parse_reportable_box(
+                    params.get("reportable_box"), rule_type
+                ),
+                dataset_resource_id_override=params.get("dataset_resource_id_override"),
+            )
+
         raise ValueError(
             f"ValidationRuleFactory: tipo de regra não suportado: {rule_type}."
         )
@@ -356,6 +378,54 @@ class ValidationRuleFactory:
                 "ausente ou inválido (esperado string não-vazia)."
             )
         return val
+
+    @staticmethod
+    def _parse_reportable_box(
+        raw: Optional[dict], rule_type: ValidationRuleType
+    ) -> Optional[dict]:
+        """Parser tolerante para reportable_box (V2).
+
+        Aceita None ou dict com chaves entre {"r_probe", "r_reference",
+        "r_single"} mapeadas para (lo, hi) numéricos. Levanta ValueError
+        em estrutura inválida — gate operacional não pode silenciar
+        erro de config.
+        """
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Regra {rule_type.value}: 'reportable_box' deve ser dict "
+                f"(recebeu {type(raw).__name__})."
+            )
+        # Chaves de raridade (LR_ARCH_VEC) + score bruto (piecewise V1.5)
+        allowed = {"r_probe", "r_reference", "r_single", "s", "base_score"}
+        parsed: dict = {}
+        for key, val in raw.items():
+            if key not in allowed:
+                raise ValueError(
+                    f"Regra {rule_type.value}: chave inválida em "
+                    f"reportable_box: '{key}'. Permitidas: {sorted(allowed)}."
+                )
+            if not isinstance(val, (list, tuple)) or len(val) != 2:
+                raise ValueError(
+                    f"Regra {rule_type.value}: reportable_box['{key}'] deve "
+                    "ser par (lo, hi)."
+                )
+            try:
+                lo = float(val[0])
+                hi = float(val[1])
+            except (TypeError, ValueError) as e:
+                raise ValueError(
+                    f"Regra {rule_type.value}: reportable_box['{key}'] "
+                    f"não numérico: {e}"
+                )
+            if lo > hi:
+                raise ValueError(
+                    f"Regra {rule_type.value}: reportable_box['{key}'] "
+                    f"inválido: lo={lo} > hi={hi}."
+                )
+            parsed[key] = (lo, hi)
+        return parsed or None
 
     @staticmethod
     def _req_list_str(

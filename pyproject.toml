@@ -65,3 +65,8 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]  # Ou ["src"] se você usou a pasta src
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marca testes lentos / estatísticos (desativados por default no CI)",
+]

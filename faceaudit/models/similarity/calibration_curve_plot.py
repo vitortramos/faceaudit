@@ -36,6 +36,7 @@ def compute_calibration_curve_summary(
     *,
     max_points_per_class: int = _MAX_POINTS_PER_CLASS,
     seed: int = 0,
+    metadata: Optional[dict] = None,
 ) -> Optional[dict]:
     """Extrai (raw_score, log_lr) por classe a partir dos samples.
 
@@ -92,8 +93,8 @@ def compute_calibration_curve_summary(
     imp_x, imp_y, n_imp_total = _maybe_sample(imp_pairs)
     case_x, case_y, n_case_total = _maybe_sample(case_pairs)
 
-    return {
-        "schema_version": 1,
+    summary = {
+        "schema_version": 2,  # v2 adiciona campos piecewise opcionais
         "n_gen": int(gen_x.size),
         "n_imp": int(imp_x.size),
         "n_case": int(case_x.size),
@@ -108,6 +109,29 @@ def compute_calibration_curve_summary(
         "case_x": case_x.tolist(),
         "case_y": case_y.tolist(),
     }
+
+    # Piecewise info (V1 — opcional). Quando o calibrador é LogReg com
+    # mode=PIECEWISE_LINEAR, o SCORE_CALIBRATION propaga estes campos no
+    # metadata do dataset calibrado. Usamos pra desenhar a curva
+    # analítica e marcadores verticais dos knots.
+    if isinstance(metadata, dict) and metadata.get("piecewise_enabled"):
+        s0 = metadata.get("hinge_anchor_s0")
+        knots_abs = metadata.get("piecewise_knots_absolute")
+        coef_raw = metadata.get("calibrator_coef_raw")
+        intercept_raw = metadata.get("calibrator_intercept_raw")
+        if (
+            s0 is not None and knots_abs and coef_raw is not None
+            and intercept_raw is not None
+            and len(coef_raw) == 1 + len(knots_abs)
+        ):
+            summary["piecewise"] = {
+                "hinge_anchor_s0": float(s0),
+                "knots_absolute": [float(k) for k in knots_abs],
+                "calibrator_coef_raw": [float(c) for c in coef_raw],
+                "calibrator_intercept_raw": float(intercept_raw),
+            }
+
+    return summary
 
 
 def draw_calibration_curve_from_summary(
@@ -187,6 +211,56 @@ def draw_calibration_curve_from_summary(
         0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
         label="log-LR = 0  (LR=1)",
     )
+
+    # Curva analítica + marcadores de knots (piecewise V1). Renderizado
+    # APÓS scatters pra ficar visível sobre os pontos. Sem essa info, o
+    # plot fica reduzido ao scatter (caso legacy, sem piecewise ou sem
+    # metadata propagado).
+    pwl = summary.get("piecewise") if isinstance(summary, dict) else None
+    if pwl is not None:
+        s0 = float(pwl["hinge_anchor_s0"])
+        knots_abs = [float(k) for k in pwl["knots_absolute"]]
+        coef_raw = [float(c) for c in pwl["calibrator_coef_raw"]]
+        intercept_raw = float(pwl["calibrator_intercept_raw"])
+
+        # Range do plot — usa o min/max dos scatters + folga 5%.
+        xs_all = (
+            list(summary.get("gen_x", []))
+            + list(summary.get("imp_x", []))
+            + list(summary.get("case_x", []))
+        )
+        if xs_all:
+            x_min = min(xs_all)
+            x_max = max(xs_all)
+            span = x_max - x_min
+            grid_x = np.linspace(
+                x_min - 0.05 * span, x_max + 0.05 * span, 400,
+            )
+            beta_z = coef_raw[0]
+            beta_hinges = coef_raw[1:]
+            z = grid_x - s0
+            llr_y = beta_z * z + intercept_raw
+            for beta_j, knot_abs in zip(beta_hinges, knots_abs):
+                llr_y = llr_y + beta_j * np.maximum(grid_x - knot_abs, 0.0)
+
+            ax.plot(
+                grid_x, llr_y,
+                color="#1a4f8a", linewidth=2.0, alpha=0.95,
+                label="Calibrador f(x)", zorder=3,
+            )
+
+            # Linhas verticais nos knots.
+            knot_label = (
+                f"Knot piecewise (n={len(knots_abs)})"
+                if len(knots_abs) > 1 else "Knot piecewise"
+            )
+            for idx, k in enumerate(knots_abs):
+                ax.axvline(
+                    k,
+                    color="#5a3a8a", linestyle=(0, (3, 3)), linewidth=1.0,
+                    alpha=0.7, zorder=2,
+                    label=knot_label if idx == 0 else None,
+                )
 
     if show_title:
         ax.set_title("Curva de Calibração", fontsize=11)

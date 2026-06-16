@@ -167,6 +167,18 @@ class ValidationRuleType(Enum):
         "multivariado e geram log-LRs sem sentido (EER/Cllr explodem).",
     )
 
+    CONDITIONAL_MONOTONICITY = (
+        "CONDITIONAL_MONOTONICITY",
+        "Monotonicidade condicional do calibrador",
+        "Verifica que ∂log_LR/∂s > 0 em todos os pares observados em D_cal "
+        "e nos cantos da caixa central de raridades (P5-P95). Gate "
+        "estrutural: cosseno maior nunca pode produzir log-LR menor, "
+        "condicionado às raridades observadas. Aplica-se a todas as "
+        "arquiteturas de LR_ARCHITECTURE_VECTORIZATION (V1). Auditoria "
+        "executada após o refit final do calibrador; resultados persistidos "
+        "no metadata do calibrador para auditoria forense.",
+    )
+
     def __new__(cls, value: str, label: str, description: str):
         # Pattern canônico de Enum com valor composto — ver
         # typicality_reference_mode.py pra explicação completa.

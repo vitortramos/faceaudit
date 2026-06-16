@@ -4,7 +4,7 @@
 Dialog wrapper sobre `TypicalityDistributionWidget`.
 
 Aberto pelo botão "🔍 Expandir" na 3ª coluna da aba Strategy Editor V2
-quando a instrução é `KNN_TYPICALITY_MODEL_TRAINING`. Reusa o mesmo
+quando a instrução é `TYPICALITY_MODEL_TRAINING`. Reusa o mesmo
 widget de plot inline, agora com NavigationToolbar matplotlib (zoom,
 pan, salvar PNG).
 """

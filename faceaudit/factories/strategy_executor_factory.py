@@ -55,11 +55,17 @@ from faceaudit.executors.instructions.hubness_ablation_instruction_executor impo
 from faceaudit.executors.instructions.similarity_scoring_instruction_executor import (
     SimilarityScoringInstructionExecutor,
 )
-from faceaudit.executors.instructions.knn_typicality_model_training_instruction_executor import (
-    KNNTypicalityModelTrainingInstructionExecutor,
+from faceaudit.executors.instructions.typicality_model_training_instruction_executor import (
+    TypicalityModelTrainingInstructionExecutor,
 )
 from faceaudit.executors.instructions.typicality_pair_scoring_instruction_executor import (
     TypicalityPairScoringInstructionExecutor,
+)
+from faceaudit.executors.instructions.score_interaction_feature_instruction_executor import (
+    ScoreInteractionFeatureInstructionExecutor,
+)
+from faceaudit.executors.instructions.lr_architecture_vectorization_instruction_executor import (
+    LRArchitectureVectorizationInstructionExecutor,
 )
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
@@ -178,13 +184,23 @@ class StrategyExecutorFactory:
         )
 
         registry.register(
-            StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
-            KNNTypicalityModelTrainingInstructionExecutor(),
+            StrategyInstructionType.TYPICALITY_MODEL_TRAINING,
+            TypicalityModelTrainingInstructionExecutor(),
         )
 
         registry.register(
             StrategyInstructionType.TYPICALITY_PAIR_SCORING,
             TypicalityPairScoringInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.SCORE_INTERACTION_FEATURE,
+            ScoreInteractionFeatureInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION,
+            LRArchitectureVectorizationInstructionExecutor(),
         )
 
         return registry

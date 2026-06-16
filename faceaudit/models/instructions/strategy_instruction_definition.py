@@ -395,16 +395,28 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return HubnessAblationInstruction.from_dict(processed_data)
 
-        if instruction_type == StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING:
-            from faceaudit.models.instructions.knn_typicality_model_training_instruction import (
-                KNNTypicalityModelTrainingInstruction,
+        if instruction_type == StrategyInstructionType.TYPICALITY_MODEL_TRAINING:
+            from faceaudit.models.instructions.typicality_model_training_instruction import (
+                TypicalityModelTrainingInstruction,
             )
-            return KNNTypicalityModelTrainingInstruction.from_dict(processed_data)
+            return TypicalityModelTrainingInstruction.from_dict(processed_data)
 
         if instruction_type == StrategyInstructionType.TYPICALITY_PAIR_SCORING:
             from faceaudit.models.instructions.typicality_pair_scoring_instruction import (
                 TypicalityPairScoringInstruction,
             )
             return TypicalityPairScoringInstruction.from_dict(processed_data)
+
+        if instruction_type == StrategyInstructionType.SCORE_INTERACTION_FEATURE:
+            from faceaudit.models.instructions.score_interaction_feature_instruction import (
+                ScoreInteractionFeatureInstruction,
+            )
+            return ScoreInteractionFeatureInstruction.from_dict(processed_data)
+
+        if instruction_type == StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION:
+            from faceaudit.models.instructions.lr_architecture_vectorization_instruction import (
+                LRArchitectureVectorizationInstruction,
+            )
+            return LRArchitectureVectorizationInstruction.from_dict(processed_data)
 
         return cls(**processed_data)

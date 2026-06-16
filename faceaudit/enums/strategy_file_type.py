@@ -154,6 +154,11 @@ class StrategyFileType(Enum):
         ProjectFolder.RESULTS,
         "{strategy_folder}/hubness/{resource_id}_{id}_ablation",
     )
+    LR_ARCHITECTURE_RAW_INPUT = (
+        ".pkl",
+        ProjectFolder.SCORES,
+        "{strategy_folder}/raw_input/{resource_id}_{id}",
+    )
     GRAPHIC = (
         ".png",
         ProjectFolder.GRAPHICS,
@@ -328,6 +333,7 @@ class StrategyFileType(Enum):
             StrategyArtifactType.CASEWORK_VISUALIZATION:    cls.CASEWORK_VISUALIZATION,
             StrategyArtifactType.HUBNESS_REPORT:            cls.HUBNESS_REPORT,
             StrategyArtifactType.HUBNESS_ABLATION_RESULT:   cls.HUBNESS_ABLATION_RESULT,
+            StrategyArtifactType.LR_ARCHITECTURE_RAW_INPUT: cls.LR_ARCHITECTURE_RAW_INPUT,
             StrategyArtifactType.GRAPHIC:                   cls.GRAPHIC,
             StrategyArtifactType.CHECKPOINT:                cls.CHECKPOINT,
             # Tipos de biblioteca global → destino dentro do projeto

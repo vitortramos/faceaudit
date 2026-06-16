@@ -207,10 +207,22 @@ class StrategyExecutor:
         self,
         instruction: StrategyInstructionDefinition,
         context: StrategyExecutionContextProtocol,
+        phase=None,
+        instruction_index: int = 0,
     ) -> InstructionExecutionResult:
         """
         Executa uma única instrução dentro do contexto fornecido.
         Os recursos produzidos ficam disponíveis no contexto para instruções futuras.
+
+        `phase`: `StrategyPhase` opcional. Quando informado E o contexto
+        ainda não tem um frame ativo, o orquestrador constrói o
+        `InstructionExecutionFrame` correspondente e injeta via
+        `context.with_frame(frame)`. Executores que dependem do frame
+        (e.g. `LR_ARCHITECTURE_VECTORIZATION`) fail-closam sem ele.
+
+        `_execute_all_phases` continua injetando o frame externamente
+        antes de chamar este método — quando `context.frame` já está
+        preenchido, este método não reescreve.
         """
         # Reseta a lista de execution_logs entre execuções individuais. O
         # contexto é compartilhado ao longo da sessão, mas os logs do Run
@@ -234,6 +246,28 @@ class StrategyExecutor:
                 f"⚠️ Aviso: {n_listeners} listeners de log ativos no contexto. "
                 "Pode indicar acúmulo de dialogs anteriores que não fecharam."
             )
+
+        # Injeta frame quando o caller passa a fase e o contexto ainda
+        # não está framed. Necessário no caminho por-instrução (UI Run),
+        # onde o worker chama este método diretamente sem passar pelo
+        # `_execute_all_phases`. Sem isso, `LR_ARCHITECTURE_VECTORIZATION`
+        # levanta `MissingExecutionFrameError`.
+        if phase is not None and getattr(context, "frame", None) is None:
+            from faceaudit.models.strategy.instruction_execution_frame import (
+                InstructionExecutionFrame,
+            )
+            strategy_id = ""
+            try:
+                strategy_id = context.get_metadata("strategy_id") or ""
+            except Exception:
+                strategy_id = ""
+            frame = InstructionExecutionFrame(
+                phase=phase,
+                instruction_index=int(instruction_index),
+                strategy_id=strategy_id,
+            )
+            if hasattr(context, "with_frame"):
+                context = context.with_frame(frame)
 
         executor = self._resolve_executor(instruction)
         self._log(context, f"▶ Executando: {instruction.name} ({instruction.instruction_id})")
@@ -388,25 +422,30 @@ class StrategyExecutor:
                     resource.resource_type
                     == StrategyResourceType.TRAINED_TYPICALITY_MODEL
                 ):
-                    # KNNTypicalityModel treinado → PNG da distribuição LOO
-                    # de T_k. Mesmo padrão dos demais — gera headless via
-                    # FigureCanvasAgg, painel inline mostra via QPixmap
-                    # sem reconstruir matplotlib vivo.
-                    from faceaudit.services.knn_typicality_model import (
-                        KNNTypicalityModel,
+                    # Modelo de tipicidade treinado (k-NN ou MoVMF) → PNG
+                    # da distribuição de referência. Dispatch polimórfico
+                    # via TypicalityScoringModelProtocol (model_type +
+                    # is_fitted) — k-NN renderiza T_k LOO, MoVMF renderiza
+                    # log-likelihood do treino. Mesmo padrão dos demais:
+                    # gera headless via FigureCanvasAgg, painel inline
+                    # mostra via QPixmap.
+                    from faceaudit.protocols.typicality_scoring_model_protocol import (
+                        TypicalityScoringModelProtocol,
                     )
                     from faceaudit.models.typicality_distribution_plot import (
                         render_typicality_distribution_png,
                         typicality_distribution_png_path,
                     )
-                    if isinstance(resource.payload, KNNTypicalityModel):
+                    payload = resource.payload
+                    if (
+                        isinstance(payload, TypicalityScoringModelProtocol)
+                        and getattr(payload, "is_fitted", lambda: False)()
+                    ):
                         png_path = typicality_distribution_png_path(
                             project_root, strategy_id, resource.resource_id,
                             strategy_name=strategy_name,
                         )
-                        render_typicality_distribution_png(
-                            resource.payload, png_path,
-                        )
+                        render_typicality_distribution_png(payload, png_path)
                 elif (
                     resource.resource_type
                     == StrategyResourceType.VALIDATION_RESULT
@@ -545,22 +584,29 @@ class StrategyExecutor:
         context: StrategyExecutionContextProtocol,
         cancel_checker: Optional[Callable[[], bool]] = None,
     ) -> List[InstructionExecutionResult]:
+        from faceaudit.enums.strategy_phase import StrategyPhase
+        from faceaudit.models.strategy.instruction_execution_frame import (
+            InstructionExecutionFrame,
+        )
+
         results: List[InstructionExecutionResult] = []
 
         phases = [
-            ("Preparação", strategy_definition.preparation_instructions),
-            ("Validação", strategy_definition.validation_instructions),
-            ("Análise de Caso", strategy_definition.casework_instructions),
+            ("Preparação", StrategyPhase.PREPARATION, strategy_definition.preparation_instructions),
+            ("Validação", StrategyPhase.VALIDATION, strategy_definition.validation_instructions),
+            ("Análise de Caso", StrategyPhase.CASEWORK, strategy_definition.casework_instructions),
         ]
 
-        for phase_name, phase_instructions in phases:
+        strategy_id = getattr(strategy_definition, "strategy_id", "") or ""
+
+        for phase_name, phase_enum, phase_instructions in phases:
             if not phase_instructions:
                 continue
             self._log(
                 context,
                 f"📋 Fase: {phase_name} ({len(phase_instructions)} instruções)",
             )
-            for instruction in phase_instructions:
+            for instruction_index, instruction in enumerate(phase_instructions):
                 # Checkpoint de cancelamento ANTES de cada instrução.
                 # Granularidade é por-instrução: uma instrução longa em
                 # execução não é interrompida no meio, mas o usuário não
@@ -574,9 +620,22 @@ class StrategyExecutor:
                     raise StrategyCancelledError(
                         f"Cancelado pelo usuário antes de '{instruction.name}'."
                     )
+                # Cria frame para a instrução e injeta via with_frame.
+                # A view compartilha resources/artifacts com o contexto raiz —
+                # mutação via set_resource continua propagando.
+                frame = InstructionExecutionFrame(
+                    phase=phase_enum,
+                    instruction_index=instruction_index,
+                    strategy_id=strategy_id,
+                )
+                framed_ctx = (
+                    context.with_frame(frame)
+                    if hasattr(context, "with_frame") else context
+                )
+
                 # execute_single_instruction já chama _rehydrate_inputs_if_needed
                 # internamente — não precisa duplicar aqui.
-                result = self.execute_single_instruction(instruction, context)
+                result = self.execute_single_instruction(instruction, framed_ctx)
                 if not result.success:
                     raise RuntimeError(
                         f"Instrução falhou ({instruction.instruction_id}): {result.errors}"

@@ -149,14 +149,15 @@ class StrategyInstructionType(Enum):
         "O(N²) em N subsets.",
     )
 
-    KNN_TYPICALITY_MODEL_TRAINING = (
-        "KNN_TYPICALITY_MODEL_TRAINING",
-        "kNN Typicality Model Training",
-        "Treinar Modelo de Tipicidade (kNN)",
-        "Treina um modelo de tipicidade não-paramétrico baseado em k-NN esférico "
-        "a partir de um dataset de referência da subpopulação relevante (já "
-        "estratificada). Persiste a referência inteira como modelo e pré-computa "
-        "a CDF empírica leave-one-out de T_k pra inferência de percentile.",
+    TYPICALITY_MODEL_TRAINING = (
+        "TYPICALITY_MODEL_TRAINING",
+        "Typicality Model Training",
+        "Treinar Modelo de Tipicidade",
+        "Treina um modelo de tipicidade (k-NN não-paramétrico ou MoVMF "
+        "paramétrico EXPERIMENTAL) a partir de um dataset de referência "
+        "da subpopulação relevante. Backend escolhido via "
+        "typicality_model_type; hiperparâmetros embutidos no "
+        "typicality_model_config polimórfico.",
     )
 
     TYPICALITY_PAIR_SCORING = (
@@ -166,11 +167,47 @@ class StrategyInstructionType(Enum):
         "Aplica modelo(s) de tipicidade treinado(s) a cada face de cada par "
         "(probe, reference) de um dataset, e produz um SimilarityScoreDataset "
         "onde o score de cada par é a combinação simétrica (MEAN/MIN/MAX/PRODUCT/"
-        "ABS_DIFF) das tipicidades individuais. Suporta dois modelos distintos "
-        "(probe vs reference) para casos cross-população (ex.: cross-pose: "
-        "lateral × frontal). Pareado com SIMILARITY_SCORES pelo "
-        "SCORE_VECTORIZATION pra treinar calibrador 2D+ que conheça raridade "
-        "local.",
+        "ABS_DIFF) das tipicidades individuais OU a tipicidade de um papel só "
+        "(REFERENCE_ONLY/PROBE_ONLY — alimentam SCORE_INTERACTION_FEATURE). "
+        "Suporta dois modelos distintos (probe vs reference) para casos "
+        "cross-população (ex.: cross-pose: lateral × frontal). Pareado com "
+        "SIMILARITY_SCORES pelo SCORE_VECTORIZATION pra treinar calibrador "
+        "2D+ que conheça raridade local.",
+    )
+
+    SCORE_INTERACTION_FEATURE = (
+        "SCORE_INTERACTION_FEATURE",
+        "Score Interaction Feature",
+        "Feature de Interação Cosseno × Raridade",
+        "Constrói feature forense de interação `(base − s0)·rarity` "
+        "(modos ONE_SIDED_POSITIVE/LINEAR/HINGE_BASE) a partir de "
+        "DOIS SimilarityScoreDataset alinháveis por par: base (cosseno/PLDA) "
+        "e modifier (tipicidade do TYPICALITY_PAIR_SCORING). `s0` (ponto "
+        "de evidência neutra, logLR=0) é resolvido em três modos: "
+        "AUTO_LOGREG (calibrador auxiliar univariado), MANUAL (valor "
+        "fixo), INHERIT (herda metadata de execução anterior — "
+        "obrigatório em validação e casework). Inversão typicality→rarity "
+        "automática por score_type (PERCENTILE→1−v/100; MEAN_KNN/LOG_DENSITY→−v). "
+        "Output `raw_score` 1D consumível por SCORE_VECTORIZATION para "
+        "fusão LogReg multivariada. Bloqueia AUTO_LOGREG em casework; "
+        "valida `same_person` e família do modifier.",
+    )
+
+    LR_ARCHITECTURE_VECTORIZATION = (
+        "LR_ARCHITECTURE_VECTORIZATION",
+        "LR Architecture Vectorization",
+        "Vetorização por Arquitetura LR",
+        "Instrução declarativa de alto nível que substitui o "
+        "encadeamento manual SCORE_INTERACTION_FEATURE×N + "
+        "SCORE_VECTORIZATION para uma das 9 arquiteturas de calibração "
+        "LR (COSINE_ONLY a BILATERAL_FULL_CENTERED D=7). O usuário "
+        "escolhe a arquitetura via enum e a instrução cuida da "
+        "construção interna (hinges, raridades centradas, vetorização) "
+        "e do binding do fingerprint para o calibrador. As instruções "
+        "SCORE_INTERACTION_FEATURE e SCORE_VECTORIZATION continuam "
+        "disponíveis para composições exóticas. Fase derivada do "
+        "InstructionExecutionFrame; bloqueia ajuste em VALIDATION/"
+        "CASEWORK exigindo parameter_mode=INHERIT.",
     )
 
     def __new__(

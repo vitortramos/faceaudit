@@ -477,11 +477,20 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
             line3_parts.append(f"slope={slope:.3f} ({slope_diag})")
         if intercept is not None:
             line3_parts.append(f"intercept={intercept:+.3f}")
+        # Linha extra com slopes piecewise por trecho. Aparece só quando o
+        # calibrador tem expansão piecewise-linear ativa.
+        pwl_slopes = list(getattr(pd, "cal_curve_piecewise_segment_slopes", []) or [])
+        line4_parts: list[str] = []
+        if len(pwl_slopes) >= 2:
+            slopes_fmt = ", ".join(f"{s:.4f}" for s in pwl_slopes)
+            line4_parts.append(f"piecewise slopes (raw) = [{slopes_fmt}]")
         title_lines = [title_line1]
         if line2_parts:
             title_lines.append("  ·  ".join(line2_parts))
         if line3_parts:
             title_lines.append("  ·  ".join(line3_parts))
+        if line4_parts:
+            title_lines.append("  ·  ".join(line4_parts))
         ax_top.set_title("\n".join(title_lines), fontsize=10)
 
     # ── Camadas adicionais no top axes (só com grid) ─────────────────────
@@ -492,11 +501,31 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         rug_gen = np.asarray(getattr(pd, "cal_curve_rug_gen_x", []), dtype=np.float64)
         rug_imp = np.asarray(getattr(pd, "cal_curve_rug_imp_x", []), dtype=np.float64)
 
+        # Knots do calibrador piecewise-linear. Desenhamos ANTES da curva
+        # para que as linhas verticais fiquem atrás da curva azul (em zorder).
+        knots_abs = list(getattr(pd, "cal_curve_piecewise_knots_absolute", []) or [])
+        slopes_seg = list(getattr(pd, "cal_curve_piecewise_segment_slopes", []) or [])
+        if knots_abs:
+            knot_label = (
+                f"Knot piecewise (n={len(knots_abs)})" if len(knots_abs) > 1
+                else "Knot piecewise"
+            )
+            # Linhas verticais finas em cada knot — usa axvline com label
+            # só na primeira pra não poluir a legenda.
+            for idx, k in enumerate(knots_abs):
+                ax_top.axvline(
+                    float(k),
+                    color="#5a3a8a", linestyle=(0, (3, 3)), linewidth=1.0,
+                    alpha=0.6, zorder=2,
+                    label=knot_label if idx == 0 else None,
+                )
+
         # Curva f(x) — calibrador atual.
         ax_top.plot(
             grid_x, llr_y,
             color="#1a4f8a", linewidth=2.0, alpha=0.95,
             label="Calibrador atual f(x)",
+            zorder=3,
         )
         # Curva pós-afim Brümmer-Doddington. Apenas a fórmula vai na
         # label — diagnóstico (over-/under-confident) e Cllr_affine
@@ -1300,7 +1329,18 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     ax_top.set_xlim(0, 100)
     ax_top.set_ylabel("log-LR calibrado")
 
-    # Title 3-line + flag wrong-side se houver inversões nos pontos críticos.
+    # Title 3-line + flags semanticamente distintas pra cada fenômeno.
+    #
+    # São DUAS condições diferentes:
+    # (1) inversão entre quantis extremos: P1g < P99i. As caudas das
+    #     classes literalmente se cruzam — separação operacional
+    #     comprometida nos extremos.
+    # (2) cauda com sinal contrário: genuíno crítico com log-LR < 0
+    #     OU impostor crítico com log-LR > 0. A separação pode estar
+    #     OK (P1g > P99i), mas a calibração coloca parte dos pontos
+    #     críticos do lado errado de zero — comum em domain mismatch.
+    #
+    # Avisos separados pra não confundir os fenômenos no título.
     m = getattr(result, "metrics", None)
     cllr_val = getattr(m, "cllr", None) if m else None
     cllr_min_val = getattr(m, "cllr_min", None) if m else None
@@ -1313,6 +1353,7 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
     # hard-tail (P5g − P95i) e extreme (P1g − P99i). Positivo = boa
     # separação; ≈0 ou negativo = overlap relevante.
     line3_parts = []
+    has_extreme_inversion = False
     if gen_q is not None and imp_q is not None:
         idx_p1, idx_p5 = 0, 1
         idx_p95, idx_p99 = 7, 8
@@ -1320,9 +1361,17 @@ def draw_quantile_log_lr(figure: Figure, result: Any) -> None:
         extreme_tail_gap = float(gen_q[idx_p1] - imp_q[idx_p99])
         line3_parts.append(f"hard-tail (P5g − P95i)={hard_tail_gap:+.2f}")
         line3_parts.append(f"extreme (P1g − P99i)={extreme_tail_gap:+.2f}")
+        has_extreme_inversion = extreme_tail_gap < 0.0
     title_main = "Quantis por Classe"
-    if n_wrong_gen or n_wrong_imp:
-        title_main += "  ⚠ inversão"
+    warning_parts = []
+    if has_extreme_inversion:
+        warning_parts.append("⚠ inversão de caudas (P1g < P99i)")
+    if n_wrong_gen:
+        warning_parts.append(f"⚠ cauda Hp com log-LR < 0 (n={n_wrong_gen})")
+    if n_wrong_imp:
+        warning_parts.append(f"⚠ cauda Hd com log-LR > 0 (n={n_wrong_imp})")
+    if warning_parts:
+        title_main += "  " + "  ".join(warning_parts)
     title_lines = [title_main]
     if line2_parts:
         title_lines.append("  ·  ".join(line2_parts))

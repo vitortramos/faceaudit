@@ -50,6 +50,7 @@ _TYPE_PREFIXES: dict[StrategyResourceType, str] = {
     StrategyResourceType.CASEWORK_VISUALIZATION:    "CV",
     StrategyResourceType.HUBNESS_REPORT:            "HR",
     StrategyResourceType.HUBNESS_ABLATION_RESULT:   "HA",
+    StrategyResourceType.LR_ARCHITECTURE_RAW_INPUT: "RI",
     StrategyResourceType.DATASET_STATS:             "DT",
     StrategyResourceType.ARTIFACT:                  "AR",
     StrategyResourceType.UNKNOWN:                   "UN",

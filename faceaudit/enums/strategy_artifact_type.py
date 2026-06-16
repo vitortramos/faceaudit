@@ -48,6 +48,12 @@ class StrategyArtifactType(Enum):
     HUBNESS_REPORT = "hubness_report"
     HUBNESS_ABLATION_RESULT = "hubness_ablation_result"
 
+    # --- ARQUITETURA DE CALIBRAÇÃO LR ---
+    # Payload bruto produzido por LR_ARCHITECTURE_VECTORIZATION:
+    # matriz (s, r_F, r_P) + schema + pair_keys + identidades + fingerprints.
+    # Persistido como pickle em scores/{strategy}/raw_input/.
+    LR_ARCHITECTURE_RAW_INPUT = "lr_architecture_raw_input"
+
     # --- VISUALIZAÇÕES ---
     GRAPHIC = "graphic"
 

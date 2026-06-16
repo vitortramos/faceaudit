@@ -235,6 +235,40 @@ class LRStrategyDefinition(JSONSerializableMixin):
             self.casework_instructions,
         ]
 
+    def get_phase_of_instruction(self, instruction_id: str):
+        """
+        Resolve a fase (PREPARATION/VALIDATION/CASEWORK) à qual a
+        instrução pertence. Retorna `None` se não encontrada.
+
+        Usado pelo orquestrador na execução por-instrução para construir
+        o `InstructionExecutionFrame` correto (LR_ARCHITECTURE_VECTORIZATION
+        fail-closes sem frame em VALIDATION/CASEWORK).
+        """
+        from faceaudit.enums.strategy_phase import StrategyPhase
+
+        mapping = [
+            (self.preparation_instructions, StrategyPhase.PREPARATION),
+            (self.validation_instructions, StrategyPhase.VALIDATION),
+            (self.casework_instructions, StrategyPhase.CASEWORK),
+        ]
+        for phase_list, phase_enum in mapping:
+            for instr in phase_list:
+                if instr.instruction_id == instruction_id:
+                    return phase_enum
+        return None
+
+    def get_instruction_index_in_phase(self, instruction_id: str) -> int:
+        """
+        Retorna o índice da instrução dentro da sua lista de fase, ou
+        -1 se não encontrada. Usado pelo orquestrador na execução
+        por-instrução para popular `InstructionExecutionFrame.instruction_index`.
+        """
+        for phase_list in self._phase_lists():
+            for index, instr in enumerate(phase_list):
+                if instr.instruction_id == instruction_id:
+                    return index
+        return -1
+
     def _get_phase_list(self, phase: str) -> List[StrategyInstructionDefinition]:
         _map = {
             "preparation": self.preparation_instructions,
@@ -295,7 +329,12 @@ class LRStrategyDefinition(JSONSerializableMixin):
         }
 
     @classmethod
-    def from_dict(cls: Type[T], data: dict) -> Optional[T]:
+    def from_dict(
+        cls: Type[T],
+        data: dict,
+        *,
+        allow_legacy_auto_migration: bool = True,
+    ) -> Optional[T]:
         """
         Reconstrói a definição da estratégia, hidratando corretamente:
         - resources
@@ -303,11 +342,33 @@ class LRStrategyDefinition(JSONSerializableMixin):
 
         Observação:
         validation_rule_ids permanece como lista simples de strings.
+
+        Migração preservativa (PR 2):
+        - Detecta sinais legados (V2.14) via `LegacyStrategyMigrationService`.
+        - Converte em memória — NÃO grava em disco; o JSON original
+          permanece intacto. A escrita da cópia `*.v2_15.fa` é acionada
+          pela UI/CLI via `LegacyStrategyMigrationService.write_side_by_side_copy`.
+        - `allow_legacy_auto_migration=False` (modo estrito) levanta
+          `LegacyStrategyVersionRejected` ao detectar formato legado.
         """
         if not data:
             return None
 
+        # Migração preservativa (PR 2) — primeira coisa antes do parsing.
+        from faceaudit.services.legacy_strategy_migration_service import (
+            LegacyStrategyMigrationService,
+            LegacyStrategyVersionRejected,
+        )
+        plan = LegacyStrategyMigrationService.detect(data)
+        if plan.is_needed:
+            if not allow_legacy_auto_migration:
+                raise LegacyStrategyVersionRejected(plan.legacy_signals_found)
+            data = LegacyStrategyMigrationService.convert_in_memory(data, plan)
+
         processed_data = data.copy()
+        # Bloco informativo de auditoria gravado lado-a-lado pela cópia
+        # migrada — não faz parte do DTO. Filtra antes de `cls(**...)`.
+        processed_data.pop("_migration_metadata", None)
 
         if "resources" in processed_data and isinstance(processed_data["resources"], list):
             processed_data["resources"] = [

@@ -80,6 +80,10 @@ def test_calibration_training_rebuilds_input_params_on_change():
         input_resource_id="scores_v1",
         trained_calibration_model_resource_id="cal_v1",
     )
+    # 2 defaults pré-execução: MIN_CALIBRATION_PAIRS, SCORE_CALIBRATION_STATE.
+    # CONDITIONAL_MONOTONICITY foi movido para auditoria embutida no executor
+    # (V1.5) — não aparece mais como regra de pré-execução porque precisa do
+    # calibrador refitado para avaliar.
     assert len(instr.validation_rule_configs) == 2
     for cfg in instr.validation_rule_configs:
         assert cfg.params["scores_resource_id"] == "scores_v1"

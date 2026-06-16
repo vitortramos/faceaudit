@@ -4605,17 +4605,17 @@ class StrategyManagerV2Controller(QtCore.QObject):
     ) -> None:
         """
         Abre o TypicalityDistributionViewerDialog a partir do modelo treinado
-        produzido por KNN_TYPICALITY_MODEL_TRAINING. Mesmo padrão de fetch
+        produzido por TYPICALITY_MODEL_TRAINING. Mesmo padrão de fetch
         dos demais viewers — contexto vivo primeiro, hidrata do disco como
         fallback.
         """
-        from faceaudit.models.instructions.knn_typicality_model_training_instruction import (
-            KNNTypicalityModelTrainingInstruction,
+        from faceaudit.models.instructions.typicality_model_training_instruction import (
+            TypicalityModelTrainingInstruction,
         )
 
         if not self._project or not self._current_definition:
             return
-        if not isinstance(instruction, KNNTypicalityModelTrainingInstruction):
+        if not isinstance(instruction, TypicalityModelTrainingInstruction):
             return
 
         result_id = instruction.trained_typicality_model_resource_id
@@ -4653,7 +4653,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
             if model is None:
                 missing_msg = (
                     "Não foi encontrado um modelo de tipicidade treinado para "
-                    "esta instrução. Execute KNN_TYPICALITY_MODEL_TRAINING primeiro."
+                    "esta instrução. Execute TYPICALITY_MODEL_TRAINING primeiro."
                 )
             else:
                 try:
@@ -4702,6 +4702,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
         dialog.setWindowModality(QtCore.Qt.WindowModality.NonModal)
         dialog.show()
 
+        # Resolve a fase da instrução para o frame de execução
+        # (LR_ARCHITECTURE_VECTORIZATION exige frame em VALIDATION/CASEWORK
+        # e fail-closa silenciosamente sem ele).
+        phase = self._current_definition.get_phase_of_instruction(
+            instruction.instruction_id
+        )
+        instruction_index = self._current_definition.get_instruction_index_in_phase(
+            instruction.instruction_id
+        )
+
         thread = QtCore.QThread()
         worker = InstructionExecutionWorker(
             self._executor,
@@ -4709,6 +4719,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
             self._execution_context,
             strategy_id=self._current_definition.strategy_id,
             strategy_name=self._current_definition.name or "",
+            phase=phase,
+            instruction_index=max(0, instruction_index),
         )
         worker.moveToThread(thread)
 

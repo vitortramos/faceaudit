@@ -98,8 +98,11 @@ from .services.serfiq_service import SERFIQService
 from .services.trajectory_plotter_service import TrajectoryPlotterService
 from .services.validation_math_service import ValidationMathService
 from .services.plda_split_service import PLDASplitService
-from .services.typicality_model import TypicalityModel
-from .services.typicality_model import TypicalityInfo
+from .services.movmf_typicality_model import MoVMFTypicalityModel
+from .models.typicality_info import TypicalityInfo
+
+# Compat: nome antigo continua importável até V2.16
+TypicalityModel = MoVMFTypicalityModel
 from .services.knn_typicality_model import KNNTypicalityModel
 from .models.knn_typicality_info import KNNTypicalityInfo
 from .services.hubness_analysis_service import HubnessAnalysisService

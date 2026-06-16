@@ -155,6 +155,10 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
           com poucos pares genuínos ou impostores.
         - SCORE_CALIBRATION_STATE(RAW) — evita treino sobre log-LR já
           calibrado, que produziria modelo distorcido.
+        - CONDITIONAL_MONOTONICITY — gate forense: ∂log_LR/∂s > 0 em
+          observed_rows + central_box (V1: apenas para LogReg, que persiste
+          architecture_state quando treinado via LR_ARCHITECTURE_VECTORIZATION
+          em FIT_PER_FOLD).
         """
         if self.validation_rules_user_managed:
             return
@@ -167,7 +171,7 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
         if not self.input_resource_id:
             return
 
-        self.validation_rule_configs = [
+        defaults = [
             ValidationRuleConfig(
                 rule_type=ValidationRuleType.MIN_CALIBRATION_PAIRS,
                 params={"scores_resource_id": self.input_resource_id},
@@ -180,6 +184,15 @@ class CalibrationModelTrainingInstruction(StrategyInstructionDefinition):
                 },
             ),
         ]
+
+        # CONDITIONAL_MONOTONICITY: auditoria embutida no executor (V1.5).
+        # Não auto-populamos como regra pré-execução porque a regra precisa
+        # do calibrador refitado para avaliar; o executor roda auditoria
+        # programaticamente pós-refit e persiste `monotonicity_audit` no
+        # metadata do calibrador. Usuários que queiram opt-in da regra como
+        # validação extra ainda podem adicioná-la manualmente via UI.
+
+        self.validation_rule_configs = defaults
 
     @property
     def uses_logistic_regression(self) -> bool:

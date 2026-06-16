@@ -947,8 +947,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 instr, "uses_bigauss", False
             ):
                 continue
+            if attr_name == "typicality_model_config" and not (
+                getattr(instr, "uses_knn", False)
+                or getattr(instr, "uses_movmf", False)
+            ):
+                continue
 
             current_dto = getattr(instr, attr_name, None)
+
+            # Reconcilia config polimórfico antes da renderização inline.
+            # Quando o usuário troca KNN ↔ MoVMF no dropdown, _sync_declared_io
+            # já chama _reconcile_config_type, mas defensivamente garantimos
+            # aqui que o DTO carregado bate com o backend escolhido — assim
+            # JSONs híbridos antigos abertos pela 1ª vez também se acertam.
+            if attr_name == "typicality_model_config" and hasattr(
+                instr, "_reconcile_config_type"
+            ):
+                instr._reconcile_config_type()
+                current_dto = getattr(instr, attr_name, None)
 
             if render_strategy == "inline":
                 if current_dto is None:

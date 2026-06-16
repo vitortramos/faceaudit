@@ -24,6 +24,8 @@ _INSTRUCTION_ICONS = {
     StrategyInstructionType.CALIBRATION_MODEL_TRAINING: "🎯",
     StrategyInstructionType.SCORE_CALIBRATION: "🎚️",
     StrategyInstructionType.SCORE_VECTORIZATION: "🧬",
+    StrategyInstructionType.SCORE_INTERACTION_FEATURE: "🪢",
+    StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION: "🧩",
     StrategyInstructionType.STRATEGY_EVALUATION: "📈",
     StrategyInstructionType.CASEWORK_VISUALIZATION: "🎯",
 }
@@ -35,7 +37,7 @@ _TRAINING_ONLY_TYPES = {
     StrategyInstructionType.PIPELINE_TRAINING,
     StrategyInstructionType.SIMILARITY_MODEL_TRAINING,
     StrategyInstructionType.CALIBRATION_MODEL_TRAINING,
-    StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
+    StrategyInstructionType.TYPICALITY_MODEL_TRAINING,
 }
 
 # Instruções exclusivas da fase Validação. Não devem aparecer em

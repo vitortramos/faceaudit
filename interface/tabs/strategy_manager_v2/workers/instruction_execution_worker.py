@@ -34,6 +34,8 @@ class InstructionExecutionWorker(QtCore.QObject):
         context,
         strategy_id: Optional[str] = None,
         strategy_name: str = "",
+        phase=None,
+        instruction_index: int = 0,
         parent=None,
     ):
         super().__init__(parent)
@@ -42,6 +44,12 @@ class InstructionExecutionWorker(QtCore.QObject):
         self._context = context
         self._strategy_id = strategy_id
         self._strategy_name = strategy_name
+        # Fase + índice da instrução dentro da fase. Permite ao executor
+        # construir o `InstructionExecutionFrame` no caminho por-instrução
+        # (LR_ARCHITECTURE_VECTORIZATION exige frame em VALIDATION/CASEWORK
+        # e o executor fail-closa silenciosamente quando ausente).
+        self._phase = phase
+        self._instruction_index = int(instruction_index)
 
     @QtCore.pyqtSlot()
     def run(self):
@@ -59,7 +67,10 @@ class InstructionExecutionWorker(QtCore.QObject):
         try:
             self.log_message.emit(f"Executando: {self._instruction.name}")
             result = self._executor.execute_single_instruction(
-                self._instruction, self._context
+                self._instruction,
+                self._context,
+                phase=self._phase,
+                instruction_index=self._instruction_index,
             )
             if result.success:
                 # Persiste recursos produzidos AINDA NA THREAD DO WORKER —

@@ -344,6 +344,19 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                 )
             except Exception:
                 pass  # JSON falha → simplesmente não persiste; plot cai em fallback
+        # Família de score (tipicidade / interaction feature) — flags que o
+        # SCORE_INTERACTION_FEATURE consulta em `dataset.metadata` para validar
+        # o modifier e a base. Sem persistir, o round-trip pelo parquet perde
+        # `score_kind`/`score_type` e o validador rejeita um modifier legítimo
+        # de TYPICALITY_PAIR_SCORING re-hidratado do disco.
+        score_kind = self.metadata.get("score_kind")
+        if score_kind:
+            schema_metadata[b"faceaudit:score_kind"] = str(score_kind).encode()
+        score_type = self.metadata.get("score_type")
+        if score_type:
+            schema_metadata[b"faceaudit:score_type"] = str(score_type).encode()
+        if bool(self.metadata.get("is_interaction_feature", False)):
+            schema_metadata[b"faceaudit:is_interaction_feature"] = b"true"
         schema = pa.schema(fields, metadata=schema_metadata or None)
 
         if n == 0:
@@ -661,7 +674,12 @@ class SimilarityScoreDataset(JSONSerializableMixin):
                 compute_calibration_curve_summary,
                 render_calibration_curve_png,
             )
-            summary = compute_calibration_curve_summary(self.items)
+            # Passa metadata pra que piecewise (knots/coefs) seja
+            # propagado ao summary e renderizado como curva analítica +
+            # marcadores nos knots.
+            summary = compute_calibration_curve_summary(
+                self.items, metadata=self.metadata,
+            )
             if summary is None:
                 return False
             render_calibration_curve_png(summary, target_png_path)

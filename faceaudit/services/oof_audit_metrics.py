@@ -1,0 +1,930 @@
+"""Helpers compartilhados (P0-R5-2/3/6) para validação + fingerprint
+auditável das métricas OOF persistidas pelos backends de tipicidade
+após `install_reference_score_calibration`.
+
+Por que módulo separado:
+- Mesma validação aplica-se ao MoVMF e ao k-NN; sem helper, qualquer
+  divergência entre install signatures viraria assimetria semântica.
+- O fingerprint é uma propriedade do contrato R5 — recalculado e
+  comparado pelo `from_dict` (defesa contra adulteração de pickle —
+  o revisor demonstrou que `payload["state"]["oof_predictive_avg_score"]
+  += 1234` passava sem ser detectado em R4).
+"""
+from __future__ import annotations
+
+import hashlib
+from typing import Optional, Sequence
+
+import numpy as np
+
+
+class OofAuditMetricMismatchError(ValueError):
+    """Adulteração ou corrupção das métricas OOF detectada pelo fingerprint
+    auditável.
+
+    P0-R5-3: garantia de que valores carregados de pickle correspondem
+    aos que foram instalados — bloqueia round-trip que muta
+    `oof_predictive_avg_score` por fora do `install_reference_score_calibration`.
+    """
+
+    def __init__(self, *, expected: str, computed: str) -> None:
+        super().__init__(
+            f"OofAuditMetricMismatch: fingerprint persistido={expected!r} "
+            f"não bate com recomputado={computed!r}. O pickle foi alterado "
+            "fora do `install_reference_score_calibration` ou está corrompido."
+        )
+        self.expected = expected
+        self.computed = computed
+
+
+_SHA256_HEX_RE = None  # lazy compile
+
+
+def _is_valid_sha256_hex(value) -> bool:
+    """P0-R8-2 (revisão externa round 8): valida formato canônico
+    SHA-256 hex (exatamente 64 caracteres em [0-9a-f])."""
+    import re
+    global _SHA256_HEX_RE
+    if _SHA256_HEX_RE is None:
+        _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+    if not isinstance(value, str):
+        return False
+    return bool(_SHA256_HEX_RE.match(value))
+
+
+class OofAuditSemanticError(ValueError):
+    """Bloco OOF carregado com violação semântica (não apenas estrutural).
+
+    P0-R8-2 (revisão externa round 8): a R7 cobria comprimentos e
+    finitude mas não invariantes semânticos: `sum(n_scores_by_fold)
+    == len(reference_scores)`, modo IDENTITY_CENTROIDS ↔
+    `n_scores == n_identities`, média global compatível com pesos
+    persistidos, threshold por fold finito vs ood_quantile, formato
+    do split_fingerprint, presença de bloco OOF em modo não-cross-fit.
+    """
+
+    def __init__(self, *, rule: str, detail: str) -> None:
+        super().__init__(
+            f"OofAuditSemantic: regra {rule!r} violada — {detail}"
+        )
+        self.rule = rule
+        self.detail = detail
+
+
+class IncompleteCrossFitAuditPayloadError(ValueError):
+    """Modelo no modo CROSS_FIT_IDENTITY foi carregado sem o bloco
+    completo de auditoria OOF.
+
+    P0-R7-2 (revisão externa 2026-06-09 round 7): a regra "qualquer
+    campo OOF presente exige fingerprint" do round 6 era necessária
+    mas insuficiente — um adversário podia remover TODOS os
+    diagnósticos OOF + o fingerprint e ainda assim carregar o modelo
+    como CROSS_FIT_IDENTITY válido. Agora a presença de
+    `CROSS_FIT_IDENTITY` em `reference_score_calibration_mode` exige
+    o bloco OOF completo + fingerprint.
+    """
+
+    def __init__(self, *, missing_fields: tuple) -> None:
+        super().__init__(
+            "IncompleteCrossFitAuditPayload: modelo no modo "
+            "CROSS_FIT_IDENTITY exige bloco completo de diagnósticos "
+            f"OOF + fingerprint. Campos ausentes: {missing_fields!r}."
+        )
+        self.missing_fields = missing_fields
+
+
+class UnexpectedOofScoreTypeError(ValueError):
+    """`oof_predictive_score_type` não corresponde ao backend declarado.
+
+    P0-R7-3 (revisão externa 2026-06-09 round 7): MoVMF deve persistir
+    `LOG_DENSITY_ESTIMATE`; k-NN deve persistir `MEAN_KNN_SIMILARITY`.
+    Qualquer outro valor (ex.: `"ARBITRARY_SCALE"`) é fail-closed.
+    """
+
+    def __init__(self, *, backend: str, expected: str, actual) -> None:
+        super().__init__(
+            f"UnexpectedOofScoreType: backend {backend!r} exige "
+            f"`oof_predictive_score_type = {expected!r}` mas o payload "
+            f"persistiu {actual!r}."
+        )
+        self.backend = backend
+        self.expected = expected
+        self.actual = actual
+
+
+# Mapeamento esperado de score_type por backend (P0-R7-3).
+_EXPECTED_OOF_SCORE_TYPE = {
+    "MOVMF": "LOG_DENSITY_ESTIMATE",
+    "KNN": "MEAN_KNN_SIMILARITY",
+}
+
+
+def _validate_cross_fit_audit_completeness_or_raise(
+    *,
+    backend: str,
+    reference_score_calibration_mode,
+    persisted_fingerprint,
+    oof_predictive_avg_score,
+    oof_predictive_avg_score_by_fold,
+    oof_predictive_score_type,
+    n_identities_by_fold,
+    n_scores_by_fold,
+    ood_threshold_by_fold,
+    split_fingerprint,
+    fold_seeds,
+    n_folds_used,
+    # P0-R8-2 (revisão externa round 8): novos parâmetros para
+    # validação semântica. Quando passados, regras extras se aplicam.
+    reference_scores=None,
+    reference_weights=None,
+    reference_cdf=None,
+    ood_quantile=None,
+    population_weighting_mode=None,
+    # P0-R9 (revisão externa 2026-06-10 round 9): valida também o
+    # threshold global e a estratégia de seeds.
+    ood_threshold_global=None,
+    base_random_state=None,
+    fold_seed_strategy=None,
+    format_version=None,
+) -> None:
+    """P0-R7-2/3: em CROSS_FIT_IDENTITY, exige bloco completo e
+    score_type coerente com o backend.
+
+    `reference_score_calibration_mode` pode vir como string ou como
+    enum. Comparamos por `.to_str()` quando enum.
+    """
+    if reference_score_calibration_mode is None:
+        # P0-R8-2: modo None ⇔ pré-install. Nenhum bloco OOF deve
+        # estar presente.
+        _reject_oof_block_when_not_cross_fit(
+            mode_label="None",
+            oof_predictive_avg_score=oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=oof_predictive_score_type,
+            n_identities_by_fold=n_identities_by_fold,
+            n_scores_by_fold=n_scores_by_fold,
+            ood_threshold_by_fold=ood_threshold_by_fold,
+            split_fingerprint=split_fingerprint,
+            fold_seeds=fold_seeds,
+            n_folds_used=n_folds_used,
+            persisted_fingerprint=persisted_fingerprint,
+        )
+        return
+    mode_str = (
+        reference_score_calibration_mode.to_str()
+        if hasattr(reference_score_calibration_mode, "to_str")
+        else str(reference_score_calibration_mode)
+    )
+    if mode_str != "CROSS_FIT_IDENTITY":
+        # P0-R8-2: em IN_SAMPLE_LEGACY ou outros modos não-cross-fit,
+        # a presença do bloco OOF é incoerente.
+        _reject_oof_block_when_not_cross_fit(
+            mode_label=mode_str,
+            oof_predictive_avg_score=oof_predictive_avg_score,
+            oof_predictive_avg_score_by_fold=oof_predictive_avg_score_by_fold,
+            oof_predictive_score_type=oof_predictive_score_type,
+            n_identities_by_fold=n_identities_by_fold,
+            n_scores_by_fold=n_scores_by_fold,
+            ood_threshold_by_fold=ood_threshold_by_fold,
+            split_fingerprint=split_fingerprint,
+            fold_seeds=fold_seeds,
+            n_folds_used=n_folds_used,
+            persisted_fingerprint=persisted_fingerprint,
+        )
+        return
+
+    # Bloco completo obrigatório:
+    required = {
+        "audit_metrics_fingerprint": persisted_fingerprint,
+        "oof_predictive_avg_score": oof_predictive_avg_score,
+        "oof_predictive_avg_score_by_fold": oof_predictive_avg_score_by_fold,
+        "oof_predictive_score_type": oof_predictive_score_type,
+        "n_identities_by_fold": n_identities_by_fold,
+        "n_scores_by_fold": n_scores_by_fold,
+        "ood_threshold_by_fold": ood_threshold_by_fold,
+        "split_fingerprint": split_fingerprint,
+        "fold_seeds": fold_seeds,
+        "n_folds_used": n_folds_used,
+    }
+    missing = tuple(name for name, value in required.items() if value is None)
+    if missing:
+        raise IncompleteCrossFitAuditPayloadError(missing_fields=missing)
+
+    # P0-R7-2 / endurecimento adicional: n_folds_used >= 2 em CROSS_FIT.
+    if isinstance(n_folds_used, int) and n_folds_used < 2:
+        raise IncompleteCrossFitAuditPayloadError(
+            missing_fields=(f"n_folds_used={n_folds_used} (deve ser >= 2)",),
+        )
+
+    # P0-R7-3: score_type esperado por backend.
+    backend_key = backend.upper() if isinstance(backend, str) else str(backend)
+    expected = _EXPECTED_OOF_SCORE_TYPE.get(backend_key)
+    if expected is not None and oof_predictive_score_type != expected:
+        raise UnexpectedOofScoreTypeError(
+            backend=backend_key,
+            expected=expected,
+            actual=oof_predictive_score_type,
+        )
+
+    # ─── P0-R8-2: validações semânticas ────────────────────────────
+    # split_fingerprint deve ser SHA-256 hex (64 chars [0-9a-f]).
+    if not _is_valid_sha256_hex(split_fingerprint):
+        raise OofAuditSemanticError(
+            rule="split_fingerprint_format",
+            detail=(
+                f"split_fingerprint={split_fingerprint!r} não está no "
+                "formato SHA-256 hex (64 caracteres [0-9a-f])."
+            ),
+        )
+
+    # Contagens estritamente positivas.
+    for field_name, arr in (
+        ("n_identities_by_fold", n_identities_by_fold),
+        ("n_scores_by_fold", n_scores_by_fold),
+    ):
+        for i, v in enumerate(arr):
+            if v <= 0:
+                raise OofAuditSemanticError(
+                    rule=f"{field_name}_strictly_positive",
+                    detail=f"{field_name}[{i}] = {v} (deve ser > 0).",
+                )
+
+    # Coerência com modo populacional.
+    if population_weighting_mode is not None:
+        pop_str = (
+            population_weighting_mode.to_str()
+            if hasattr(population_weighting_mode, "to_str")
+            else str(population_weighting_mode)
+        )
+        if pop_str == "IDENTITY_CENTROIDS":
+            for i, (ns, nid) in enumerate(
+                zip(n_scores_by_fold, n_identities_by_fold),
+            ):
+                if ns != nid:
+                    raise OofAuditSemanticError(
+                        rule="identity_centroids_one_score_per_identity",
+                        detail=(
+                            f"IDENTITY_CENTROIDS exige "
+                            f"n_scores_by_fold[{i}]=={ns} == "
+                            f"n_identities_by_fold[{i}]=={nid}."
+                        ),
+                    )
+        elif pop_str in ("FACE_LEVEL_RAW", "INVERSE_IDENTITY_FREQUENCY"):
+            for i, (ns, nid) in enumerate(
+                zip(n_scores_by_fold, n_identities_by_fold),
+            ):
+                if ns < nid:
+                    raise OofAuditSemanticError(
+                        rule="face_level_at_least_one_score_per_id",
+                        detail=(
+                            f"{pop_str} exige n_scores_by_fold[{i}]={ns} "
+                            f">= n_identities_by_fold[{i}]={nid}."
+                        ),
+                    )
+
+    # Total de scores OOF == comprimento da referência persistida.
+    if reference_scores is not None:
+        total_scores = int(sum(n_scores_by_fold))
+        ref_len = int(len(reference_scores))
+        if total_scores != ref_len:
+            raise OofAuditSemanticError(
+                rule="sum_n_scores_equals_reference_length",
+                detail=(
+                    f"sum(n_scores_by_fold)={total_scores} ≠ "
+                    f"len(reference_scores)={ref_len}."
+                ),
+            )
+
+    # Thresholds finitos vs ood_quantile.
+    if ood_quantile is not None:
+        if float(ood_quantile) > 0.0:
+            for i, t in enumerate(ood_threshold_by_fold):
+                if t is None:
+                    raise OofAuditSemanticError(
+                        rule="ood_threshold_required_when_quantile_positive",
+                        detail=(
+                            f"ood_quantile={ood_quantile} > 0 exige "
+                            f"ood_threshold_by_fold[{i}] != None."
+                        ),
+                    )
+        else:
+            for i, t in enumerate(ood_threshold_by_fold):
+                if t is not None:
+                    raise OofAuditSemanticError(
+                        rule="ood_threshold_must_be_none_when_quantile_zero",
+                        detail=(
+                            f"ood_quantile=0 exige "
+                            f"ood_threshold_by_fold[{i}]=None "
+                            f"(recebido {t})."
+                        ),
+                    )
+
+    # P0-R9-1 (revisão externa round 9): em CROSS_FIT_IDENTITY no
+    # schema atual, pesos e CDF são SEMPRE obrigatórios. Antes, a
+    # ausência de weights+cdf abria caminho para média global
+    # arbitrária (a validação `avg_score_matches_weighted_reference`
+    # exigia ambos os arrays para rodar).
+    import numpy as _np
+    if reference_weights is None:
+        raise OofAuditSemanticError(
+            rule="cross_fit_requires_explicit_weights",
+            detail=(
+                "CROSS_FIT_IDENTITY no schema atual exige "
+                "`reference_weights` explícito (ainda que uniforme). "
+                "None impede a validação semântica da média OOF."
+            ),
+        )
+    if reference_cdf is None:
+        raise OofAuditSemanticError(
+            rule="cross_fit_requires_explicit_cdf",
+            detail=(
+                "CROSS_FIT_IDENTITY no schema atual exige "
+                "`reference_cdf` explícito. Ela é a CDF de fato — sem "
+                "ela o threshold global não pode ser revalidado."
+            ),
+        )
+
+    # Média global ≈ média ponderada dos scores persistidos.
+    if reference_scores is not None:
+        arr_s = _np.asarray(reference_scores, dtype=_np.float64)
+        arr_w = _np.asarray(reference_weights, dtype=_np.float64)
+        if arr_s.shape == arr_w.shape and arr_w.sum() > 0:
+            reconstructed = float(
+                (arr_w * arr_s).sum() / arr_w.sum()
+            )
+            if not _np.isclose(
+                reconstructed, float(oof_predictive_avg_score),
+                rtol=1e-6, atol=1e-9,
+            ):
+                raise OofAuditSemanticError(
+                    rule="avg_score_matches_weighted_reference",
+                    detail=(
+                        f"oof_predictive_avg_score="
+                        f"{oof_predictive_avg_score!r} ≠ "
+                        f"(weights·scores)/sum(weights)="
+                        f"{reconstructed!r}."
+                    ),
+                )
+
+    # P0-R9-2: threshold global vinculado à CDF persistida e a
+    # ood_quantile. Antes, qualquer valor finito era aceito —
+    # incluindo `0.99999` em q=0 (que mudaria classificação OOD)
+    # e `1e9` em q=0.05.
+    if ood_quantile is not None and reference_scores is not None:
+        q = float(ood_quantile)
+        if q == 0.0:
+            if ood_threshold_global is not None:
+                raise OofAuditSemanticError(
+                    rule="ood_global_threshold_must_be_none_when_q_zero",
+                    detail=(
+                        f"ood_quantile=0 exige ood_threshold_global=None "
+                        f"(recebido {ood_threshold_global!r})."
+                    ),
+                )
+        else:
+            if ood_threshold_global is None:
+                raise OofAuditSemanticError(
+                    rule="ood_global_threshold_required_when_q_positive",
+                    detail=(
+                        f"ood_quantile={q} > 0 exige ood_threshold_global "
+                        "não-None."
+                    ),
+                )
+            arr_s = _np.asarray(reference_scores, dtype=_np.float64)
+            arr_cdf = _np.asarray(reference_cdf, dtype=_np.float64)
+            if arr_s.shape == arr_cdf.shape and arr_s.size > 0:
+                idx = int(_np.searchsorted(arr_cdf, q, side="left"))
+                idx = min(max(idx, 0), arr_s.size - 1)
+                expected = float(arr_s[idx])
+                if not _np.isclose(
+                    expected, float(ood_threshold_global),
+                    rtol=1e-9, atol=1e-12,
+                ):
+                    raise OofAuditSemanticError(
+                        rule="ood_global_threshold_matches_weighted_quantile",
+                        detail=(
+                            f"ood_threshold_global="
+                            f"{ood_threshold_global!r} ≠ score em CDF>=q "
+                            f"({expected!r}). q={q}."
+                        ),
+                    )
+
+    # P1-R9-4: by_fold deve agregar à média global ponderado pela
+    # massa do fold. fold_mass = n_identities_by_fold em
+    # INVERSE_IDENTITY_FREQUENCY (cada identidade peso 1); senão
+    # n_scores_by_fold (cada score peso unitário, é o que a CDF usa).
+    if oof_predictive_avg_score_by_fold is not None:
+        if population_weighting_mode is not None:
+            pop_str = (
+                population_weighting_mode.to_str()
+                if hasattr(population_weighting_mode, "to_str")
+                else str(population_weighting_mode)
+            )
+        else:
+            pop_str = None
+        if pop_str == "INVERSE_IDENTITY_FREQUENCY":
+            fold_mass = _np.asarray(n_identities_by_fold, dtype=_np.float64)
+        else:
+            fold_mass = _np.asarray(n_scores_by_fold, dtype=_np.float64)
+        by_fold = _np.asarray(
+            oof_predictive_avg_score_by_fold, dtype=_np.float64,
+        )
+        if by_fold.shape == fold_mass.shape and fold_mass.sum() > 0:
+            agg = float((by_fold * fold_mass).sum() / fold_mass.sum())
+            if not _np.isclose(
+                agg, float(oof_predictive_avg_score),
+                rtol=1e-6, atol=1e-9,
+            ):
+                raise OofAuditSemanticError(
+                    rule="by_fold_aggregates_to_global_average",
+                    detail=(
+                        f"weighted-average(by_fold, fold_mass)={agg!r} "
+                        f"≠ oof_predictive_avg_score="
+                        f"{oof_predictive_avg_score!r}. "
+                        f"pop_mode={pop_str!r}."
+                    ),
+                )
+
+    # P1-R9-5: seeds vinculadas à estratégia declarada.
+    if fold_seed_strategy is not None:
+        if fold_seed_strategy != "BASE_PLUS_FOLD_INDEX":
+            raise OofAuditSemanticError(
+                rule="unknown_fold_seed_strategy",
+                detail=(
+                    f"fold_seed_strategy={fold_seed_strategy!r} desconhecida; "
+                    "única política implementada é 'BASE_PLUS_FOLD_INDEX'."
+                ),
+            )
+        if base_random_state is None:
+            raise OofAuditSemanticError(
+                rule="base_random_state_required_with_strategy",
+                detail=(
+                    "fold_seed_strategy declarada mas base_random_state=None."
+                ),
+            )
+        expected_seeds = tuple(
+            int(base_random_state) + i for i in range(int(n_folds_used))
+        )
+        if tuple(fold_seeds) != expected_seeds:
+            raise OofAuditSemanticError(
+                rule="fold_seeds_match_declared_strategy",
+                detail=(
+                    f"fold_seeds={tuple(fold_seeds)!r} ≠ "
+                    f"esperado(base={base_random_state}, "
+                    f"n_folds={n_folds_used})={expected_seeds!r}."
+                ),
+            )
+
+
+def _reject_oof_block_when_not_cross_fit(
+    *,
+    mode_label: str,
+    oof_predictive_avg_score,
+    oof_predictive_avg_score_by_fold,
+    oof_predictive_score_type,
+    n_identities_by_fold,
+    n_scores_by_fold,
+    ood_threshold_by_fold,
+    split_fingerprint,
+    fold_seeds,
+    n_folds_used,
+    persisted_fingerprint,
+) -> None:
+    """P0-R8-2: bloco OOF anexado a modo não-cross-fit é incoerente
+    semanticamente. `split_fingerprint`/`persisted_fingerprint` podem
+    sobreviver em pickles legados; o resto não.
+    """
+    leaks = {
+        "oof_predictive_avg_score": oof_predictive_avg_score,
+        "oof_predictive_avg_score_by_fold": oof_predictive_avg_score_by_fold,
+        "oof_predictive_score_type": oof_predictive_score_type,
+        "n_identities_by_fold": n_identities_by_fold,
+        "n_scores_by_fold": n_scores_by_fold,
+        "ood_threshold_by_fold": ood_threshold_by_fold,
+        "fold_seeds": fold_seeds,
+        "n_folds_used": n_folds_used,
+    }
+    present = tuple(name for name, value in leaks.items() if value is not None)
+    if present:
+        raise OofAuditSemanticError(
+            rule="oof_block_requires_cross_fit_mode",
+            detail=(
+                f"modo='{mode_label}' não-CROSS_FIT_IDENTITY mas bloco OOF "
+                f"presente: {present!r}. Carregue como CROSS_FIT_IDENTITY "
+                "ou remova esses campos."
+            ),
+        )
+
+
+class MissingOofAuditMetricFingerprintError(ValueError):
+    """Payload OOF presente sem fingerprint auditável correspondente.
+
+    P0-R6-2 (revisão externa 2026-06-09 round 6): fechar o bypass
+    demonstrado pelo revisor — `payload["state"]["audit_metrics_fingerprint"]
+    = None` permitia que QUALQUER alteração das métricas OOF passasse
+    despercebida. A nova regra é: se há qualquer campo OOF persistido,
+    o fingerprint é obrigatório.
+    """
+
+    def __init__(self, *, fields_present: tuple) -> None:
+        super().__init__(
+            "MissingOofAuditMetricFingerprint: payload tem campos OOF "
+            f"persistidos {fields_present!r} mas `audit_metrics_fingerprint` "
+            "é None. Em modelos com payload OOF, o fingerprint auditável "
+            "é obrigatório — removê-lo desativaria a proteção contra "
+            "adulteração das métricas."
+        )
+        self.fields_present = fields_present
+
+
+# ─── Validadores de finitude e comprimento ──────────────────────────────
+
+
+def _normalize_oof_avg_score(value, *, field: str) -> Optional[float]:
+    if value is None:
+        return None
+    v = float(value)
+    if not np.isfinite(v):
+        raise ValueError(
+            f"install_reference_score_calibration: {field} não-finito "
+            f"({v!r})."
+        )
+    return v
+
+
+def _normalize_oof_per_fold_floats(value, *, field: str) -> Optional[tuple]:
+    if value is None:
+        return None
+    out = tuple(float(x) for x in value)
+    for i, v in enumerate(out):
+        if not np.isfinite(v):
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"não-finito ({v!r})."
+            )
+    return out
+
+
+def _normalize_oof_per_fold_floats_optional(
+    value, *, field: str
+) -> Optional[tuple]:
+    """Versão de `_normalize_oof_per_fold_floats` que aceita `None` em
+    elementos (caso do `ood_threshold_by_fold` quando `ood_quantile=0`)."""
+    if value is None:
+        return None
+    out = []
+    for i, x in enumerate(value):
+        if x is None:
+            out.append(None)
+            continue
+        v = float(x)
+        if not np.isfinite(v):
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"não-finito ({v!r})."
+            )
+        out.append(v)
+    return tuple(out)
+
+
+def _normalize_oof_per_fold_ints(value, *, field: str) -> Optional[tuple]:
+    """P1-R6-6 (revisão externa round 6): aceita SOMENTE inteiros
+    estritos (int/np.integer ou float com `.is_integer()=True`).
+    Floats fracionários como 1.9 ou 2.2 são rejeitados — antes,
+    `int(1.9)` truncava silenciosamente para 1.
+
+    `bool` é explicitamente rejeitado (Python `bool` é subclasse de
+    `int` mas semanticamente seria ambíguo aqui).
+    """
+    if value is None:
+        return None
+    out = []
+    for i, x in enumerate(value):
+        if isinstance(x, bool):
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"bool não é aceito ({x!r})."
+            )
+        if isinstance(x, (int, np.integer)):
+            v = int(x)
+        elif isinstance(x, (float, np.floating)):
+            if not np.isfinite(x):
+                raise ValueError(
+                    f"install_reference_score_calibration: {field}[{i}] "
+                    f"não-finito ({x!r})."
+                )
+            if not float(x).is_integer():
+                raise ValueError(
+                    f"install_reference_score_calibration: {field}[{i}] "
+                    f"= {x!r} não é inteiro (fração não nula)."
+                )
+            v = int(x)
+        else:
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"= {x!r} não é numérico inteiro."
+            )
+        if v < 0:
+            raise ValueError(
+                f"install_reference_score_calibration: {field}[{i}] "
+                f"negativo ({v})."
+            )
+        out.append(v)
+    return tuple(out)
+
+
+def _normalize_n_folds_used(value) -> Optional[int]:
+    """P1-R6-6: `n_folds_used` aceita None, int não-negativo ou float
+    com parte fracionária zero. Floats fracionários levantam.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used bool "
+            f"não é aceito ({value!r})."
+        )
+    if isinstance(value, (int, np.integer)):
+        v = int(value)
+    elif isinstance(value, (float, np.floating)):
+        if not np.isfinite(value):
+            raise ValueError(
+                f"install_reference_score_calibration: n_folds_used "
+                f"não-finito ({value!r})."
+            )
+        if not float(value).is_integer():
+            raise ValueError(
+                f"install_reference_score_calibration: n_folds_used "
+                f"= {value!r} não é inteiro."
+            )
+        v = int(value)
+    else:
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used "
+            f"= {value!r} não é numérico inteiro."
+        )
+    if v < 0:
+        raise ValueError(
+            f"install_reference_score_calibration: n_folds_used "
+            f"negativo ({v})."
+        )
+    return v
+
+
+def _validate_oof_per_fold_lengths(
+    *,
+    n_folds_used: Optional[int],
+    oof_by_fold: Optional[tuple],
+    n_identities_by_fold: Optional[tuple],
+    n_scores_by_fold: Optional[tuple],
+    ood_threshold_by_fold: Optional[tuple],
+    fold_seeds: Optional[tuple],
+) -> None:
+    """Se `n_folds_used` está definido, todos os arrays por-fold passados
+    devem ter exatamente esse comprimento. Arrays None são tolerados (o
+    caller pode não estar passando aquele diagnóstico).
+    """
+    if n_folds_used is None:
+        # Sem n_folds_used, exigimos que os arrays por-fold concordem
+        # entre si (qualquer um define o tamanho).
+        present = [
+            arr for arr in (
+                oof_by_fold, n_identities_by_fold, n_scores_by_fold,
+                ood_threshold_by_fold, fold_seeds,
+            ) if arr is not None
+        ]
+        if not present:
+            return
+        target = len(present[0])
+        for arr in present[1:]:
+            if len(arr) != target:
+                raise ValueError(
+                    f"install_reference_score_calibration: arrays por-fold "
+                    f"com comprimentos diferentes ({target} vs {len(arr)})."
+                )
+        return
+
+    for field_name, arr in (
+        ("oof_predictive_avg_score_by_fold", oof_by_fold),
+        ("n_identities_by_fold", n_identities_by_fold),
+        ("n_scores_by_fold", n_scores_by_fold),
+        ("ood_threshold_by_fold", ood_threshold_by_fold),
+        ("fold_seeds", fold_seeds),
+    ):
+        if arr is None:
+            continue
+        if len(arr) != n_folds_used:
+            raise ValueError(
+                f"install_reference_score_calibration: len({field_name}) "
+                f"= {len(arr)} ≠ n_folds_used = {n_folds_used}."
+            )
+
+
+# ─── Fingerprint auditável ──────────────────────────────────────────────
+
+
+def _compute_audit_metrics_fingerprint(
+    *,
+    oof_predictive_avg_score: Optional[float],
+    oof_predictive_avg_score_by_fold: Optional[tuple],
+    oof_predictive_score_type: Optional[str],
+    n_identities_by_fold: Optional[tuple],
+    n_scores_by_fold: Optional[tuple],
+    ood_threshold_by_fold: Optional[tuple],
+    split_fingerprint: Optional[str],
+    fold_seeds: Optional[tuple],
+    n_folds_used: Optional[int],
+    # R9: estratégia de seeds entra no fingerprint.
+    base_random_state: Optional[int] = None,
+    fold_seed_strategy: Optional[str] = None,
+) -> Optional[str]:
+    """SHA-256 sobre representação textual canônica das métricas OOF.
+
+    Cobre os campos que o revisor R5 enumerou explicitamente. Retorna
+    None quando NENHUMA métrica OOF foi instalada (todos os campos None
+    — caso IN_SAMPLE_LEGACY); senão retorna hex digest.
+
+    Determinismo: floats serializados com `repr` (preserva precisão);
+    tuplas serializadas como JSON-like. Mudar a ordem dos campos quebra
+    fingerprint — propositadamente; alterar este código exige migração.
+    """
+    fields = [
+        oof_predictive_avg_score,
+        oof_predictive_avg_score_by_fold,
+        oof_predictive_score_type,
+        n_identities_by_fold,
+        n_scores_by_fold,
+        ood_threshold_by_fold,
+        split_fingerprint,
+        fold_seeds,
+        n_folds_used,
+    ]
+    if all(f is None for f in fields):
+        return None
+
+    h = hashlib.sha256()
+
+    def _feed(label: str, value) -> None:
+        h.update(label.encode("utf-8"))
+        h.update(b"=")
+        if value is None:
+            h.update(b"None")
+        elif isinstance(value, float):
+            h.update(repr(value).encode("utf-8"))
+        elif isinstance(value, int):
+            h.update(str(value).encode("utf-8"))
+        elif isinstance(value, str):
+            h.update(value.encode("utf-8"))
+        elif isinstance(value, (tuple, list)):
+            h.update(b"(")
+            for i, x in enumerate(value):
+                if i > 0:
+                    h.update(b",")
+                if x is None:
+                    h.update(b"None")
+                elif isinstance(x, float):
+                    h.update(repr(x).encode("utf-8"))
+                elif isinstance(x, int):
+                    h.update(str(x).encode("utf-8"))
+                else:
+                    h.update(str(x).encode("utf-8"))
+            h.update(b")")
+        else:
+            h.update(repr(value).encode("utf-8"))
+        h.update(b";")
+
+    _feed("oof_predictive_avg_score", oof_predictive_avg_score)
+    _feed("oof_predictive_avg_score_by_fold", oof_predictive_avg_score_by_fold)
+    _feed("oof_predictive_score_type", oof_predictive_score_type)
+    _feed("n_identities_by_fold", n_identities_by_fold)
+    _feed("n_scores_by_fold", n_scores_by_fold)
+    _feed("ood_threshold_by_fold", ood_threshold_by_fold)
+    _feed("split_fingerprint", split_fingerprint)
+    _feed("fold_seeds", fold_seeds)
+    _feed("n_folds_used", n_folds_used)
+    _feed("base_random_state", base_random_state)
+    _feed("fold_seed_strategy", fold_seed_strategy)
+    return h.hexdigest()
+
+
+def _revalidate_oof_payload_or_raise(
+    *,
+    oof_predictive_avg_score,
+    oof_predictive_avg_score_by_fold,
+    n_identities_by_fold,
+    n_scores_by_fold,
+    ood_threshold_by_fold,
+    fold_seeds,
+    n_folds_used,
+) -> None:
+    """P0-R6-3 (revisão externa round 6): re-aplica as validações
+    estruturais sobre o payload OOF carregado de pickle.
+
+    SHA-256 não substitui validação semântica — alguém que tenha
+    capacidade de adulterar o payload pode recalcular o hash. Aqui
+    re-rodamos os normalizadores: NaN/inf, contagens negativas,
+    comprimentos incoerentes. Levanta `ValueError` em qualquer
+    violação.
+
+    Tolera campos None (pickle pré-R4 sem cross-fit). Mas quando há
+    payload, os comprimentos têm de ser coerentes.
+    """
+    _normalize_oof_avg_score(
+        oof_predictive_avg_score, field="oof_predictive_avg_score",
+    )
+    _normalize_oof_per_fold_floats(
+        oof_predictive_avg_score_by_fold,
+        field="oof_predictive_avg_score_by_fold",
+    )
+    _normalize_oof_per_fold_ints(
+        n_identities_by_fold, field="n_identities_by_fold",
+    )
+    _normalize_oof_per_fold_ints(
+        n_scores_by_fold, field="n_scores_by_fold",
+    )
+    _normalize_oof_per_fold_floats_optional(
+        ood_threshold_by_fold, field="ood_threshold_by_fold",
+    )
+    _normalize_oof_per_fold_ints(fold_seeds, field="fold_seeds")
+    # P0-R7-1: usa `_normalize_n_folds_used` em vez de `int(...)`
+    # defensivo — antes, `1.9 → 1` era truncado silenciosamente.
+    normalized_n_folds = _normalize_n_folds_used(n_folds_used)
+    _validate_oof_per_fold_lengths(
+        n_folds_used=normalized_n_folds,
+        oof_by_fold=oof_predictive_avg_score_by_fold,
+        n_identities_by_fold=n_identities_by_fold,
+        n_scores_by_fold=n_scores_by_fold,
+        ood_threshold_by_fold=ood_threshold_by_fold,
+        fold_seeds=fold_seeds,
+    )
+
+
+def _verify_audit_metrics_fingerprint_or_raise(
+    *,
+    persisted_fingerprint: Optional[str],
+    oof_predictive_avg_score: Optional[float],
+    oof_predictive_avg_score_by_fold: Optional[tuple],
+    oof_predictive_score_type: Optional[str],
+    n_identities_by_fold: Optional[tuple],
+    n_scores_by_fold: Optional[tuple],
+    ood_threshold_by_fold: Optional[tuple],
+    split_fingerprint: Optional[str],
+    fold_seeds: Optional[tuple],
+    n_folds_used: Optional[int],
+    # R9: novos campos incluídos no fingerprint.
+    base_random_state: Optional[int] = None,
+    fold_seed_strategy: Optional[str] = None,
+) -> None:
+    """Recalcula o fingerprint e compara ao persistido. Para uso no
+    `from_dict` dos backends.
+
+    P0-R6-2 (revisão externa round 6): regra fail-closed —
+    - SEM nenhum campo OOF persistido (todos None): pickle pré-R4 sem
+      cross-fit. Permite migração (fingerprint pode ser None).
+    - COM qualquer campo OOF persistido + fingerprint None: rejeita
+      com `MissingOofAuditMetricFingerprintError` (fechar bypass
+      demonstrado pelo revisor: remover o fingerprint desativava a
+      proteção).
+    - COM payload OOF + fingerprint presente: recalcula e compara.
+    """
+    fields_by_name = {
+        "oof_predictive_avg_score": oof_predictive_avg_score,
+        "oof_predictive_avg_score_by_fold": oof_predictive_avg_score_by_fold,
+        "oof_predictive_score_type": oof_predictive_score_type,
+        "n_identities_by_fold": n_identities_by_fold,
+        "n_scores_by_fold": n_scores_by_fold,
+        "ood_threshold_by_fold": ood_threshold_by_fold,
+        "split_fingerprint": split_fingerprint,
+        "fold_seeds": fold_seeds,
+        "n_folds_used": n_folds_used,
+    }
+    fields_present = tuple(
+        name for name, value in fields_by_name.items()
+        if value is not None
+    )
+
+    if persisted_fingerprint is None:
+        if fields_present:
+            raise MissingOofAuditMetricFingerprintError(
+                fields_present=fields_present,
+            )
+        return
+
+    computed = _compute_audit_metrics_fingerprint(
+        oof_predictive_avg_score=oof_predictive_avg_score,
+        oof_predictive_avg_score_by_fold=oof_predictive_avg_score_by_fold,
+        oof_predictive_score_type=oof_predictive_score_type,
+        n_identities_by_fold=n_identities_by_fold,
+        n_scores_by_fold=n_scores_by_fold,
+        ood_threshold_by_fold=ood_threshold_by_fold,
+        split_fingerprint=split_fingerprint,
+        fold_seeds=fold_seeds,
+        n_folds_used=n_folds_used,
+        base_random_state=base_random_state,
+        fold_seed_strategy=fold_seed_strategy,
+    )
+    if computed != persisted_fingerprint:
+        raise OofAuditMetricMismatchError(
+            expected=str(persisted_fingerprint),
+            computed=str(computed),
+        )

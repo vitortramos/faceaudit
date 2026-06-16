@@ -456,7 +456,7 @@ def _instruction_plot_kind(
         return _PLOT_KIND_HUBNESS_REPORT
     if t == StrategyInstructionType.HUBNESS_ABLATION:
         return _PLOT_KIND_HUBNESS_ABLATION
-    if t == StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING:
+    if t == StrategyInstructionType.TYPICALITY_MODEL_TRAINING:
         return _PLOT_KIND_TYPICALITY_DISTRIBUTION
     return None
 
@@ -779,7 +779,7 @@ class _ResultsCard(QtWidgets.QWidget):
                 show_header=False, show_toolbar=False, show_help=False,
             )
         elif self._plot_kind == _PLOT_KIND_TYPICALITY_DISTRIBUTION:
-            # KNN_TYPICALITY_MODEL_TRAINING: executor grava
+            # TYPICALITY_MODEL_TRAINING: executor grava
             # `<resource>_dist.png` em `graphics/<strategy>/typicality_models/`
             # durante a persistência. Painel inline mostra via QPixmap
             # (mesma estratégia de Score/Casework/ValidationResult). Widget
@@ -1347,7 +1347,7 @@ class _ResultsCard(QtWidgets.QWidget):
         PNG durante a persistência: SIMILARITY_SCORING e PAIR_MINING
         (produzem `SIMILARITY_SCORES`); SCORE_CALIBRATION (produz
         `CALIBRATED_SCORES`, plot usa log-LR no eixo X);
-        KNN_TYPICALITY_MODEL_TRAINING e TYPICALITY_PAIR_SCORING (executor
+        TYPICALITY_MODEL_TRAINING e TYPICALITY_PAIR_SCORING (executor
         grava `<resource>_dist.png`). Mantém o widget vivo só pro botão
         🔍 Expandir."""
         try:
@@ -1355,7 +1355,7 @@ class _ResultsCard(QtWidgets.QWidget):
                 StrategyInstructionType.SIMILARITY_SCORING,
                 StrategyInstructionType.PAIR_MINING,
                 StrategyInstructionType.SCORE_CALIBRATION,
-                StrategyInstructionType.KNN_TYPICALITY_MODEL_TRAINING,
+                StrategyInstructionType.TYPICALITY_MODEL_TRAINING,
                 StrategyInstructionType.TYPICALITY_PAIR_SCORING,
             )
         except Exception:
