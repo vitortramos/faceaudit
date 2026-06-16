@@ -32,16 +32,16 @@ use o simulador:
 
 Todo embedding sintético é construído pela fatoração geométrica fundamental
 
-\[
+$$
 x = r \cdot u, \qquad r = \lVert x \rVert_2 > 0, \qquad u = \frac{x}{\lVert x \rVert_2} \in S^{D-1},
-\]
+$$
 
 em que:
 
 - **`r`** é a **norma radial** (a magnitude do vetor bruto), modelada em escala log via
   `RadialConfig`. Em embeddings AdaFace reais a norma carrega sinal de qualidade/dificuldade
   da amostra, e o simulador reproduz esse acoplamento.
-- **`u`** é a **direção** (o vetor unitário na hiperesfera \( S^{D-1} \)), modelado pela
+- **`u`** é a **direção** (o vetor unitário na hiperesfera $S^{D-1}$), modelado pela
   geometria de população + dispersão intra-classe + perturbações tangenciais.
 
 Os dois fatores variam **independentemente**: o `raw_embeddings` carrega `r·u`, enquanto o
@@ -299,10 +299,10 @@ print(paths)
 
 ### Anatomia do que acabou de ser gerado
 
-- **`dataset.raw_embeddings`** — a matriz \( N \times D \) dos vetores brutos \( x = r\,u \),
+- **`dataset.raw_embeddings`** — a matriz $N \times D$ dos vetores brutos $x = r\,u$,
   com a norma preservada (carrega o sinal radial).
 - **`dataset.normalized_embeddings`** — a mesma matriz após L2-normalização, portanto apenas
-  as direções \( u \in S^{D-1} \) (todas as linhas com norma 1).
+  as direções $u \in S^{D-1}$ (todas as linhas com norma 1).
 - **`dataset.metadata`** — um `pandas.DataFrame` com uma linha por amostra e colunas
   totalmente auditáveis (identidade, índice de amostra, sessão, domínio de aquisição,
   qualidade latente, regime radial, norma, concentração intra-classe, modo de dispersão e
@@ -357,58 +357,58 @@ com sua própria seção — são:
 
 O `adaface_embedding_simulator` não implementa a rede neural AdaFace. Ele implementa um **mundo sintético configurável** cuja saída imita as propriedades geométricas de embeddings faciais reais (direção na hiperesfera unitária × norma euclidiana), de modo que backends como cosseno, LDA, whitening, PLDA e alternativas esféricas possam ser estudados sob causas conhecidas e auditáveis. Cada embedding bruto é o produto de uma **norma** por uma **direção**:
 
-\[
+$$
 x \;=\; r \cdot u, \qquad r \in \mathbb{R}_{>0}, \quad u \in \mathbb{S}^{d-1},
-\]
+$$
 
-onde \( d \) é `SimulatorConfig.dimension` (padrão 512), \( r \) é a norma do embedding e \( u \) é a direção L2-normalizada. O simulador entrega **dois** arrays paralelos: `raw_embeddings` (\( x = r\,u \)) e `normalized_embeddings` (\( u \)). A coluna de metadata `embedding_norm` é exatamente \( r \); a validação do dataset confere \( \lVert x \rVert = r \) e \( \lVert u \rVert = 1 \).
+onde $d$ é `SimulatorConfig.dimension` (padrão 512), $r$ é a norma do embedding e $u$ é a direção L2-normalizada. O simulador entrega **dois** arrays paralelos: `raw_embeddings` ($x = r\,u$) e `normalized_embeddings` ($u$). A coluna de metadata `embedding_norm` é exatamente $r$; a validação do dataset confere $\lVert x \rVert = r$ e $\lVert u \rVert = 1$.
 
-O ponto central de auditabilidade é que **cinco camadas conceituais variam independentemente**, cada uma controlada por um bloco de configuração distinto. A norma \( r \) e a direção \( u \) são geradas por mecanismos separados, mas **acoplados de forma explícita e desligável** (Seção 9). Isto permite atribuir qualquer efeito observado num backend a uma camada específica do gerador.
+O ponto central de auditabilidade é que **cinco camadas conceituais variam independentemente**, cada uma controlada por um bloco de configuração distinto. A norma $r$ e a direção $u$ são geradas por mecanismos separados, mas **acoplados de forma explícita e desligável** (Seção 9). Isto permite atribuir qualquer efeito observado num backend a uma camada específica do gerador.
 
 | Camada | O que produz | Bloco de configuração |
 |---|---|---|
 | Mistura populacional | centros de identidade na hiperesfera | `PopulationConfig` |
-| Centro angular da identidade | direção média \( \mu_i \) de cada identidade | `PopulationConfig.identity_center_kappas` |
+| Centro angular da identidade | direção média $\mu_i$ de cada identidade | `PopulationConfig.identity_center_kappas` |
 | Domínio de aquisição | regime de condição (controlado/vigilância/etc.) | `AcquisitionDomainConfig` |
-| Qualidade latente + regimes radiais | norma \( r \) por amostra | `RadialConfig` + Beta por domínio |
-| Confiabilidade angular (dispersão intra-classe) | desvio de \( u \) em torno de \( \mu_i \) | `DirectionalConfig` (Seção 6) |
+| Qualidade latente + regimes radiais | norma $r$ por amostra | `RadialConfig` + Beta por domínio |
+| Confiabilidade angular (dispersão intra-classe) | desvio de $u$ em torno de $\mu_i$ | `DirectionalConfig` (Seção 6) |
 
 Esta seção descreve as quatro primeiras camadas (a quinta — dispersão intra-classe — é o capítulo central, Seção 6).
 
 ### 5.1 Mistura populacional de von Mises-Fisher
 
-Os centros de identidade não são uniformes na hiperesfera: pertencem a uma **mistura de von Mises-Fisher (vMF)** com \( K \) componentes, espelhando a estrutura de subpopulações (etnia, gênero, faixa etária) que existe em galerias reais. Os parâmetros vivem em `PopulationConfig`:
+Os centros de identidade não são uniformes na hiperesfera: pertencem a uma **mistura de von Mises-Fisher (vMF)** com $K$ componentes, espelhando a estrutura de subpopulações (etnia, gênero, faixa etária) que existe em galerias reais. Os parâmetros vivem em `PopulationConfig`:
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `component_count` | `int` | `8` | número \( K \) de componentes da mistura |
-| `component_weights` | `ArrayLike \| None` | `None` | pesos \( w_k \) (probabilidade de uma identidade vir da componente \( k \)); `None` ⇒ uniforme \( 1/K \) |
-| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração \( \kappa_k^{\mathrm{id}} \) dos centros de identidade dentro de cada componente (escalar ou um valor por componente) |
-| `component_means` | `ArrayLike \| None` | `None` | médias \( m_k \) das componentes \( (K, d) \); se dadas, são L2-normalizadas e usadas diretamente |
-| `component_mean_global_kappa` | `float` | `20.0` | concentração \( \kappa^{\mathrm{glob}} \) que dispersa as médias das componentes em torno de uma direção global |
-| `global_mean_direction` | `ArrayLike \| None` | `None` | direção global \( g \in \mathbb{S}^{d-1} \); `None` ⇒ amostrada uniformemente |
+| `component_count` | `int` | `8` | número $K$ de componentes da mistura |
+| `component_weights` | `ArrayLike \| None` | `None` | pesos $w_k$ (probabilidade de uma identidade vir da componente $k$); `None` ⇒ uniforme $1/K$ |
+| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração $\kappa_k^{\mathrm{id}}$ dos centros de identidade dentro de cada componente (escalar ou um valor por componente) |
+| `component_means` | `ArrayLike \| None` | `None` | médias $m_k$ das componentes $(K, d)$; se dadas, são L2-normalizadas e usadas diretamente |
+| `component_mean_global_kappa` | `float` | `20.0` | concentração $\kappa^{\mathrm{glob}}$ que dispersa as médias das componentes em torno de uma direção global |
+| `global_mean_direction` | `ArrayLike \| None` | `None` | direção global $g \in \mathbb{S}^{d-1}$; `None` ⇒ amostrada uniformemente |
 
-A geração das médias das componentes \( m_k \) (em `_create_population_component_means`) segue:
+A geração das médias das componentes $m_k$ (em `_create_population_component_means`) segue:
 
-- se `component_means` é fornecido, usa-se \( m_k \) L2-normalizado;
-- senão, define-se a direção global \( g \) (de `global_mean_direction` ou amostrada uniformemente). Se \( \kappa^{\mathrm{glob}} \le 0 \), as \( K \) médias são uniformes na esfera; caso contrário, são amostradas de uma vMF concentrada em \( g \):
+- se `component_means` é fornecido, usa-se $m_k$ L2-normalizado;
+- senão, define-se a direção global $g$ (de `global_mean_direction` ou amostrada uniformemente). Se $\kappa^{\mathrm{glob}} \le 0$, as $K$ médias são uniformes na esfera; caso contrário, são amostradas de uma vMF concentrada em $g$:
 
-\[
+$$
 m_k \;\sim\; \mathrm{vMF}\!\left(g,\; \kappa^{\mathrm{glob}}\right), \qquad k = 1,\dots,K.
-\]
+$$
 
-Um \( \kappa^{\mathrm{glob}} \) alto agrupa as subpopulações numa calota comum (galeria homogênea); um \( \kappa^{\mathrm{glob}} \) baixo as espalha (galeria heterogênea).
+Um $\kappa^{\mathrm{glob}}$ alto agrupa as subpopulações numa calota comum (galeria homogênea); um $\kappa^{\mathrm{glob}}$ baixo as espalha (galeria heterogênea).
 
 ### 5.2 Centro angular da identidade
 
-Cada identidade sintética \( i \) recebe primeiro uma **componente** \( c_i \in \{1,\dots,K\} \) amostrada segundo os pesos \( w_k \), e depois um **centro angular** \( \mu_i \in \mathbb{S}^{d-1} \) amostrado de uma vMF em torno da média da sua componente, com concentração \( \kappa_{c_i}^{\mathrm{id}} \) (em `_sample_identity_centers`):
+Cada identidade sintética $i$ recebe primeiro uma **componente** $c_i \in \{1,\dots,K\}$ amostrada segundo os pesos $w_k$, e depois um **centro angular** $\mu_i \in \mathbb{S}^{d-1}$ amostrado de uma vMF em torno da média da sua componente, com concentração $\kappa_{c_i}^{\mathrm{id}}$ (em `_sample_identity_centers`):
 
-\[
+$$
 c_i \;\sim\; \mathrm{Categorical}(w_1,\dots,w_K), \qquad
 \mu_i \;\sim\; \mathrm{vMF}\!\left(m_{c_i},\; \kappa_{c_i}^{\mathrm{id}}\right).
-\]
+$$
 
-O \( \mu_i \) é a **assinatura biométrica** da identidade — o alvo invariante em torno do qual todas as suas observações se dispersam. `identity_center_kappas` controla quão **separadas** as identidades de uma mesma subpopulação são entre si: \( \kappa^{\mathrm{id}} \) alto produz identidades vizinhas e difíceis (impostores próximos), \( \kappa^{\mathrm{id}} \) baixo produz identidades bem separadas. A amostragem vMF usada em todos esses passos é a função pública `sample_vmf` (amostrador por rejeição de Wood, 1994, com rotação de Householder vetorizada; \( \kappa = 0 \) recai em direção uniforme).
+O $\mu_i$ é a **assinatura biométrica** da identidade — o alvo invariante em torno do qual todas as suas observações se dispersam. `identity_center_kappas` controla quão **separadas** as identidades de uma mesma subpopulação são entre si: $\kappa^{\mathrm{id}}$ alto produz identidades vizinhas e difíceis (impostores próximos), $\kappa^{\mathrm{id}}$ baixo produz identidades bem separadas. A amostragem vMF usada em todos esses passos é a função pública `sample_vmf` (amostrador por rejeição de Wood, 1994, com rotação de Householder vetorizada; $\kappa = 0$ recai em direção uniforme).
 
 ### 5.3 Domínio de aquisição
 
@@ -418,8 +418,8 @@ Cada observação é atribuída a um **domínio de aquisição** — uma condiç
 |---|---|---|---|
 | `name` | `str` | — | nome único do domínio |
 | `weight` | `float` | `1.0` | peso de seleção (probabilidade relativa do domínio) |
-| `quality_beta_alpha` | `float` | `4.0` | parâmetro \( \alpha \) da Beta de qualidade latente |
-| `quality_beta_beta` | `float` | `2.0` | parâmetro \( \beta \) da Beta de qualidade latente |
+| `quality_beta_alpha` | `float` | `4.0` | parâmetro $\alpha$ da Beta de qualidade latente |
+| `quality_beta_beta` | `float` | `2.0` | parâmetro $\beta$ da Beta de qualidade latente |
 | `central_regime_probability` | `float` | `0.86` | probabilidade base do regime radial central |
 | `low_tail_probability` | `float` | `0.08` | probabilidade base do regime radial de cauda baixa |
 | `high_tail_probability` | `float` | `0.06` | probabilidade base do regime radial de cauda alta |
@@ -427,66 +427,66 @@ Cada observação é atribuída a um **domínio de aquisição** — uma condiç
 | `high_tail_quality_logit_slope` | `float` | `0.0` | inclinação que aumenta a chance de cauda alta em qualidade baixa |
 | `log_norm_shift` | `float` | `0.0` | deslocamento aditivo da log-norma média do domínio |
 | `log_norm_sigma_multiplier` | `float` | `1.0` | multiplicador da escala da log-norma do domínio |
-| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de \( \log\kappa \) intra-classe do domínio (Seção 6) |
+| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de $\log\kappa$ intra-classe do domínio (Seção 6) |
 
 (Os demais campos — `anisotropic_noise_multiplier`, vieses e `cap_lower_bound_offset` — pertencem às Seções 6, 7 e 9.)
 
 ### 5.4 Qualidade latente (Beta por domínio)
 
-Cada observação recebe uma **qualidade latente** \( q \in [0,1] \), amostrada de uma distribuição Beta cujos parâmetros dependem do domínio (em `_sample_latent_quality`):
+Cada observação recebe uma **qualidade latente** $q \in [0,1]$, amostrada de uma distribuição Beta cujos parâmetros dependem do domínio (em `_sample_latent_quality`):
 
-\[
+$$
 q \;\sim\; \mathrm{Beta}\!\left(\alpha_{\mathrm{dom}},\; \beta_{\mathrm{dom}}\right).
-\]
+$$
 
-A qualidade é a **variável causal oculta** que liga as três camadas seguintes: ela enviesa os regimes radiais, desloca a norma e modula a concentração angular. Um domínio controlado (ex.: \( \alpha = 5, \beta = 2 \)) gera qualidade tipicamente alta; um domínio de vigilância (ex.: \( \alpha = 2, \beta = 4{,}5 \)) gera qualidade tipicamente baixa. A qualidade é exportada como coluna de metadata `latent_quality` e é a porta de entrada de várias ablações causais (Seção 9).
+A qualidade é a **variável causal oculta** que liga as três camadas seguintes: ela enviesa os regimes radiais, desloca a norma e modula a concentração angular. Um domínio controlado (ex.: $\alpha = 5, \beta = 2$) gera qualidade tipicamente alta; um domínio de vigilância (ex.: $\alpha = 2, \beta = 4{,}5$) gera qualidade tipicamente baixa. A qualidade é exportada como coluna de metadata `latent_quality` e é a porta de entrada de várias ablações causais (Seção 9).
 
 ### 5.5 Regimes radiais e logits modulados por qualidade
 
 A norma de embeddings faciais reais exibe um padrão **não-monotônico** em relação à confiabilidade: faces nítidas e bem-pose tendem a normas centrais altas, mas tanto faces degradadas (baixa qualidade) quanto faces "saturadas" atípicas podem cair em caudas. O simulador modela isso com **três regimes radiais** — `central`, `low_tail`, `high_tail` — escolhidos por amostra (em `_sample_radial_regimes`).
 
-Partindo das probabilidades base \( (p_{\mathrm{cen}}, p_{\mathrm{low}}, p_{\mathrm{high}}) \) do domínio, formam-se logits \( \ell = \log p \). Quando o acoplamento `quality_affects_regime_probabilities` está ligado, a qualidade enviesa as caudas (centrado em \( q = 0{,}5 \)):
+Partindo das probabilidades base $(p_{\mathrm{cen}}, p_{\mathrm{low}}, p_{\mathrm{high}})$ do domínio, formam-se logits $\ell = \log p$. Quando o acoplamento `quality_affects_regime_probabilities` está ligado, a qualidade enviesa as caudas (centrado em $q = 0{,}5$):
 
-\[
+$$
 \ell_{\mathrm{low}} \mathrel{+}= s^{\mathrm{low}}_{\mathrm{dom}}\,(0{,}5 - q), \qquad
 \ell_{\mathrm{high}} \mathrel{+}= s^{\mathrm{high}}_{\mathrm{dom}}\,(0{,}5 - q),
-\]
+$$
 
-onde \( s^{\mathrm{low}}_{\mathrm{dom}} \) e \( s^{\mathrm{high}}_{\mathrm{dom}} \) são `low_tail_quality_logit_slope` e `high_tail_quality_logit_slope`. Como \( (0{,}5 - q) > 0 \) para qualidade baixa, inclinações positivas **empurram amostras de baixa qualidade para as caudas**. Os logits são então normalizados via softmax estável:
+onde $s^{\mathrm{low}}_{\mathrm{dom}}$ e $s^{\mathrm{high}}_{\mathrm{dom}}$ são `low_tail_quality_logit_slope` e `high_tail_quality_logit_slope`. Como $(0{,}5 - q) > 0$ para qualidade baixa, inclinações positivas **empurram amostras de baixa qualidade para as caudas**. Os logits são então normalizados via softmax estável:
 
-\[
+$$
 P(\mathrm{regime}=g) \;=\; \frac{\exp(\ell_g - \max_{g'} \ell_{g'})}{\sum_{g'} \exp(\ell_{g'} - \max_{g''} \ell_{g''})}.
-\]
+$$
 
 O regime escolhido é exportado em `radial_regime`.
 
 ### 5.6 Norma do embedding (log-normal por regime + domínio + qualidade)
 
-Dado o regime \( g \), a **log-norma** é amostrada de uma normal cuja média e escala combinam quatro contribuições (em `_sample_log_norms`). A média:
+Dado o regime $g$, a **log-norma** é amostrada de uma normal cuja média e escala combinam quatro contribuições (em `_sample_log_norms`). A média:
 
-\[
+$$
 \mu_{\log r} \;=\; \underbrace{m_{\mathrm{ref}}}_{\text{referência}}
 \;+\; \underbrace{\beta_q\,(q - 0{,}5)}_{\text{efeito de qualidade}}
 \;+\; \underbrace{o_g}_{\text{offset de regime}}
 \;+\; \underbrace{\delta^{\log r}_{\mathrm{dom}}}_{\text{shift de domínio}},
-\]
+$$
 
-onde \( m_{\mathrm{ref}} = \) `reference_log_norm_mean`, \( \beta_q = \) `quality_log_norm_slope` (zerado se `quality_affects_log_norm` estiver desligado), \( o_g \in \{ \) `central_offset`, `low_tail_offset`, `high_tail_offset` \( \} \) e \( \delta^{\log r}_{\mathrm{dom}} = \) `log_norm_shift`. A escala:
+onde $m_{\mathrm{ref}} =$ `reference_log_norm_mean`, $\beta_q =$ `quality_log_norm_slope` (zerado se `quality_affects_log_norm` estiver desligado), $o_g \in \{$ `central_offset`, `low_tail_offset`, `high_tail_offset` $\}$ e $\delta^{\log r}_{\mathrm{dom}} =$ `log_norm_shift`. A escala:
 
-\[
+$$
 \sigma_{\log r} \;=\; \sigma_g \cdot \rho_{\mathrm{dom}},
-\]
+$$
 
-com \( \sigma_g \in \{ \) `central_sigma`, `low_tail_sigma`, `high_tail_sigma` \( \} \) e \( \rho_{\mathrm{dom}} = \) `log_norm_sigma_multiplier`. A log-norma é \( \log r \sim \mathcal{N}(\mu_{\log r}, \sigma_{\log r}^2) \); a norma é \( r = e^{\log r} \), recortada em \( [\,\)`minimum_norm`\(,\,\)`maximum_norm`\(\,] \) (e a log-norma é recomputada após o clip para consistência). Os campos de `RadialConfig`:
+com $\sigma_g \in \{$ `central_sigma`, `low_tail_sigma`, `high_tail_sigma` $\}$ e $\rho_{\mathrm{dom}} =$ `log_norm_sigma_multiplier`. A log-norma é $\log r \sim \mathcal{N}(\mu_{\log r}, \sigma_{\log r}^2)$; a norma é $r = e^{\log r}$, recortada em $[\,$`minimum_norm`$,\,$`maximum_norm`$\,]$ (e a log-norma é recomputada após o clip para consistência). Os campos de `RadialConfig`:
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `reference_log_norm_mean` | `float` | `log(25.0)` | localização de referência \( m_{\mathrm{ref}} \) da log-norma |
-| `reference_log_norm_scale` | `float` | `0.24` | escala de referência \( s_{\mathrm{ref}} \) da log-norma (usada na padronização, §5.7) |
+| `reference_log_norm_mean` | `float` | `log(25.0)` | localização de referência $m_{\mathrm{ref}}$ da log-norma |
+| `reference_log_norm_scale` | `float` | `0.24` | escala de referência $s_{\mathrm{ref}}$ da log-norma (usada na padronização, §5.7) |
 | `reference_method` | `str` | `"configured_reference"` | rótulo da procedência da referência (exportado em `radial_reference_method`) |
-| `quality_log_norm_slope` | `float` | `0.12` | inclinação \( \beta_q \) do efeito de qualidade na log-norma |
-| `central_offset` | `float` | `0.0` | offset \( o_g \) do regime central |
-| `central_sigma` | `float` | `0.10` | escala \( \sigma_g \) do regime central |
+| `quality_log_norm_slope` | `float` | `0.12` | inclinação $\beta_q$ do efeito de qualidade na log-norma |
+| `central_offset` | `float` | `0.0` | offset $o_g$ do regime central |
+| `central_sigma` | `float` | `0.10` | escala $\sigma_g$ do regime central |
 | `low_tail_offset` | `float` | `-0.70` | offset do regime de cauda baixa |
 | `low_tail_sigma` | `float` | `0.16` | escala do regime de cauda baixa |
 | `high_tail_offset` | `float` | `0.70` | offset do regime de cauda alta |
@@ -498,11 +498,11 @@ com \( \sigma_g \in \{ \) `central_sigma`, `low_tail_sigma`, `high_tail_sigma` \
 
 Para que a posição radial de uma amostra seja **comparável entre domínios e datasets** (e para alimentar as penalidades não-monotônicas da concentração angular, §6), a log-norma é padronizada em torno de uma referência robusta:
 
-\[
+$$
 z \;=\; \frac{\log r - m_{\mathrm{ref}}}{s_{\mathrm{ref}}},
-\]
+$$
 
-com \( m_{\mathrm{ref}} = \) `reference_log_norm_mean` e \( s_{\mathrm{ref}} = \) `reference_log_norm_scale`. Esse \( z \) é exportado na coluna `reference_scaled_log_norm_z`, **também disponível como** `robust_norm_z` (alias com valor idêntico, presente para conveniência de consumidores que esperam esse nome). O valor \( z = 0 \) corresponde à norma de referência; \( z > 0 \) indica norma atipicamente alta e \( z < 0 \) atipicamente baixa.
+com $m_{\mathrm{ref}} =$ `reference_log_norm_mean` e $s_{\mathrm{ref}} =$ `reference_log_norm_scale`. Esse $z$ é exportado na coluna `reference_scaled_log_norm_z`, **também disponível como** `robust_norm_z` (alias com valor idêntico, presente para conveniência de consumidores que esperam esse nome). O valor $z = 0$ corresponde à norma de referência; $z > 0$ indica norma atipicamente alta e $z < 0$ atipicamente baixa.
 
 #### A classe `RadialReference` (mediana + MAD escalado)
 
@@ -510,90 +510,90 @@ Quando a referência deve ser **estimada a partir de embeddings reais** (em vez 
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `log_norm_location` | `float` | — | localização de referência \( m_{\mathrm{ref}} \) (mediana das log-normas) |
-| `log_norm_scale` | `float` | — | escala de referência \( s_{\mathrm{ref}} \) (MAD escalado) |
+| `log_norm_location` | `float` | — | localização de referência $m_{\mathrm{ref}}$ (mediana das log-normas) |
+| `log_norm_scale` | `float` | — | escala de referência $s_{\mathrm{ref}}$ (MAD escalado) |
 | `method` | `str` | `"median_scaled_mad"` | rótulo do método de estimação |
 
-O método de classe `RadialReference.fit(raw_embeddings_or_norms)` aceita uma matriz de embeddings \( (N,d) \) (das quais extrai as normas por linha) ou um vetor de normas, e estima:
+O método de classe `RadialReference.fit(raw_embeddings_or_norms)` aceita uma matriz de embeddings $(N,d)$ (das quais extrai as normas por linha) ou um vetor de normas, e estima:
 
-\[
+$$
 m_{\mathrm{ref}} = \mathrm{median}\big(\log r_n\big), \qquad
 s_{\mathrm{ref}} = 1{,}4826 \cdot \mathrm{median}\big(\lvert \log r_n - m_{\mathrm{ref}} \rvert\big).
-\]
+$$
 
-O fator \( 1{,}4826 \) torna o MAD um estimador consistente do desvio-padrão sob normalidade. O ajuste falha (levanta exceção) se algum \( r_n \le 0 \) ou se o MAD escalado for nulo. A `RadialConfig` pode ser construída diretamente a partir de uma referência ajustada via `RadialConfig.from_reference(reference, **kwargs)`, que injeta `reference_log_norm_mean`, `reference_log_norm_scale` e `reference_method`. Este é o caminho recomendado para **calibrar a camada radial contra uma galeria real** (Seção 21), preservando a auditabilidade: o `method` registrado documenta a procedência da referência.
+O fator $1{,}4826$ torna o MAD um estimador consistente do desvio-padrão sob normalidade. O ajuste falha (levanta exceção) se algum $r_n \le 0$ ou se o MAD escalado for nulo. A `RadialConfig` pode ser construída diretamente a partir de uma referência ajustada via `RadialConfig.from_reference(reference, **kwargs)`, que injeta `reference_log_norm_mean`, `reference_log_norm_scale` e `reference_method`. Este é o caminho recomendado para **calibrar a camada radial contra uma galeria real** (Seção 21), preservando a auditabilidade: o `method` registrado documenta a procedência da referência.
 
 ---
 
 ## 6. Dispersão intra-classe (VMF, IDPERTURB_CAP, HYBRID)
 
-A camada de **dispersão intra-classe** decide como cada observação de uma identidade se afasta angularmente do centro \( \mu_i \). É o capítulo mais consequente do simulador: ela governa diretamente a **distância genuína** (cosseno entre duas amostras da mesma pessoa) e, portanto, o grau de sobreposição entre as distribuições genuína e impostora — o substrato exato sobre o qual PLDA, cosseno e calibração de razão de verossimilhança operam.
+A camada de **dispersão intra-classe** decide como cada observação de uma identidade se afasta angularmente do centro $\mu_i$. É o capítulo mais consequente do simulador: ela governa diretamente a **distância genuína** (cosseno entre duas amostras da mesma pessoa) e, portanto, o grau de sobreposição entre as distribuições genuína e impostora — o substrato exato sobre o qual PLDA, cosseno e calibração de razão de verossimilhança operam.
 
-O simulador oferece **três modos** de dispersão, selecionados por `DirectionalConfig.intra_class_sampling_mode` (enum `IntraClassSamplingMode`): `VMF`, `IDPERTURB_CAP` e `HYBRID_VMF_CAP`. Os três produzem direções unitárias \( v \in \mathbb{S}^{d-1} \) em torno de \( \mu_i \), mas com **filosofias de controle diferentes**: um controla a *concentração* (cauda angular macia, sem piso), outro controla a *excursão máxima* (piso angular duro), e o terceiro combina os dois.
+O simulador oferece **três modos** de dispersão, selecionados por `DirectionalConfig.intra_class_sampling_mode` (enum `IntraClassSamplingMode`): `VMF`, `IDPERTURB_CAP` e `HYBRID_VMF_CAP`. Os três produzem direções unitárias $v \in \mathbb{S}^{d-1}$ em torno de $\mu_i$, mas com **filosofias de controle diferentes**: um controla a *concentração* (cauda angular macia, sem piso), outro controla a *excursão máxima* (piso angular duro), e o terceiro combina os dois.
 
-A direção \( v \) produzida aqui é a direção **pré-ruído**: as perturbações tangenciais de domínio/sessão/identidade (Seção 7) são aplicadas em seguida, sobre \( v \). A coluna de metadata `pre_nuisance_center_cosine` registra \( \langle v, \mu_i \rangle \) antes do ruído (invariante \( \ge \) `cap_lower_bound_effective` nos modos com calota); a coluna `own_center_cosine` registra o cosseno final, pós-ruído (que pode cair ligeiramente abaixo do piso por efeito da perturbação tangencial).
+A direção $v$ produzida aqui é a direção **pré-ruído**: as perturbações tangenciais de domínio/sessão/identidade (Seção 7) são aplicadas em seguida, sobre $v$. A coluna de metadata `pre_nuisance_center_cosine` registra $\langle v, \mu_i \rangle$ antes do ruído (invariante $\ge$ `cap_lower_bound_effective` nos modos com calota); a coluna `own_center_cosine` registra o cosseno final, pós-ruído (que pode cair ligeiramente abaixo do piso por efeito da perturbação tangencial).
 
-### 6.1 Modo VMF — concentração \( \kappa \)
+### 6.1 Modo VMF — concentração $\kappa$
 
-No modo `VMF`, a direção é amostrada de uma von Mises-Fisher centrada em \( \mu_i \) com concentração \( \kappa \):
+No modo `VMF`, a direção é amostrada de uma von Mises-Fisher centrada em $\mu_i$ com concentração $\kappa$:
 
-\[
+$$
 v \;\sim\; \mathrm{vMF}(\mu_i,\; \kappa), \qquad
 p(v) \;\propto\; \exp\!\big(\kappa\,\langle v, \mu_i\rangle\big).
-\]
+$$
 
-A amostragem é feita pela função pública `sample_vmf`. Não há **piso angular**: o cosseno \( \langle v, \mu_i \rangle \) tem uma cauda contínua que pode, em princípio, descer arbitrariamente perto de \( -1 \) (com probabilidade decrescente em \( \kappa \)). O \( \kappa \) por amostra é **modulado por covariáveis** (em `_calculate_intra_kappas`): qualidade, posição radial e domínio. Partindo do pico `peak_intra_kappa`:
+A amostragem é feita pela função pública `sample_vmf`. Não há **piso angular**: o cosseno $\langle v, \mu_i \rangle$ tem uma cauda contínua que pode, em princípio, descer arbitrariamente perto de $-1$ (com probabilidade decrescente em $\kappa$). O $\kappa$ por amostra é **modulado por covariáveis** (em `_calculate_intra_kappas`): qualidade, posição radial e domínio. Partindo do pico `peak_intra_kappa`:
 
-\[
+$$
 \log\kappa \;=\; \log(\kappa_{\mathrm{peak}})
 \;+\; \underbrace{s_\kappa\,(q - 0{,}5)}_{\text{qualidade}}
 \;+\; \underbrace{\delta^{\log\kappa}_{\mathrm{dom}}}_{\text{domínio}}
 \;\underbrace{-\; \lambda_{\mathrm{low}}\,d_{\mathrm{low}}^2 - \lambda_{\mathrm{high}}\,d_{\mathrm{high}}^2}_{\text{penalidades radiais não-monotônicas}},
-\]
+$$
 
-onde \( s_\kappa = \) `quality_log_kappa_slope`, \( \delta^{\log\kappa}_{\mathrm{dom}} = \) `log_kappa_shift`, \( \lambda_{\mathrm{low}/\mathrm{high}} = \) `low_tail_quadratic_penalty`/`high_tail_quadratic_penalty`, e as distâncias radiais ao ponto ótimo são:
+onde $s_\kappa =$ `quality_log_kappa_slope`, $\delta^{\log\kappa}_{\mathrm{dom}} =$ `log_kappa_shift`, $\lambda_{\mathrm{low}/\mathrm{high}} =$ `low_tail_quadratic_penalty`/`high_tail_quadratic_penalty`, e as distâncias radiais ao ponto ótimo são:
 
-\[
+$$
 d_{\mathrm{low}} = \max(0,\; z^\star - z), \qquad d_{\mathrm{high}} = \max(0,\; z - z^\star),
-\]
+$$
 
-com \( z = \) `reference_scaled_log_norm_z` (§5.7) e \( z^\star = \) `optimal_reference_scaled_log_norm_z`. O termo de qualidade é zerado se `quality_affects_intra_kappa` estiver desligado; o termo radial é zerado se `norm_z_affects_intra_kappa` estiver desligado. Por fim, \( \kappa = e^{\log\kappa} \) é recortado em \( [\,\)`minimum_intra_kappa`\(,\,\)`maximum_intra_kappa`\(\,] \). O \( \kappa \) efetivo é exportado em `intra_kappa`.
+com $z =$ `reference_scaled_log_norm_z` (§5.7) e $z^\star =$ `optimal_reference_scaled_log_norm_z`. O termo de qualidade é zerado se `quality_affects_intra_kappa` estiver desligado; o termo radial é zerado se `norm_z_affects_intra_kappa` estiver desligado. Por fim, $\kappa = e^{\log\kappa}$ é recortado em $[\,$`minimum_intra_kappa`$,\,$`maximum_intra_kappa`$\,]$. O $\kappa$ efetivo é exportado em `intra_kappa`.
 
 ### 6.2 Modo IDPERTURB_CAP — calota esférica cosseno-uniforme
 
-No modo `IDPERTURB_CAP`, em vez de uma concentração, controla-se diretamente a **excursão angular máxima** via um piso de cosseno \( lb \) (lower bound). Para cada amostra, sorteia-se um cosseno-alvo uniforme em \( [lb, 1] \) e constrói-se a direção (em `sample_spherical_cap`):
+No modo `IDPERTURB_CAP`, em vez de uma concentração, controla-se diretamente a **excursão angular máxima** via um piso de cosseno $lb$ (lower bound). Para cada amostra, sorteia-se um cosseno-alvo uniforme em $[lb, 1]$ e constrói-se a direção (em `sample_spherical_cap`):
 
-\[
+$$
 s \;\sim\; \mathcal{U}[\,lb,\; 1\,], \qquad
 v \;=\; s\,\mu_i \;+\; \sqrt{1 - s^2}\;u,
-\]
+$$
 
-onde \( u \in \mathbb{S}^{d-1} \) é uma direção tangente uniforme ortogonal a \( \mu_i \). Por construção \( \lVert v \rVert = 1 \) e \( \langle v, \mu_i \rangle = s \ge lb \) — ou seja, o piso é **garantido** na direção pré-ruído. O cosseno esperado é
+onde $u \in \mathbb{S}^{d-1}$ é uma direção tangente uniforme ortogonal a $\mu_i$. Por construção $\lVert v \rVert = 1$ e $\langle v, \mu_i \rangle = s \ge lb$ — ou seja, o piso é **garantido** na direção pré-ruído. O cosseno esperado é
 
-\[
+$$
 \mathbb{E}[\,\langle v, \mu_i\rangle\,] \;=\; \frac{1 + lb}{2},
-\]
+$$
 
-e \( lb = 1 \) colapsa \( v = \mu_i \) (sem perturbação). **Caveat essencial**: \( s \) é uniforme *em cosseno*, o que **não** é a distribuição uniforme sobre a área da calota em alta dimensão. Em \( \mathbb{S}^{d-1} \) com \( d \) grande, a maior parte da área de uma calota concentra-se perto da borda; uniformidade-em-cosseno coloca massa apreciável em cossenos altos que a uniformidade-em-área quase nunca visitaria. Esta é uma escolha deliberada de interpretabilidade (o parâmetro \( lb \) é a excursão máxima legível), não um modelo de difusão isotrópica na calota.
+e $lb = 1$ colapsa $v = \mu_i$ (sem perturbação). **Caveat essencial**: $s$ é uniforme *em cosseno*, o que **não** é a distribuição uniforme sobre a área da calota em alta dimensão. Em $\mathbb{S}^{d-1}$ com $d$ grande, a maior parte da área de uma calota concentra-se perto da borda; uniformidade-em-cosseno coloca massa apreciável em cossenos altos que a uniformidade-em-área quase nunca visitaria. Esta é uma escolha deliberada de interpretabilidade (o parâmetro $lb$ é a excursão máxima legível), não um modelo de difusão isotrópica na calota.
 
 ### 6.3 Modo HYBRID_VMF_CAP — corpo vMF com piso duro
 
-O modo `HYBRID_VMF_CAP` combina o **corpo macio** da vMF com o **piso duro** da calota. Amostra-se \( v \sim \mathrm{vMF}(\mu_i, \kappa) \); qualquer linha cujo cosseno caia abaixo de \( lb \) é **re-sorteada** da vMF, até `hybrid_max_resample_rounds` vezes; as linhas que ainda violam o piso após todas as rodadas caem num **fallback de calota** via `sample_spherical_cap` no piso \( lb \), o que garante o piso. A função pública é `sample_hybrid_vmf_cap`, que retorna, além das amostras, dois diagnósticos por linha:
+O modo `HYBRID_VMF_CAP` combina o **corpo macio** da vMF com o **piso duro** da calota. Amostra-se $v \sim \mathrm{vMF}(\mu_i, \kappa)$; qualquer linha cujo cosseno caia abaixo de $lb$ é **re-sorteada** da vMF, até `hybrid_max_resample_rounds` vezes; as linhas que ainda violam o piso após todas as rodadas caem num **fallback de calota** via `sample_spherical_cap` no piso $lb$, o que garante o piso. A função pública é `sample_hybrid_vmf_cap`, que retorna, além das amostras, dois diagnósticos por linha:
 
 - `hybrid_resample_count` — número de re-sorteios vMF que cada amostra precisou;
 - `hybrid_used_cap_fallback` — se a amostra acabou no fallback de calota.
 
-A interpretação destes diagnósticos é central para a auditoria: uma **alta taxa de fallback** significa que o piso \( lb \) está cortando uma fração grande do corpo vMF, de modo que o resultado é **dominado pela calota** e não mais pela vMF — sinal de que \( \kappa \) e \( lb \) estão em desacordo (vMF larga demais sob piso apertado). Neste regime, a forma da cauda angular efetiva é a da calota, não a da vMF, e isso deve ser reportado.
+A interpretação destes diagnósticos é central para a auditoria: uma **alta taxa de fallback** significa que o piso $lb$ está cortando uma fração grande do corpo vMF, de modo que o resultado é **dominado pela calota** e não mais pela vMF — sinal de que $\kappa$ e $lb$ estão em desacordo (vMF larga demais sob piso apertado). Neste regime, a forma da cauda angular efetiva é a da calota, não a da vMF, e isso deve ser reportado.
 
 ### 6.4 Tabela comparativa dos três modos
 
 | Aspecto | `VMF` | `IDPERTURB_CAP` | `HYBRID_VMF_CAP` |
 |---|---|---|---|
-| Parâmetro de controle | concentração \( \kappa \) | piso de cosseno \( lb \) | \( \kappa \) **+** \( lb \) |
+| Parâmetro de controle | concentração $\kappa$ | piso de cosseno $lb$ | $\kappa$ **+** $lb$ |
 | Função amostradora | `sample_vmf` | `sample_spherical_cap` | `sample_hybrid_vmf_cap` |
-| Distribuição do cosseno | \( p(\cos)\propto e^{\kappa\cos}\,(1-\cos^2)^{(d-3)/2} \) | \( \cos = s \sim \mathcal{U}[lb,1] \) | corpo vMF truncado em \( lb \); calota no fallback |
-| Cauda angular | macia, **sem piso** (cossenos baixos possíveis) | **piso duro** em \( lb \); cossenos altos sobre-representados | macia acima de \( lb \), **piso duro** em \( lb \) |
-| Cosseno esperado | \( A_d(\kappa) \) (razão de Bessel) | \( (1+lb)/2 \) | entre os dois, conforme taxa de fallback |
+| Distribuição do cosseno | $p(\cos)\propto e^{\kappa\cos}\,(1-\cos^2)^{(d-3)/2}$ | $\cos = s \sim \mathcal{U}[lb,1]$ | corpo vMF truncado em $lb$; calota no fallback |
+| Cauda angular | macia, **sem piso** (cossenos baixos possíveis) | **piso duro** em $lb$; cossenos altos sobre-representados | macia acima de $lb$, **piso duro** em $lb$ |
+| Cosseno esperado | $A_d(\kappa)$ (razão de Bessel) | $(1+lb)/2$ | entre os dois, conforme taxa de fallback |
 | Interpretação do parâmetro | "quão concentrada" | "excursão máxima legível" | concentração com limite de segurança |
 | `intra_kappa` usado? | sim | não (campo presente, mas não dirige a calota) | sim (dirige o corpo vMF) |
 | `cap_lower_bound_effective` | `NaN` | preenchido | preenchido |
@@ -603,64 +603,64 @@ A interpretação destes diagnósticos é central para a auditoria: uma **alta t
 ### 6.5 Quando escolher cada modo
 
 - **`VMF`** — quando se quer o modelo direcional canônico, sem piso artificial, e a métrica de interesse é a concentração. É o modo dos perfis de baseline e o que melhor casa com a teoria de PLDA esférico/PSDA. Use quando a pergunta for "como o backend se comporta sob uma cauda angular contínua".
-- **`IDPERTURB_CAP`** — quando se quer **garantir por construção** uma excursão angular máxima e estudar o efeito de uma separabilidade imposta (inspirado no regime experimental IDperturb de Boutros et al., 2026). O parâmetro \( lb \) é interpretável e auditável como "cosseno mínimo intra-classe". Lembre-se do caveat de uniformidade-em-cosseno (§6.2): não é difusão isotrópica na calota.
+- **`IDPERTURB_CAP`** — quando se quer **garantir por construção** uma excursão angular máxima e estudar o efeito de uma separabilidade imposta (inspirado no regime experimental IDperturb de Boutros et al., 2026). O parâmetro $lb$ é interpretável e auditável como "cosseno mínimo intra-classe". Lembre-se do caveat de uniformidade-em-cosseno (§6.2): não é difusão isotrópica na calota.
 - **`HYBRID_VMF_CAP`** — quando se quer o realismo da vMF **mais** uma salvaguarda dura contra amostras que colidem com outras identidades, monitorando via `hybrid_used_cap_fallback` se o piso está distorcendo o corpo. É a escolha mais conservadora forensicamente quando se teme que a cauda vMF gere genuínos artificialmente difíceis.
 
-### 6.6 O piso \( lb \) e sua modulação
+### 6.6 O piso $lb$ e sua modulação
 
-Nos modos com calota (`IDPERTURB_CAP` e `HYBRID_VMF_CAP`), o piso \( lb \) **não é uma constante**: ele é modulado por amostra pelas mesmas covariáveis que modulam \( \kappa \), espelhando `_calculate_intra_kappas`. O cálculo (em `_calculate_cap_lower_bounds`) opera **em escala de cosseno** (não de \( \log\kappa \)):
+Nos modos com calota (`IDPERTURB_CAP` e `HYBRID_VMF_CAP`), o piso $lb$ **não é uma constante**: ele é modulado por amostra pelas mesmas covariáveis que modulam $\kappa$, espelhando `_calculate_intra_kappas`. O cálculo (em `_calculate_cap_lower_bounds`) opera **em escala de cosseno** (não de $\log\kappa$):
 
-\[
+$$
 lb \;=\; lb_{\mathrm{base}}
 \;+\; \underbrace{\Delta^{lb}_{\mathrm{dom}}}_{\text{offset de domínio}}
 \;+\; \underbrace{s_{lb}\,(q - 0{,}5)}_{\text{qualidade}}
 \;\underbrace{-\; \pi_{\mathrm{low}}\,d_{\mathrm{low}}^2 - \pi_{\mathrm{high}}\,d_{\mathrm{high}}^2}_{\text{penalidades radiais não-monotônicas}},
-\]
+$$
 
-onde \( lb_{\mathrm{base}} = \) `cap_base_lower_bound`, \( \Delta^{lb}_{\mathrm{dom}} = \) `cap_lower_bound_offset` (campo de `AcquisitionDomainConfig`, de qualquer sinal: positivo aperta a identidade — condição controlada; negativo afrouxa — vigilância), \( s_{lb} = \) `cap_quality_lower_bound_slope`, e \( \pi_{\mathrm{low}/\mathrm{high}} = \) `cap_low_tail_penalty`/`cap_high_tail_penalty`. As distâncias radiais \( d_{\mathrm{low}}, d_{\mathrm{high}} \) e o ponto ótimo \( z^\star \) são os mesmos da §6.1.
+onde $lb_{\mathrm{base}} =$ `cap_base_lower_bound`, $\Delta^{lb}_{\mathrm{dom}} =$ `cap_lower_bound_offset` (campo de `AcquisitionDomainConfig`, de qualquer sinal: positivo aperta a identidade — condição controlada; negativo afrouxa — vigilância), $s_{lb} =$ `cap_quality_lower_bound_slope`, e $\pi_{\mathrm{low}/\mathrm{high}} =$ `cap_low_tail_penalty`/`cap_high_tail_penalty`. As distâncias radiais $d_{\mathrm{low}}, d_{\mathrm{high}}$ e o ponto ótimo $z^\star$ são os mesmos da §6.1.
 
-Crucialmente, **os mesmos switches de `CouplingConfig`** que governam \( \kappa \) governam \( lb \), apesar do nome historicamente centrado em kappa: o termo de qualidade é desligado por `quality_affects_intra_kappa` e o termo radial por `norm_z_affects_intra_kappa`. Nos modos de calota, esses switches portam-se como "a qualidade/posição radial afeta a dispersão intra-classe". As penalidades agem **na escala de cosseno** — uma penalidade radial subtrai diretamente do cosseno-piso, não de \( \log\kappa \). Após a soma, \( lb \) é recortado em \( [\,\)`cap_minimum_lower_bound`\(,\,\)`cap_maximum_lower_bound`\(\,] \).
+Crucialmente, **os mesmos switches de `CouplingConfig`** que governam $\kappa$ governam $lb$, apesar do nome historicamente centrado em kappa: o termo de qualidade é desligado por `quality_affects_intra_kappa` e o termo radial por `norm_z_affects_intra_kappa`. Nos modos de calota, esses switches portam-se como "a qualidade/posição radial afeta a dispersão intra-classe". As penalidades agem **na escala de cosseno** — uma penalidade radial subtrai diretamente do cosseno-piso, não de $\log\kappa$. Após a soma, $lb$ é recortado em $[\,$`cap_minimum_lower_bound`$,\,$`cap_maximum_lower_bound`$\,]$.
 
 Os campos de `DirectionalConfig` que controlam a calota:
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
 | `intra_class_sampling_mode` | `IntraClassSamplingMode \| str` | `VMF` | modo de dispersão intra-classe |
-| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base \( lb_{\mathrm{base}} \) |
-| `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação \( s_{lb} \) do efeito de qualidade no piso (qualquer sinal) |
-| `cap_low_tail_penalty` | `float` | `0.0` | penalidade quadrática \( \pi_{\mathrm{low}} \) de cauda baixa, em escala de cosseno |
-| `cap_high_tail_penalty` | `float` | `0.0` | penalidade quadrática \( \pi_{\mathrm{high}} \) de cauda alta, em escala de cosseno |
-| `cap_minimum_lower_bound` | `float` | `0.0` | piso de recorte do \( lb \) nominal |
-| `cap_maximum_lower_bound` | `float` | `0.999` | teto de recorte do \( lb \) **nominal** (não do efetivo, §6.7) |
+| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base $lb_{\mathrm{base}}$ |
+| `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação $s_{lb}$ do efeito de qualidade no piso (qualquer sinal) |
+| `cap_low_tail_penalty` | `float` | `0.0` | penalidade quadrática $\pi_{\mathrm{low}}$ de cauda baixa, em escala de cosseno |
+| `cap_high_tail_penalty` | `float` | `0.0` | penalidade quadrática $\pi_{\mathrm{high}}$ de cauda alta, em escala de cosseno |
+| `cap_minimum_lower_bound` | `float` | `0.0` | piso de recorte do $lb$ nominal |
+| `cap_maximum_lower_bound` | `float` | `0.999` | teto de recorte do $lb$ **nominal** (não do efetivo, §6.7) |
 | `cap_overlap_guard` | `bool` | `True` | ativa a regra do bissetor (§6.7) |
 | `hybrid_max_resample_rounds` | `int` | `8` | rodadas máximas de re-sorteio vMF no modo híbrido |
 
 ### 6.7 A regra do bissetor (`cap_overlap_guard`) e o caveat do piso efetivo
 
-Mesmo com um \( lb \) nominal modulado, identidades em **regiões densas da população** (centros mutuamente próximos) podem gerar perturbações que ultrapassam o ponto médio angular até a identidade vizinha mais próxima — criando, por construção, genuínos que estão mais perto de outra pessoa do que da própria. Para impedir isso, a **regra do bissetor** (`cap_overlap_guard=True`, inspirada em Boutros et al., 2026, Eq. 6) impõe um **piso por identidade**: o cosseno do semi-ângulo até o centro mais próximo. Para a identidade \( i \), com vizinho mais próximo dado por \( \max_{j\neq i} \langle \mu_i, \mu_j \rangle \):
+Mesmo com um $lb$ nominal modulado, identidades em **regiões densas da população** (centros mutuamente próximos) podem gerar perturbações que ultrapassam o ponto médio angular até a identidade vizinha mais próxima — criando, por construção, genuínos que estão mais perto de outra pessoa do que da própria. Para impedir isso, a **regra do bissetor** (`cap_overlap_guard=True`, inspirada em Boutros et al., 2026, Eq. 6) impõe um **piso por identidade**: o cosseno do semi-ângulo até o centro mais próximo. Para a identidade $i$, com vizinho mais próximo dado por $\max_{j\neq i} \langle \mu_i, \mu_j \rangle$:
 
-\[
+$$
 \mathrm{floor}_i \;=\; \sqrt{\frac{1 + \max_{j \neq i}\, \langle \mu_i, \mu_j \rangle}{2}} \;=\; \cos\!\left(\frac{\text{ângulo ao vizinho mais próximo}}{2}\right).
-\]
+$$
 
-Este piso é calculado em blocos de linhas (em `_overlap_lower_bound_floor`), sem materializar a matriz \( C \times C \) inteira (custo \( O(C^2 d) \) em tempo, \( O(\text{bloco}\times C) \) em memória); identidades singleton recebem piso \( 0 \). O piso é **cacheado** na população para reuso entre observações cross-condition.
+Este piso é calculado em blocos de linhas (em `_overlap_lower_bound_floor`), sem materializar a matriz $C \times C$ inteira (custo $O(C^2 d)$ em tempo, $O(\text{bloco}\times C)$ em memória); identidades singleton recebem piso $0$. O piso é **cacheado** na população para reuso entre observações cross-condition.
 
-**Caveat crítico de auditoria**: a regra do bissetor é aplicada **após** o recorte do \( lb \) nominal e **tem prioridade** sobre ele:
+**Caveat crítico de auditoria**: a regra do bissetor é aplicada **após** o recorte do $lb$ nominal e **tem prioridade** sobre ele:
 
-\[
+$$
 lb_{\mathrm{efetivo},\,n} \;=\; \min\!\Big(1,\; \max\big(lb_{\mathrm{nominal},\,n},\; \mathrm{floor}_{i(n)}\big)\Big).
-\]
+$$
 
-Como a anti-colisão tem prioridade, o **\( lb \) efetivo pode exceder `cap_maximum_lower_bound`**. Em outras palavras, o `cap_base_lower_bound`/`cap_maximum_lower_bound` nominais são um **piso de pedido, não o valor realizado**. Por isso, ao reportar uma configuração, **nunca** se deve apresentar apenas o \( lb \) nominal: deve-se reportar percentis empíricos da coluna `cap_lower_bound_effective`, que é a única descrição fiel da excursão angular efetivamente imposta a cada amostra. Em populações densas, o piso efetivo pode estar consistentemente acima do nominal para muitas identidades, e isso muda materialmente a dificuldade dos pares genuínos.
+Como a anti-colisão tem prioridade, o **$lb$ efetivo pode exceder `cap_maximum_lower_bound`**. Em outras palavras, o `cap_base_lower_bound`/`cap_maximum_lower_bound` nominais são um **piso de pedido, não o valor realizado**. Por isso, ao reportar uma configuração, **nunca** se deve apresentar apenas o $lb$ nominal: deve-se reportar percentis empíricos da coluna `cap_lower_bound_effective`, que é a única descrição fiel da excursão angular efetivamente imposta a cada amostra. Em populações densas, o piso efetivo pode estar consistentemente acima do nominal para muitas identidades, e isso muda materialmente a dificuldade dos pares genuínos.
 
-Quando `cap_overlap_guard=False`, o piso do bissetor não é aplicado e \( lb_{\mathrm{efetivo}} = \min(1, lb_{\mathrm{nominal}}) \) — útil para ablações que querem isolar o efeito da modulação por covariáveis sem a salvaguarda anti-colisão, mas com o risco de gerar genuínos que colidem com identidades vizinhas.
+Quando `cap_overlap_guard=False`, o piso do bissetor não é aplicado e $lb_{\mathrm{efetivo}} = \min(1, lb_{\mathrm{nominal}})$ — útil para ablações que querem isolar o efeito da modulação por covariáveis sem a salvaguarda anti-colisão, mas com o risco de gerar genuínos que colidem com identidades vizinhas.
 ## 7. Perturbações tangenciais e atualização
 
-Depois que a dispersão intra-classe produz uma direção \(\mathbf{u}_{ij}^{(0)}\) em torno do centro de identidade \(\mathbf{c}_i\) (Seção 6), o simulador adiciona uma **perturbação estruturada** que modela ruído de aquisição, viés de domínio e efeitos de sessão. Essa perturbação é montada em coordenadas ambientais, projetada no plano tangente da hiperesfera e mapeada de volta para a superfície unitária. Todo o cálculo vive em `AdaFaceEmbeddingSimulator._apply_anisotropic_nuisance`.
+Depois que a dispersão intra-classe produz uma direção $\mathbf{u}_{ij}^{(0)}$ em torno do centro de identidade $\mathbf{c}_i$ (Seção 6), o simulador adiciona uma **perturbação estruturada** que modela ruído de aquisição, viés de domínio e efeitos de sessão. Essa perturbação é montada em coordenadas ambientais, projetada no plano tangente da hiperesfera e mapeada de volta para a superfície unitária. Todo o cálculo vive em `AdaFaceEmbeddingSimulator._apply_anisotropic_nuisance`.
 
 O passo bruto somado é
 
-\[
+$$
 \boldsymbol{\delta}_{ij}
 =
 \boldsymbol{\delta}_{ij}^{\text{aniso}}
@@ -670,34 +670,34 @@ O passo bruto somado é
 \mathbf{b}_{d,i}
 +
 \mathbf{b}_{d,s},
-\]
+$$
 
 com quatro termos de natureza distinta:
 
 | Termo | Coluna de diagnóstico | Interpretação forense |
 |---|---|---|
-| \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) | `anisotropic_noise_norm` | nuisance anisotrópico de baixo posto (ruído estruturado, dependente de qualidade) |
-| \(\mathbf{b}_d\) | `fixed_domain_bias_norm` | deslocamento médio **fixo** do domínio \(d\) (mesmo para todas as identidades) |
-| \(\mathbf{b}_{d,i}\) | `domain_identity_bias_norm` | interação **domínio × identidade** (deslocamento próprio de cada identidade naquele domínio) |
-| \(\mathbf{b}_{d,s}\) | `session_bias_norm` | deslocamento de **sessão** (compartilhado por todas as observações da mesma tripla identidade × domínio × sessão) |
+| $\boldsymbol{\delta}_{ij}^{\text{aniso}}$ | `anisotropic_noise_norm` | nuisance anisotrópico de baixo posto (ruído estruturado, dependente de qualidade) |
+| $\mathbf{b}_d$ | `fixed_domain_bias_norm` | deslocamento médio **fixo** do domínio $d$ (mesmo para todas as identidades) |
+| $\mathbf{b}_{d,i}$ | `domain_identity_bias_norm` | interação **domínio × identidade** (deslocamento próprio de cada identidade naquele domínio) |
+| $\mathbf{b}_{d,s}$ | `session_bias_norm` | deslocamento de **sessão** (compartilhado por todas as observações da mesma tripla identidade × domínio × sessão) |
 
 Cada termo é auditável individualmente pela sua coluna de norma na metadata, e o passo tangencial efetivo é reportado em `combined_tangent_step_norm` (Seção 7.4). Essa decomposição é deliberada: em laudo é possível afirmar qual parcela do deslocamento angular vem de ruído puro, de viés sistemático de domínio, de idiossincrasia identidade-em-domínio ou de efeito de sessão.
 
 ### 7.1 Nuisance anisotrópico — base de baixo posto
 
-O nuisance anisotrópico \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) não é ruído isotrópico: ele vive num **subespaço de baixo posto** \(r\), modelando o fato empírico de que erros de aquisição concentram-se em poucas direções estruturadas (iluminação, pose residual, compressão). Uma base ortonormal \(\mathbf{B} \in \mathbb{R}^{D \times r}\) é amostrada uma única vez no construtor (via decomposição QR de uma matriz Gaussiana, em `_orthonormal_basis`) e fixada na seed estrutural. A cada observação, coeficientes Gaussianos \(\mathbf{z} \sim \mathcal{N}(0, I_r)\) são projetados pela base:
+O nuisance anisotrópico $\boldsymbol{\delta}_{ij}^{\text{aniso}}$ não é ruído isotrópico: ele vive num **subespaço de baixo posto** $r$, modelando o fato empírico de que erros de aquisição concentram-se em poucas direções estruturadas (iluminação, pose residual, compressão). Uma base ortonormal $\mathbf{B} \in \mathbb{R}^{D \times r}$ é amostrada uma única vez no construtor (via decomposição QR de uma matriz Gaussiana, em `_orthonormal_basis`) e fixada na seed estrutural. A cada observação, coeficientes Gaussianos $\mathbf{z} \sim \mathcal{N}(0, I_r)$ são projetados pela base:
 
-\[
+$$
 \boldsymbol{\delta}^{\text{base}} = \mathbf{z}\,\mathbf{B}^{\top}.
-\]
+$$
 
-O posto \(r\) é controlado por `DirectionalConfig.anisotropic_rank` (deve satisfazer \(0 \le r < D\)); a magnitude base por `anisotropic_base_scale`. Se qualquer um dos dois for zero, **nenhuma** base é construída (`anisotropic_basis is None`) e o nuisance anisotrópico é integralmente desligado.
+O posto $r$ é controlado por `DirectionalConfig.anisotropic_rank` (deve satisfazer $0 \le r < D$); a magnitude base por `anisotropic_base_scale`. Se qualquer um dos dois for zero, **nenhuma** base é construída (`anisotropic_basis is None`) e o nuisance anisotrópico é integralmente desligado.
 
 #### Escala dependente de qualidade e domínio
 
 A magnitude de cada amostra é modulada por qualidade e domínio antes da projeção tangencial:
 
-\[
+$$
 s_{ij}
 =
 \underbrace{\texttt{anisotropic\_base\_scale}}_{\text{base}}
@@ -707,9 +707,9 @@ s_{ij}
 \Bigl(
 1 + \texttt{anisotropic\_quality\_slope}\cdot(1 - q_{ij})
 \Bigr),
-\]
+$$
 
-onde \(q_{ij} \in [0,1]\) é a qualidade latente e \(m_d\) é o multiplicador por domínio. **Quanto menor a qualidade, maior o nuisance** — o fator \((1 - q_{ij})\) faz a perturbação crescer em imagens ruins, reproduzindo a degradação de confiabilidade angular sob baixa qualidade. Domínios de vigilância recebem `anisotropic_noise_multiplier > 1` para ampliar esse efeito.
+onde $q_{ij} \in [0,1]$ é a qualidade latente e $m_d$ é o multiplicador por domínio. **Quanto menor a qualidade, maior o nuisance** — o fator $(1 - q_{ij})$ faz a perturbação crescer em imagens ruins, reproduzindo a degradação de confiabilidade angular sob baixa qualidade. Domínios de vigilância recebem `anisotropic_noise_multiplier > 1` para ampliar esse efeito.
 
 ### 7.2 Os três modos de estrutura do nuisance (`NuisanceStructureMode`)
 
@@ -724,15 +724,15 @@ O atributo `DirectionalConfig.nuisance_structure_mode` (enum `NuisanceStructureM
 A combinação concreta segue a lógica de `_apply_anisotropic_nuisance`:
 
 - **Componente global** (ativa em `GLOBAL_SHARED` e `HIERARCHICAL`):
-  \[
+  $$
   \boldsymbol{\delta}^{\text{global}}_{ij}
   =
   w_{\text{global}}\,\bigl(\mathbf{z}_{ij}\,\mathbf{B}_{\text{global}}^{\top}\bigr),
   \qquad
   w_{\text{global}} = \texttt{global\_nuisance\_weight}.
-  \]
-- **Componente por domínio** (ativa em `PER_DOMAIN` e `HIERARCHICAL`): para cada domínio \(d\) com base própria \(\mathbf{B}_d\),
-  \[
+  $$
+- **Componente por domínio** (ativa em `PER_DOMAIN` e `HIERARCHICAL`): para cada domínio $d$ com base própria $\mathbf{B}_d$,
+  $$
   \boldsymbol{\delta}^{\text{domínio}}_{ij}
   =
   w_d\,\bigl(\mathbf{z}_{ij}\,\mathbf{B}_d^{\top}\bigr),
@@ -742,7 +742,7 @@ A combinação concreta segue a lógica de `_apply_anisotropic_nuisance`:
   \texttt{domain\_nuisance\_weight}, & \text{modo } \mathtt{HIERARCHICAL},\\
   1, & \text{modo } \mathtt{PER\_DOMAIN}.
   \end{cases}
-  \]
+  $$
 
 Em `HIERARCHICAL` os dois pesos coexistem: `global_nuisance_weight` pondera a parcela comum e `domain_nuisance_weight` a parcela específica, permitindo controlar exatamente quanto do ruído é correlacionado entre condições (importante para estressar backends PLDA cross-condition).
 
@@ -750,16 +750,16 @@ Em `HIERARCHICAL` os dois pesos coexistem: `global_nuisance_weight` pondera a pa
 
 Independentemente do modo acima, é possível adicionar um subespaço de nuisance **próprio de cada identidade**. Para cada identidade da população, uma base ortonormal de posto `identity_specific_nuisance_rank` é amostrada (em `_sample_identity_specific_bases`) e armazenada na `SyntheticIdentityPopulation`. A contribuição é
 
-\[
+$$
 \boldsymbol{\delta}^{\text{id}}_{ij}
 =
 \texttt{identity\_specific\_nuisance\_scale}\cdot
 \bigl(\mathbf{B}_{i}\,\mathbf{z}_{ij}\bigr),
-\]
+$$
 
-aplicada via `np.einsum("ndr,nr->nd", ...)` linha a linha, selecionando a base \(\mathbf{B}_i\) da identidade correta. Esse termo modela variação angular intrínseca e idiossincrática de cada sujeito (por exemplo, um traço facial que sistematicamente desloca os embeddings daquela pessoa numa direção própria). Como as bases pertencem à população, elas são **compartilhadas entre condições cross-condition** — a mesma identidade carrega a mesma idiossincrasia em todos os domínios. Se o posto ou a escala forem zero, o termo é integralmente desligado (`identity_specific_nuisance_bases is None`).
+aplicada via `np.einsum("ndr,nr->nd", ...)` linha a linha, selecionando a base $\mathbf{B}_i$ da identidade correta. Esse termo modela variação angular intrínseca e idiossincrática de cada sujeito (por exemplo, um traço facial que sistematicamente desloca os embeddings daquela pessoa numa direção própria). Como as bases pertencem à população, elas são **compartilhadas entre condições cross-condition** — a mesma identidade carrega a mesma idiossincrasia em todos os domínios. Se o posto ou a escala forem zero, o termo é integralmente desligado (`identity_specific_nuisance_bases is None`).
 
-A soma \(\boldsymbol{\delta}^{\text{global}} + \boldsymbol{\delta}^{\text{domínio}} + \boldsymbol{\delta}^{\text{id}}\) é então multiplicada, linha a linha, pela escala \(s_{ij}\) da Seção 7.1, produzindo o nuisance anisotrópico final \(\boldsymbol{\delta}_{ij}^{\text{aniso}}\) reportado em `anisotropic_noise_norm`.
+A soma $\boldsymbol{\delta}^{\text{global}} + \boldsymbol{\delta}^{\text{domínio}} + \boldsymbol{\delta}^{\text{id}}$ é então multiplicada, linha a linha, pela escala $s_{ij}$ da Seção 7.1, produzindo o nuisance anisotrópico final $\boldsymbol{\delta}_{ij}^{\text{aniso}}$ reportado em `anisotropic_noise_norm`.
 
 ### 7.4 Viés de domínio, domínio × identidade e de sessão
 
@@ -767,36 +767,36 @@ Aos termos estocásticos somam-se três **vieses determinísticos** (na seed) qu
 
 | Viés | Como é gerado | Escala | Escopo de compartilhamento |
 |---|---|---|---|
-| \(\mathbf{b}_d\) — domínio fixo | direção uniforme amostrada uma vez no construtor (`_create_domain_bias_vectors`) | `AcquisitionDomainConfig.domain_bias_scale` | **idêntico** para todas as observações daquele domínio |
-| \(\mathbf{b}_{d,i}\) — domínio × identidade | direção uniforme por identidade dentro do domínio (em `sample_identity_population`) | `AcquisitionDomainConfig.domain_identity_bias_scale` | próprio de cada par (domínio, identidade), constante entre observações dessa identidade no domínio |
-| \(\mathbf{b}_{d,s}\) — sessão | direção uniforme por tripla (identidade, domínio, sessão), em `_sample_session_bias_matrix` | `AcquisitionDomainConfig.session_bias_scale` | compartilhado por todas as observações da mesma sessão |
+| $\mathbf{b}_d$ — domínio fixo | direção uniforme amostrada uma vez no construtor (`_create_domain_bias_vectors`) | `AcquisitionDomainConfig.domain_bias_scale` | **idêntico** para todas as observações daquele domínio |
+| $\mathbf{b}_{d,i}$ — domínio × identidade | direção uniforme por identidade dentro do domínio (em `sample_identity_population`) | `AcquisitionDomainConfig.domain_identity_bias_scale` | próprio de cada par (domínio, identidade), constante entre observações dessa identidade no domínio |
+| $\mathbf{b}_{d,s}$ — sessão | direção uniforme por tripla (identidade, domínio, sessão), em `_sample_session_bias_matrix` | `AcquisitionDomainConfig.session_bias_scale` | compartilhado por todas as observações da mesma sessão |
 
-O viés fixo de domínio \(\mathbf{b}_d\) é a fonte canônica de **mismatch sistemático entre condições** num estudo cross-condition: ele desloca *toda* a nuvem de embeddings de um domínio numa direção comum, exatamente o tipo de viés que um PLDA two-covariance cross-condition deve absorver. O viés de sessão modela correlação dentro de uma mesma captura (várias imagens de uma sessão compartilham um deslocamento), o que infla a similaridade genuína intra-sessão de forma realista. Todos os três têm escala padrão `0.0` (desligados) e qualquer escala negativa é rejeitada na validação.
+O viés fixo de domínio $\mathbf{b}_d$ é a fonte canônica de **mismatch sistemático entre condições** num estudo cross-condition: ele desloca *toda* a nuvem de embeddings de um domínio numa direção comum, exatamente o tipo de viés que um PLDA two-covariance cross-condition deve absorver. O viés de sessão modela correlação dentro de uma mesma captura (várias imagens de uma sessão compartilham um deslocamento), o que infla a similaridade genuína intra-sessão de forma realista. Todos os três têm escala padrão `0.0` (desligados) e qualquer escala negativa é rejeitada na validação.
 
 ### 7.5 Projeção tangente e atualização: retração vs. mapa exponencial
 
-O passo bruto \(\boldsymbol{\delta}_{ij}\) é primeiro **projetado no plano tangente** de um vetor de referência \(\mathbf{t}\), removendo sua componente radial:
+O passo bruto $\boldsymbol{\delta}_{ij}$ é primeiro **projetado no plano tangente** de um vetor de referência $\mathbf{t}$, removendo sua componente radial:
 
-\[
+$$
 \boldsymbol{\delta}_{ij}^{\top}
 =
 \boldsymbol{\delta}_{ij}
 -
 \bigl(\boldsymbol{\delta}_{ij}\cdot \mathbf{t}\bigr)\,\mathbf{t}.
-\]
+$$
 
-A escolha do vetor de referência \(\mathbf{t}\) e da fórmula de retorno à hiperesfera é governada por `DirectionalConfig.tangent_update_mode` (enum `TangentUpdateMode`), e essa escolha tem uma **diferença geométrica concreta** — ela muda inclusive qual ponto define o plano tangente:
+A escolha do vetor de referência $\mathbf{t}$ e da fórmula de retorno à hiperesfera é governada por `DirectionalConfig.tangent_update_mode` (enum `TangentUpdateMode`), e essa escolha tem uma **diferença geométrica concreta** — ela muda inclusive qual ponto define o plano tangente:
 
 | Modo | Valor | Plano tangente em | Retorno à esfera |
 |---|---|---|---|
-| `RETRACTION` | `"retraction"` | **centro de identidade** \(\mathbf{c}_i\) | soma e renormalização |
-| `EXPONENTIAL_MAP` | `"exponential_map"` | **direção atual** \(\mathbf{u}_{ij}^{(0)}\) | deslocamento geodésico exato |
+| `RETRACTION` | `"retraction"` | **centro de identidade** $\mathbf{c}_i$ | soma e renormalização |
+| `EXPONENTIAL_MAP` | `"exponential_map"` | **direção atual** $\mathbf{u}_{ij}^{(0)}$ | deslocamento geodésico exato |
 
 #### Retração
 
-No modo `RETRACTION`, o passo é projetado no tangente do **centro de identidade** \(\mathbf{c}_i\), somado à direção corrente e renormalizado:
+No modo `RETRACTION`, o passo é projetado no tangente do **centro de identidade** $\mathbf{c}_i$, somado à direção corrente e renormalizado:
 
-\[
+$$
 \widetilde{\mathbf{u}}_{ij}
 =
 \frac{
@@ -804,15 +804,15 @@ No modo `RETRACTION`, o passo é projetado no tangente do **centro de identidade
 }{
 \bigl\lVert \mathbf{u}_{ij}^{(0)} + \boldsymbol{\delta}_{ij}^{\top}\bigr\rVert_2
 }.
-\]
+$$
 
-É uma aproximação de primeira ordem, rápida e adequada quando os passos são pequenos. Como o tangente é definido em \(\mathbf{c}_i\), o deslocamento é coerente com a geometria da identidade, mas a renormalização introduz uma leve compressão não-geodésica para passos grandes.
+É uma aproximação de primeira ordem, rápida e adequada quando os passos são pequenos. Como o tangente é definido em $\mathbf{c}_i$, o deslocamento é coerente com a geometria da identidade, mas a renormalização introduz uma leve compressão não-geodésica para passos grandes.
 
 #### Mapa exponencial
 
-No modo `EXPONENTIAL_MAP`, o passo é projetado no tangente da **direção corrente** \(\mathbf{u}_{ij}^{(0)}\) e mapeado de volta pelo mapa exponencial Riemanniano exato da esfera:
+No modo `EXPONENTIAL_MAP`, o passo é projetado no tangente da **direção corrente** $\mathbf{u}_{ij}^{(0)}$ e mapeado de volta pelo mapa exponencial Riemanniano exato da esfera:
 
-\[
+$$
 \widetilde{\mathbf{u}}_{ij}
 =
 \operatorname{Exp}_{\mathbf{u}_{ij}^{(0)}}\!\bigl(\boldsymbol{\delta}_{ij}^{\top}\bigr)
@@ -821,22 +821,22 @@ No modo `EXPONENTIAL_MAP`, o passo é projetado no tangente da **direção corre
 +
 \sin\!\bigl(\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert\bigr)\,
 \frac{\boldsymbol{\delta}_{ij}^{\top}}{\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert}.
-\]
+$$
 
-Esse é o deslocamento geodésico exato: a norma do passo tangente vira, literalmente, o **ângulo geodésico** percorrido na esfera, preservando comprimento de arco. Passos de norma \(\le 10^{-12}\) são tratados de forma degenerada (a direção permanece inalterada). Recomenda-se o mapa exponencial quando os passos deixam de ser desprezíveis — em perfis com nuisance forte ou vieses grandes (por exemplo, o perfil de estresse cross-condition), o mapa exponencial preserva melhor a métrica angular do que a retração.
+Esse é o deslocamento geodésico exato: a norma do passo tangente vira, literalmente, o **ângulo geodésico** percorrido na esfera, preservando comprimento de arco. Passos de norma $\le 10^{-12}$ são tratados de forma degenerada (a direção permanece inalterada). Recomenda-se o mapa exponencial quando os passos deixam de ser desprezíveis — em perfis com nuisance forte ou vieses grandes (por exemplo, o perfil de estresse cross-condition), o mapa exponencial preserva melhor a métrica angular do que a retração.
 
 > **Diferença geométrica resumida.** A retração mede o deslocamento no plano tangente do *centro de identidade* e volta por soma+renormalização (aproximação de 1ª ordem); o mapa exponencial mede no plano tangente da *direção atual* e volta pelo arco geodésico exato (a norma do passo é o ângulo percorrido). Para passos pequenos os dois coincidem em 1ª ordem; para passos grandes divergem, e só o mapa exponencial preserva comprimento de arco.
 
 ### 7.6 Coluna `combined_tangent_step_norm`
 
-Em ambos os modos, o simulador registra a norma do passo tangencial efetivo, \(\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert\), na coluna de metadata **`combined_tangent_step_norm`**. Essa é a quantidade auditável central desta etapa:
+Em ambos os modos, o simulador registra a norma do passo tangencial efetivo, $\lVert\boldsymbol{\delta}_{ij}^{\top}\rVert$, na coluna de metadata **`combined_tangent_step_norm`**. Essa é a quantidade auditável central desta etapa:
 
 - Em `EXPONENTIAL_MAP`, é **exatamente** o ângulo geodésico (em radianos) que a perturbação afastou a observação da sua direção pré-nuisance.
 - Em `RETRACTION`, é o comprimento do passo tangente antes da renormalização (aproxima o ângulo para passos pequenos).
 
 Ela agrega os quatro termos (anisotrópico + domínio + domínio×identidade + sessão) *após* a projeção tangente, então funciona como medida única do quanto o nuisance/viés total moveu cada amostra. O diagnóstico de bins de norma (`norm_bin_diagnostics`) reporta a média dessa coluna por quantil de norma sob o nome `tangent_step_norm_mean`, permitindo verificar se o passo tangencial cresce nas caudas de norma (como esperado quando a qualidade cai).
 
-> **Interação com a calota (modos de cap).** O piso de cosseno `lb` dos modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP` é garantido sobre a direção **pré-nuisance** \(\mathbf{u}_{ij}^{(0)}\). O passo tangencial desta seção pode empurrar o cosseno realizado (pós-nuisance) ligeiramente abaixo de `lb`. Para auditar a calota, use sempre a coluna invariante `pre_nuisance_center_cosine` (que satisfaz \(\ge\) `cap_lower_bound_effective`), nunca `own_center_cosine`.
+> **Interação com a calota (modos de cap).** O piso de cosseno `lb` dos modos `IDPERTURB_CAP` e `HYBRID_VMF_CAP` é garantido sobre a direção **pré-nuisance** $\mathbf{u}_{ij}^{(0)}$. O passo tangencial desta seção pode empurrar o cosseno realizado (pós-nuisance) ligeiramente abaixo de `lb`. Para auditar a calota, use sempre a coluna invariante `pre_nuisance_center_cosine` (que satisfaz $\ge$ `cap_lower_bound_effective`), nunca `own_center_cosine`.
 
 ---
 
@@ -861,7 +861,7 @@ Configuração de topo do gerador.
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `dimension` | `int` | `512` | dimensionalidade \(D\) do embedding; deve ser \(\ge 3\) |
+| `dimension` | `int` | `512` | dimensionalidade $D$ do embedding; deve ser $\ge 3$ |
 | `profile_name` | `str` | `"custom"` | rótulo do perfil, gravado no manifesto; deve ser não-vazio |
 | `population` | `PopulationConfig` | `PopulationConfig()` | distribuição dos centros de identidade |
 | `radial` | `RadialConfig` | `RadialConfig()` | modelo de norma não-monotônico |
@@ -877,14 +877,14 @@ Distribuição dos centros de identidade sintéticos na hiperesfera unitária (u
 |---|---|---|---|
 | `component_count` | `int` | `8` | número de componentes (sub-populações) da mistura; deve ser positivo |
 | `component_weights` | `ArrayLike \| None` | `None` | pesos da mistura (normalizados internamente); `None` ⇒ uniforme; se dado, um valor por componente |
-| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração vMF dos centros em torno da média do componente; escalar ou um valor por componente; finito e \(\ge 0\) |
-| `component_means` | `ArrayLike \| None` | `None` | médias dos componentes \((C, D)\) fornecidas explicitamente; `None` ⇒ amostradas |
-| `component_mean_global_kappa` | `float` | `20.0` | concentração das médias dos componentes em torno de uma média global; \(\ge 0\); `0` ⇒ médias uniformes na esfera |
+| `identity_center_kappas` | `ArrayLike \| float` | `70.0` | concentração vMF dos centros em torno da média do componente; escalar ou um valor por componente; finito e $\ge 0$ |
+| `component_means` | `ArrayLike \| None` | `None` | médias dos componentes $(C, D)$ fornecidas explicitamente; `None` ⇒ amostradas |
+| `component_mean_global_kappa` | `float` | `20.0` | concentração das médias dos componentes em torno de uma média global; $\ge 0$; `0` ⇒ médias uniformes na esfera |
 | `global_mean_direction` | `ArrayLike \| None` | `None` | direção global em torno da qual os componentes se concentram; `None` ⇒ amostrada uniformemente |
 
 ### 8.3 `RadialReference`
 
-Localização e escala de referência para normas logarítmicas padronizadas. Usada para padronizar \(\log\lVert\mathbf{x}\rVert\) em z-scores robustos. Frozen.
+Localização e escala de referência para normas logarítmicas padronizadas. Usada para padronizar $\log\lVert\mathbf{x}\rVert$ em z-scores robustos. Frozen.
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
@@ -911,7 +911,7 @@ Modelo de norma não-monotônico com três regimes (central, cauda baixa, cauda 
 | `high_tail_offset` | `float` | `0.70` | deslocamento da log-norma na cauda alta (normas grandes) |
 | `high_tail_sigma` | `float` | `0.16` | desvio-padrão na cauda alta; positivo |
 | `minimum_norm` | `float` | `1e-6` | piso físico da norma (clipping) |
-| `maximum_norm` | `float` | `1e6` | teto físico da norma; deve satisfazer \(0 < \texttt{minimum} < \texttt{maximum}\) |
+| `maximum_norm` | `float` | `1e6` | teto físico da norma; deve satisfazer $0 < \texttt{minimum} < \texttt{maximum}$ |
 
 O classmethod `RadialConfig.from_reference(reference, **kwargs)` constrói um `RadialConfig` a partir de uma `RadialReference` ajustada em dados reais, copiando locação, escala e método e aceitando overrides dos demais campos via `kwargs`.
 
@@ -924,12 +924,12 @@ Modelo de confiabilidade angular (κ intra-classe), modelo opcional de nuisance 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
 | `peak_intra_kappa` | `float` | `1400.0` | κ de pico (máxima concentração angular, na qualidade/norma ótimas); positivo |
-| `quality_log_kappa_slope` | `float` | `0.90` | inclinação do efeito de qualidade sobre \(\log\kappa\) |
+| `quality_log_kappa_slope` | `float` | `0.90` | inclinação do efeito de qualidade sobre $\log\kappa$ |
 | `optimal_reference_scaled_log_norm_z` | `float` | `0.0` | z de norma padronizada onde κ é máximo (ápice do U invertido) |
-| `low_tail_quadratic_penalty` | `float` | `0.55` | penalidade quadrática de \(\log\kappa\) para z **abaixo** do ótimo; \(\ge 0\) |
-| `high_tail_quadratic_penalty` | `float` | `0.75` | penalidade quadrática de \(\log\kappa\) para z **acima** do ótimo; \(\ge 0\) |
+| `low_tail_quadratic_penalty` | `float` | `0.55` | penalidade quadrática de $\log\kappa$ para z **abaixo** do ótimo; $\ge 0$ |
+| `high_tail_quadratic_penalty` | `float` | `0.75` | penalidade quadrática de $\log\kappa$ para z **acima** do ótimo; $\ge 0$ |
 | `minimum_intra_kappa` | `float` | `20.0` | piso de κ (clipping); positivo |
-| `maximum_intra_kappa` | `float` | `10000.0` | teto de κ (clipping); \(\ge\) `minimum_intra_kappa` |
+| `maximum_intra_kappa` | `float` | `10000.0` | teto de κ (clipping); $\ge$ `minimum_intra_kappa` |
 
 A property `optimal_robust_norm_z` é alias de `optimal_reference_scaled_log_norm_z` (mesmo valor, leitura apenas).
 
@@ -937,14 +937,14 @@ A property `optimal_robust_norm_z` é alias de `optimal_reference_scaled_log_nor
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `anisotropic_rank` | `int` | `0` | posto \(r\) da base de nuisance global/por-domínio; \(0 \le r < D\); `0` desliga |
-| `anisotropic_base_scale` | `float` | `0.0` | magnitude base do nuisance anisotrópico; \(\ge 0\); `0` desliga |
-| `anisotropic_quality_slope` | `float` | `1.0` | inclinação do crescimento do nuisance com a baixa qualidade; \(\ge 0\) |
+| `anisotropic_rank` | `int` | `0` | posto $r$ da base de nuisance global/por-domínio; $0 \le r < D$; `0` desliga |
+| `anisotropic_base_scale` | `float` | `0.0` | magnitude base do nuisance anisotrópico; $\ge 0$; `0` desliga |
+| `anisotropic_quality_slope` | `float` | `1.0` | inclinação do crescimento do nuisance com a baixa qualidade; $\ge 0$ |
 | `nuisance_structure_mode` | `NuisanceStructureMode \| str` | `GLOBAL_SHARED` | compartilhamento da base: `global_shared` / `per_domain` / `hierarchical` |
-| `global_nuisance_weight` | `float` | `1.0` | peso da base global (modos `global_shared`/`hierarchical`); \(\ge 0\) |
-| `domain_nuisance_weight` | `float` | `0.0` | peso da base por domínio em `hierarchical`; \(\ge 0\) |
-| `identity_specific_nuisance_rank` | `int` | `0` | posto da base de nuisance **própria de cada identidade**; \(0 \le r < D\); `0` desliga |
-| `identity_specific_nuisance_scale` | `float` | `0.0` | magnitude do nuisance específico de identidade; \(\ge 0\); `0` desliga |
+| `global_nuisance_weight` | `float` | `1.0` | peso da base global (modos `global_shared`/`hierarchical`); $\ge 0$ |
+| `domain_nuisance_weight` | `float` | `0.0` | peso da base por domínio em `hierarchical`; $\ge 0$ |
+| `identity_specific_nuisance_rank` | `int` | `0` | posto da base de nuisance **própria de cada identidade**; $0 \le r < D$; `0` desliga |
+| `identity_specific_nuisance_scale` | `float` | `0.0` | magnitude do nuisance específico de identidade; $\ge 0$; `0` desliga |
 | `tangent_update_mode` | `TangentUpdateMode \| str` | `RETRACTION` | retorno à hiperesfera: `retraction` / `exponential_map` |
 
 #### Bloco C — modo de dispersão intra-classe e parâmetros da calota
@@ -952,16 +952,16 @@ A property `optimal_robust_norm_z` é alias de `optimal_reference_scaled_log_nor
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
 | `intra_class_sampling_mode` | `IntraClassSamplingMode \| str` | `VMF` | dispersão intra-classe: `vmf` / `idperturb_cap` / `hybrid_vmf_cap` |
-| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base `lb` da calota (modos de cap); \([0,1]\) |
+| `cap_base_lower_bound` | `float` | `0.6` | piso de cosseno base `lb` da calota (modos de cap); $[0,1]$ |
 | `cap_quality_lower_bound_slope` | `float` | `0.10` | inclinação do efeito de qualidade sobre `lb` (qualquer sinal; maior qualidade ⇒ maior `lb`) |
-| `cap_low_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda baixa de norma; \(\ge 0\) |
-| `cap_high_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda alta de norma; \(\ge 0\) |
-| `cap_minimum_lower_bound` | `float` | `0.0` | piso de clipping de `lb`; \([0,1]\); \(\le\) `cap_maximum_lower_bound` |
-| `cap_maximum_lower_bound` | `float` | `0.999` | teto de clipping de `lb`; \([0,1]\) (o overlap guard PODE excedê-lo) |
+| `cap_low_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda baixa de norma; $\ge 0$ |
+| `cap_high_tail_penalty` | `float` | `0.0` | penalidade não-monotônica sobre `lb` na cauda alta de norma; $\ge 0$ |
+| `cap_minimum_lower_bound` | `float` | `0.0` | piso de clipping de `lb`; $[0,1]$; $\le$ `cap_maximum_lower_bound` |
+| `cap_maximum_lower_bound` | `float` | `0.999` | teto de clipping de `lb`; $[0,1]$ (o overlap guard PODE excedê-lo) |
 | `cap_overlap_guard` | `bool` | `True` | aplica o piso da bissetriz por identidade (anti-colisão), com **prioridade** sobre o clipping |
-| `hybrid_max_resample_rounds` | `int` | `8` | número de redraws vMF no modo `hybrid_vmf_cap` antes do fallback de calota; \(\ge 1\) |
+| `hybrid_max_resample_rounds` | `int` | `8` | número de redraws vMF no modo `hybrid_vmf_cap` antes do fallback de calota; $\ge 1$ |
 
-> As penalidades de calota (`cap_low_tail_penalty`, `cap_high_tail_penalty`) e a inclinação de qualidade atuam na **escala de cosseno**, não em \(\log\kappa\). O overlap guard tem prioridade sobre o teto: o `lb` *efetivo* pode exceder `cap_maximum_lower_bound`, por isso sempre se reporta percentis de `cap_lower_bound_effective` (Seção 6/16) — o `lb` nominal é um piso, não o valor realizado.
+> As penalidades de calota (`cap_low_tail_penalty`, `cap_high_tail_penalty`) e a inclinação de qualidade atuam na **escala de cosseno**, não em $\log\kappa$. O overlap guard tem prioridade sobre o teto: o `lb` *efetivo* pode exceder `cap_maximum_lower_bound`, por isso sempre se reporta percentis de `cap_lower_bound_effective` (Seção 6/16) — o `lb` nominal é um piso, não o valor realizado.
 
 A modulação de κ (Bloco A) e de `lb` (Bloco C) é controlada pelos switches de qualidade/norma do `CouplingConfig` (Seção 9). Nos modos de cap, os switches `quality_affects_intra_kappa` e `norm_z_affects_intra_kappa` continuam sendo os que liberam, respectivamente, o efeito de qualidade e o efeito de norma sobre `lb` (apesar do nome centrado em κ, eles regem a dispersão intra-classe em qualquer modo).
 
@@ -995,11 +995,11 @@ Parâmetros de um domínio de aquisição — a unidade que cria mismatch contro
 | `high_tail_quality_logit_slope` | `float` | `0.0` | quanto a baixa qualidade aumenta o logit da cauda alta |
 | `log_norm_shift` | `float` | `0.0` | deslocamento aditivo da média da log-norma neste domínio |
 | `log_norm_sigma_multiplier` | `float` | `1.0` | multiplicador do desvio da log-norma; positivo |
-| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de \(\log\kappa\) neste domínio |
-| `anisotropic_noise_multiplier` | `float` | `1.0` | multiplicador da magnitude do nuisance anisotrópico; \(\ge 0\) |
-| `domain_bias_scale` | `float` | `0.0` | escala do viés **fixo** de domínio \(\mathbf{b}_d\); \(\ge 0\) |
-| `domain_identity_bias_scale` | `float` | `0.0` | escala do viés **domínio × identidade** \(\mathbf{b}_{d,i}\); \(\ge 0\) |
-| `session_bias_scale` | `float` | `0.0` | escala do viés de **sessão** \(\mathbf{b}_{d,s}\); \(\ge 0\) |
+| `log_kappa_shift` | `float` | `0.0` | deslocamento aditivo de $\log\kappa$ neste domínio |
+| `anisotropic_noise_multiplier` | `float` | `1.0` | multiplicador da magnitude do nuisance anisotrópico; $\ge 0$ |
+| `domain_bias_scale` | `float` | `0.0` | escala do viés **fixo** de domínio $\mathbf{b}_d$; $\ge 0$ |
+| `domain_identity_bias_scale` | `float` | `0.0` | escala do viés **domínio × identidade** $\mathbf{b}_{d,i}$; $\ge 0$ |
+| `session_bias_scale` | `float` | `0.0` | escala do viés de **sessão** $\mathbf{b}_{d,s}$; $\ge 0$ |
 | `cap_lower_bound_offset` | `float` | `0.0` | deslocamento aditivo de `lb` da calota neste domínio (qualquer sinal; positivo aperta a identidade — controlado; negativo afrouxa — vigilância); espelha `log_kappa_shift` para a parametrização de calota |
 
 ---
@@ -1068,7 +1068,7 @@ A seed estrutural fixa garante que população, bases de nuisance e vieses sejam
 no_q_norm = replace(base, coupling=replace(base.coupling, quality_affects_log_norm=False))
 ```
 
-**Isolar o caminho qualidade → κ do caminho norma → κ.** Os dois alimentam κ. Para atribuir a confiabilidade angular a um ou a outro, gere quatro mundos no grid \(2\times 2\):
+**Isolar o caminho qualidade → κ do caminho norma → κ.** Os dois alimentam κ. Para atribuir a confiabilidade angular a um ou a outro, gere quatro mundos no grid $2\times 2$:
 
 ```python
 grid = {}
@@ -1188,9 +1188,9 @@ A reprodutibilidade é tratada como requisito de auditabilidade forense, não co
 
 O construtor armazena `self.structural_seed = int(random_seed)`. A partir daí, cada fluxo aleatório recebe sua própria semente derivada via `_stable_seed`:
 
-\[
+$$
 \text{seed}(\text{root}, p_1, \dots, p_n) = \text{blake2b}_{64}\bigl(\text{root} \,|\, p_1 \,|\, \dots \,|\, p_n\bigr)
-\]
+$$
 
 ```python
 def _stable_seed(root_seed: int, *parts: object) -> int:
@@ -1432,9 +1432,9 @@ Os centros sorteados por uma mistura vMF genérica não respeitam a geometria em
 
 Computa um centro de média esférica por identidade:
 
-\[
+$$
 \hat{c}_i = \text{normalize}\!\left(\sum_{j \in i} w_j\, u_{ij}\right), \qquad u_{ij} = \frac{x_{ij}}{\lVert x_{ij}\rVert}
-\]
+$$
 
 ```python
 def identity_centers_from_dataset(
@@ -1629,11 +1629,11 @@ PLDA, calibração, tipicidade, ou os adapters do FaceAudit (Seção 19).
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `raw_embeddings` | `FloatArray` `(N, D)` | obrigatório | embeddings brutos \(x_{ij}=r_{ij}\,u_{ij}\) (direção × norma); a norma carrega o sinal radial usado em calibração/qualidade |
-| `normalized_embeddings` | `FloatArray` `(N, D)` | obrigatório | direções unitárias \(u_{ij}\) (cada linha com \(\lVert u\rVert=1\)); base dos escores de cosseno |
-| `identity_centers` | `FloatArray` `(M, D)` | obrigatório | centros angulares latentes \(\mathbf{c}_i\) das \(M\) identidades observadas |
+| `raw_embeddings` | `FloatArray` `(N, D)` | obrigatório | embeddings brutos $x_{ij}=r_{ij}\,u_{ij}$ (direção × norma); a norma carrega o sinal radial usado em calibração/qualidade |
+| `normalized_embeddings` | `FloatArray` `(N, D)` | obrigatório | direções unitárias $u_{ij}$ (cada linha com $\lVert u\rVert=1$); base dos escores de cosseno |
+| `identity_centers` | `FloatArray` `(M, D)` | obrigatório | centros angulares latentes $\mathbf{c}_i$ das $M$ identidades observadas |
 | `metadata` | `pandas.DataFrame` | obrigatório | uma linha por observação; dicionário completo de colunas na Seção 15.2 |
-| `population_component_means` | `FloatArray` | obrigatório | médias \(\mu_k\) dos componentes populacionais (artefato estrutural) |
+| `population_component_means` | `FloatArray` | obrigatório | médias $\mu_k$ dos componentes populacionais (artefato estrutural) |
 | `anisotropic_basis` | `FloatArray` ou `None` | obrigatório | base ortonormal do nuisance anisotrópico global (`None` quando desativado) |
 | `domain_anisotropic_bases` | `Mapping[str, FloatArray\|None]` | obrigatório | base anisotrópica por domínio (`None` por domínio quando desativada) |
 | `domain_bias_vectors` | `Mapping[str, FloatArray]` | obrigatório | vetor de bias fixo por domínio (zeros quando `domain_bias_scale=0`) |
@@ -1644,7 +1644,7 @@ PLDA, calibração, tipicidade, ou os adapters do FaceAudit (Seção 19).
 | `stream_name` | `str` | obrigatório | nome do stream nomeado de RNG usado nas observações |
 
 O método `validate()` reverifica os invariantes físicos do bundle antes de qualquer uso:
-`normalized_embeddings` tem o mesmo shape de `raw_embeddings`, o `metadata` tem exatamente \(N\)
+`normalized_embeddings` tem o mesmo shape de `raw_embeddings`, o `metadata` tem exatamente $N$
 linhas, todas as direções normalizadas são unitárias (`atol=1e-8`), e as normas observadas de
 `raw_embeddings` batem com a coluna `embedding_norm` do metadata (`rtol=1e-8`). `validate()` é
 chamado internamente ao final de cada geração — uma falha aqui sinaliza corrupção do estado, não
@@ -1664,16 +1664,16 @@ inteiro reauditável.
 | `local_identity_index` | `int` | índice local na população (0-based, antes do offset) |
 | `sample_index` | `int` | índice da observação dentro da identidade |
 | `session_index` | `int` | sessão sintética da observação |
-| `population_component` | `int` | componente populacional latente \(k\) da identidade |
+| `population_component` | `int` | componente populacional latente $k$ da identidade |
 | `acquisition_domain` | `str` | domínio de aquisição amostrado (ou forçado via `forced_domain`) |
 | `radial_regime` | `str` | regime radial: `central`, `low_tail` ou `high_tail` |
-| `latent_quality` | `float` | qualidade sintética em \([0,1]\) |
-| `embedding_norm` | `float` | norma do embedding bruto \(r_{ij}\) |
-| `log_embedding_norm` | `float` | log-norma \(\log r_{ij}\) (após clipping de `minimum_norm`/`maximum_norm`) |
-| `reference_scaled_log_norm_z` | `float` | posição radial padronizada \(z=(\log r-\mu_{\log})/\sigma_{\log}\) |
+| `latent_quality` | `float` | qualidade sintética em $[0,1]$ |
+| `embedding_norm` | `float` | norma do embedding bruto $r_{ij}$ |
+| `log_embedding_norm` | `float` | log-norma $\log r_{ij}$ (após clipping de `minimum_norm`/`maximum_norm`) |
+| `reference_scaled_log_norm_z` | `float` | posição radial padronizada $z=(\log r-\mu_{\log})/\sigma_{\log}$ |
 | `robust_norm_z` | `float` | **alias de** `reference_scaled_log_norm_z` (mesma coluna, também disponível sob este nome) |
 | `radial_reference_method` | `str` | método da referência radial (`RadialConfig.reference_method`) |
-| `intra_kappa` | `float` | concentração vMF intra-identidade \(\kappa_{ij}\) |
+| `intra_kappa` | `float` | concentração vMF intra-identidade $\kappa_{ij}$ |
 | `own_center_cosine` | `float` | cosseno ao centro latente **após** o passo de nuisance/viés |
 | `pre_nuisance_center_cosine` | `float` | cosseno ao centro latente **antes** do passo de nuisance/viés |
 | `intra_class_sampling_mode` | `str` | modo de dispersão usado: `vmf`, `idperturb_cap` ou `hybrid_vmf_cap` |
@@ -1708,9 +1708,9 @@ distribuição de `hybrid_resample_count` é o diagnóstico que separa "vMF com 
 
 #### Invariante crítico para auditar a calota
 
-\[
+$$
 \texttt{pre\_nuisance\_center\_cosine} \;\ge\; \texttt{cap\_lower\_bound\_effective}.
-\]
+$$
 
 Esse é o invariante que prova que o piso geométrico `lb` foi respeitado na geração. O piso é
 garantido **na direção pré-nuisance**. O passo tangencial de nuisance/viés aplicado em seguida
@@ -1746,8 +1746,8 @@ serem vetores grandes ou caches derivados (`repr=False`, `compare=False`).
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
 | `identity_ids` | `IntArray` | obrigatório | ids das identidades (com `identity_offset` aplicado) |
-| `population_components` | `IntArray` | obrigatório | componente populacional \(k\) por identidade |
-| `identity_centers` | `FloatArray` | obrigatório | centro angular latente \(\mathbf{c}_i\) por identidade (unitário) |
+| `population_components` | `IntArray` | obrigatório | componente populacional $k$ por identidade |
+| `identity_centers` | `FloatArray` | obrigatório | centro angular latente $\mathbf{c}_i$ por identidade (unitário) |
 | `identity_specific_nuisance_bases` | `FloatArray` ou `None` | obrigatório | base de nuisance específica por identidade (quando habilitada) |
 | `domain_identity_bias_vectors` | `Mapping[str, FloatArray]` | obrigatório | bias domínio × identidade |
 | `sampling_seed` | `int` | obrigatório | seed efetiva da amostragem da população |
@@ -1758,7 +1758,7 @@ serem vetores grandes ou caches derivados (`repr=False`, `compare=False`).
 
 O campo `overlap_lower_bound_floor` é calculado preguiçosamente na primeira observação em modo de
 calota (via `_overlap_lower_bound_floor`, em blocos de linhas, sem materializar a matriz
-\(C\times C\) de cossenos) e **cacheado** para reuso entre observações cross-condition da mesma
+$C\times C$ de cossenos) e **cacheado** para reuso entre observações cross-condition da mesma
 população — isso garante que o piso anti-colisão seja idêntico em todos os domínios alinhados. Os
 campos `source_identity_labels` e `source_sample_counts` são `None` em populações amostradas e
 preenchidos apenas no caminho de injeção de centros (Modo A); é deles que `sample_observations`
@@ -1781,7 +1781,7 @@ resumo radial em U-invertido (`norm_bin_diagnostics`) e a regra de ouro dos perc
 
 O método `norm_bin_diagnostics` estratifica as observações por quantis de norma e resume o padrão
 esperado de **U-invertido** entre norma, qualidade e estabilidade angular: as observações de norma
-intermediária tendem a ter maior qualidade latente e maior \(\kappa\) intra-classe (direções mais
+intermediária tendem a ter maior qualidade latente e maior $\kappa$ intra-classe (direções mais
 estáveis, mais próximas do centro), enquanto as caudas radiais (`low_tail`/`high_tail`) tendem a
 ser de menor qualidade e direção mais dispersa. É o diagnóstico que confirma que o acoplamento
 não-monotônico norma↔confiabilidade está ativo conforme configurado.
@@ -1811,7 +1811,7 @@ O método usa `pd.qcut(..., duplicates="drop")`. Se existirem bordas de quantil 
 pandas produzirá **menos** bins do que o solicitado; nesse caso o método **emite um `UserWarning`**
 e informa tanto `requested_bin_count` quanto `actual_bin_count`, evitando que um diagnóstico
 silenciosamente degradado seja interpretado como completo. O parâmetro `bin_count` deve ser
-\(\ge 2\). Esse diagnóstico também é gravado automaticamente por `save_bundle` no CSV
+$\ge 2$. Esse diagnóstico também é gravado automaticamente por `save_bundle` no CSV
 `<stem>_norm_diagnostics.csv` (Seção 18), usando `bin_count=10`.
 
 ### 16.2 Sempre reporte os percentis de `cap_lower_bound_effective`
@@ -1881,14 +1881,14 @@ pairs = sample_pair_table(
 | `strategy` | `PairSamplingStrategy` ou `str` | `BALANCED_IDENTITY` | estratégia de ponderação dos impostores |
 | `unique_pairs` | `bool` | `False` | se `True`, deduplica pares não-ordenados após a amostragem |
 
-Contagens negativas levantam erro. Os genuínos exigem ao menos uma identidade com \(\ge 2\)
+Contagens negativas levantam erro. Os genuínos exigem ao menos uma identidade com $\ge 2$
 amostras; os impostores exigem ao menos duas identidades — caso contrário a função levanta erro
 explícito.
 
 ### 17.2 Estratégias de amostragem (`PairSamplingStrategy`)
 
 Em ambas as estratégias os **pares genuínos são identity-balanced**: cada identidade elegível
-(com \(\ge 2\) amostras) recebe peso aproximadamente igual, e os dois índices internos são
+(com $\ge 2$ amostras) recebe peso aproximadamente igual, e os dois índices internos são
 sorteados sem repetição dentro da identidade. As estratégias diferem apenas na ponderação dos
 **impostores**:
 
@@ -1903,7 +1903,7 @@ sorteados sem repetição dentro da identidade. As estratégias diferem apenas n
 
 ### 17.3 `unique_pairs`
 
-Quando `unique_pairs=True`, a tabela é deduplicada por par não-ordenado \(\{i,j\}\) (ordena
+Quando `unique_pairs=True`, a tabela é deduplicada por par não-ordenado $\{i,j\}$ (ordena
 `min`/`max` das linhas e remove duplicatas, preservando o rótulo). Como a deduplicação remove
 trials repetidos, o `DataFrame` retornado pode conter **menos** linhas do que
 `genuine_pair_count + random_impostor_pair_count`; nesse caso a função **emite um `UserWarning`**.
@@ -2232,8 +2232,8 @@ Métricas:
 - `Cllr_min` (referência diagnóstica in-sample, não operacional);
 - Tippett;
 - estabilidade de LR;
-- espectro de \(W\);
-- traço de \(W\);
+- espectro de $W$;
+- traço de $W$;
 - desempenho por domínio;
 - desempenho por quantis de norma;
 - desempenho por tipicidade.
@@ -2277,9 +2277,9 @@ Gere a varredura em duas versões, exatamente como na Seção 16:
 
 **(A) guarda desligada + sem nuisance** — a tendência é limpa:
 
-\[
+$$
 lb\downarrow \;\Rightarrow\; \text{dispersão genuína}\uparrow \;\Rightarrow\; \text{EER}\uparrow.
-\]
+$$
 
 ```python
 from dataclasses import replace
@@ -2433,11 +2433,11 @@ degeneradas, seleção de K e o caso L2.
 `RadialReference.fit` aceita diretamente a matriz `(N, D)` de embeddings brutos
 reais (ou um vetor de normas) e estima localização e escala robustas:
 
-\[
+$$
 \text{localização} = \operatorname{mediana}(\log r),
 \qquad
 \text{escala} = 1{,}4826\cdot\operatorname{MAD}(\log r).
-\]
+$$
 
 ```python
 from adaface_embedding_simulator import RadialReference, RadialConfig
@@ -2465,7 +2465,7 @@ referência radial-base com um warning, em vez de quebrar.
 
 Em vez de calcular a média esférica manualmente, use
 `identity_centers_from_dataset`, que computa
-\(\widehat{\mathbf{c}}_i = \operatorname{normalize}\big(\sum_j w_j \mathbf{u}_{ij}\big)\)
+$\widehat{\mathbf{c}}_i = \operatorname{normalize}\big(\sum_j w_j \mathbf{u}_{ij}\big)$
 por identidade, com agrupamento pelo valor **original** de `identity` (evita
 fundir `1` e `"1"`), filtro `min_samples`, ponderação opcional por qualidade e
 fallback robusto para médias degeneradas:
@@ -2524,7 +2524,7 @@ reproduz as estatísticas reais de interesse:
 | genuínos | distribuição de cosseno e score PLDA |
 | impostores | distribuição de cosseno e score PLDA |
 | caudas | quantis extremos |
-| intraidentidade | \(\widehat{\mathbf{c}}_i^T\mathbf{u}_{ij}\) (compare com `pre_nuisance_center_cosine`) |
+| intraidentidade | $\widehat{\mathbf{c}}_i^T\mathbf{u}_{ij}$ (compare com `pre_nuisance_center_cosine`) |
 | relação radial | estabilidade por quantil de norma |
 | domínio | diferença controlled vs surveillance |
 | estrutura anisotrópica | espectro de covariância intraidentidade |
@@ -2605,9 +2605,9 @@ A calota (`IDPERTURB_CAP` e o fallback do `HYBRID_VMF_CAP`) sorteia o cosseno-al
 `s ~ U[lb, 1]`: é **uniforme em cosseno**, **não** uniforme na área da calota. Em
 alta dimensão essas distribuições são bem diferentes. Consequência direta:
 
-\[
+$$
 \mathbb{E}[\langle \tilde v, \mu\rangle] = \frac{1 + lb}{2},
-\]
+$$
 
 e `lb = 1` colapsa a amostra ao próprio centro (sem perturbação). Não descreva a
 calota como "amostragem uniforme sobre a calota esférica".
@@ -2673,7 +2673,7 @@ quando o FaceAudit não está instalado; os demais rodam sem o host.
 Valida a geometria e a reprodutibilidade básicas:
 
 - normas unitárias e alinhamento da média empírica da vMF (`sample_vmf`);
-- crescimento do comprimento resultante com \(\kappa\);
+- crescimento do comprimento resultante com $\kappa$;
 - consistência entre embeddings brutos e metadados (norma bate com
   `embedding_norm`, presença de `combined_tangent_step_norm`);
 - independência da ordem das chamadas e seeds explícitas reproduzíveis;
@@ -2691,7 +2691,7 @@ Valida a geometria e a reprodutibilidade básicas:
 O módulo mais extenso, cobrindo:
 
 - norma unitária da calota e preservação do cosseno sorteado, com
-  \(\mathbb{E}[s] = (1+lb)/2\) (`sample_spherical_cap`);
+  $\mathbb{E}[s] = (1+lb)/2$ (`sample_spherical_cap`);
 - `lb = 1` retorna a direção média;
 - pisos vetoriais respeitados por linha;
 - ortogonalidade e norma unitária dos tangentes (`_deterministic_orthogonal`,
