@@ -8,7 +8,7 @@ geometry of real face embeddings. This bridge feeds the population from real dat
   (and the norm) is synthetic. NOTE: Mode A is NOT anonymization — it generates synthetic variation
   around real biometric anchors.
 * **Mode B (distribution-matched)** — :func:`simulator_config_from_dataset`: fit a MoVMF to the real
-  per-identity centres (FaceAudit's ``TypicalityModel``) and use μ_k/κ_k/π_k as a ``PopulationConfig``;
+  per-identity centres (FaceAudit's ``MoVMFTypicalityModel``) and use μ_k/κ_k/π_k as a ``PopulationConfig``;
   the simulator then samples NEW ghost centres from an MoVMF approximation of the empirical centre
   distribution (a per-component isotropic mixture — first-order angular density, not the full
   manifold). Optionally also fits the radial (norm) reference.
@@ -42,10 +42,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from faceaudit.models.embedding_dataset import EmbeddingDataset
 
 
-def _import_typicality_model():
-    from faceaudit.services.typicality_model import TypicalityModel
+def _import_movmf_typicality_model():
+    from faceaudit.services.movmf_typicality_model import MoVMFTypicalityModel
 
-    return TypicalityModel
+    return MoVMFTypicalityModel
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ def population_config_from_dataset(
     ``n_components`` set, fits that fixed K; otherwise selects K by ``criterion`` ('bic'/'aic') over
     ``component_candidates`` clamped to ``[1, min(M, max_k)]``.
     """
-    TypicalityModel = _import_typicality_model()
+    MoVMFTypicalityModel = _import_movmf_typicality_model()
 
     extraction = identity_centers_from_dataset(
         dataset, min_samples=min_samples, weight_by_quality=weight_by_quality
@@ -228,7 +228,7 @@ def population_config_from_dataset(
     criterion_values: dict[int, float | None] = {}
     candidate_k: list[int] | None = None
     if n_components is not None:
-        model = TypicalityModel(n_components=int(n_components), **common).fit(centers)
+        model = MoVMFTypicalityModel(n_components=int(n_components), **common).fit(centers)
     else:
         effective_max_k = int(max_k) if max_k is not None else max(component_candidates)
         candidate_k = sorted(
@@ -240,7 +240,7 @@ def population_config_from_dataset(
         best_score = float("inf")
         for k in candidate_k:
             try:
-                candidate = TypicalityModel(n_components=k, **common).fit(centers)
+                candidate = MoVMFTypicalityModel(n_components=k, **common).fit(centers)
                 score = candidate.bic_ if criterion == "bic" else candidate.aic_
             except Exception as exc:  # noqa: BLE001 - numerical/EM failures per K
                 criterion_values[k] = None

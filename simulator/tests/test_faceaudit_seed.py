@@ -1,4 +1,4 @@
-"""Mode B (MoVMF) integration tests — require faceaudit (TypicalityModel + EmbeddingDataset).
+"""Mode B (MoVMF) integration tests — require faceaudit (MoVMFTypicalityModel + EmbeddingDataset).
 
     .venv/Scripts/python.exe -m pytest simulator/tests/test_faceaudit_seed.py
 """

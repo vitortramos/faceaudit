@@ -1,7 +1,7 @@
 """Core center-injection + faceaudit-free bridge (Mode A) tests.
 
 Runs without faceaudit installed — `faceaudit_seed`'s extraction/Mode A/leakage helpers never
-import faceaudit at runtime (TypicalityModel is lazy-imported only by Mode B).
+import faceaudit at runtime (MoVMFTypicalityModel is lazy-imported only by Mode B).
 
     .venv/Scripts/python.exe -m pytest simulator/tests/test_core_population_injection.py
 """

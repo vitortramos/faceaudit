@@ -154,7 +154,7 @@ O módulo `faceaudit_seed` permite gerar variação sintética em torno de ânco
 **não é anonimização**: o conjunto-âncora precisa permanecer **disjunto** de qualquer
 conjunto de avaliação (use `assert_disjoint_source_identities`). No **Modo B**
 (`population_config_from_dataset` / `simulator_config_from_dataset`) ajusta-se um MoVMF
-(via `TypicalityModel` do FaceAudit) que produz centros-fantasma — uma aproximação angular
+(via `MoVMFTypicalityModel` do FaceAudit) que produz centros-fantasma — uma aproximação angular
 de primeira ordem da distribuição empírica dos centros, **não** o manifold real de
 embeddings. Para levar o resultado de volta ao FaceAudit, use o adapter **concreto**
 `faceaudit_concrete_adapter.to_embedding_dataset` (o `faceaudit_adapter` genérico é apenas

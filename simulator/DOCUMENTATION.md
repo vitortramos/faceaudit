@@ -85,7 +85,7 @@ python -m pytest -q
 
 As funcionalidades que tocam o projeto hospedeiro têm dependências adicionais opcionais:
 
-- a **população ancorada em dataset real no Modo B** (`population_config_from_dataset` / `simulator_config_from_dataset`) usa o `TypicalityModel` (MoVMF) do FaceAudit;
+- a **população ancorada em dataset real no Modo B** (`population_config_from_dataset` / `simulator_config_from_dataset`) usa o `MoVMFTypicalityModel` (MoVMF) do FaceAudit;
 - o **adapter concreto** (`faceaudit_concrete_adapter`) importa os DTOs reais `EmbeddingInfo` / `EmbeddingDataset` e usa parquet (via `pandas`/`pyarrow`, conforme o host).
 
 O **Modo A** (centros médios esféricos) e os helpers de extração/vazamento de `faceaudit_seed` funcionam **sem** o FaceAudit instalado — eles nunca importam o host no topo do módulo, apenas operam sobre arrays NumPy. Use o `.venv` do projeto FaceAudit quando precisar do Modo B ou do adapter concreto.
@@ -169,7 +169,7 @@ Adapter **concreto**: importa os DTOs reais do host e mapeia as colunas de metad
 
 ### `faceaudit_seed.py`
 
-Ancora a população do simulador em um `EmbeddingDataset` real, em dois modos (Modo A: centros médios esféricos; Modo B: centros-fantasma MoVMF via `TypicalityModel`), com helpers de extração de centros, ajuste radial e verificação de vazamento (`source_identity_set`, `assert_disjoint_source_identities`).
+Ancora a população do simulador em um `EmbeddingDataset` real, em dois modos (Modo A: centros médios esféricos; Modo B: centros-fantasma MoVMF via `MoVMFTypicalityModel`), com helpers de extração de centros, ajuste radial e verificação de vazamento (`source_identity_set`, `assert_disjoint_source_identities`).
 
 ### `example_generate_adaface_embeddings.py`
 
@@ -1655,7 +1655,7 @@ contra dados reais, validação metodológica de PLDA, *augmentation* — o mód
   (e a norma) é sintética.
 - **Modo B (distribuição-pareada)** — `population_config_from_dataset` /
   `simulator_config_from_dataset`: ajusta-se uma mistura de von Mises–Fisher (MoVMF) aos centros
-  reais por identidade (via `TypicalityModel` do próprio FaceAudit) e usam-se `μ_k`/`κ_k`/`π_k`
+  reais por identidade (via `MoVMFTypicalityModel` do próprio FaceAudit) e usam-se `μ_k`/`κ_k`/`π_k`
   como `PopulationConfig`. O simulador então amostra centros-fantasma NOVOS dessa aproximação
   angular da distribuição empírica.
 
@@ -1774,7 +1774,7 @@ Pontos essenciais:
 - **Ajusta sobre os CENTROS por identidade**, não sobre todas as observações. Ajustar sobre as
   observações brutas misturaria variância intra e inter-identidade — o alvo aqui é a distribuição
   *dos centros*.
-- **MoVMF via `TypicalityModel` com `centering="none"`.** O `TypicalityModel` do FaceAudit é
+- **MoVMF via `MoVMFTypicalityModel` com `centering="none"`.** O `MoVMFTypicalityModel` do FaceAudit é
   reutilizado como estimador MoVMF; a centralização é desligada deliberadamente, pois os centros
   já estão na esfera unitária e qualquer recentragem distorceria a geometria angular.
 - **Seleção de K por BIC/AIC.** Com `n_components` fixo, ajusta-se aquele K. Caso contrário,
@@ -3106,7 +3106,7 @@ O módulo mais extenso da v0.3, cobrindo:
 - fallback de média degenerada;
 - população Modo A e colunas de proveniência;
 - helpers de leakage;
-- import do módulo sem disparar o import do `TypicalityModel`.
+- import do módulo sem disparar o import do `MoVMFTypicalityModel`.
 
 ### 23.5 `test_faceaudit_seed.py` — Modo B (MoVMF)
 
@@ -3363,7 +3363,7 @@ da v0.2:
 - `identity_centers_from_dataset` — médias esféricas por identidade;
 - `population_from_dataset` — população ancorada (Modo A);
 - `population_config_from_dataset` / `simulator_config_from_dataset` — população
-  e config distribuição-matched (Modo B, MoVMF via `TypicalityModel`);
+  e config distribuição-matched (Modo B, MoVMF via `MoVMFTypicalityModel`);
 - `assert_disjoint_source_identities` — guarda de vazamento âncora↔avaliação.
 
 O adapter concreto `faceaudit_concrete_adapter` (DTOs reais, float32, parquet,
