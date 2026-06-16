@@ -1,10 +1,8 @@
-"""Concrete adapter: v0.2 ``SyntheticEmbeddingDataset`` -> FaceAudit ``EmbeddingDataset``.
+"""Adapter: ``SyntheticEmbeddingDataset`` -> FaceAudit ``EmbeddingDataset``.
 
-The shipped ``faceaudit_adapter.py`` is a dependency-injected *reference* scaffold: it
-assumes ``EmbeddingInfo(embedding=, identity=, metadata=)``, which does NOT match the real
-FaceAudit DTO (``EmbeddingInfo(embedding, face_hash, image_path, identity, file_name, ...)``
-with no ``metadata`` kwarg). This module is the real bridge — it imports the host DTOs and
-maps the simulator's metadata columns onto the actual ``EmbeddingInfo`` fields.
+The real bridge to the host project: it imports the FaceAudit DTOs and maps the simulator's
+metadata columns onto the actual ``EmbeddingInfo`` fields (``EmbeddingInfo(embedding, face_hash,
+image_path, identity, file_name, ...)``).
 
 Field mapping (forensically actionable covariates kept; embeddings cast to float32 to match
 real extracted datasets):

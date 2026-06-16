@@ -2,10 +2,12 @@
 
 Gerador sintético configurável de embeddings **AdaFace-like** para experimentos controlados com similaridade de cosseno, LDA, *whitening*, Gaussianização radial, PLDA, PSDA, calibração e tipicidade.
 
-O pacote não implementa a rede neural AdaFace. Ele cria um mundo sintético auditável no qual é possível variar separadamente:
+O pacote não implementa a rede neural AdaFace. Ele cria um mundo sintético auditável que opera em **dois regimes**: **sintético puro** (população sorteada de uma mistura vMF genérica) e — o recurso mais distintivo — **ancorado em datasets reais do FaceAudit** (população derivada de embeddings reais, para que a geometria sintética seja fiel aos seus dados; ver [População ancorada em dataset real](#população-ancorada-em-dataset-real)).
+
+Em qualquer regime, é possível variar separadamente:
 
 - geometria populacional esférica por mistura de vMF;
-- dispersão intraidentidade (vMF, calota esférica IDperturb ou híbrido — novo em 0.3);
+- dispersão intraidentidade (vMF, calota esférica IDperturb ou híbrido);
 - norma do embedding e caudas radiais baixa e alta;
 - qualidade latente;
 - estrutura anisotrópica global, por domínio e por identidade;
@@ -15,11 +17,11 @@ O pacote não implementa a rede neural AdaFace. Ele cria um mundo sintético aud
 
 ## Recursos
 
+- **⭐ População ancorada em dataset real** via `faceaudit_seed` — o recurso central. Modo A (`population_from_dataset`): centros de identidade reais (média esférica por identidade); Modo B (`simulator_config_from_dataset`): centros-fantasma de um MoVMF ajustado aos centros reais, com seleção de K por BIC/AIC e casamento opcional da norma. Guardas anti-vazamento (`assert_disjoint_source_identities`).
 - **Dispersão intra-classe selecionável** via `IntraClassSamplingMode`: `VMF` (concentração `κ`, padrão), `IDPERTURB_CAP` (calota esférica com cosseno uniforme, Boutros et al. CVPR 2026) e `HYBRID_VMF_CAP` (corpo vMF com piso rígido de calota).
 - **Perfis prontos** `make_spherical_baseline_config`, `make_cooperative_plda_config`, `make_cross_condition_stress_config` e `make_idperturb_cap_config`.
 - **Serialização de configuração round-trippável**: `config_to_dict` / `config_from_dict` / `config_from_manifest`.
 - **Adapter concreto FaceAudit** (`faceaudit_concrete_adapter`) para `EmbeddingInfo`/`EmbeddingDataset` reais (float32, parquet, cross-condition).
-- **População ancorada em dataset real** via `faceaudit_seed` (Modo A: âncoras biométricas reais; Modo B: centros-fantasma MoVMF).
 
 ## Instalação
 
@@ -58,6 +60,40 @@ test = simulator.sample_dataset(
 
 test.save_bundle("synthetic_output", "test")
 ```
+
+## População ancorada em dataset real
+
+O recurso mais distintivo do pacote: em vez de sortear a população de uma mistura vMF
+genérica, derive-a de embeddings **reais** de um `EmbeddingDataset` do FaceAudit, para que a
+geometria populacional sintética seja fiel aos seus dados. Centros sorteados de uma MoVMF
+genérica podem não respeitar a variedade fina/anisotrópica/agrupada dos embeddings reais — a
+ancoragem fecha essa lacuna.
+
+- **Modo A — ancorado** (`population_from_dataset`): os centros de identidade são a média
+  esférica por identidade dos embeddings reais. As identidades são reais; só a dispersão
+  intra-classe (e, opcionalmente, a norma) é sintética. **Não é anonimização** — o
+  conjunto-âncora precisa permanecer **disjunto** da base de avaliação
+  (`assert_disjoint_source_identities`).
+- **Modo B — distribuição-casada** (`simulator_config_from_dataset`): ajusta-se um MoVMF aos
+  centros reais (via `MoVMFTypicalityModel`, seleção de K por BIC/AIC) e geram-se
+  centros-fantasma inéditos — uma aproximação angular de primeira ordem da distribuição
+  empírica, **não** o manifold real. Casa opcionalmente a norma radial real.
+
+```python
+import faceaudit_seed as fs
+from adaface_embedding_simulator import AdaFaceEmbeddingSimulator, make_cooperative_plda_config
+
+simulator = AdaFaceEmbeddingSimulator(make_cooperative_plda_config(dimension=512), random_seed=7)
+
+# Modo A: centros = média esférica por identidade dos embeddings reais.
+population = fs.population_from_dataset(simulator, real_embedding_dataset, min_samples=2)
+anchored = simulator.sample_observations(population, samples_per_identity=(4, 10), split_name="anchored")
+# Proveniência por amostra na metadata: 'source_identity', 'source_sample_count'.
+```
+
+Para levar o resultado de volta ao FaceAudit como um `EmbeddingDataset` real, use
+`faceaudit_concrete_adapter.to_embedding_dataset`. Referência completa em
+[`DOCUMENTATION.md`](DOCUMENTATION.md) (Seção 14).
 
 ## Dispersão por calota esférica (IDperturb)
 
@@ -143,20 +179,6 @@ assert config_to_dict(config_from_dict(payload)) == payload
 `config_from_dict` aceita o dicionário produzido por `config_to_dict` (enums como string,
 arrays como listas); chaves ausentes caem nos *defaults* do dataclass (compatível com
 configs antigas) e chaves desconhecidas levantam erro, expondo *version drift* cedo.
-
-## População ancorada em dataset real
-
-O módulo `faceaudit_seed` permite gerar variação sintética em torno de âncoras biométricas
-**reais** extraídas de um `EmbeddingDataset` do FaceAudit. No **Modo A**
-(`population_from_dataset`) os centros de identidade vêm direto dos embeddings reais — isto
-**não é anonimização**: o conjunto-âncora precisa permanecer **disjunto** de qualquer
-conjunto de avaliação (use `assert_disjoint_source_identities`). No **Modo B**
-(`population_config_from_dataset` / `simulator_config_from_dataset`) ajusta-se um MoVMF
-(via `MoVMFTypicalityModel` do FaceAudit) que produz centros-fantasma — uma aproximação angular
-de primeira ordem da distribuição empírica dos centros, **não** o manifold real de
-embeddings. Para levar o resultado de volta ao FaceAudit, use o adapter **concreto**
-`faceaudit_concrete_adapter.to_embedding_dataset` (o `faceaudit_adapter` genérico é apenas
-um *scaffold* de referência e não bate com o DTO real de produção).
 
 ## Documentação
 

@@ -1,9 +1,9 @@
 """Make the flat simulator modules importable under pytest.
 
-The v0.2 package ships as flat top-level modules (``adaface_embedding_simulator``,
-``faceaudit_adapter``, ...) imported without a package prefix, mirroring the upstream
-standalone layout. Inserting this directory on ``sys.path`` lets those imports resolve
-whether the tests are run from the repo root or from inside ``simulator/``.
+The package uses flat top-level modules (``adaface_embedding_simulator``,
+``faceaudit_seed``, ...) imported without a package prefix. Inserting this directory on
+``sys.path`` lets those imports resolve whether the tests are run from the repo root or
+from inside ``simulator/``.
 """
 
 import os

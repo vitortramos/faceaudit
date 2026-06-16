@@ -11,6 +11,59 @@ alternativas esféricas). Ele produz diretamente os **vetores de embedding** e s
 **metadados** — junto com tabelas de pares, escores e diagnósticos — sob um modelo
 generativo totalmente parametrizado, determinístico e auditável.
 
+O simulador opera em **dois regimes**, e é importante distingui-los desde já:
+
+1. **Sintético puro** — a população de identidades é **sorteada** de uma mistura vMF
+   genérica. Ideal para estudar a *matemática* de um backend (PLDA, calibração, tipicidade)
+   sob um *ground-truth* totalmente conhecido.
+2. **Ancorado em dataset real do FaceAudit** — a população é **derivada de embeddings reais**
+   (centros de identidade reais, ou uma distribuição ajustada a eles). É o que torna o mundo
+   sintético geometricamente fiel aos seus dados — e o recurso mais distintivo do pacote.
+
+### ⭐ O recurso central: ancoragem em datasets reais do FaceAudit
+
+No regime sintético puro, os centros de identidade são sorteados de uma MoVMF genérica. Mas
+os embeddings AdaFace reais ocupam uma **variedade fina, anisotrópica e agrupada** de
+$S^{D-1}$: centros sorteados de uma mistura genérica podem **não respeitar essa geometria
+empírica fina** — ótimos para estressar a álgebra de um backend, porém insuficientes para
+**transferir conclusões quantitativas** ao FaceAudit real.
+
+A **ancoragem** (módulo `faceaudit_seed`) fecha essa lacuna alimentando a população **a partir
+de um `EmbeddingDataset` real**, em dois modos:
+
+- **Modo A — ancorado (`population_from_dataset`).** Os centros de identidade são a **média
+  esférica por identidade dos embeddings reais**. As identidades são reais; só a dispersão
+  intra-classe (e, opcionalmente, a norma) é sintética. Útil para augmentação e validação
+  metodológica com base autorizada. **Não é anonimização** — gera variação sintética *em torno
+  de âncoras biométricas reais*, então o conjunto-âncora precisa permanecer **disjunto** de
+  qualquer conjunto de avaliação (guarda `assert_disjoint_source_identities`).
+- **Modo B — distribuição-casada (`simulator_config_from_dataset`).** Ajusta-se um **MoVMF aos
+  centros reais** (via `MoVMFTypicalityModel` do FaceAudit, com seleção de $K$ por BIC/AIC) e
+  geram-se **novos** centros-fantasma de uma aproximação angular de primeira ordem da
+  distribuição empírica. Identidades inéditas, mas com a geometria populacional **casada com a
+  do dataset real**. Opcionalmente casa também a **norma radial** real.
+
+Teaser (Modo A — semear a população nos centros reais e gerar variação sintética em torno):
+
+```python
+import faceaudit_seed as fs
+from adaface_embedding_simulator import AdaFaceEmbeddingSimulator, make_cooperative_plda_config
+
+simulator = AdaFaceEmbeddingSimulator(make_cooperative_plda_config(dimension=512), random_seed=7)
+
+# centros = média esférica por identidade dos embeddings reais (>= 2 amostras/identidade)
+population = fs.population_from_dataset(simulator, real_embedding_dataset, min_samples=2)
+
+dataset = simulator.sample_observations(population, samples_per_identity=(4, 10), split_name="anchored")
+# A proveniência viaja na metadata: 'source_identity' e 'source_sample_count' por amostra.
+```
+
+> **Referência completa na [Seção 14](#14-população-ancorada-em-dataset-real)**: extração de
+> centros, ponderação por qualidade, seleção de $K$, casamento de norma, guardas anti-vazamento
+> e os caveats forenses (Modo A ≠ anonimização; Modo B casa só a densidade angular de 1ª ordem).
+> Para levar o resultado de volta ao FaceAudit como um `EmbeddingDataset` real, ver
+> [Seção 19](#19-adapter-para-o-faceaudit).
+
 ### O que o pacote NÃO é
 
 A delimitação de escopo é essencial para a defensibilidade forense de qualquer estudo que
@@ -104,9 +157,9 @@ except ImportError as exc:
     ) from exc
 ```
 
-O núcleo gerador (`adaface_embedding_simulator.py`), o adapter de referência
-(`faceaudit_adapter.py`) e os testes só exigem `numpy` + `pandas`. As funcionalidades de
-**ancoragem em dataset real** (`faceaudit_seed.py`, modo MoVMF) e o **adapter concreto**
+O núcleo gerador (`adaface_embedding_simulator.py`) e os testes do núcleo só exigem `numpy` +
+`pandas`. As funcionalidades de **ancoragem em dataset real** (`faceaudit_seed.py`, modo MoVMF)
+e o **adapter**
 (`faceaudit_concrete_adapter.py`) importam, sob demanda, classes do projeto hospedeiro
 FaceAudit (`MoVMFTypicalityModel`, `EmbeddingDataset`, `EmbeddingInfo`) — esses imports só são
 acionados quando você usa essas funções específicas, então o núcleo permanece autossuficiente.
@@ -188,8 +241,7 @@ simulator/
 ├── adaface_embedding_simulator.py     ← NÚCLEO: enums, configs, funções geométricas,
 │                                          AdaFaceEmbeddingSimulator, dataset, pares, perfis
 ├── faceaudit_seed.py                  ← Ancoragem em dataset real (Modo A e Modo B / MoVMF)
-├── faceaudit_adapter.py               ← Adapter de REFERÊNCIA (scaffold com injeção genérica)
-├── faceaudit_concrete_adapter.py      ← Adapter CONCRETO de produção (DTOs reais do FaceAudit)
+├── faceaudit_concrete_adapter.py      ← Adapter para os DTOs reais do FaceAudit
 ├── example_generate_adaface_embeddings.py  ← Script executável de ponta a ponta
 ├── conftest.py                        ← Insere a pasta no sys.path para os imports planos
 ├── DOCUMENTATION.md                   ← Documentação técnica de referência
@@ -200,8 +252,7 @@ simulator/
     ├── test_core_population_injection.py     ← Injeção de centros/componentes na população
     ├── test_idperturb_cap.py                 ← Calota cosseno-uniforme + guarda de overlap
     ├── test_faceaudit_seed.py                ← Ancoragem em dataset real (A e B), disjunção
-    ├── test_faceaudit_adapter.py             ← Adapter de referência (injeção genérica)
-    └── test_faceaudit_concrete_adapter.py    ← Adapter concreto contra DTOs reais
+    └── test_faceaudit_concrete_adapter.py    ← Adapter contra os DTOs reais
 ```
 
 ### Papel de cada módulo
@@ -228,15 +279,7 @@ simulator/
   distribuição dos centros e fabrica centros "fantasma". Inclui salvaguardas de disjunção
   (`source_identity_set`, `assert_disjoint_source_identities`). Detalhado na Seção 14.
 
-- **`faceaudit_adapter.py` (adapter de referência / scaffold).** Helper de **referência** com
-  **injeção genérica de construtores**. Expõe `dataset_to_embedding_records` e
-  `to_faceaudit_embedding_dataset`, recebendo `embedding_info_factory` e
-  `embedding_dataset_factory` como parâmetros. **Importante:** assume a assinatura
-  `EmbeddingInfo(embedding=, identity=, metadata=)`, que **não corresponde** ao DTO real do
-  FaceAudit. Serve como andaime didático e não deve ser usado em produção — use o adapter
-  concreto. Detalhado na Seção 19.
-
-- **`faceaudit_concrete_adapter.py` (adapter concreto / produção).** A ponte real. Importa os
+- **`faceaudit_concrete_adapter.py` (adapter para o FaceAudit).** A ponte real. Importa os
   DTOs do hospedeiro (`EmbeddingDataset`, `EmbeddingInfo`) e mapeia as colunas de metadata do
   simulador sobre os campos reais (`face_hash`, `image_path`, `quality_scores`, `source`,
   etc.). Expõe `to_embedding_dataset` e `cross_condition_to_embedding_datasets`. É o caminho
@@ -327,6 +370,45 @@ eval_dataset = simulator.sample_dataset(
     identity_offset=200,   # identidades 200..299, disjuntas de train (0..199)
 )
 ```
+
+### Início rápido ancorado em dataset real (Modo A)
+
+Em vez de sortear a população, **ancore-a nos centros de identidade reais** de um
+`EmbeddingDataset` do FaceAudit. Aqui só a dispersão intra-classe é sintética — as
+identidades-âncora são reais, então mantenha-as **disjuntas** de qualquer conjunto de
+avaliação (a função `population_from_dataset` é o Modo A; a referência completa está na
+**Seção 14**):
+
+```python
+import faceaudit_seed as fs
+from adaface_embedding_simulator import (
+    AdaFaceEmbeddingSimulator,
+    make_cooperative_plda_config,
+)
+
+simulator = AdaFaceEmbeddingSimulator(make_cooperative_plda_config(dimension=512), random_seed=7)
+
+# 1) Centros = média esférica por identidade dos embeddings reais.
+#    min_samples=2 descarta identidades com uma única foto (âncora ruidosa).
+population = fs.population_from_dataset(simulator, real_embedding_dataset, min_samples=2)
+
+# 2) Guarda anti-vazamento: a base-âncora NÃO pode compartilhar identidades
+#    com a base de avaliação (levanta ValueError se houver interseção).
+fs.assert_disjoint_source_identities(population, eval_population)
+
+# 3) Gere variação sintética em torno das âncoras reais.
+anchored = simulator.sample_observations(
+    population,
+    samples_per_identity=(4, 10),
+    split_name="anchored",
+)
+
+# A proveniência viaja na metadata para auditoria/estratificação:
+print(anchored.metadata[["source_identity", "source_sample_count"]].head())
+```
+
+Para o **Modo B** (centros-fantasma de um MoVMF ajustado à distribuição real, identidades
+inéditas) e o casamento opcional da norma radial, ver a **Seção 14**.
 
 ### Ponteiros para os modos de uso principais
 
@@ -1418,7 +1500,7 @@ faceaudit_datasets = cross_condition_to_embedding_datasets(datasets_by_domain)
 # -> {"controlled": EmbeddingDataset, "surveillance": EmbeddingDataset}
 ```
 
-`cross_condition_to_embedding_datasets` mapeia cada `SyntheticEmbeddingDataset` via `to_embedding_dataset`, preservando os mesmos valores de `identity` entre as condições. Os datasets resultantes formam um conjunto cross-condition pareado pronto para `PAIRED_DATASET_SPLIT` ou para treino de PLDA two-covariance cross-condition no FaceAudit. (O scaffold genérico `faceaudit_adapter.py` **não** deve ser usado em produção — ver Seção 19.)
+`cross_condition_to_embedding_datasets` mapeia cada `SyntheticEmbeddingDataset` via `to_embedding_dataset`, preservando os mesmos valores de `identity` entre as condições. Os datasets resultantes formam um conjunto cross-condition pareado pronto para `PAIRED_DATASET_SPLIT` ou para treino de PLDA two-covariance cross-condition no FaceAudit.
 
 ---
 
@@ -2013,39 +2095,12 @@ usado na geração não mudou entre a execução e a auditoria.
 
 ---
 
-## 19. Adapters para o FaceAudit
+## 19. Adapter para o FaceAudit
 
-O pacote oferece dois caminhos de integração com o FaceAudit, com papéis distintos: um **scaffold
-genérico de referência** (`faceaudit_adapter`), que mostra a forma da conversão sem acoplar ao
-projeto hospedeiro, e o **adapter concreto** (`faceaudit_concrete_adapter`), que é a ponte real de
-produção, importando os DTOs do FaceAudit e mapeando os campos corretamente.
-
-### 19.1 O scaffold genérico `faceaudit_adapter` (referência, NÃO usar em produção)
-
-`faceaudit_adapter` é um scaffold de **referência por injeção de dependência**: os construtores do
-FaceAudit (`EmbeddingInfo`, `EmbeddingDataset`) não são importados; são **injetados** como
-callables. Ele expõe:
-
-- **`dataset_to_embedding_records(dataset, *, embedding_view="normalized", domain_filter=None)`**
-  — converte o dataset sintético em uma lista de `dict`s simples (`embedding`, `identity`,
-  `metadata`), opcionalmente filtrando por domínio de aquisição. `embedding_view` escolhe a matriz
-  bruta (`"raw"`) ou normalizada (`"normalized"`).
-- **`to_faceaudit_embedding_dataset(dataset, *, embedding_info_factory, embedding_dataset_factory,
-  ...)`** — monta DTOs chamando os construtores injetados.
-
-> **Caveat decisivo — não casa com o DTO real.** O scaffold assume
-> `EmbeddingInfo(embedding=, identity=, metadata=)`, isto é, um `EmbeddingInfo` que aceita um
-> kwarg `metadata`. **O `EmbeddingInfo` real do FaceAudit NÃO tem esse kwarg** (sua assinatura é
-> `EmbeddingInfo(embedding, face_hash, image_path, identity, file_name, ...)`). Portanto
-> `faceaudit_adapter` serve **apenas como referência didática** da forma da conversão — não deve
-> ser usado para produzir datasets reais do FaceAudit. Para produção, use o adapter concreto
-> (Seção 19.2).
-
-### 19.2 O adapter concreto `faceaudit_concrete_adapter` (produção)
-
-`faceaudit_concrete_adapter` é a ponte real: importa `EmbeddingDataset` e `EmbeddingInfo` do
-FaceAudit e mapeia as colunas de metadata do simulador sobre os campos reais do `EmbeddingInfo`.
-Expõe duas funções.
+O `faceaudit_concrete_adapter` é a ponte para o FaceAudit: importa `EmbeddingDataset` e
+`EmbeddingInfo` do projeto hospedeiro e mapeia as colunas de metadata do simulador sobre os campos
+reais do `EmbeddingInfo` (`EmbeddingInfo(embedding, face_hash, image_path, identity, file_name,
+...)`). Expõe duas funções.
 
 #### `to_embedding_dataset`
 
@@ -2767,12 +2822,7 @@ Requer FaceAudit (`MoVMFTypicalityModel` + `EmbeddingDataset`):
 - round-trip completo: gerar sintético → adaptar para `EmbeddingDataset` real →
   re-semear pela ponte.
 
-### 23.6 `test_faceaudit_adapter.py` — adapter genérico
-
-- registros simples (`dataset_to_embedding_records`) e adapter por factory
-  injetada (`to_faceaudit_embedding_dataset`) usando DTOs dummy.
-
-### 23.7 `test_faceaudit_concrete_adapter.py` — adapter concreto
+### 23.6 `test_faceaudit_concrete_adapter.py` — adapter concreto
 
 Requer FaceAudit:
 
@@ -2875,16 +2925,6 @@ None/NaN viram peso 1; todos-zero caem para média não-ponderada. Se o aviso de
 degeneração aparecer com frequência, aumente `min_samples` (1 é ruidoso; 2+ é
 mais estável) ou revise a coluna `quality_score`.
 
-### Devo usar o adapter genérico ou o concreto?
-
-Use **sempre o concreto** (`faceaudit_concrete_adapter.to_embedding_dataset`) em
-produção: ele importa os DTOs reais e mapeia os campos corretos. O genérico
-(`faceaudit_adapter.to_faceaudit_embedding_dataset`) assume
-`EmbeddingInfo(metadata=...)`, que **não** corresponde ao DTO real do FaceAudit
-(`EmbeddingInfo(embedding, face_hash, image_path, identity, file_name, ...)`, sem
-`metadata`). O genérico é apenas referência/scaffold para projetos com outra
-assinatura de DTO.
-
 ---
 
 ## 25. API pública resumida e checklist de experimento auditável
@@ -2931,10 +2971,8 @@ exclusiva com `identity_count`; `sample_observations`; `sample_dataset`;
 `population_config_from_dataset`, `simulator_config_from_dataset` (Modo B),
 `source_identity_set`, `assert_disjoint_source_identities`.
 
-**Adapters:** `faceaudit_concrete_adapter.to_embedding_dataset` /
-`cross_condition_to_embedding_datasets` (produção, DTOs reais);
-`faceaudit_adapter.dataset_to_embedding_records` /
-`to_faceaudit_embedding_dataset` (scaffold de referência por injeção).
+**Adapter:** `faceaudit_concrete_adapter.to_embedding_dataset` /
+`cross_condition_to_embedding_datasets` (DTOs reais do FaceAudit).
 
 ### 25.2 Checklist de experimento auditável
 
