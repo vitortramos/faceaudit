@@ -2,6 +2,40 @@
 
 ## Manual completo do gerador sintético de embeddings AdaFace-like
 
+> **Novo por aqui?** Para uma porta de entrada operacional (árvore de decisão "quero X → use Y",
+> tabela de perfis e snippets mínimos), comece pelo [`QUICKSTART.md`](QUICKSTART.md). Este
+> documento é a referência completa.
+
+## Índice
+
+1. [Visão geral](#1-visão-geral)
+2. [Instalação e dependências](#2-instalação-e-dependências)
+3. [Estrutura do pacote](#3-estrutura-do-pacote)
+4. [Início rápido](#4-início-rápido)
+5. [Modelo generativo](#5-modelo-generativo)
+6. [Dispersão intra-classe (VMF, IDPERTURB_CAP, HYBRID)](#6-dispersão-intra-classe-vmf-idperturb_cap-hybrid)
+7. [Perturbações tangenciais e atualização](#7-perturbações-tangenciais-e-atualização)
+8. [Referência completa da configuração](#8-referência-completa-da-configuração)
+9. [Acoplamentos e ablações causais](#9-acoplamentos-e-ablações-causais)
+10. [Perfis prontos](#10-perfis-prontos)
+11. [Reprodutibilidade](#11-reprodutibilidade)
+12. [População e observações](#12-população-e-observações)
+13. [Geração cross-condition](#13-geração-cross-condition)
+14. [População ancorada em dataset real](#14-população-ancorada-em-dataset-real)
+15. [O dataset e o dicionário de colunas de metadata](#15-o-dataset-e-o-dicionário-de-colunas-de-metadata)
+16. [Diagnósticos](#16-diagnósticos)
+17. [Geração de pares](#17-geração-de-pares)
+18. [Serialização e persistência](#18-serialização-e-persistência)
+19. [Adapter para o FaceAudit](#19-adapter-para-o-faceaudit)
+20. [Experimentos recomendados](#20-experimentos-recomendados)
+21. [Calibração contra embeddings reais](#21-calibração-contra-embeddings-reais)
+22. [Cuidados interpretativos forenses](#22-cuidados-interpretativos-forenses)
+23. [Testes automatizados](#23-testes-automatizados)
+24. [Solução de problemas](#24-solução-de-problemas)
+25. [API pública resumida e checklist de experimento auditável](#25-api-pública-resumida-e-checklist-de-experimento-auditável)
+
+---
+
 ## 1. Visão geral
 
 O pacote `adaface_embedding_simulator` é um **gerador sintético de embeddings no estilo
@@ -13,7 +47,7 @@ generativo totalmente parametrizado, determinístico e auditável.
 
 O simulador opera em **dois regimes**, e é importante distingui-los desde já:
 
-1. **Sintético puro** — a população de identidades é **sorteada** de uma mistura vMF
+1. **Sintético puro** — a população de identidades é **sorteada** de uma mistura de von Mises-Fisher (MoVMF)
    genérica. Ideal para estudar a *matemática* de um backend (PLDA, calibração, tipicidade)
    sob um *ground-truth* totalmente conhecido.
 2. **Ancorado em dataset real do FaceAudit** — a população é **derivada de embeddings reais**
@@ -97,9 +131,12 @@ em que:
 - **`u`** é a **direção** (o vetor unitário na hiperesfera $S^{D-1}$), modelado pela
   geometria de população + dispersão intra-classe + perturbações tangenciais.
 
-Os dois fatores variam **independentemente**: o `raw_embeddings` carrega `r·u`, enquanto o
-`normalized_embeddings` carrega apenas `u`. Isso permite estudar separadamente backends que
-usam a norma (ex.: detecção via norma) e backends puramente angulares (cosseno, PLDA esférico).
+Os dois fatores são **representados e podem ser consumidos separadamente** — o `raw_embeddings`
+carrega `r·u`, enquanto o `normalized_embeddings` carrega apenas `u` —, mas **não são
+independentes por construção**: o gerador permite acoplamentos explícitos e desligáveis entre
+qualidade, norma e direção (`CouplingConfig`, ver Seção 9). Essa separação permite estudar
+separadamente backends que usam a norma (ex.: detecção via norma) e backends puramente
+angulares (cosseno, PLDA esférico).
 
 ### As cinco camadas conceituais
 
@@ -124,8 +161,9 @@ afeta a concentração?") para permitir experimentos contrafactuais limpos (ver 
 
 O simulador existe para **experimentos controlados**: comparar backends, estressar
 calibradores, validar pipelines de tipicidade e estudar a sensibilidade de métricas forenses
-(Cllr, EER, ECE, Tippett) a propriedades geométricas conhecidas — porque aqui o
-*ground-truth* gerador é totalmente conhecido.
+(Cllr, EER, ECE, Tippett) a propriedades geométricas conhecidas — porque, **no regime sintético
+puro, o mecanismo gerador é totalmente conhecido**. Nos modos ancorados (Seção 14), conhece-se o
+mecanismo de **perturbação sintética**, mas a geometria de base provém de dados reais.
 
 > **Aviso de defensibilidade.** Nenhum parâmetro do simulador é, por si só, um valor
 > "correto" para AdaFace/PLDA/FaceAudit. Os perfis prontos e os valores como `lb = 0.6` são
@@ -134,6 +172,17 @@ calibradores, validar pipelines de tipicidade e estudar a sensibilidade de métr
 > representativos** (Seção 21) e **reporte explicitamente qual perfil sintético foi usado**
 > (o nome vive em `config.profile_name` e é persistido no manifesto). O simulador é uma
 > bancada de teste, não evidência.
+
+### 1.1 Glossário de métricas forenses
+
+As métricas citadas ao longo deste manual são definidas no contexto de razões de verossimilhança (LR) forenses:
+
+- **EER** (Equal Error Rate): ponto em que a taxa de falsa aceitação iguala a de falsa rejeição; resume o poder discriminante bruto do escore.
+- **AUC** (Area Under the ROC Curve): área sob a curva ROC; probabilidade de um par genuíno receber escore maior que um impostor. Mede discriminação, não calibração.
+- **Cllr** (cost of log-likelihood-ratio): custo médio do log-LR; penaliza simultaneamente discriminação e calibração. Quanto menor, melhor.
+- **Cllr_min**: Cllr após recalibração monotônica PAVA in-sample — referência diagnóstica (oracle in-sample), **não** medida operacional de calibração.
+- **ECE** (Empirical/Expected Calibration Error): desvio entre a confiança declarada e a frequência empírica observada; quantifica miscalibração.
+- **Tippett**: par de curvas das proporções acumuladas de LR sob H_p e H_d; diagnóstico visual de calibração e poder do sistema de LR.
 
 ---
 
@@ -392,9 +441,11 @@ simulator = AdaFaceEmbeddingSimulator(make_cooperative_plda_config(dimension=512
 #    min_samples=2 descarta identidades com uma única foto (âncora ruidosa).
 population = fs.population_from_dataset(simulator, real_embedding_dataset, min_samples=2)
 
-# 2) Guarda anti-vazamento: a base-âncora NÃO pode compartilhar identidades
-#    com a base de avaliação (levanta ValueError se houver interseção).
-fs.assert_disjoint_source_identities(population, eval_population)
+# 2) Guarda anti-vazamento: a base-âncora NÃO pode compartilhar identidades com a de
+#    avaliação. A guarda compara os source_identity_labels dos dois lados, então
+#    eval_population deve ser OUTRA população ancorada (de um split de avaliação disjunto):
+eval_population = fs.population_from_dataset(simulator, eval_embedding_dataset, min_samples=2)
+fs.assert_disjoint_source_identities(population, eval_population)  # ValueError se houver interseção
 
 # 3) Gere variação sintética em torno das âncoras reais.
 anchored = simulator.sample_observations(
@@ -407,8 +458,8 @@ anchored = simulator.sample_observations(
 print(anchored.metadata[["source_identity", "source_sample_count"]].head())
 ```
 
-Para o **Modo B** (centros-fantasma de um MoVMF ajustado à distribuição real, identidades
-inéditas) e o casamento opcional da norma radial, ver a **Seção 14**.
+Para o **Modo B** (centros-fantasma de um MoVMF ajustado à distribuição empírica dos centros
+reais, identidades inéditas) e o casamento opcional da norma radial, ver a **Seção 14**.
 
 ### Ponteiros para os modos de uso principais
 
@@ -459,7 +510,7 @@ Esta seção descreve as quatro primeiras camadas (a quinta — dispersão intra
 
 ### 5.1 Mistura populacional de von Mises-Fisher
 
-Os centros de identidade não são uniformes na hiperesfera: pertencem a uma **mistura de von Mises-Fisher (vMF)** com $K$ componentes, espelhando a estrutura de subpopulações (etnia, gênero, faixa etária) que existe em galerias reais. Os parâmetros vivem em `PopulationConfig`:
+Os centros de identidade não são uniformes na hiperesfera: pertencem a uma **mistura de von Mises-Fisher (MoVMF)** com $K$ componentes. Os componentes devem ser interpretados como **regiões latentes de densidade** no espaço de embeddings — podem correlacionar-se com atributos demográficos ou de aquisição (etnia, gênero, faixa etária, condição de captura), mas **não devem ser tratados automaticamente como grupos semânticos**. Os parâmetros vivem em `PopulationConfig`:
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
@@ -479,7 +530,7 @@ $$
 m_k \;\sim\; \mathrm{vMF}\!\left(g,\; \kappa^{\mathrm{glob}}\right), \qquad k = 1,\dots,K.
 $$
 
-Um $\kappa^{\mathrm{glob}}$ alto agrupa as subpopulações numa calota comum (galeria homogênea); um $\kappa^{\mathrm{glob}}$ baixo as espalha (galeria heterogênea).
+Um $\kappa^{\mathrm{glob}}$ alto agrupa os componentes numa calota comum (galeria homogênea); um $\kappa^{\mathrm{glob}}$ baixo os espalha (galeria heterogênea).
 
 ### 5.2 Centro angular da identidade
 
@@ -521,7 +572,7 @@ $$
 q \;\sim\; \mathrm{Beta}\!\left(\alpha_{\mathrm{dom}},\; \beta_{\mathrm{dom}}\right).
 $$
 
-A qualidade é a **variável causal oculta** que liga as três camadas seguintes: ela enviesa os regimes radiais, desloca a norma e modula a concentração angular. Um domínio controlado (ex.: $\alpha = 5, \beta = 2$) gera qualidade tipicamente alta; um domínio de vigilância (ex.: $\alpha = 2, \beta = 4{,}5$) gera qualidade tipicamente baixa. A qualidade é exportada como coluna de metadata `latent_quality` e é a porta de entrada de várias ablações causais (Seção 9).
+A qualidade é a **variável causal oculta** que liga as três camadas seguintes: ela enviesa os regimes radiais, desloca a norma e modula a concentração angular. Um domínio controlado (ex.: $\alpha = 5, \beta = 2$) gera qualidade latente (`latent_quality` — variável latente do modelo, **não** medida óptica de uma imagem real) tipicamente alta; um domínio de vigilância (ex.: $\alpha = 2, \beta = 4{,}5$) gera qualidade latente tipicamente baixa. A qualidade é exportada como coluna de metadata `latent_quality` e é a porta de entrada de várias ablações causais (Seção 9).
 
 ### 5.5 Regimes radiais e logits modulados por qualidade
 
@@ -791,7 +842,7 @@ s_{ij}
 \Bigr),
 $$
 
-onde $q_{ij} \in [0,1]$ é a qualidade latente e $m_d$ é o multiplicador por domínio. **Quanto menor a qualidade, maior o nuisance** — o fator $(1 - q_{ij})$ faz a perturbação crescer em imagens ruins, reproduzindo a degradação de confiabilidade angular sob baixa qualidade. Domínios de vigilância recebem `anisotropic_noise_multiplier > 1` para ampliar esse efeito.
+onde $q_{ij} \in [0,1]$ é a qualidade latente e $m_d$ é o multiplicador por domínio. **Quanto menor a qualidade latente, maior o nuisance** — o fator $(1 - q_{ij})$ faz a perturbação crescer sob baixa `latent_quality` (variável latente do modelo, não qualidade óptica medida de uma imagem real), reproduzindo a degradação de confiabilidade angular sob baixa qualidade. Domínios de vigilância recebem `anisotropic_noise_multiplier > 1` para ampliar esse efeito.
 
 ### 7.2 Os três modos de estrutura do nuisance (`NuisanceStructureMode`)
 
@@ -953,7 +1004,7 @@ Configuração de topo do gerador.
 
 ### 8.2 `PopulationConfig`
 
-Distribuição dos centros de identidade sintéticos na hiperesfera unitária (uma mistura vMF de componentes).
+Distribuição dos centros de identidade sintéticos na hiperesfera unitária (uma mistura de von Mises-Fisher (MoVMF) de componentes).
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
@@ -1264,7 +1315,16 @@ O `lower_bound` padrão `0.6` é **inspirado** no regime experimental do IDpertu
 | `make_idperturb_cap_config` | `IDPERTURB_CAP` | 2 (`controlled`/`surveillance`) | calota (IDPERTURB_CAP) | global, moderado | retração |
 ## 11. Reprodutibilidade
 
-A reprodutibilidade é tratada como requisito de auditabilidade forense, não como conveniência. Toda a aleatoriedade do `AdaFaceEmbeddingSimulator` deriva de uma **única semente raiz** (`structural_seed`, passada como `random_seed` ao construtor, padrão `42`) através de uma função de derivação determinística e independente da ordem das chamadas. Isso garante que dois experimentos com a mesma configuração e a mesma semente produzam embeddings bit-a-bit idênticos — uma propriedade indispensável para reproduzir um laudo ou uma ablação meses depois.
+A reprodutibilidade é tratada como requisito de auditabilidade forense, não como conveniência. Toda a aleatoriedade do `AdaFaceEmbeddingSimulator` deriva de uma **única semente raiz** (`structural_seed`, passada como `random_seed` ao construtor, padrão `42`) através de uma função de derivação determinística e independente da ordem das chamadas. Isso garante que dois experimentos com a mesma configuração e a mesma semente produzam embeddings bit-a-bit idênticos **no mesmo ambiente de software/numérico** — uma propriedade indispensável para reproduzir um laudo ou uma ablação meses depois.
+
+> **Caveat de reprodutibilidade (ambiente).** A reprodução bit-a-bit de um dataset salvo só é
+> garantida sob o **mesmo ambiente de software e numérico** da execução que o produziu — versões
+> idênticas de Python, NumPy e pandas (BLAS/threading e a plataforma também podem afetar o último
+> bit). O manifesto registra essas versões sob a chave top-level `environment` (mais a versão do
+> `faceaudit` quando o pacote é importável; `null` caso contrário). Para uma trilha de auditoria
+> forte, fixe `python`, `numpy` e `pandas` nas versões ali reportadas antes de regenerar; uma
+> divergência de versão é razão legítima para um fingerprint diferir mesmo com as mesmas seeds e
+> config.
 
 ### 11.1 Semente raiz e derivação estável
 
@@ -1367,7 +1427,7 @@ O método tem **duas formas mutuamente exclusivas**, selecionadas pela presença
 
 | Parâmetro | Tipo | Padrão | Significado |
 |---|---|---|---|
-| `identity_count` | `int \| None` | `None` | **Forma sorteada.** Número de identidades a sortear da mistura vMF configurada (`PopulationConfig`). Exatamente um entre `identity_count` e `centers` deve ser informado. |
+| `identity_count` | `int \| None` | `None` | **Forma sorteada.** Número de identidades a sortear da MoVMF configurada (`PopulationConfig`). Exatamente um entre `identity_count` e `centers` deve ser informado. |
 | `centers` | `ArrayLike \| None` | `None` | **Forma injetada.** Matriz `(M, dimension)` de direções de centro fornecidas externamente (ex.: médias esféricas reais por identidade). Re-normalizada por linha; a dimensão deve bater com `config.dimension`. |
 | `components` | `ArrayLike \| None` | `None` | (Apenas injetada) Rótulo de componente populacional por centro `(M,)`, inteiros em `[0, component_count)`. Se omitido, todos recebem componente `0`. |
 | `identity_labels` | `Sequence[str] \| None` | `None` | (Apenas injetada) Rótulo de identidade de origem por centro `(M,)`. Armazenado como `source_identity_labels`; alimenta as colunas de proveniência e os helpers anti-vazamento (Seção 14). |
@@ -1506,7 +1566,7 @@ faceaudit_datasets = cross_condition_to_embedding_datasets(datasets_by_domain)
 
 ## 14. População ancorada em dataset real
 
-Os centros sorteados por uma mistura vMF genérica não respeitam a geometria empírica fina dos embeddings faciais reais. O módulo `simulator/faceaudit_seed.py` é a ponte que alimenta a população a partir de um `EmbeddingDataset` real do FaceAudit, em dois modos. Para que `import simulator.faceaudit_seed` funcione sem o FaceAudit instalado, `faceaudit` é importado preguiçosamente apenas dentro das funções que dele precisam.
+Os centros sorteados por uma MoVMF genérica não respeitam a geometria empírica fina dos embeddings faciais reais. O módulo `simulator/faceaudit_seed.py` é a ponte que alimenta a população a partir de um `EmbeddingDataset` real do FaceAudit, em dois modos. Para que `import simulator.faceaudit_seed` funcione sem o FaceAudit instalado, `faceaudit` é importado preguiçosamente apenas dentro das funções que dele precisam.
 
 > **Caveat de vazamento — proeminente.** Em ambos os modos, a base usada para ancorar/ajustar **deve ser disjunta em identidades** de qualquer conjunto de avaliação. Use `assert_disjoint_source_identities` (Seção 14.5). O Modo A **não é anonimização**.
 
@@ -1807,7 +1867,7 @@ dos ruídos de domínio/sessão."*
 As colunas `source_identity` e `source_sample_count` aparecem **apenas** quando o dataset foi
 observado a partir de uma população ancorada em dataset real (Modo A, Seção 14), ou seja, quando
 `SyntheticIdentityPopulation.source_identity_labels` / `source_sample_counts` estão preenchidos.
-Em populações puramente amostradas da mistura vMF essas colunas estão **ausentes** — pela simples
+Em populações puramente amostradas da MoVMF essas colunas estão **ausentes** — pela simples
 presença/ausência da coluna o auditor sabe se há âncoras biométricas reais por trás do dataset.
 
 `source_identity` carrega o rótulo de identidade real do FaceAudit que originou cada centro;
@@ -1865,7 +1925,7 @@ O método `norm_bin_diagnostics` estratifica as observações por quantis de nor
 esperado de **U-invertido** entre norma, qualidade e estabilidade angular: as observações de norma
 intermediária tendem a ter maior qualidade latente e maior $\kappa$ intra-classe (direções mais
 estáveis, mais próximas do centro), enquanto as caudas radiais (`low_tail`/`high_tail`) tendem a
-ser de menor qualidade e direção mais dispersa. É o diagnóstico que confirma que o acoplamento
+ser de menor qualidade latente (`latent_quality`, variável latente — não medida óptica) e direção mais dispersa. É o diagnóstico que confirma que o acoplamento
 não-monotônico norma↔confiabilidade está ativo conforme configurado.
 
 ```python
@@ -2068,6 +2128,12 @@ paths = test.save_bundle("out", stem="test")   # npz + csv + manifesto + diagnó
 Todos os métodos criam os diretórios pais que faltarem e retornam o `Path` (ou `dict` de
 `Path`) escrito.
 
+> **⚠️ Privacidade — populações ancoradas.** Se o dataset foi gerado a partir de uma população
+> ancorada em dados reais (Modo A, Seção 14), o `<stem>_metadata.csv` contém **rótulos de
+> identidade reais** na coluna `source_identity`. **Não distribua esse bundle externamente** sem
+> antes remover ou *hashear* essa coluna — caso contrário você expõe identidades biométricas
+> reais. Populações puramente sintéticas não têm essa coluna.
+
 ### 18.3 O manifesto como artefato de proveniência
 
 `save_manifest` escreve um JSON indentado com o seguinte conteúdo, projetado como o **artefato de
@@ -2084,13 +2150,14 @@ cadeia de custódia** de uma execução:
 | `row_count` / `dimension` | nº de observações e dimensão dos embeddings |
 | `identity_count` | nº de identidades distintas no metadata |
 | `source_sha256` | SHA-256 do próprio arquivo-fonte do simulador (quando acessível) |
+| `environment` | versões de software da execução (`python`, `numpy`, `pandas`, e `faceaudit` quando importável) — chave **top-level** de auditoria de reprodutibilidade; **não** faz parte do round-trip de `config` (ver Seção 11) |
 | `config` | a configuração integral via `config_to_dict` (re-lível por `config_from_manifest`) |
 | `extra` | dicionário arbitrário do usuário, normalizado para JSON (`_json_ready`) |
 
 Como o manifesto carrega o bloco `config` completo e as três seeds, ele é **round-trippável**:
 `config_from_manifest` reconstrói a configuração exata, e reinstanciar o simulador com a mesma
 `structural_seed` reproduz os artefatos estruturais; com as mesmas seeds de população e observação
-o dataset inteiro é reproduzido bit-a-bit. O `source_sha256` permite verificar que o código-fonte
+o dataset inteiro é reproduzido bit-a-bit **no mesmo ambiente de software** (as versões ficam registradas em `environment`; ver Seção 11). O `source_sha256` permite verificar que o código-fonte
 usado na geração não mudou entre a execução e a auditoria.
 
 ---
@@ -2305,7 +2372,7 @@ importar.
 Compare estimadores de tipicidade sobre uma mesma população:
 
 1. tipicidade-oráculo sobre os centros latentes (`dataset.identity_centers`);
-2. MoVMF ajustada sobre centroides observados;
+2. MoVMF ajustada sobre centroides observados (Modo B, Seção 14);
 3. k-NN `PER_IDENTITY`;
 4. k-NN `PER_FACE`;
 5. estratificação por qualidade e por norma.

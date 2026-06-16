@@ -182,6 +182,8 @@ configs antigas) e chaves desconhecidas levantam erro, expondo *version drift* c
 
 ## Documentação
 
+Novo por aqui? Comece pelo [`QUICKSTART.md`](QUICKSTART.md) — porta de entrada operacional (árvore de decisão "quero X → use Y", tabela de perfis e snippets mínimos).
+
 Consulte [`DOCUMENTATION.md`](DOCUMENTATION.md) para a referência completa da API, fórmulas,
 parâmetros configuráveis, perfis prontos, modos de dispersão intra-classe, geração de pares,
 diagnósticos radiais e por calota, integração com o FaceAudit e roteiro de calibração contra

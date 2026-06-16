@@ -834,6 +834,30 @@ class SyntheticEmbeddingDataset:
         self.metadata.to_csv(output_path, index=False)
         return output_path
 
+    @staticmethod
+    def _environment_metadata() -> dict[str, str | None]:
+        """Capture the software environment for reproducibility audit.
+
+        Always records the Python, NumPy and pandas versions. The faceaudit
+        version is captured ONLY via an optional import so this core module
+        stays faceaudit-free: if faceaudit is not installed the value degrades
+        to ``None``. Consumes no RNG and touches no arrays — manifest only.
+        """
+        import platform
+
+        try:  # optional: present only when run inside the FaceAudit project
+            import faceaudit  # type: ignore
+
+            faceaudit_version = getattr(faceaudit, "__version__", None)
+        except Exception:  # pragma: no cover - faceaudit absent by design
+            faceaudit_version = None
+        return {
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "pandas": pd.__version__,
+            "faceaudit": faceaudit_version,
+        }
+
     def save_manifest(self, path: str | Path, *, extra: Mapping[str, Any] | None = None) -> Path:
         """Write a JSON manifest with configuration, seeds and source hash."""
         output_path = Path(path)
@@ -851,6 +875,7 @@ class SyntheticEmbeddingDataset:
             "dimension": int(self.raw_embeddings.shape[1]),
             "identity_count": int(self.metadata["identity_id"].nunique()),
             "source_sha256": source_hash,
+            "environment": self._environment_metadata(),
             "config": config_to_dict(self.config),
             "extra": _json_ready(dict(extra or {})),
         }
