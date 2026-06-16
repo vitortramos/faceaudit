@@ -753,6 +753,11 @@ class SyntheticIdentityPopulation:
     overlap_lower_bound_floor: FloatArray | None = field(
         default=None, repr=False, compare=False
     )
+    # Provenance for dataset-anchored populations (Mode A): the original FaceAudit identity
+    # label per synthetic identity, and how many real images formed each spherical-mean
+    # centre. Optional; None for sampled populations. Not serialized to npz.
+    source_identity_labels: list[str] | None = field(default=None, repr=False, compare=False)
+    source_sample_counts: IntArray | None = field(default=None, repr=False, compare=False)
 
     def validate(self) -> None:
         identity_count, dimension = self.identity_centers.shape
@@ -1016,26 +1021,74 @@ class AdaFaceEmbeddingSimulator:
     def sample_identity_population(
         self,
         *,
-        identity_count: int,
+        identity_count: int | None = None,
+        centers: ArrayLike | None = None,
+        components: ArrayLike | None = None,
+        identity_labels: Sequence[str] | None = None,
+        source_sample_counts: ArrayLike | None = None,
         identity_offset: int = 0,
         random_seed: int | None = None,
         stream_name: str = "population",
     ) -> SyntheticIdentityPopulation:
-        """Sample latent identities once so they can be observed in many domains."""
-        if identity_count <= 0:
-            raise ValueError("identity_count must be positive.")
-        seed = self._resolved_seed("population", stream_name, identity_offset, identity_count, explicit_seed=random_seed)
+        """Sample (or inject) latent identities so they can be observed in many domains.
+
+        Pass ``identity_count`` to sample centres from the configured vMF mixture (default,
+        unchanged), or pass ``centers`` (M, dimension) to anchor the population on externally
+        supplied directions (e.g. real per-identity spherical means). Exactly one of the two.
+        When ``centers`` is given, ``_sample_identity_centers`` is skipped (its RNG is not
+        consumed), so the sampled path stays bit-for-bit identical to before.
+        """
+        injected = centers is not None
+        if injected == (identity_count is not None):
+            raise ValueError("Provide exactly one of identity_count or centers.")
+
+        if injected:
+            centers = l2_normalize_rows(centers)
+            if centers.shape[1] != self.config.dimension:
+                raise ValueError(
+                    f"centers have dimension {centers.shape[1]}, expected {self.config.dimension}."
+                )
+            count = centers.shape[0]
+        else:
+            if identity_count <= 0:
+                raise ValueError("identity_count must be positive.")
+            count = int(identity_count)
+
+        seed = self._resolved_seed("population", stream_name, identity_offset, count, explicit_seed=random_seed)
         rng = np.random.default_rng(seed)
-        components, centers = self._sample_identity_centers(identity_count, rng)
-        identity_ids = np.arange(identity_count, dtype=np.int64) + int(identity_offset)
-        identity_bases = self._sample_identity_specific_bases(identity_count, rng)
+
+        if injected:
+            if components is None:
+                components = np.zeros(count, dtype=np.int64)
+            else:
+                components = np.asarray(components)
+                if components.shape != (count,):
+                    raise ValueError("components must have one value per center.")
+                if not np.issubdtype(components.dtype, np.integer):
+                    raise ValueError("components must be integers.")
+                if np.any(components < 0) or np.any(components >= self.config.population.component_count):
+                    raise ValueError("components must lie in [0, population.component_count).")
+                components = components.astype(np.int64)
+            if identity_labels is not None and len(identity_labels) != count:
+                raise ValueError("identity_labels must have one value per center.")
+            if source_sample_counts is not None:
+                source_sample_counts = np.asarray(source_sample_counts, dtype=np.int64)
+                if source_sample_counts.shape != (count,):
+                    raise ValueError("source_sample_counts must have one value per center.")
+                if np.any(source_sample_counts <= 0):
+                    raise ValueError("source_sample_counts must be positive.")
+        else:
+            components, centers = self._sample_identity_centers(count, rng)
+
+        identity_ids = np.arange(count, dtype=np.int64) + int(identity_offset)
+        identity_bases = self._sample_identity_specific_bases(count, rng)
         domain_identity_biases: dict[str, FloatArray] = {}
         for domain in self._domains:
             if domain.domain_identity_bias_scale == 0:
-                domain_identity_biases[domain.name] = np.zeros((identity_count, self.config.dimension), dtype=np.float64)
+                domain_identity_biases[domain.name] = np.zeros((count, self.config.dimension), dtype=np.float64)
             else:
                 domain_identity_biases[domain.name] = (
-                    sample_uniform_directions(identity_count, self.config.dimension, rng)
+                    sample_uniform_directions(count, self.config.dimension, rng)
                     * domain.domain_identity_bias_scale
                 )
         population = SyntheticIdentityPopulation(
@@ -1046,6 +1099,8 @@ class AdaFaceEmbeddingSimulator:
             domain_identity_bias_vectors=domain_identity_biases,
             sampling_seed=seed,
             stream_name=stream_name,
+            source_identity_labels=([str(label) for label in identity_labels] if identity_labels is not None else None),
+            source_sample_counts=source_sample_counts,
         )
         population.validate()
         return population
@@ -1428,6 +1483,12 @@ class AdaFaceEmbeddingSimulator:
                 **nuisance_diagnostics,
             }
         )
+        # Provenance columns only for dataset-anchored populations (Mode A); absent otherwise,
+        # so sampled-population metadata is unchanged.
+        if population.source_identity_labels is not None:
+            metadata["source_identity"] = np.asarray(population.source_identity_labels)[repeated_local_ids]
+        if population.source_sample_counts is not None:
+            metadata["source_sample_count"] = population.source_sample_counts[repeated_local_ids]
         dataset = SyntheticEmbeddingDataset(
             raw_embeddings=raw_embeddings,
             normalized_embeddings=normalized_embeddings,
