@@ -26,6 +26,7 @@ from adaface_embedding_simulator import (
     config_to_dict,
     make_cooperative_plda_config,
     make_cross_condition_stress_config,
+    make_idperturb_cap_config,
     make_spherical_baseline_config,
 )
 
@@ -33,6 +34,7 @@ _PROFILES = [
     make_spherical_baseline_config,
     make_cooperative_plda_config,
     make_cross_condition_stress_config,
+    make_idperturb_cap_config,
 ]
 
 

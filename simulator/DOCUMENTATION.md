@@ -1975,3 +1975,121 @@ Para experimentos auditáveis, sempre registre:
 - versão do simulador;
 - hash do código;
 - métricas estratificadas.
+
+---
+
+# Amostragem intra-classe: vMF, IDPERTURB_CAP e HYBRID (v0.3)
+
+A dispersão das observações em torno do centro de identidade `μ` tem três modos, escolhidos
+por `DirectionalConfig.intra_class_sampling_mode` (`IntraClassSamplingMode`):
+
+| Modo | Controle | Interpretação |
+|---|---|---|
+| `VMF` (padrão) | `κ` | concentração angular média (distribuição direcional, sem piso rígido) |
+| `IDPERTURB_CAP` | `lb` | **afastamento angular máximo** permitido (cosseno ≥ `lb`) |
+| `HYBRID_VMF_CAP` | `κ` + `lb` | corpo vMF com **piso rígido** de identidade |
+
+O modo padrão é `VMF` — a saída do v0.2 permanece bit-a-bit idêntica.
+
+## A construção da calota (IDperturb, Boutros et al., CVPR 2026)
+
+Para cada amostra, sorteia-se um cosseno-alvo `s ~ U[lb, 1]`, um ruído `n ~ N(0, I)`
+projetado no hiperplano tangente ortogonal a `μ` (mesma projeção do nuisance), e constrói-se:
+
+\[
+\tilde v = s\,\mu + \sqrt{1 - s^2}\; u, \qquad u \perp \mu,\ \lVert u\rVert = 1.
+\]
+
+Garante `‖ṽ‖ = 1` e `⟨ṽ, μ⟩ = s ≥ lb`. `lb = 1` ⇒ `ṽ = μ` (sem perturbação).
+
+**Cuidado de nomenclatura:** isto é **uniforme em cosseno** (`s` uniforme), **não** uniforme
+na área da calota — em alta dimensão essas distribuições são bem diferentes. Por isso
+`E[⟨ṽ,μ⟩] = (1 + lb)/2`.
+
+## Interpretação de `lb` para laudo
+
+`lb` é muito mais transparente que `κ` em 512-D: *"nenhuma observação sintética desta
+identidade foi gerada com cosseno menor que `lb` em relação ao centro latente, antes dos
+ruídos de domínio/sessão."* `lb` baixo ⇒ mais diversidade intra-classe (e EER maior); `lb`
+perto de 1 ⇒ identidade mais rígida.
+
+## Modulação de `lb` e os switches de coupling
+
+`lb` é modulado pelas mesmas covariáveis do `κ`:
+
+\[
+lb = \text{base} + \Delta_{\text{domínio}} + \beta_q (q - 0{,}5)
+     - \lambda_{\text{low}} d_{\text{low}}^2 - \lambda_{\text{high}} d_{\text{high}}^2,
+\]
+
+com clip em `[cap_minimum_lower_bound, cap_maximum_lower_bound]`. Os termos de qualidade e de
+norma são governados pelos switches **`coupling.quality_affects_intra_kappa`** e
+**`coupling.norm_z_affects_intra_kappa`** — nos modos cap eles controlam a **dispersão
+intra-classe**, apesar do nome histórico mencionar `kappa`.
+
+**Escala:** as penalidades de calota agem em **escala de cosseno**, não em `logκ`. Uma
+penalidade de `0.1` com `z = 2` derruba `lb` em `0.4` — calibre-as separadamente das
+penalidades de `κ` (que entram em `logκ`).
+
+**Offset por domínio** (`AcquisitionDomainConfig.cap_lower_bound_offset`), ex.:
+
+```text
+controlled:   cap_lower_bound_offset = +0.10
+surveillance: cap_lower_bound_offset = -0.15
+```
+
+## Regra do bissetor (`cap_overlap_guard`)
+
+Para evitar que a perturbação de uma identidade fique angularmente mais próxima de outra
+identidade, define-se um **piso** por identidade a partir da densidade local dos centros:
+
+\[
+\text{floor}_i = \cos\!\Big(\tfrac{1}{2}\min_{j \ne i} \angle(c_i, c_j)\Big)
+              = \sqrt{\tfrac{1 + \max_{j \ne i} c_i^\top c_j}{2}}.
+\]
+
+O `lb` efetivo é `max(lb_modulado, floor_i)`. **A guarda tem prioridade e pode produzir
+`lb_efetivo > cap_maximum_lower_bound`** em regiões densas — isso é intencional, não bug. Em
+512-D, mesmo centros aleatórios têm vizinhos relativamente próximos, então com
+`cap_overlap_guard=True` um `lower_bound` nominal de `0.4` **não** significa que as amostras
+foram geradas com piso `0.4`: o piso efetivo pode ser bem maior para identidades densas.
+**Sempre reporte `cap_lower_bound_effective` (mean/p10/p50/p90)** junto do `lb` nominal. O
+cálculo é feito em blocos (sem materializar a matriz C×C). Ligação com tipicidade: regiões
+densas (identidades típicas) toleram menos variação; regiões raras toleram mais.
+
+## Modo HYBRID
+
+Amostra vMF; reamostra por rejeição as observações com `cos < lb` (até
+`hybrid_max_resample_rounds`); as teimosas caem para a calota em `lb`. As colunas
+`hybrid_resample_count` e `hybrid_used_cap_fallback` permitem **auditar a taxa de fallback**:
+com `lb` alto e `κ` baixo, grande parte das amostras pode acabar vindo da calota — nesse caso
+o modo deixa de ser "vMF truncado" na prática.
+
+## Colunas de metadata novas
+
+| Coluna | Significado |
+|---|---|
+| `intra_class_sampling_mode` | modo usado |
+| `cap_lower_bound_effective` | `lb` efetivo por amostra (NaN em `VMF`) |
+| `pre_nuisance_center_cosine` | cosseno ao centro **logo após** vMF/cap/hybrid |
+| `hybrid_resample_count` | reamostragens vMF (0 fora de HYBRID) |
+| `hybrid_used_cap_fallback` | usou fallback de calota (False fora de HYBRID) |
+
+**Invariante correto:** `pre_nuisance_center_cosine ≥ cap_lower_bound_effective`. O
+`own_center_cosine` (pós-nuisance) **pode cair abaixo** de `lb` por causa do passo tangencial
+de nuisance/viés — para auditar a calota use `pre_nuisance_center_cosine`.
+
+## Sweep de `lb` recomendado
+
+Gere em `lb ∈ {0.9, …, 0.4}` em duas versões: **(A) guarda off + sem nuisance**, onde a
+tendência é limpa (`lb↓ ⇒ dispersão genuína↑ ⇒ EER↑`); **(B) guarda on**, onde a curva pode
+achatar em regiões densas (reporte os percentis do `lb` efetivo).
+
+## Caveat metodológico
+
+O IDperturb gera **imagens** via difusão e treina FR; o nosso simulador gera **embeddings
+diretamente**. O elo é **geométrico, não quantitativo**. O `lb = 0.6` do perfil
+`IDPERTURB_CAP` é **inspirado** no regime do artigo, **não** um ótimo para AdaFace/PLDA sem
+calibração empírica. Formulação recomendada: *MoVMF modela população/tipicidade; vMF modela
+dispersão estatística; IDPERTURB-cap impõe um limite geométrico interpretável e citável para
+a variação intra-identidade.*

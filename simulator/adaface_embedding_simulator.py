@@ -24,7 +24,7 @@ embeddings and report which synthetic profile was used.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from hashlib import blake2b, sha256
 import json
@@ -43,7 +43,7 @@ except ImportError as exc:  # pragma: no cover
     ) from exc
 
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 FloatArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -75,6 +75,24 @@ class PairSamplingStrategy(str, Enum):
 
     BALANCED_IDENTITY = "balanced_identity"
     BALANCED_OBSERVATION = "balanced_observation"
+
+
+class IntraClassSamplingMode(str, Enum):
+    """How within-identity directions are dispersed around the identity centre.
+
+    * ``VMF`` — von Mises-Fisher concentration ``kappa`` (the v0.2 behaviour): a
+      directional distribution with no hard angular floor.
+    * ``IDPERTURB_CAP`` — cosine-uniform spherical cap (Boutros et al., IDperturb,
+      CVPR 2026): the cosine to the centre is drawn ``s ~ U[lb, 1]``, giving an
+      interpretable *maximum* angular excursion controlled by the lower bound ``lb``.
+      NOTE: this is uniform *in cosine*, NOT uniform over the cap area in high dim.
+    * ``HYBRID_VMF_CAP`` — vMF body with a hard cap floor: sample vMF, then redraw (or
+      fall back to the cap) any sample whose cosine to the centre falls below ``lb``.
+    """
+
+    VMF = "vmf"
+    IDPERTURB_CAP = "idperturb_cap"
+    HYBRID_VMF_CAP = "hybrid_vmf_cap"
 
 
 def _enum_value(value: str | Enum) -> str:
@@ -248,6 +266,132 @@ def sample_vmf(
     return result
 
 
+def _as_lower_bounds(lower_bounds: ArrayLike | float, sample_count: int) -> FloatArray:
+    lb = np.asarray(lower_bounds, dtype=np.float64)
+    if lb.ndim == 0:
+        lb = np.full(sample_count, float(lb), dtype=np.float64)
+    if lb.shape != (sample_count,):
+        raise ValueError("lower_bounds must be a scalar or one value per mean direction.")
+    if not np.all(np.isfinite(lb)):
+        raise ValueError("lower_bounds contains non-finite values.")
+    if np.any(lb < -1.0) or np.any(lb > 1.0):
+        raise ValueError("lower_bounds must lie in [-1, 1].")
+    return lb
+
+
+def _deterministic_orthogonal(means: FloatArray) -> FloatArray:
+    """A deterministic unit vector orthogonal to each row of ``means``.
+
+    Uses the least-aligned canonical axis per row (argmin |mean_i|), which is well
+    conditioned for the Gram-Schmidt step.  Fallback for the (vanishingly rare) case
+    where a random tangent draw is numerically parallel to the mean.
+    """
+    row_count, dimension = means.shape
+    axis = np.argmin(np.abs(means), axis=1)
+    canonical = np.zeros((row_count, dimension), dtype=np.float64)
+    canonical[np.arange(row_count), axis] = 1.0
+    ortho = canonical - np.sum(canonical * means, axis=1, keepdims=True) * means
+    return l2_normalize_rows(ortho)
+
+
+def _sample_tangent_directions(
+    means: FloatArray,
+    rng: np.random.Generator,
+    *,
+    eps: float = 1e-12,
+    max_resample: int = 8,
+) -> FloatArray:
+    """Unit vectors uniform on the tangent hypersphere at each row of ``means``."""
+    row_count, dimension = means.shape
+    noise = rng.normal(size=(row_count, dimension))
+    proj = noise - np.sum(noise * means, axis=1, keepdims=True) * means
+    norms = np.linalg.norm(proj, axis=1)
+    for _ in range(max_resample):
+        degenerate = norms <= eps
+        if not np.any(degenerate):
+            break
+        replacement = rng.normal(size=(int(degenerate.sum()), dimension))
+        sub_means = means[degenerate]
+        replacement -= np.sum(replacement * sub_means, axis=1, keepdims=True) * sub_means
+        proj[degenerate] = replacement
+        norms[degenerate] = np.linalg.norm(replacement, axis=1)
+    degenerate = norms <= eps
+    if np.any(degenerate):
+        proj[degenerate] = _deterministic_orthogonal(means[degenerate])
+        norms[degenerate] = 1.0
+    return proj / np.maximum(norms, eps)[:, np.newaxis]
+
+
+def sample_spherical_cap(
+    mean_directions: ArrayLike,
+    lower_bounds: ArrayLike | float,
+    rng: np.random.Generator,
+    *,
+    eps: float = 1e-12,
+) -> FloatArray:
+    """Sample a cosine-uniform spherical cap around each mean direction.
+
+    For each row: draw a target cosine ``s ~ U[lb, 1]`` and a tangent direction ``u``
+    orthogonal to the mean ``mu``, then build ``v = s*mu + sqrt(1-s^2)*u`` (IDperturb,
+    Boutros et al. 2026, Eq. 5). Guarantees ``||v|| = 1`` and ``<v, mu> = s >= lb``.
+
+    NOTE: ``s`` is uniform *in cosine*, which is NOT the area-uniform distribution on
+    the cap in high dimension. ``lb = 1`` yields ``v = mu`` (no perturbation).
+    """
+    means = l2_normalize_rows(mean_directions)
+    sample_count, _ = means.shape
+    lb = _as_lower_bounds(lower_bounds, sample_count)
+    cosines = rng.uniform(lb, 1.0)
+    radial = np.sqrt(np.maximum(0.0, 1.0 - cosines**2))
+    tangent = _sample_tangent_directions(means, rng, eps=eps)
+    # Where radial ~ 0 (s ~ 1) the tangent coefficient vanishes -> v collapses to mu.
+    perturbed = cosines[:, np.newaxis] * means + radial[:, np.newaxis] * tangent
+    return l2_normalize_rows(perturbed)
+
+
+def sample_hybrid_vmf_cap(
+    mean_directions: ArrayLike,
+    kappas: ArrayLike | float,
+    lower_bounds: ArrayLike | float,
+    rng: np.random.Generator,
+    *,
+    max_rounds: int = 8,
+) -> tuple[FloatArray, IntArray, NDArray[np.bool_]]:
+    """vMF body with a hard cap floor at ``lb``.
+
+    Sample vMF; rows whose cosine to the centre falls below ``lb`` are redrawn from vMF
+    up to ``max_rounds`` times; rows still violating fall back to :func:`sample_spherical_cap`
+    at ``lb`` (guaranteeing the floor). Returns the samples plus, per row, the number of
+    vMF redraws and whether the cap fallback was used (diagnostics: high fallback rate
+    means the result is dominated by the cap rather than the vMF body).
+    """
+    means = l2_normalize_rows(mean_directions)
+    sample_count, _ = means.shape
+    lb = _as_lower_bounds(lower_bounds, sample_count)
+    kappa_array = np.asarray(kappas, dtype=np.float64)
+    if kappa_array.ndim == 0:
+        kappa_array = np.full(sample_count, float(kappa_array), dtype=np.float64)
+
+    samples = sample_vmf(means, kappa_array, rng)
+    cosines = np.sum(samples * means, axis=1)
+    resample_count = np.zeros(sample_count, dtype=np.int64)
+    used_cap_fallback = np.zeros(sample_count, dtype=bool)
+
+    for _ in range(max_rounds):
+        violating = np.flatnonzero(cosines < lb)
+        if violating.size == 0:
+            break
+        samples[violating] = sample_vmf(means[violating], kappa_array[violating], rng)
+        cosines[violating] = np.sum(samples[violating] * means[violating], axis=1)
+        resample_count[violating] += 1
+
+    violating = np.flatnonzero(cosines < lb)
+    if violating.size > 0:
+        samples[violating] = sample_spherical_cap(means[violating], lb[violating], rng)
+        used_cap_fallback[violating] = True
+    return samples, resample_count, used_cap_fallback
+
+
 # ---------------------------------------------------------------------------
 # Configuration objects
 # ---------------------------------------------------------------------------
@@ -310,6 +454,11 @@ class AcquisitionDomainConfig:
     domain_bias_scale: float = 0.0
     domain_identity_bias_scale: float = 0.0
     session_bias_scale: float = 0.0
+
+    # Additive per-domain shift of the cap lower bound `lb` (cosine-cap intra-class
+    # modes). Any sign: positive tightens identity (controlled), negative loosens it
+    # (surveillance). Mirrors `log_kappa_shift` for the cap parametrization.
+    cap_lower_bound_offset: float = 0.0
 
     def validate(self) -> None:
         if not self.name.strip():
@@ -435,6 +584,21 @@ class DirectionalConfig:
     identity_specific_nuisance_scale: float = 0.0
     tangent_update_mode: TangentUpdateMode | str = TangentUpdateMode.RETRACTION
 
+    # Intra-class dispersion mode and cosine-cap (IDperturb) parameters. The cap lower
+    # bound `lb` is modulated by the SAME covariates as kappa (quality, radial position,
+    # domain), reusing the CouplingConfig switches `quality_affects_intra_kappa` and
+    # `norm_z_affects_intra_kappa` (in cap modes they gate intra-class dispersion, despite
+    # the historical kappa-centric name). Penalties act on cosine scale, NOT on log-kappa.
+    intra_class_sampling_mode: IntraClassSamplingMode | str = IntraClassSamplingMode.VMF
+    cap_base_lower_bound: float = 0.6
+    cap_quality_lower_bound_slope: float = 0.10  # any sign; higher quality -> higher lb
+    cap_low_tail_penalty: float = 0.0
+    cap_high_tail_penalty: float = 0.0
+    cap_minimum_lower_bound: float = 0.0
+    cap_maximum_lower_bound: float = 0.999
+    cap_overlap_guard: bool = True
+    hybrid_max_resample_rounds: int = 8
+
     @property
     def optimal_robust_norm_z(self) -> float:
         """Backward-compatible alias for version 0.1 documentation."""
@@ -465,6 +629,20 @@ class DirectionalConfig:
             TangentUpdateMode(_enum_value(self.tangent_update_mode))
         except ValueError as exc:
             raise ValueError("Invalid tangent_update_mode.") from exc
+        try:
+            IntraClassSamplingMode(_enum_value(self.intra_class_sampling_mode))
+        except ValueError as exc:
+            raise ValueError("Invalid intra_class_sampling_mode.") from exc
+        for name in ["cap_base_lower_bound", "cap_minimum_lower_bound", "cap_maximum_lower_bound"]:
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must lie in [0, 1].")
+        if self.cap_minimum_lower_bound > self.cap_maximum_lower_bound:
+            raise ValueError("cap_minimum_lower_bound must be <= cap_maximum_lower_bound.")
+        if self.cap_low_tail_penalty < 0 or self.cap_high_tail_penalty < 0:
+            raise ValueError("Cap tail penalties cannot be negative.")
+        if self.hybrid_max_resample_rounds < 1:
+            raise ValueError("hybrid_max_resample_rounds must be >= 1.")
 
 
 @dataclass(frozen=True)
@@ -569,6 +747,12 @@ class SyntheticIdentityPopulation:
     domain_identity_bias_vectors: Mapping[str, FloatArray]
     sampling_seed: int
     stream_name: str
+    # Lazily-computed bisector floor per identity (cosine of half-angle to nearest other
+    # centre), cached for reuse across cross-condition observations. NOT serialized: it is
+    # never passed to asdict()/save_manifest/save_npz; keep it that way (a large vector).
+    overlap_lower_bound_floor: FloatArray | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def validate(self) -> None:
         identity_count, dimension = self.identity_centers.shape
@@ -987,6 +1171,65 @@ class AdaFaceEmbeddingSimulator:
         log_kappas = np.log(directional.peak_intra_kappa) + quality_effect + shifts[domain_indices] + radial_effect
         return np.clip(np.exp(log_kappas), directional.minimum_intra_kappa, directional.maximum_intra_kappa)
 
+    @staticmethod
+    def _overlap_lower_bound_floor(centers: FloatArray, *, chunk_size: int = 2048) -> FloatArray:
+        """Per-identity cosine floor from the bisector rule (Boutros et al. 2026, Eq. 6).
+
+        ``floor_i = sqrt((1 + max_{j!=i} c_i.c_j) / 2) = cos(angle_to_nearest / 2)`` — keeps a
+        perturbation closer to its own centre than to the nearest other identity. Computed in
+        row blocks so the full C x C cosine matrix is never materialized (O(C^2 d) time,
+        O(chunk*C) memory). Singletons get floor 0.
+        """
+        count = centers.shape[0]
+        if count < 2:
+            return np.zeros(count, dtype=np.float64)
+        nearest = np.full(count, -np.inf, dtype=np.float64)
+        for start in range(0, count, chunk_size):
+            stop = min(start + chunk_size, count)
+            block = centers[start:stop] @ centers.T
+            block[np.arange(stop - start), np.arange(start, stop)] = -np.inf  # exclude self
+            nearest[start:stop] = block.max(axis=1)
+        return np.sqrt(np.maximum(0.0, (1.0 + nearest) / 2.0))
+
+    def _calculate_cap_lower_bounds(
+        self,
+        domain_indices: IntArray,
+        latent_quality: FloatArray,
+        reference_scaled_log_norm_z: FloatArray,
+        repeated_local_ids: IntArray,
+        population: "SyntheticIdentityPopulation",
+    ) -> FloatArray:
+        """Per-sample cap lower bound `lb`, mirroring `_calculate_intra_kappas`.
+
+        Modulation (cosine scale): base + per-domain offset + quality term + non-monotonic
+        norm penalties, gated by the CouplingConfig switches. Then clip to the configured
+        range; the overlap guard is applied AFTER the clip and may push the effective `lb`
+        above ``cap_maximum_lower_bound`` (anti-collision has priority). Physical cap at 1.
+        """
+        directional = self.config.directional
+        coupling = self.config.coupling
+        low_distance = np.maximum(0.0, directional.optimal_reference_scaled_log_norm_z - reference_scaled_log_norm_z)
+        high_distance = np.maximum(0.0, reference_scaled_log_norm_z - directional.optimal_reference_scaled_log_norm_z)
+        quality_effect = (
+            directional.cap_quality_lower_bound_slope * (latent_quality - 0.5)
+            if coupling.quality_affects_intra_kappa
+            else 0.0
+        )
+        radial_effect = (
+            - directional.cap_low_tail_penalty * low_distance**2
+            - directional.cap_high_tail_penalty * high_distance**2
+            if coupling.norm_z_affects_intra_kappa
+            else 0.0
+        )
+        domain_offsets = np.asarray([domain.cap_lower_bound_offset for domain in self._domains])
+        lb = directional.cap_base_lower_bound + domain_offsets[domain_indices] + quality_effect + radial_effect
+        lb = np.clip(lb, directional.cap_minimum_lower_bound, directional.cap_maximum_lower_bound)
+        if directional.cap_overlap_guard:
+            if population.overlap_lower_bound_floor is None:
+                population.overlap_lower_bound_floor = self._overlap_lower_bound_floor(population.identity_centers)
+            lb = np.maximum(lb, population.overlap_lower_bound_floor[repeated_local_ids])
+        return np.minimum(lb, 1.0)
+
     def _sample_session_bias_matrix(
         self,
         repeated_identity_ids: IntArray,
@@ -1115,7 +1358,35 @@ class AdaFaceEmbeddingSimulator:
         log_norms = np.log(embedding_norms)
         reference_scaled_z = (log_norms - radial.reference_log_norm_mean) / radial.reference_log_norm_scale
         intra_kappas = self._calculate_intra_kappas(domain_indices, latent_quality, reference_scaled_z)
-        normalized_embeddings = sample_vmf(repeated_centers, intra_kappas, rng)
+
+        directional = self.config.directional
+        sampling_mode = IntraClassSamplingMode(_enum_value(directional.intra_class_sampling_mode))
+        sample_total = len(repeated_identity_ids)
+        cap_lower_bound_effective = np.full(sample_total, np.nan, dtype=np.float64)
+        hybrid_resample_count = np.zeros(sample_total, dtype=np.int64)
+        hybrid_used_cap_fallback = np.zeros(sample_total, dtype=bool)
+
+        if sampling_mode is IntraClassSamplingMode.VMF:
+            normalized_embeddings = sample_vmf(repeated_centers, intra_kappas, rng)
+        else:
+            cap_lower_bound_effective = self._calculate_cap_lower_bounds(
+                domain_indices, latent_quality, reference_scaled_z, repeated_local_ids, population
+            )
+            if sampling_mode is IntraClassSamplingMode.IDPERTURB_CAP:
+                normalized_embeddings = sample_spherical_cap(repeated_centers, cap_lower_bound_effective, rng)
+            else:  # HYBRID_VMF_CAP
+                normalized_embeddings, hybrid_resample_count, hybrid_used_cap_fallback = sample_hybrid_vmf_cap(
+                    repeated_centers,
+                    intra_kappas,
+                    cap_lower_bound_effective,
+                    rng,
+                    max_rounds=directional.hybrid_max_resample_rounds,
+                )
+
+        # Floor `lb` is guaranteed on the PRE-nuisance direction; the tangent nuisance step
+        # below can push the realized (post-nuisance) own_center_cosine slightly below `lb`.
+        pre_nuisance_center_cosines = np.sum(normalized_embeddings * repeated_centers, axis=1)
+
         normalized_embeddings, nuisance_diagnostics = self._apply_anisotropic_nuisance(
             normalized_embeddings,
             repeated_centers,
@@ -1148,6 +1419,11 @@ class AdaFaceEmbeddingSimulator:
                 "radial_reference_method": radial.reference_method,
                 "intra_kappa": intra_kappas,
                 "own_center_cosine": own_center_cosines,
+                "pre_nuisance_center_cosine": pre_nuisance_center_cosines,
+                "intra_class_sampling_mode": sampling_mode.value,
+                "cap_lower_bound_effective": cap_lower_bound_effective,
+                "hybrid_resample_count": hybrid_resample_count,
+                "hybrid_used_cap_fallback": hybrid_used_cap_fallback,
                 "tangent_update_mode": _enum_value(self.config.directional.tangent_update_mode),
                 **nuisance_diagnostics,
             }
@@ -1501,6 +1777,28 @@ def make_cross_condition_stress_config(*, dimension: int = 512) -> SimulatorConf
             ),
         ),
     )
+
+
+def make_idperturb_cap_config(*, dimension: int = 512, lower_bound: float = 0.6) -> SimulatorConfig:
+    """Cooperative PLDA baseline using the cosine-uniform spherical cap (IDperturb).
+
+    ``lower_bound`` (``lb``) is the base cosine floor for within-identity dispersion. The
+    value ``0.6`` is INSPIRED by the IDperturb experimental regime (Boutros et al. 2026),
+    NOT an optimum for AdaFace/PLDA/FaceAudit — calibrate empirically before drawing
+    conclusions. The overlap guard is on, so the *effective* ``lb`` can exceed
+    ``lower_bound`` for identities in dense regions of the population.
+    """
+    base = make_cooperative_plda_config(dimension=dimension)
+    directional = replace(
+        base.directional,
+        intra_class_sampling_mode=IntraClassSamplingMode.IDPERTURB_CAP,
+        cap_base_lower_bound=lower_bound,
+        cap_quality_lower_bound_slope=0.10,
+        cap_low_tail_penalty=0.15,
+        cap_high_tail_penalty=0.20,
+        cap_overlap_guard=True,
+    )
+    return replace(base, profile_name="IDPERTURB_CAP", directional=directional)
 
 
 def make_example_config(*, dimension: int = 512) -> SimulatorConfig:

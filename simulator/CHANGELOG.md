@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0
+
+- Modo de amostragem intra-classe `IntraClassSamplingMode`: `VMF` (atual, padrão),
+  `IDPERTURB_CAP` (calota esférica com cosseno uniforme, Boutros et al. CVPR 2026) e
+  `HYBRID_VMF_CAP` (corpo vMF com piso rígido de calota).
+- `sample_spherical_cap` (`ṽ = s·μ + √(1−s²)·u`, `s ~ U[lb,1]`) e `sample_hybrid_vmf_cap`
+  (vMF truncado por rejeição com fallback de calota + diagnósticos de reamostragem).
+- Modulação completa do piso `lb`: base + offset por domínio (`cap_lower_bound_offset`) +
+  qualidade + penalidades não-monotônicas de norma, reusando os switches de `CouplingConfig`.
+- Regra do bissetor (`cap_overlap_guard`): piso anti-colisão por densidade local dos centros
+  (`floor = cos(ângulo_ao_vizinho/2)`), calculado em blocos (sem matriz C×C cheia).
+- Colunas de metadata: `intra_class_sampling_mode`, `cap_lower_bound_effective`,
+  `pre_nuisance_center_cosine`, `hybrid_resample_count`, `hybrid_used_cap_fallback`.
+- Perfil `IDPERTURB_CAP` (`make_idperturb_cap_config`).
+- Round-trip de configuração `config_from_dict` / `config_from_manifest` (fecha o
+  `config_to_dict` que só tinha o lado de ida).
+- Adapter concreto FaceAudit (`faceaudit_concrete_adapter`) para `EmbeddingInfo`/
+  `EmbeddingDataset` reais (float32, parquet, cross-condition).
+- Testes para calota, modulação de `lb`, guarda do bissetor, híbrido, invariantes de
+  pré/pós-nuisance e golden VMF (saída VMF inalterada vs 0.2.0).
+
 ## 0.2.0
 
 - Separação entre população latente de identidades e amostragem de observações.
