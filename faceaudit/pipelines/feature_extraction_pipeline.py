@@ -11,11 +11,12 @@ from faceaudit.adapters.face_dataset_adapter import FaceDatasetAdapter
 
 # Imports dos Serviços
 from faceaudit.services import (
-    FFService, 
-    HashService, 
-    OFIQService, 
+    FFService,
+    HashService,
+    OFIQService,
     SERFIQService
 )
+from faceaudit.services.image_io import imwrite_unicode_safe
 
 class FeatureExtractionPipeline:
     """
@@ -715,19 +716,10 @@ class FeatureExtractionPipeline:
             dst = aligned_target_dir / rel_name
 
             # `cv2.imwrite` falha SILENCIOSAMENTE em paths com chars não-ASCII
-            # no Windows (bug histórico do OpenCV em paths via fopen UTF-8).
-            # Caminhos como `OneDrive/...` quebram tudo
-            # sem aviso, levando o dataset a preservar paths das imagens
-            # desalinhadas. Workaround: encoda em memória e grava bytes
-            # via pathlib, que usa a API Unicode do Windows direto.
-            success, buf = cv2.imencode(".png", bgr)
-            if not success:
-                print(f"⚠️  [Pipeline] cv2.imencode falhou: {dst}")
-                continue
-            try:
-                dst.write_bytes(buf.tobytes())
-            except OSError as exc:
-                print(f"⚠️  [Pipeline] gravação falhou {dst}: {exc}")
+            # no Windows. Usa o helper compartilhado (image_io), que encoda
+            # em memória e grava bytes via pathlib (API Unicode do Windows).
+            if not imwrite_unicode_safe(dst, bgr):
+                print(f"⚠️  [Pipeline] gravação do crop alinhado falhou: {dst}")
                 continue
 
             # Atualiza FaceInfo: image_path absoluto pro PNG alinhado,

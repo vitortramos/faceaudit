@@ -37,6 +37,7 @@ class AuditOperation(str, Enum):
     ENRICH = "enrich"
     MERGE = "merge"
     SPLIT = "split"
+    VIDEO_EXTRACT = "video_extract"  # criação de dataset a partir de vídeo
 
     # Saída de dados
     EXPORT = "export"
@@ -64,6 +65,7 @@ class AuditOperation(str, Enum):
             "enrich": "🔬",
             "merge": "🔗",
             "split": "✂️",
+            "video_extract": "🎬",
             "export": "📤",
             "copy_images": "🗂",
             "integrity_verified": "✅",
@@ -87,6 +89,7 @@ class AuditOperation(str, Enum):
             "enrich": "Enriquecimento",
             "merge": "Concatenação",
             "split": "Divisão",
+            "video_extract": "Extração de vídeo",
             "export": "Exportação",
             "copy_images": "Localização (cópia/reescrita de imagens)",
             "integrity_verified": "Integridade verificada",

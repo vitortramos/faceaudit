@@ -87,12 +87,26 @@ class VideoRunImporter:
         accepted_statuses: Tuple[str, ...] = ("accepted",),
         validate_hashes: bool = True,
         logger: Optional[Callable[[str], None]] = None,
+        enrich: bool = False,
+        pipeline: Any = None,
+        ingestion_config: Any = None,
+        require_review: bool = True,
     ) -> FaceDataset:
         run_dir = Path(run_dir)
         meta_dir = run_dir / "_meta"
         if not meta_dir.is_dir():
             raise FileNotFoundError(f"Pasta _meta/ não encontrada em {run_dir}")
         manifest = self._load_manifest(meta_dir)
+
+        # Invariante END_TO_END: o parquet só é finalizado após o commit da
+        # revisão (review_status completed ou skipped-override).
+        if enrich and require_review:
+            rs = manifest.get("review_status", "not_started")
+            if rs not in ("completed", "skipped"):
+                raise RuntimeError(
+                    f"enrich bloqueado: revisão não concluída (review_status={rs!r}). "
+                    f"Conclua a revisão (ou marque skipped como override) antes do dataset final."
+                )
 
         faces: List[FaceInfo] = []
         n_skipped_status = n_hash_mismatch = n_missing = 0
@@ -144,9 +158,58 @@ class VideoRunImporter:
         if logger:
             logger(f"importadas {len(faces)} face(s) | status-pulados={n_skipped_status} "
                    f"| hash-divergentes={n_hash_mismatch} | ausentes={n_missing}")
+
+        if enrich:
+            if pipeline is None:
+                raise ValueError("enrich=True requer um pipeline (FeatureExtractionPipeline).")
+            cfg = ingestion_config or self._default_ingestion_config(ds.name, run_dir)
+            pipeline.enrich_existing_dataset(ds, cfg)
+            self._finalize_manifest(meta_dir, run_dir, ds, now=None)
+
         return ds
 
     # ---- helpers ----
+    @staticmethod
+    def _default_ingestion_config(name: str, run_dir: Path) -> Any:
+        """DatasetIngestionConfig mínimo p/ enrich (FF apenas; input_path é
+        ignorado pelo enrich, mas o DTO o exige)."""
+        from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
+        return DatasetIngestionConfig(
+            input_path=run_dir, dataset_name=name,
+            compute_ff=True, compute_ofiq=False, compute_serfiq=False,
+        )
+
+    def _finalize_manifest(self, meta_dir: Path, run_dir: Path, ds: FaceDataset, now=None) -> None:
+        """Após o enrich, grava no manifesto dataset_status=enriched +
+        final_dataset_path/sha256/n_faces (fecha a trilha run→parquet)."""
+        manifests = sorted(meta_dir.glob("_run_*.json"))
+        if not manifests:
+            return
+        parquet_path = Path(ds._parquet_dir or run_dir) / f"{ds.name}.parquet"
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        manifest["dataset_status"] = "enriched"
+        manifest["final_dataset"] = {
+            "path": parquet_path.name,
+            "sha256": self._hash.calculate_file_hash(parquet_path) if parquet_path.exists() else None,
+            "n_faces": len(ds),
+        }
+        manifests[0].write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def audit_metadata(self, run_dir) -> Dict[str, Any]:
+        """Metadata para o audit log VIDEO_EXTRACT (emitido pela UI na Fase 5)."""
+        manifest = self._load_manifest(Path(run_dir) / "_meta")
+        summary = manifest.get("summary") or {}
+        review = manifest.get("review") or {}
+        return {
+            "run_id": manifest.get("run_id"),
+            "video_sha256": (manifest.get("source_video") or {}).get("sha256"),
+            "n_frames_sampled": summary.get("n_frames_sampled"),
+            "n_accepted_auto": summary.get("n_accepted_auto"),
+            "n_accepted_after_review": review.get("n_accepted"),
+            "n_rejected_human": review.get("n_rejected"),
+            "review_skipped": review.get("skipped"),
+        }
+
     @staticmethod
     def _load_manifest(meta_dir: Path) -> Dict[str, Any]:
         candidates = sorted(meta_dir.glob("_run_*.json"))
