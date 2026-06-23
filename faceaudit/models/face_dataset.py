@@ -64,6 +64,21 @@ def _is_canonical_face_column(name: str) -> bool:
     return name.startswith("ofiq_") or name.startswith("serfiq_")
 
 
+# Chaves de proveniência estruturada (sem o prefixo `faceaudit:`) que o
+# `to_parquet`/`from_parquet` aceita gravar/reler em `provenance_metadata`.
+# Allowlist deliberada — evita virar saco genérico de metadata. Ex.: aviso
+# de viés de seleção de datasets extraídos de vídeo (VIDEO_TARGET_EXTRACTION).
+_PROVENANCE_METADATA_KEYS = frozenset({
+    "dataset_origin_type",
+    "selection_conditioned_on_embedding",
+    "selection_anchor_model",
+    "selection_threshold",
+    "selection_warning",
+    "source_run_id",
+    "source_run_manifest",
+})
+
+
 @dataclass
 class FaceDataset:
     """
@@ -106,6 +121,11 @@ class FaceDataset:
     # direto pro embedding extraction). Persistido em
     # `faceaudit:is_aligned` na metadata do parquet.
     is_aligned: bool = False
+    # Proveniência estruturada (controlada por allowlist) gravada na
+    # metadata do parquet como chaves `faceaudit:*`. Usada, por exemplo,
+    # para o aviso de viés de seleção de datasets extraídos de vídeo.
+    # Ver `_PROVENANCE_METADATA_KEYS`. Persiste/relê em to_parquet/from_parquet.
+    provenance_metadata: Dict[str, str] = field(default_factory=dict)
     # Runtime — diretório do parquet de origem, set por `from_parquet`.
     # Não persiste; não entra em comparações; não aparece em repr.
     _parquet_dir: Optional[Path] = field(
@@ -582,6 +602,11 @@ class FaceDataset:
         ds.path_mode = path_mode
         ds.path_root = path_root
         ds.is_aligned = is_aligned
+        ds.provenance_metadata = {
+            k: meta[f"faceaudit:{k}"]
+            for k in _PROVENANCE_METADATA_KEYS
+            if f"faceaudit:{k}" in meta
+        }
         # Set _parquet_dir runtime — usado por resolve_image_path em modo
         # RELATIVE pra ancorar paths.
         ds._parquet_dir = path_obj.parent.resolve()
@@ -646,6 +671,9 @@ class FaceDataset:
                 empty_meta["faceaudit:path_root"] = normalize_stored_path(self.path_root)
             if self.is_aligned:
                 empty_meta["faceaudit:is_aligned"] = "true"
+            for _k, _v in (self.provenance_metadata or {}).items():
+                if _k in _PROVENANCE_METADATA_KEYS:
+                    empty_meta[f"faceaudit:{_k}"] = str(_v)
             empty_table = pa.Table.from_pandas(df, preserve_index=False)
             empty_table = empty_table.replace_schema_metadata(
                 _build_metadata_bytes(empty_meta),
@@ -705,6 +733,11 @@ class FaceDataset:
             "faceaudit:n_ids": str(stats.n_ids),
             "faceaudit:last_modified": stats.last_modified or "",
         }
+
+        # Proveniência estruturada (allowlist) — ex.: aviso de viés de seleção.
+        for _k, _v in (self.provenance_metadata or {}).items():
+            if _k in _PROVENANCE_METADATA_KEYS:
+                meta_payload[f"faceaudit:{_k}"] = str(_v)
 
         # PR L1a — `path_root` só entra na metadata em modo RELATIVE.
         # PR L1c.1 — normaliza pra POSIX antes de gravar (cross-platform).

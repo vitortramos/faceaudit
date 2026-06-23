@@ -43,6 +43,32 @@ class FaceProvenanceScalarProjection:
         """Dict pronto para `FaceInfo.extra_data` (só chaves não-None)."""
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
+    @classmethod
+    def from_sidecar_dict(cls, d: Dict[str, Any]) -> "FaceProvenanceScalarProjection":
+        """Extrai os escalares whitelisted direto do sidecar aninhado
+        (usado pelo importador de run — única porta para o parquet)."""
+        ident = d.get("identity") or {}
+        reid = d.get("reidentification") or {}
+        src = d.get("source_video") or {}
+        frame = d.get("frame") or {}
+        qg = d.get("quality_gates") or {}
+        return cls(
+            target_label=ident.get("label"),
+            similarity_to_anchor=reid.get("similarity_to_anchor"),
+            source_video_sha256=src.get("sha256"),
+            frame_index=frame.get("native_index"),
+            timestamp_s_from_fps=frame.get("timestamp_s_from_fps"),
+            video_extraction_det_score=qg.get("det_score"),
+            video_extraction_fiqa_score=qg.get("fiqa_score"),
+            video_det_score_decision=qg.get("det_score_decision"),
+            video_fiqa_score_decision=qg.get("fiqa_score_decision"),
+            video_det_score_policy=qg.get("det_score_policy"),
+            video_fiqa_score_policy=qg.get("fiqa_score_policy"),
+            video_min_det_score=qg.get("min_det_score"),
+            video_min_fiqa_score=qg.get("min_fiqa_score"),
+            anchor_embedding_fingerprint=reid.get("anchor_embedding_fingerprint"),
+        )
+
 
 @dataclass
 class FaceProvenance:
