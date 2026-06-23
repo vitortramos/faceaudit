@@ -38,7 +38,10 @@ class VideoDatasetController(QtCore.QObject):
 
     # ───────────────────────── entrada ─────────────────────────
     def run_new_from_video(self):
-        use_gpu = bool(getattr(getattr(self._config, "ff", None), "use_gpu", False))
+        # Caminho validado em CPU; esta workstation (Pascal) não tem CUDA em
+        # ort>=1.20. Forçado False por segurança — revisitar quando o hardware
+        # permitir (ou expor um toggle na janela).
+        use_gpu = False
         start_dir = self._library_dir()
         dlg = VideoDatasetSetupDialog(self._view, use_gpu=use_gpu, model=None, datasets_dir=start_dir)
         if not dlg.exec():
