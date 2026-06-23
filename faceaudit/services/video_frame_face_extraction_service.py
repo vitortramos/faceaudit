@@ -255,6 +255,27 @@ class VideoFrameFaceExtractionService:
         )
         return target, idx, detections
 
+    def score_frame_against_target(self, frame_bgr, target, model: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Para a prévia de limiar (UI): similaridade + det_score + fiqa de
+        cada detecção do quadro contra a âncora do alvo."""
+        model = model or self._ff.default_model
+        out: List[Dict[str, Any]] = []
+        for d in self.detect_in_frame(frame_bgr):
+            rgb = d.get("aligned_face")
+            if rgb is None:
+                continue
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            ff = self._ff.extract_embeddings_from_aligned_face(
+                bgr, aligned_keypoints=d.get("aligned_keypoints"), model=model)
+            emb = self._embedding_from_ffinfo(ff, model)
+            sim = target.similarity_to(emb) if emb is not None else float("-inf")
+            out.append({
+                "det_score": float(d.get("det_score", 0.0)),
+                "fiqa": (float(ff.fiqa_score) if ff and ff.fiqa_score is not None else None),
+                "similarity": sim,
+            })
+        return out
+
     # ─────────────────────────── helpers internos ──────────────────────────
 
     def _embedding_from_ffinfo(self, ff_info, model: Optional[str]) -> Optional[np.ndarray]:

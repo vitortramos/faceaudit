@@ -8,6 +8,8 @@ class ManagerToolbarController(QtCore.QObject):
     """
     # Sinais para comunicar com o Pai
     action_new = QtCore.pyqtSignal()
+    action_new_from_video = QtCore.pyqtSignal()    # 🎬 criar dataset de vídeo
+    action_import_video_run = QtCore.pyqtSignal()  # 📥 importar run de vídeo
     action_load = QtCore.pyqtSignal()
     action_close = QtCore.pyqtSignal()
     action_save = QtCore.pyqtSignal()
@@ -59,6 +61,8 @@ class ManagerToolbarController(QtCore.QObject):
     def _connect_signals(self):
         """Conecta os cliques dos botões aos sinais deste controller."""
         self.view.btn_new.clicked.connect(self.action_new.emit)
+        self.view.btn_new_video.clicked.connect(self.action_new_from_video.emit)
+        self.view.btn_import_video_run.clicked.connect(self.action_import_video_run.emit)
         self.view.btn_load.clicked.connect(self.action_load.emit)
         self.view.btn_close.clicked.connect(self.action_close.emit)
         self.view.btn_save.clicked.connect(self.action_save.emit)

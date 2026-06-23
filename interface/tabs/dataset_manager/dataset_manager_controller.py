@@ -120,6 +120,8 @@ class DatasetManagerController(QtCore.QObject):
 
     def _connect_submodules(self):
         self.toolbar_ctrl.action_new.connect(self.fluxo_novo_dataset)
+        self.toolbar_ctrl.action_new_from_video.connect(self.fluxo_novo_dataset_video)
+        self.toolbar_ctrl.action_import_video_run.connect(self.fluxo_importar_run_video)
         self.toolbar_ctrl.action_load.connect(self.fluxo_abrir_dataset)
         self.toolbar_ctrl.action_close.connect(self.fluxo_fechar_dataset)
         self.toolbar_ctrl.action_save.connect(self.fluxo_salvar)
@@ -1021,6 +1023,20 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_fechar_dataset(self):
         self.request_close()
+
+    def fluxo_novo_dataset_video(self):
+        """🎬 Abre o fluxo de criação de dataset a partir de vídeo."""
+        from .video_dataset_dialog.video_dataset_controller import VideoDatasetController
+        if getattr(self, "_video_ctrl", None) is None:
+            self._video_ctrl = VideoDatasetController(self)
+        self._video_ctrl.run_new_from_video()
+
+    def fluxo_importar_run_video(self):
+        """📥 Importa um run de extração de vídeo já produzido (revisar + dataset)."""
+        from .video_dataset_dialog.video_dataset_controller import VideoDatasetController
+        if getattr(self, "_video_ctrl", None) is None:
+            self._video_ctrl = VideoDatasetController(self)
+        self._video_ctrl.run_import_video_run()
 
     def fluxo_novo_dataset(self):
         templates_path = Path(self.config.paths.dir_templates)

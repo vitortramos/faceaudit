@@ -22,11 +22,21 @@ class ArquivoRibbon(ResponsiveRibbon):
         # Criação / leitura
         self.btn_new = ToolbarButton(
             "Novo Dataset", "➕", style="success",
-            tooltip="Criar novo dataset",
+            tooltip="Criar novo dataset a partir de uma pasta de imagens",
+        )
+        self.btn_new_video = ToolbarButton(
+            "Dataset de Vídeo", "🎬", style="success",
+            tooltip="Criar dataset extraindo faces de um arquivo de vídeo",
+        )
+        self.btn_import_video_run = ToolbarButton(
+            "Importar Run de Vídeo", "📥",
+            tooltip="Importar um run de extração de vídeo já produzido (revisar + gerar dataset)",
         )
         self.btn_load = ToolbarButton("Abrir", "📂", style="primary")
 
         layout.addWidget(self.btn_new)
+        layout.addWidget(self.btn_new_video)
+        layout.addWidget(self.btn_import_video_run)
         layout.addWidget(self.btn_load)
         layout.addWidget(ToolbarSeparator())
 

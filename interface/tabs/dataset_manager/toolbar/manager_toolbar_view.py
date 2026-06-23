@@ -127,6 +127,8 @@ class ManagerToolbarView(QFrame):
         """
         # Arquivo
         self.btn_new = self.arquivo_ribbon.btn_new
+        self.btn_new_video = self.arquivo_ribbon.btn_new_video
+        self.btn_import_video_run = self.arquivo_ribbon.btn_import_video_run
         self.btn_load = self.arquivo_ribbon.btn_load
         self.btn_save = self.arquivo_ribbon.btn_save
         self.btn_save_as = self.arquivo_ribbon.btn_save_as
