@@ -260,3 +260,21 @@ def test_extract_reproducible_crop_names_and_hashes(video_path, tmp_path):
         h = HashService()
         return {p.name: h.calculate_file_hash(p) for p in sorted((Path(res.run_dir) / "alvo").glob("*.png"))}
     assert crop_hashes(r1) == crop_hashes(r2)
+
+
+def test_extract_multi_target_assigns_each_to_own_folder(video_path, tmp_path):
+    # Fase 4: pipeline N-ready — 2 alvos, 2 rostos por quadro → 1-pra-1.
+    reg = {0: (EMB_TARGET, 0.8), 1: (EMB_OTHER, 0.8)}
+    script = lambda call: [_face(0, [5, 5, 25, 25], 0.95), _face(1, [35, 35, 60, 60], 0.95)]
+    service = _service(script, reg)
+    t_a = VideoTarget(label="alvo_a", anchor_embeddings=[EMB_TARGET.copy()],
+                      similarity_threshold=0.5, recognition_model="sepaelv2")
+    t_b = VideoTarget(label="alvo_b", anchor_embeddings=[EMB_OTHER.copy()],
+                      similarity_threshold=0.5, recognition_model="sepaelv2")
+    res = service.extract(_cfg(video_path, tmp_path), [t_a, t_b])
+    assert res.n_accepted_auto >= 2
+    assert list((Path(res.run_dir) / "alvo_a").glob("*.png"))
+    assert list((Path(res.run_dir) / "alvo_b").glob("*.png"))
+    # cada alvo recebe a face do seu próprio embedding (sem cruzamento)
+    side_a = json.loads(sorted((Path(res.run_dir) / "_meta").glob("alvo_a_f*.json"))[0].read_text(encoding="utf-8"))
+    assert side_a["reidentification"]["similarity_to_anchor"] == pytest.approx(1.0, abs=1e-5)

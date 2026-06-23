@@ -28,6 +28,9 @@ from forensicface.geometry import extend_bbox
 from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_io import imwrite_unicode_safe
 from faceaudit.services.video_provenance_writer import VideoProvenanceWriter
+from faceaudit.services.target_assignment import (
+    Candidate, TargetState, assign_frame, cosine,
+)
 from faceaudit.enums.quality_gate_policy import QualityGatePolicy
 from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models.video.video_info import VideoInfo
@@ -287,17 +290,30 @@ class VideoFrameFaceExtractionService:
         progress_callback: Optional[Callable[[str, int], None]] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         now_utc: Optional[Callable[[], str]] = None,
+        spatial_weight: float = 0.05,
+        gap_tolerance: Optional[int] = None,
     ) -> VideoExtractionResult:
         if not targets:
             raise ValueError("extract requer ao menos um VideoTarget.")
-        # Fase 1: um alvo.
-        target = targets[0]
         model = config.recognition_model or self._ff.default_model
         clock = now_utc or _utc_now_iso
+
+        # Estado de track por alvo (mutável ao longo do laço). A lista pode
+        # ter N; a v1 da UI expõe 1, mas o pipeline já é multi-alvo (N-ready).
+        target_states = [
+            TargetState(label=t.label, reference_embedding=t.reference_embedding(),
+                        threshold=t.similarity_threshold)
+            for t in targets
+        ]
+        target_by_label = {t.label: t for t in targets}
+        target_index_by_label = {t.label: i for i, t in enumerate(targets)}
 
         info = self.probe_video(config.video_path)
         fps = info.fps_reported if info.fps_reported > 0 else 30.0
         every_n = config.every_n_frames or max(1, int(round(fps / max(1e-6, config.target_fps))))
+        # Tolerância de gap do track em quadros NATIVOS: por padrão ~3 quadros
+        # amostrados (every_n*3) — além disso, o re-id re-adquire (recovery).
+        eff_gap_tolerance = gap_tolerance if gap_tolerance is not None else max(1, every_n * 3)
         start_frame = int(round(fps * max(0.0, config.start_s)))
         end_frame = int(round(fps * config.end_s)) if config.end_s is not None else None
 
@@ -352,15 +368,15 @@ class VideoFrameFaceExtractionService:
 
                     status = self._process_frame(
                         frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap,
-                        target=target, model=model, config=config, info=info,
-                        run_dir=run_dir, run_id=run_id, writer=writer, clock=clock,
-                        accepted_faces=accepted_faces,
+                        target_states=target_states, target_by_label=target_by_label,
+                        target_index_by_label=target_index_by_label, model=model,
+                        config=config, info=info, run_dir=run_dir, run_id=run_id,
+                        writer=writer, clock=clock, accepted_faces=accepted_faces,
+                        spatial_weight=spatial_weight, gap_tolerance=eff_gap_tolerance,
                     )
                     n_det_total += status["n_detections"]
-                    if status["accepted"]:
-                        n_accepted += 1
-                    if status["rejected"]:
-                        n_rejected += 1
+                    n_accepted += status["n_accepted"]
+                    n_rejected += status["n_rejected"]
                     if status["frame_status"] == "no_detection":
                         n_no_det += 1
 
@@ -418,15 +434,16 @@ class VideoFrameFaceExtractionService:
             )
 
     def _process_frame(
-        self, *, frame, native, ts_fps, ts_cap, target, model, config, info,
-        run_dir, run_id, writer, clock, accepted_faces,
+        self, *, frame, native, ts_fps, ts_cap, target_states, target_by_label,
+        target_index_by_label, model, config, info, run_dir, run_id, writer, clock,
+        accepted_faces, spatial_weight, gap_tolerance,
     ) -> Dict[str, Any]:
         detections = self.detect_in_frame(frame)
         n_det = len(detections)
         if n_det == 0:
             writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
                                 "n_detections": 0, "n_above_threshold": 0, "status": "no_detection"})
-            return {"n_detections": 0, "accepted": False, "rejected": False, "frame_status": "no_detection"}
+            return {"n_detections": 0, "n_accepted": 0, "n_rejected": 0, "frame_status": "no_detection"}
 
         # pré-filtro det HARD_REJECT (antes do embedding)
         survivors: List[Tuple[int, dict]] = []
@@ -441,7 +458,7 @@ class VideoFrameFaceExtractionService:
         if not survivors:
             writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
                                 "n_detections": n_det, "n_above_threshold": 0, "status": "below_threshold"})
-            return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
+            return {"n_detections": n_det, "n_accepted": 0, "n_rejected": 1, "frame_status": "below_threshold"}
 
         # embeddings em batch
         bgr_aligned = np.stack([cv2.cvtColor(d["aligned_face"], cv2.COLOR_RGB2BGR) for _, d in survivors], axis=0)
@@ -451,79 +468,99 @@ class VideoFrameFaceExtractionService:
             bgr_aligned, models=[model], aligned_keypoints_batch=kps_batch
         )
 
-        # similaridade + gate de identidade (1 alvo)
-        candidates = []
-        n_above = 0
+        # candidatos + mapa det_index → (detecção, ff_info, embedding)
+        candidates: List[Candidate] = []
+        cand_map: Dict[int, Tuple[dict, Any, Any]] = {}
         for j, (i, d) in enumerate(survivors):
             ff_info = ff_infos[j] if j < len(ff_infos) else None
             emb = self._embedding_from_ffinfo(ff_info, model)
-            sim = target.similarity_to(emb) if emb is not None else float("-inf")
-            above = bool(sim >= target.similarity_threshold)
+            bb = np.asarray(d["bbox"]).astype(float).flatten()[:4]
+            candidates.append(Candidate(det_index=i, bbox=(bb[0], bb[1], bb[2], bb[3]),
+                                        embedding=emb, det_score=float(d.get("det_score", 0.0))))
+            cand_map[i] = (d, ff_info, emb)
+
+        # log de decisão por detecção (melhor similaridade entre os alvos)
+        n_above = 0
+        for c in candidates:
+            best_sim = float("-inf")
+            best_label = None
+            above = False
+            for t in target_states:
+                s = cosine(t.reference_embedding, c.embedding)
+                if s > best_sim:
+                    best_sim, best_label = s, t.label
+                if s >= t.threshold:
+                    above = True
             if above:
                 n_above += 1
+            d, ff_info, _ = cand_map[c.det_index]
             writer.write_decision({
-                "frame_index": native, "det_index": i, "det_score": float(d.get("det_score", 0.0)),
+                "frame_index": native, "det_index": c.det_index, "det_score": c.det_score,
                 "fiqa_score": (float(ff_info.fiqa_score) if ff_info and ff_info.fiqa_score is not None else None),
-                "similarity_to_anchor": (None if sim == float("-inf") else sim),
-                "threshold": target.similarity_threshold, "above_threshold": above,
+                "similarity_to_anchor": (None if best_sim == float("-inf") else best_sim),
+                "best_target": best_label, "above_threshold": above,
                 "decision": ("candidate" if above else "non_match"),
             })
-            candidates.append({"i": i, "d": d, "ff": ff_info, "emb": emb, "sim": sim, "above": above})
 
-        above_cands = sorted([c for c in candidates if c["above"]], key=lambda c: c["sim"], reverse=True)
-        if not above_cands:
+        # atribuição detecções×alvos (gate de identidade + gating espacial + greedy 1-1)
+        assignments = assign_frame(target_states, candidates, native,
+                                   spatial_weight=spatial_weight, gap_tolerance=gap_tolerance)
+        if not assignments:
             writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
-                                "n_detections": n_det, "n_above_threshold": 0, "status": "no_match"})
-            return {"n_detections": n_det, "accepted": False, "rejected": False, "frame_status": "no_match"}
+                                "n_detections": n_det, "n_above_threshold": n_above, "status": "no_match"})
+            return {"n_detections": n_det, "n_accepted": 0, "n_rejected": 0, "frame_status": "no_match"}
 
-        best = above_cands[0]
-        margin = (best["sim"] - above_cands[1]["sim"]) if len(above_cands) >= 2 else None
-        auto_decision = "conflict" if len(above_cands) >= 2 else "accepted"
+        n_acc = n_rej = 0
+        any_conflict = False
+        for a in assignments:
+            d, ff_info, emb = cand_map[a.det_index]
+            target = target_by_label[a.target_label]
+            det_decision = _gate_decision(config.det_score_policy, float(d.get("det_score", 0.0)), config.min_det_score)
+            fiqa_val = float(ff_info.fiqa_score) if ff_info and ff_info.fiqa_score is not None else None
+            fiqa_decision = _gate_decision(config.fiqa_score_policy, fiqa_val, config.min_fiqa_score)
+            if det_decision == "hard_reject" or fiqa_decision == "hard_reject":
+                writer.write_decision({"frame_index": native, "det_index": a.det_index, "target": a.target_label,
+                                       "decision": "hard_reject_quality",
+                                       "det_score_decision": det_decision, "fiqa_score_decision": fiqa_decision})
+                n_rej += 1
+                continue
+            auto_decision = "conflict" if a.margin_to_second_best is not None else "accepted"
+            review_reasons: List[str] = []
+            if auto_decision == "conflict":
+                review_reasons.append("conflict")
+                any_conflict = True
+            if det_decision == "route_to_review":
+                review_reasons.append("low_det")
+            if fiqa_decision == "route_to_review":
+                review_reasons.append("low_fiqa")
+            prov = self._save_accepted_face(
+                frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap, d=d, ff_info=ff_info, emb=emb,
+                target=target, target_index=target_index_by_label.get(a.target_label, 0), assignment=a,
+                model=model, config=config, info=info, run_dir=run_dir, run_id=run_id, writer=writer,
+                clock=clock, auto_decision=auto_decision, review_reasons=review_reasons,
+                det_decision=det_decision, fiqa_decision=fiqa_decision, fiqa_val=fiqa_val,
+            )
+            if prov is not None:
+                accepted_faces.append(prov)
+                n_acc += 1
+            else:
+                n_rej += 1
 
-        det_decision = _gate_decision(config.det_score_policy, float(best["d"].get("det_score", 0.0)), config.min_det_score)
-        fiqa_val = float(best["ff"].fiqa_score) if best["ff"] and best["ff"].fiqa_score is not None else None
-        fiqa_decision = _gate_decision(config.fiqa_score_policy, fiqa_val, config.min_fiqa_score)
-
-        if fiqa_decision == "hard_reject" or det_decision == "hard_reject":
-            writer.write_decision({"frame_index": native, "det_index": best["i"],
-                                   "decision": "hard_reject_quality",
-                                   "det_score_decision": det_decision, "fiqa_score_decision": fiqa_decision})
-            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
-                                "n_detections": n_det, "n_above_threshold": n_above, "status": "below_threshold"})
-            return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
-
-        review_reasons: List[str] = []
-        if auto_decision == "conflict":
-            review_reasons.append("conflict")
-        if det_decision == "route_to_review":
-            review_reasons.append("low_det")
-        if fiqa_decision == "route_to_review":
-            review_reasons.append("low_fiqa")
-
-        prov = self._save_accepted_face(
-            frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap, best=best, target=target,
-            model=model, config=config, info=info, run_dir=run_dir, run_id=run_id, writer=writer,
-            clock=clock, margin=margin, auto_decision=auto_decision, review_reasons=review_reasons,
-            det_decision=det_decision, fiqa_decision=fiqa_decision, fiqa_val=fiqa_val, n_above=n_above,
-        )
-        if prov is not None:
-            accepted_faces.append(prov)
-            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
-                                "n_detections": n_det, "n_above_threshold": n_above,
-                                "status": ("conflict" if auto_decision == "conflict" else "accepted")})
-            return {"n_detections": n_det, "accepted": True, "rejected": False,
-                    "frame_status": ("conflict" if auto_decision == "conflict" else "accepted")}
-        # falha ao salvar o crop
+        if n_acc > 0:
+            frame_status = "conflict" if any_conflict else "accepted"
+        elif n_rej > 0:
+            frame_status = "below_threshold"
+        else:
+            frame_status = "no_match"
         writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
-                            "n_detections": n_det, "n_above_threshold": n_above, "status": "below_threshold"})
-        return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
+                            "n_detections": n_det, "n_above_threshold": n_above, "status": frame_status})
+        return {"n_detections": n_det, "n_accepted": n_acc, "n_rejected": n_rej, "frame_status": frame_status}
 
     def _save_accepted_face(
-        self, *, frame, native, ts_fps, ts_cap, best, target, model, config, info,
-        run_dir, run_id, writer, clock, margin, auto_decision, review_reasons,
-        det_decision, fiqa_decision, fiqa_val, n_above,
+        self, *, frame, native, ts_fps, ts_cap, d, ff_info, emb, target, target_index, assignment,
+        model, config, info, run_dir, run_id, writer, clock, auto_decision, review_reasons,
+        det_decision, fiqa_decision, fiqa_val,
     ) -> Optional[FaceProvenance]:
-        d = best["d"]
         bbox = np.asarray(d["bbox"]).astype(float).flatten()[:4]
         ext = extend_bbox(np.asarray(bbox), frame.shape, margin_factor=config.margin)
         x1, y1, x2, y2 = (int(v) for v in ext)
@@ -548,11 +585,12 @@ class VideoFrameFaceExtractionService:
 
         aligned = self.align_detected_face_from_array(frame, d)
         h, w = crop.shape[:2]
+        margin = assignment.margin_to_second_best
 
         prov = FaceProvenance(
             run_id=run_id, run_manifest=f"_run_{run_id}.json", identity_label=label,
             image_file=crop_name, image_sha256=image_sha, image_width_px=w, image_height_px=h,
-            crop_margin_factor=config.margin, color_space="BGR", saved_at_utc=clock(), target_index=0,
+            crop_margin_factor=config.margin, color_space="BGR", saved_at_utc=clock(), target_index=target_index,
             source_video_filename=info.filename, source_video_sha256=info.sha256,
             frame_native_index=native, timestamp_s_from_fps=ts_fps, timestamp_s_capture_prop=ts_cap,
             decoded_frame_sha256=decoded_sha, decoded_frame_hash_algorithm=decoded_algo,
@@ -561,9 +599,10 @@ class VideoFrameFaceExtractionService:
             keypoints_5pt=aligned.keypoints_5pt, align_matrix_2x3=aligned.align_matrix_2x3,
             align_matrix_available=aligned.align_matrix_available, pose=aligned.pose,
             gender=aligned.gender, age=aligned.age,
-            reid_method="embedding", similarity_to_anchor=float(best["sim"]),
-            similarity_threshold=target.similarity_threshold, assigned_by="embedding", track_id=0,
-            recognition_model=model, anchor_embedding_fingerprint=target.anchor_embedding_fingerprint(),
+            reid_method="embedding+tracking", similarity_to_anchor=float(assignment.similarity),
+            similarity_threshold=target.similarity_threshold, assigned_by=assignment.assigned_by,
+            track_id=target_index, recognition_model=model,
+            anchor_embedding_fingerprint=target.anchor_embedding_fingerprint(),
             margin_to_second_best=(float(margin) if margin is not None else None),
             min_det_score=config.min_det_score, det_score_policy=config.det_score_policy.to_str(),
             det_score_decision=det_decision, fiqa_score=fiqa_val, min_fiqa_score=config.min_fiqa_score,
@@ -573,7 +612,7 @@ class VideoFrameFaceExtractionService:
         writer.write_sidecar(prov)
         writer.add_embedding(
             kind=("conflict" if auto_decision == "conflict" else "accepted"),
-            target_label=label, frame_index=native, det_index=best["i"],
-            recognition_model=model, embedding=best["emb"],
+            target_label=label, frame_index=native, det_index=assignment.det_index,
+            recognition_model=model, embedding=emb,
         )
         return prov
