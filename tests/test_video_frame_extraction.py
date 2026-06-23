@@ -1,0 +1,262 @@
+"""Testes da Fase 1 — produtor mínimo de extração de faces de vídeo.
+
+Usa um FFService/engine FAKE (sem GPU/modelos ForensicFace) e um vídeo
+sintético, de modo que o laço, os gates de qualidade e a proveniência
+sejam exercitados de forma determinística.
+
+Truque: o engine fake codifica um `face_id` no pixel [0,0] da
+`aligned_face`; o FFService fake decodifica esse id de volta no batch
+para devolver o embedding/fiqa que o teste escolheu — controlando a
+similaridade com a âncora sem rodar reconhecimento real.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+cv2 = pytest.importorskip("cv2")
+
+from faceaudit.models.ff_info import FFInfo
+from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
+from faceaudit.models.video.video_target import VideoTarget
+from faceaudit.models.video.face_provenance import FaceProvenance
+from faceaudit.enums.quality_gate_policy import QualityGatePolicy
+from faceaudit.services.image_io import imwrite_unicode_safe, imread_unicode_safe
+from faceaudit.services.hash_service import HashService
+from faceaudit.services import video_frame_face_extraction_service as svc_mod
+from faceaudit.services.video_frame_face_extraction_service import (
+    VideoFrameFaceExtractionService,
+    _gate_decision,
+)
+
+DIM = 8
+EMB_TARGET = np.zeros(DIM, dtype=np.float32); EMB_TARGET[0] = 1.0
+EMB_OTHER = np.zeros(DIM, dtype=np.float32); EMB_OTHER[1] = 1.0
+
+
+# ───────────────────────────── fakes ─────────────────────────────
+
+class _FakeBackend:
+    def estimate_norm(self, kps):
+        return np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=float)
+
+
+class _FakeEngine:
+    """detect_and_align scriptável por chamada."""
+    def __init__(self, script):
+        self.backend = _FakeBackend()
+        self._script = script
+        self._call = 0
+
+    def detect_and_align(self, frame, single_face=False):
+        faces = self._script(self._call)
+        self._call += 1
+        return faces
+
+
+def _face(face_id, bbox, det_score):
+    aligned = np.zeros((112, 112, 3), dtype=np.uint8)
+    aligned[0, 0, :] = face_id  # id em todos os canais sobrevive ao swap RGB↔BGR
+    return {
+        "aligned_face": aligned,
+        "aligned_keypoints": np.zeros((5, 2), dtype=float),
+        "bbox": np.asarray(bbox, dtype=float),
+        "keypoints": np.zeros((5, 2), dtype=float),
+        "det_score": float(det_score),
+        "pose": (0.0, 0.0, 0.0),
+        "gender": "M",
+        "age": 30,
+    }
+
+
+class _FakeFFService:
+    def __init__(self, engine, registry):
+        self.app = engine
+        self.default_model = "sepaelv2"
+        self._registry = registry  # face_id -> (embedding, fiqa)
+
+    def extract_embeddings_from_aligned_faces_batch(self, bgr_aligned_faces, *, models=None, aligned_keypoints_batch=None, error_callback=None):
+        out = []
+        for k in range(bgr_aligned_faces.shape[0]):
+            fid = int(bgr_aligned_faces[k, 0, 0, 0])
+            emb, fiqa = self._registry[fid]
+            out.append(FFInfo(fiqa_score=fiqa, embedding_sepaelv2=np.asarray(emb, dtype=np.float32)))
+        return out
+
+    def extract_embeddings_from_aligned_face(self, bgr, *, aligned_keypoints=None, model=None):
+        fid = int(bgr[0, 0, 0])
+        emb, fiqa = self._registry[fid]
+        return FFInfo(fiqa_score=fiqa, embedding_sepaelv2=np.asarray(emb, dtype=np.float32))
+
+
+def _make_video(path: Path, n=5, size=(64, 64), fps=5) -> bool:
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    vw = cv2.VideoWriter(str(path), fourcc, fps, size)
+    if not vw.isOpened():
+        return False
+    for i in range(n):
+        vw.write(np.full((size[1], size[0], 3), (i * 10) % 256, np.uint8))
+    vw.release()
+    return path.exists() and path.stat().st_size > 0
+
+
+@pytest.fixture
+def video_path(tmp_path):
+    p = tmp_path / "clip.avi"
+    if not _make_video(p):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    return p
+
+
+def _target(threshold=0.5):
+    return VideoTarget(label="alvo", anchor_embeddings=[EMB_TARGET.copy()],
+                       similarity_threshold=threshold, recognition_model="sepaelv2")
+
+
+def _cfg(video_path, tmp_path, **kw):
+    base = dict(video_path=str(video_path), output_root=str(tmp_path / "out"),
+                every_n_frames=1, similarity_threshold=0.5)
+    base.update(kw)
+    return VideoExtractionConfig(**base)
+
+
+def _service(script, registry):
+    return VideoFrameFaceExtractionService(_FakeFFService(_FakeEngine(script), registry))
+
+
+def _read_jsonl(p):
+    return [json.loads(line) for line in Path(p).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+# ───────────────────────── testes puros ─────────────────────────
+
+def test_gate_decision_matrix():
+    P = QualityGatePolicy
+    assert _gate_decision(P.DISABLED, 0.1, 0.5) == "disabled"
+    assert _gate_decision(P.TAG_ONLY, 0.7, 0.5) == "passed"
+    assert _gate_decision(P.TAG_ONLY, 0.3, 0.5) == "tag_low"
+    assert _gate_decision(P.ROUTE_TO_REVIEW, 0.3, 0.5) == "route_to_review"
+    assert _gate_decision(P.HARD_REJECT, 0.3, 0.5) == "hard_reject"
+    # política ativa mas sem limiar → nunca derruba
+    assert _gate_decision(P.HARD_REJECT, 0.3, None) == "passed"
+
+
+def test_detection_containing_point_picks_clicked_not_largest():
+    big = _face(0, [0, 0, 100, 100], 0.9)
+    small = _face(1, [40, 40, 60, 60], 0.9)
+    dets = [big, small]
+    # clique dentro da face pequena (também dentro da grande) → escolhe a menor
+    idx = VideoFrameFaceExtractionService.detection_containing_point(dets, 50, 50)
+    assert idx == 1
+    # clique só dentro da grande
+    assert VideoFrameFaceExtractionService.detection_containing_point(dets, 10, 10) == 0
+    # clique fora de tudo
+    assert VideoFrameFaceExtractionService.detection_containing_point(dets, 200, 200) is None
+
+
+def test_imwrite_unicode_safe_accented_path_roundtrip(tmp_path):
+    p = tmp_path / "Política Federal" / "alvo_f0000001.png"
+    img = (np.random.default_rng(0).integers(0, 255, (32, 32, 3))).astype(np.uint8)
+    assert imwrite_unicode_safe(p, img) is True
+    assert p.exists()
+    back = imread_unicode_safe(p)
+    assert back is not None and back.shape == (32, 32, 3)
+    assert HashService().calculate_file_hash(p) is not None
+
+
+def test_face_provenance_sidecar_and_scalar_projection():
+    fp = FaceProvenance(run_id="r", run_manifest="_run_r.json", identity_label="alvo",
+                        image_file="alvo_f0000001.png", det_score=0.9, fiqa_score=0.4,
+                        similarity_to_anchor=0.7, frame_native_index=1, source_video_sha256="abc",
+                        det_score_decision="passed", fiqa_score_decision="route_to_review",
+                        det_score_policy="TAG_ONLY", fiqa_score_policy="ROUTE_TO_REVIEW")
+    side = fp.to_sidecar_dict()
+    assert side["detection"]["det_score"] == 0.9
+    assert side["quality_gates"]["fiqa_score_decision"] == "route_to_review"
+    scal = fp.scalar_projection().to_extra_data()
+    # namespaced, não colide com det_score/fiqa_score canônicos
+    assert "video_extraction_det_score" in scal and "det_score" not in scal
+    assert scal["video_extraction_fiqa_score"] == 0.4
+    assert scal["similarity_to_anchor"] == 0.7
+
+
+# ───────────────────── testes de extract (laço) ─────────────────────
+
+def test_extract_no_detection_writes_frame_log(video_path, tmp_path):
+    service = _service(lambda call: [], {})
+    res = service.extract(_cfg(video_path, tmp_path), [_target()])
+    assert res.n_accepted_auto == 0
+    frames = _read_jsonl(res.frames_path)
+    assert len(frames) >= 1
+    assert all(f["status"] == "no_detection" for f in frames)
+    # nenhuma pasta de identidade criada
+    assert not (Path(res.run_dir) / "alvo").exists()
+
+
+def test_extract_accepts_target_and_writes_crop_and_sidecar(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    res = service.extract(_cfg(video_path, tmp_path), [_target(threshold=0.5)])
+    assert res.n_accepted_auto >= 1
+    crops = list((Path(res.run_dir) / "alvo").glob("*.png"))
+    assert crops, "deveria ter salvo recortes"
+    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_f*.json"))
+    assert sidecars
+    side = json.loads(sidecars[0].read_text(encoding="utf-8"))
+    assert side["reidentification"]["similarity_to_anchor"] == pytest.approx(1.0, abs=1e-5)
+    assert side["human_review"]["status"] == "pending"
+    assert side["artifact"]["image_sha256"]
+    # manifesto com status de ciclo de vida
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["extraction_status"] == "completed"
+    assert manifest["review_status"] == "not_started"
+    assert manifest["dataset_status"] == "not_imported"
+
+
+def test_extract_below_identity_threshold_writes_no_crop(video_path, tmp_path):
+    reg = {0: (EMB_OTHER, 0.8)}  # ortogonal à âncora → sim ~0
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    res = service.extract(_cfg(video_path, tmp_path), [_target(threshold=0.5)])
+    assert res.n_accepted_auto == 0
+    assert not (Path(res.run_dir) / "alvo").exists()
+    frames = _read_jsonl(res.frames_path)
+    assert all(f["status"] in ("no_match", "no_detection") for f in frames)
+
+
+def test_extract_det_hard_reject_pre_embedding(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.40)], reg)
+    cfg = _cfg(video_path, tmp_path, det_score_policy=QualityGatePolicy.HARD_REJECT, min_det_score=0.6)
+    res = service.extract(cfg, [_target(threshold=0.5)])
+    assert res.n_accepted_auto == 0
+    decisions = _read_jsonl(res.decisions_path)
+    assert any(d.get("decision") == "hard_reject_det_pre_embedding" for d in decisions)
+    assert not (Path(res.run_dir) / "alvo").exists()
+
+
+def test_extract_fiqa_route_to_review_flags_reason(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.30)}  # fiqa baixo
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    cfg = _cfg(video_path, tmp_path, fiqa_score_policy=QualityGatePolicy.ROUTE_TO_REVIEW, min_fiqa_score=0.5)
+    res = service.extract(cfg, [_target(threshold=0.5)])
+    assert res.n_accepted_auto >= 1
+    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_f*.json"))
+    side = json.loads(sidecars[0].read_text(encoding="utf-8"))
+    assert "low_fiqa" in side["review_reasons"]
+    assert side["quality_gates"]["fiqa_score_decision"] == "route_to_review"
+
+
+def test_extract_reproducible_crop_names_and_hashes(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.8)}
+    script = lambda call: [_face(0, [10, 10, 40, 40], 0.95)]
+    fixed_clock = lambda: "2026-01-01T00:00:00Z"
+    r1 = _service(script, reg).extract(_cfg(video_path, tmp_path / "a"), [_target()], now_utc=fixed_clock)
+    r2 = _service(script, reg).extract(_cfg(video_path, tmp_path / "b"), [_target()], now_utc=fixed_clock)
+    def crop_hashes(res):
+        h = HashService()
+        return {p.name: h.calculate_file_hash(p) for p in sorted((Path(res.run_dir) / "alvo").glob("*.png"))}
+    assert crop_hashes(r1) == crop_hashes(r2)

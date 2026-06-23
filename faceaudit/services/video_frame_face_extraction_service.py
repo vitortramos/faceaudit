@@ -1,0 +1,579 @@
+# faceaudit/services/video_frame_face_extraction_service.py
+"""Serviço núcleo: extração de faces de um alvo ao longo de um vídeo.
+
+O FaceAudit é dono do laço (cv2.VideoCapture); o ForensicFace entra só
+para DETECTAR + alinhar (sem embedding) e para gerar o embedding de
+re-identificação. A identidade é o árbitro (gate `similarity_to_anchor`);
+det_score/fiqa_score são gates de qualidade configuráveis (default
+TAG_ONLY na v1, só registram).
+
+Fase 1 (produtor mínimo): 1 alvo, gate de identidade greedy por quadro,
+sem tracking pesado. O assignment N×M + tracking entram na Fase 4.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+from forensicface.geometry import extend_bbox
+
+from faceaudit.services.hash_service import HashService
+from faceaudit.services.image_io import imwrite_unicode_safe
+from faceaudit.services.video_provenance_writer import VideoProvenanceWriter
+from faceaudit.enums.quality_gate_policy import QualityGatePolicy
+from faceaudit.enums.sepael_model import SepaelModel
+from faceaudit.models.video.video_info import VideoInfo
+from faceaudit.models.video.video_target import VideoTarget
+from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
+from faceaudit.models.video.video_extraction_result import VideoExtractionResult
+from faceaudit.models.video.face_provenance import FaceProvenance
+
+
+class VideoOpenError(RuntimeError):
+    """O arquivo de vídeo não pôde ser aberto (codec/path não-ASCII/corrompido)."""
+
+
+@dataclass
+class AlignedFaceResult:
+    """Resultado de alinhar uma detecção específica (clicada) para a âncora."""
+    aligned_face_bgr: np.ndarray
+    aligned_keypoints: Optional[np.ndarray]
+    bbox_xyxy: List[float]
+    det_score: float
+    keypoints_5pt: List[List[float]]
+    align_matrix_2x3: Optional[List[List[float]]]
+    align_matrix_available: bool
+    pose: Optional[Dict[str, float]]
+    gender: Optional[str]
+    age: Optional[float]
+
+
+def _gate_decision(
+    policy: QualityGatePolicy,
+    score: Optional[float],
+    min_score: Optional[float],
+) -> str:
+    """Decisão de um gate de qualidade. Nunca derruba acima do limiar."""
+    if policy == QualityGatePolicy.DISABLED:
+        return "disabled"
+    if score is None or min_score is None:
+        return "passed"  # política ativa mas sem limiar avaliável → só registra
+    if score >= min_score:
+        return "passed"
+    if policy == QualityGatePolicy.TAG_ONLY:
+        return "tag_low"
+    if policy == QualityGatePolicy.ROUTE_TO_REVIEW:
+        return "route_to_review"
+    if policy == QualityGatePolicy.HARD_REJECT:
+        return "hard_reject"
+    return "passed"
+
+
+def _pose_to_dict(pose: Any) -> Optional[Dict[str, float]]:
+    if pose is None:
+        return None
+    try:
+        yaw, pitch, roll = pose
+        return {"yaw": float(yaw), "pitch": float(pitch), "roll": float(roll)}
+    except Exception:
+        return None
+
+
+def _utc_now_iso() -> str:
+    """Timestamp UTC ISO-8601 timezone-aware (cadeia de custódia)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _library_versions() -> Dict[str, Optional[str]]:
+    versions: Dict[str, Optional[str]] = {"opencv": cv2.__version__, "numpy": np.__version__}
+    for mod_name, key in (("forensicface", "forensicface"), ("onnxruntime", "onnxruntime"), ("faceaudit", "faceaudit")):
+        try:
+            mod = __import__(mod_name)
+            versions[key] = getattr(mod, "__version__", None)
+        except Exception:
+            versions[key] = None
+    return versions
+
+
+class VideoFrameFaceExtractionService:
+    def __init__(self, ff_service, hash_service: Optional[HashService] = None):
+        self._ff = ff_service
+        self._engine = ff_service.app
+        self._hash = hash_service or HashService()
+
+    # ─────────────────────────── probe / leitura ───────────────────────────
+
+    def probe_video(self, video_path) -> VideoInfo:
+        p = Path(video_path)
+        cap = cv2.VideoCapture(str(p))
+        if not cap.isOpened():
+            cap.release()
+            raise VideoOpenError(
+                f"Não foi possível abrir o vídeo: {video_path}. "
+                f"Verifique o codec e se o caminho contém caracteres especiais."
+            )
+        try:
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            try:
+                backend = cap.getBackendName()
+            except Exception:
+                backend = None
+        finally:
+            cap.release()
+        duration = (frame_count / fps) if fps > 0 else 0.0
+        sha = self._hash.calculate_file_hash(p)
+        size = p.stat().st_size if p.exists() else 0
+        return VideoInfo(
+            path=str(p),
+            filename=p.name,
+            sha256=sha,
+            file_size_bytes=size,
+            fps_reported=fps,
+            frame_count_reported=frame_count,
+            duration_reported_s=duration,
+            resolution=(width, height),
+            opencv_version=cv2.__version__,
+            decoder_backend=backend,
+        )
+
+    def read_frame(self, video_path, index: int) -> Optional[np.ndarray]:
+        """Lê um quadro específico (uso do scrubber da UI; seek pontual)."""
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            cap.release()
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ret, frame = cap.read()
+        finally:
+            cap.release()
+        return frame if ret else None
+
+    def detect_in_frame(self, frame_bgr: np.ndarray) -> List[dict]:
+        """Detecta + alinha todas as faces do quadro (SEM embedding)."""
+        try:
+            res = self._engine.detect_and_align(frame_bgr, single_face=False)
+        except Exception as e:
+            print(f"⚠️ [VideoExtraction] detect_and_align falhou: {e}")
+            return []
+        return res or []
+
+    # ─────────────────────────── âncora (clique) ───────────────────────────
+
+    @staticmethod
+    def detection_containing_point(detections: List[dict], x: float, y: float) -> Optional[int]:
+        """Índice da detecção cuja bbox contém (x, y); em sobreposição,
+        a de menor área (mais específica)."""
+        best_idx, best_area = None, None
+        for i, d in enumerate(detections):
+            bb = np.asarray(d.get("bbox")).astype(float).flatten()
+            if bb.size < 4:
+                continue
+            x1, y1, x2, y2 = bb[:4]
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                area = max(0.0, (x2 - x1)) * max(0.0, (y2 - y1))
+                if best_area is None or area < best_area:
+                    best_area, best_idx = area, i
+        return best_idx
+
+    def align_detected_face_from_array(self, frame_bgr: np.ndarray, detection: dict) -> AlignedFaceResult:
+        """Alinha EXATAMENTE a detecção dada (não 'melhor face')."""
+        kps = np.asarray(detection["keypoints"], dtype=np.float64)
+        align_matrix, available = None, False
+        try:
+            M = self._engine.backend.estimate_norm(kps)
+            align_matrix = np.asarray(M, dtype=float).tolist()
+            available = True
+        except Exception:
+            available = False
+        rgb_aligned = detection.get("aligned_face")
+        bgr_aligned = cv2.cvtColor(rgb_aligned, cv2.COLOR_RGB2BGR) if rgb_aligned is not None else None
+        aligned_kps = detection.get("aligned_keypoints")
+        return AlignedFaceResult(
+            aligned_face_bgr=bgr_aligned,
+            aligned_keypoints=np.asarray(aligned_kps) if aligned_kps is not None else None,
+            bbox_xyxy=np.asarray(detection["bbox"]).astype(float).flatten()[:4].tolist(),
+            det_score=float(detection.get("det_score", 0.0)),
+            keypoints_5pt=kps.tolist(),
+            align_matrix_2x3=align_matrix,
+            align_matrix_available=available,
+            pose=_pose_to_dict(detection.get("pose")),
+            gender=detection.get("gender"),
+            age=detection.get("age"),
+        )
+
+    def compute_anchor_embedding(self, detection: dict, model: Optional[str] = None) -> Optional[np.ndarray]:
+        """Embedding da face já alinhada da detecção (para a âncora)."""
+        rgb = detection.get("aligned_face")
+        if rgb is None:
+            return None
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        akps = detection.get("aligned_keypoints")
+        ff = self._ff.extract_embeddings_from_aligned_face(bgr, aligned_keypoints=akps, model=model)
+        return self._embedding_from_ffinfo(ff, model)
+
+    def build_target_from_click(
+        self,
+        frame_bgr: np.ndarray,
+        x: float,
+        y: float,
+        *,
+        label: str,
+        similarity_threshold: float,
+        model: Optional[str] = None,
+    ) -> Optional[Tuple[VideoTarget, int, List[dict]]]:
+        """Constrói o alvo a partir de um clique. Retorna (target, det_idx,
+        detections) ou None se nenhuma detecção contém o ponto."""
+        detections = self.detect_in_frame(frame_bgr)
+        idx = self.detection_containing_point(detections, x, y)
+        if idx is None:
+            return None
+        emb = self.compute_anchor_embedding(detections[idx], model)
+        if emb is None:
+            return None
+        target = VideoTarget(
+            label=label,
+            anchor_embeddings=[np.asarray(emb)],
+            anchor_policy="SINGLE",
+            similarity_threshold=float(similarity_threshold),
+            similarity_threshold_source="MANUAL",
+            recognition_model=model or self._ff.default_model,
+        )
+        return target, idx, detections
+
+    # ─────────────────────────── helpers internos ──────────────────────────
+
+    def _embedding_from_ffinfo(self, ff_info, model: Optional[str]) -> Optional[np.ndarray]:
+        if ff_info is None:
+            return None
+        name = model or self._ff.default_model
+        slot = SepaelModel.ffinfo_slot_for(name)
+        emb = getattr(ff_info, slot, None)
+        if emb is not None:
+            return np.asarray(emb)
+        for member in SepaelModel:
+            e = getattr(ff_info, member.ffinfo_slot, None)
+            if e is not None:
+                return np.asarray(e)
+        return None
+
+    @staticmethod
+    def _derive_run_tag(video_sha: Optional[str], config_manifest: dict, fingerprints: List[Optional[str]]) -> str:
+        h = hashlib.sha256()
+        h.update((video_sha or "").encode("utf-8"))
+        h.update(json.dumps(config_manifest, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+        for fp in fingerprints:
+            h.update((fp or "").encode("utf-8"))
+        return h.hexdigest()[:10]
+
+    # ─────────────────────────────── extract ───────────────────────────────
+
+    def extract(
+        self,
+        config: VideoExtractionConfig,
+        targets: List[VideoTarget],
+        *,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
+        now_utc: Optional[Callable[[], str]] = None,
+    ) -> VideoExtractionResult:
+        if not targets:
+            raise ValueError("extract requer ao menos um VideoTarget.")
+        # Fase 1: um alvo.
+        target = targets[0]
+        model = config.recognition_model or self._ff.default_model
+        clock = now_utc or _utc_now_iso
+
+        info = self.probe_video(config.video_path)
+        fps = info.fps_reported if info.fps_reported > 0 else 30.0
+        every_n = config.every_n_frames or max(1, int(round(fps / max(1e-6, config.target_fps))))
+        start_frame = int(round(fps * max(0.0, config.start_s)))
+        end_frame = int(round(fps * config.end_s)) if config.end_s is not None else None
+
+        run_tag = config.run_tag or self._derive_run_tag(
+            info.sha256, config.to_manifest_dict(), [t.anchor_embedding_fingerprint() for t in targets]
+        )
+        video_stem = Path(config.video_path).stem
+        run_dir = Path(config.output_root) / f"{video_stem}_{run_tag}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_id = run_tag
+
+        n_sampled = n_det_total = n_accepted = n_rejected = n_no_det = 0
+        accepted_faces: List[FaceProvenance] = []
+        extraction_status = "completed"
+
+        cap = cv2.VideoCapture(str(config.video_path))
+        if not cap.isOpened():
+            cap.release()
+            raise VideoOpenError(f"Não foi possível abrir o vídeo: {config.video_path}")
+
+        with VideoProvenanceWriter(run_dir, run_id) as writer:
+            # embedding da âncora na auditoria
+            for t in targets:
+                ref = t.reference_embedding()
+                writer.add_embedding(
+                    kind="anchor", target_label=t.label, frame_index=None, det_index=None,
+                    recognition_model=t.recognition_model, embedding=ref,
+                    fingerprint=t.anchor_embedding_fingerprint(),
+                )
+
+            try:
+                if start_frame > 0:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                native = start_frame
+                while True:
+                    if cancel_check is not None and cancel_check():
+                        extraction_status = "cancelled"
+                        break
+                    pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    if end_frame is not None and native > end_frame:
+                        break
+                    if (native - start_frame) % every_n != 0:
+                        native += 1
+                        continue
+
+                    n_sampled += 1
+                    ts_fps = native / fps if fps > 0 else None
+                    ts_cap = (pos_msec / 1000.0) if pos_msec and pos_msec > 0 else None
+
+                    status = self._process_frame(
+                        frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap,
+                        target=target, model=model, config=config, info=info,
+                        run_dir=run_dir, run_id=run_id, writer=writer, clock=clock,
+                        accepted_faces=accepted_faces,
+                    )
+                    n_det_total += status["n_detections"]
+                    if status["accepted"]:
+                        n_accepted += 1
+                    if status["rejected"]:
+                        n_rejected += 1
+                    if status["frame_status"] == "no_detection":
+                        n_no_det += 1
+
+                    if progress_callback and end_frame:
+                        pct = int(min(100, (native - start_frame) / max(1, end_frame - start_frame) * 100))
+                        progress_callback(f"Extraindo quadro {native}…", pct)
+
+                    native += 1
+            except Exception as e:
+                extraction_status = "failed"
+                print(f"❌ [VideoExtraction] erro no laço: {e}")
+                raise
+            finally:
+                cap.release()
+
+            manifest = {
+                "created_at_utc": clock(),
+                "source_video": info.to_manifest_dict(),
+                "versions": _library_versions(),
+                "parameters": config.to_manifest_dict(),
+                "derived": {"every_n_frames": every_n, "start_frame": start_frame, "end_frame": end_frame, "fps_used": fps},
+                "targets": [
+                    {
+                        "label": t.label,
+                        "anchor_policy": t.anchor_policy,
+                        "anchor_embedding_count": t.anchor_embedding_count,
+                        "anchor_embedding_fingerprint": t.anchor_embedding_fingerprint(),
+                        "similarity_threshold": t.similarity_threshold,
+                        "similarity_threshold_source": t.similarity_threshold_source,
+                        "recognition_model": t.recognition_model,
+                    }
+                    for t in targets
+                ],
+                "recognition_model": model,
+                "extraction_status": extraction_status,
+                "review_status": "not_started",
+                "dataset_status": "not_imported",
+                "summary": {
+                    "n_frames_sampled": n_sampled,
+                    "n_detections": n_det_total,
+                    "n_accepted_auto": n_accepted,
+                    "n_rejected_auto": n_rejected,
+                    "n_no_detection_frames": n_no_det,
+                },
+            }
+            writer.write_manifest(manifest)
+
+            return VideoExtractionResult(
+                run_dir=str(run_dir), run_id=run_id, extraction_status=extraction_status,
+                manifest_path=str(writer.manifest_path), decisions_path=str(writer.decisions_path),
+                frames_path=str(writer.frames_path), n_frames_sampled=n_sampled,
+                n_detections=n_det_total, n_accepted_auto=n_accepted, n_rejected_auto=n_rejected,
+                n_no_detection_frames=n_no_det, target_labels=[t.label for t in targets],
+                faces=accepted_faces,
+            )
+
+    def _process_frame(
+        self, *, frame, native, ts_fps, ts_cap, target, model, config, info,
+        run_dir, run_id, writer, clock, accepted_faces,
+    ) -> Dict[str, Any]:
+        detections = self.detect_in_frame(frame)
+        n_det = len(detections)
+        if n_det == 0:
+            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                                "n_detections": 0, "n_above_threshold": 0, "status": "no_detection"})
+            return {"n_detections": 0, "accepted": False, "rejected": False, "frame_status": "no_detection"}
+
+        # pré-filtro det HARD_REJECT (antes do embedding)
+        survivors: List[Tuple[int, dict]] = []
+        for i, d in enumerate(detections):
+            ds = float(d.get("det_score", 0.0))
+            if config.det_score_policy == QualityGatePolicy.HARD_REJECT and \
+               config.min_det_score is not None and ds < config.min_det_score:
+                writer.write_decision({"frame_index": native, "det_index": i, "det_score": ds,
+                                       "decision": "hard_reject_det_pre_embedding", "reason": "low_det_score"})
+                continue
+            survivors.append((i, d))
+        if not survivors:
+            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                                "n_detections": n_det, "n_above_threshold": 0, "status": "below_threshold"})
+            return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
+
+        # embeddings em batch
+        bgr_aligned = np.stack([cv2.cvtColor(d["aligned_face"], cv2.COLOR_RGB2BGR) for _, d in survivors], axis=0)
+        kps_list = [d.get("aligned_keypoints") for _, d in survivors]
+        kps_batch = np.stack(kps_list, axis=0) if all(k is not None for k in kps_list) else None
+        ff_infos = self._ff.extract_embeddings_from_aligned_faces_batch(
+            bgr_aligned, models=[model], aligned_keypoints_batch=kps_batch
+        )
+
+        # similaridade + gate de identidade (1 alvo)
+        candidates = []
+        n_above = 0
+        for j, (i, d) in enumerate(survivors):
+            ff_info = ff_infos[j] if j < len(ff_infos) else None
+            emb = self._embedding_from_ffinfo(ff_info, model)
+            sim = target.similarity_to(emb) if emb is not None else float("-inf")
+            above = bool(sim >= target.similarity_threshold)
+            if above:
+                n_above += 1
+            writer.write_decision({
+                "frame_index": native, "det_index": i, "det_score": float(d.get("det_score", 0.0)),
+                "fiqa_score": (float(ff_info.fiqa_score) if ff_info and ff_info.fiqa_score is not None else None),
+                "similarity_to_anchor": (None if sim == float("-inf") else sim),
+                "threshold": target.similarity_threshold, "above_threshold": above,
+                "decision": ("candidate" if above else "non_match"),
+            })
+            candidates.append({"i": i, "d": d, "ff": ff_info, "emb": emb, "sim": sim, "above": above})
+
+        above_cands = sorted([c for c in candidates if c["above"]], key=lambda c: c["sim"], reverse=True)
+        if not above_cands:
+            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                                "n_detections": n_det, "n_above_threshold": 0, "status": "no_match"})
+            return {"n_detections": n_det, "accepted": False, "rejected": False, "frame_status": "no_match"}
+
+        best = above_cands[0]
+        margin = (best["sim"] - above_cands[1]["sim"]) if len(above_cands) >= 2 else None
+        auto_decision = "conflict" if len(above_cands) >= 2 else "accepted"
+
+        det_decision = _gate_decision(config.det_score_policy, float(best["d"].get("det_score", 0.0)), config.min_det_score)
+        fiqa_val = float(best["ff"].fiqa_score) if best["ff"] and best["ff"].fiqa_score is not None else None
+        fiqa_decision = _gate_decision(config.fiqa_score_policy, fiqa_val, config.min_fiqa_score)
+
+        if fiqa_decision == "hard_reject" or det_decision == "hard_reject":
+            writer.write_decision({"frame_index": native, "det_index": best["i"],
+                                   "decision": "hard_reject_quality",
+                                   "det_score_decision": det_decision, "fiqa_score_decision": fiqa_decision})
+            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                                "n_detections": n_det, "n_above_threshold": n_above, "status": "below_threshold"})
+            return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
+
+        review_reasons: List[str] = []
+        if auto_decision == "conflict":
+            review_reasons.append("conflict")
+        if det_decision == "route_to_review":
+            review_reasons.append("low_det")
+        if fiqa_decision == "route_to_review":
+            review_reasons.append("low_fiqa")
+
+        prov = self._save_accepted_face(
+            frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap, best=best, target=target,
+            model=model, config=config, info=info, run_dir=run_dir, run_id=run_id, writer=writer,
+            clock=clock, margin=margin, auto_decision=auto_decision, review_reasons=review_reasons,
+            det_decision=det_decision, fiqa_decision=fiqa_decision, fiqa_val=fiqa_val, n_above=n_above,
+        )
+        if prov is not None:
+            accepted_faces.append(prov)
+            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                                "n_detections": n_det, "n_above_threshold": n_above,
+                                "status": ("conflict" if auto_decision == "conflict" else "accepted")})
+            return {"n_detections": n_det, "accepted": True, "rejected": False,
+                    "frame_status": ("conflict" if auto_decision == "conflict" else "accepted")}
+        # falha ao salvar o crop
+        writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+                            "n_detections": n_det, "n_above_threshold": n_above, "status": "below_threshold"})
+        return {"n_detections": n_det, "accepted": False, "rejected": True, "frame_status": "below_threshold"}
+
+    def _save_accepted_face(
+        self, *, frame, native, ts_fps, ts_cap, best, target, model, config, info,
+        run_dir, run_id, writer, clock, margin, auto_decision, review_reasons,
+        det_decision, fiqa_decision, fiqa_val, n_above,
+    ) -> Optional[FaceProvenance]:
+        d = best["d"]
+        bbox = np.asarray(d["bbox"]).astype(float).flatten()[:4]
+        ext = extend_bbox(np.asarray(bbox), frame.shape, margin_factor=config.margin)
+        x1, y1, x2, y2 = (int(v) for v in ext)
+        if x2 <= x1 or y2 <= y1:
+            return None
+        crop = frame[y1:y2, x1:x2]
+        if crop is None or crop.size == 0:
+            return None
+
+        label = target.label
+        crop_name = f"{label}_f{native:07d}.png"
+        crop_path = run_dir / label / crop_name
+        if not imwrite_unicode_safe(crop_path, crop):
+            print(f"⚠️ [VideoExtraction] falha ao gravar recorte {crop_path}")
+            return None
+        image_sha = self._hash.calculate_file_hash(crop_path)
+
+        decoded_sha = decoded_algo = decoded_cs = None
+        if config.save_decoded_frame_hash:
+            decoded_sha = hashlib.sha256(np.ascontiguousarray(frame).tobytes()).hexdigest()
+            decoded_algo, decoded_cs = "sha256", "BGR"
+
+        aligned = self.align_detected_face_from_array(frame, d)
+        h, w = crop.shape[:2]
+
+        prov = FaceProvenance(
+            run_id=run_id, run_manifest=f"_run_{run_id}.json", identity_label=label,
+            image_file=crop_name, image_sha256=image_sha, image_width_px=w, image_height_px=h,
+            crop_margin_factor=config.margin, color_space="BGR", saved_at_utc=clock(), target_index=0,
+            source_video_filename=info.filename, source_video_sha256=info.sha256,
+            frame_native_index=native, timestamp_s_from_fps=ts_fps, timestamp_s_capture_prop=ts_cap,
+            decoded_frame_sha256=decoded_sha, decoded_frame_hash_algorithm=decoded_algo,
+            decoded_frame_color_space=decoded_cs, decoder=info.decoder_backend, opencv_version=info.opencv_version,
+            bbox_xyxy=bbox.tolist(), det_score=float(d.get("det_score", 0.0)),
+            keypoints_5pt=aligned.keypoints_5pt, align_matrix_2x3=aligned.align_matrix_2x3,
+            align_matrix_available=aligned.align_matrix_available, pose=aligned.pose,
+            gender=aligned.gender, age=aligned.age,
+            reid_method="embedding", similarity_to_anchor=float(best["sim"]),
+            similarity_threshold=target.similarity_threshold, assigned_by="embedding", track_id=0,
+            recognition_model=model, anchor_embedding_fingerprint=target.anchor_embedding_fingerprint(),
+            margin_to_second_best=(float(margin) if margin is not None else None),
+            min_det_score=config.min_det_score, det_score_policy=config.det_score_policy.to_str(),
+            det_score_decision=det_decision, fiqa_score=fiqa_val, min_fiqa_score=config.min_fiqa_score,
+            fiqa_score_policy=config.fiqa_score_policy.to_str(), fiqa_score_decision=fiqa_decision,
+            auto_decision=auto_decision, review_reasons=review_reasons, human_review_status="pending",
+        )
+        writer.write_sidecar(prov)
+        writer.add_embedding(
+            kind=("conflict" if auto_decision == "conflict" else "accepted"),
+            target_label=label, frame_index=native, det_index=best["i"],
+            recognition_model=model, embedding=best["emb"],
+        )
+        return prov
