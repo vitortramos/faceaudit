@@ -216,7 +216,12 @@ class OcclusionProcessor:
         if not faces:
             return []
 
-        face = engine._get_best_face(image, faces, criterion="size")
+        # forensicface >= 0.7.1 removeu ForensicFace._get_best_face e expôs
+        # a seleção como função de módulo em geometry.select_best_face
+        # (recebe img_shape, não o array). Import local: este caminho só
+        # roda com FFService presente (logo, forensicface instalada).
+        from forensicface.geometry import select_best_face
+        face = select_best_face(image.shape, faces, criterion="size")
         kps = getattr(face, "kps", None)
         if kps is None or len(kps) < 5:
             return []

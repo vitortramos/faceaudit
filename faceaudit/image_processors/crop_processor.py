@@ -95,7 +95,12 @@ class CropProcessor:
             raise RuntimeError(
                 "CropMode.FACE_DETECTED: nenhuma face detectada na imagem."
             )
-        face = engine._get_best_face(image, faces, criterion="size")
+        # forensicface >= 0.7.1 removeu ForensicFace._get_best_face e expôs
+        # a seleção como função de módulo em geometry.select_best_face
+        # (recebe img_shape, não o array). Import local: este caminho só
+        # roda com FFService presente (logo, forensicface instalada).
+        from forensicface.geometry import select_best_face
+        face = select_best_face(image.shape, faces, criterion="size")
         x1, y1, x2, y2 = self._extract_bbox(face)
 
         # Aplica padding (fração da bbox em cada lado)
