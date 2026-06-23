@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 
 from faceaudit.models import FaceDataset, FaceInfo, FFInfo, OFIQInfo, SERFIQInfo
-from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN, DirTemplate
+from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN, DirTemplate, split_name
 from faceaudit.services.hash_service import HashService
 
 class FaceDatasetAdapter:
@@ -101,11 +101,13 @@ class FaceDatasetAdapter:
             if level_idx < len(folder_parts):
                 folder_name = folder_parts[level_idx]
 
-                if (template.use_folder_separator and template.folder_separator
-                        and template.folder_separator in folder_name):
-                    values = folder_name.split(template.folder_separator)
-                else:
-                    values = [folder_name]
+                values = split_name(
+                    folder_name,
+                    template.folder_separator,
+                    template.use_folder_separator,
+                    getattr(template, "folder_split_from_right", False),
+                    getattr(template, "folder_max_splits", 0),
+                )
 
                 for i, attr in enumerate(attributes):
                     val = values[i] if i < len(values) else values[0]
@@ -113,11 +115,13 @@ class FaceDatasetAdapter:
 
         # 2. Mapeamento de Arquivos
         filename_stem = file_path.stem
-        if (template.use_filename_separator and template.filename_separator
-                and template.filename_separator in filename_stem):
-            file_parts = filename_stem.split(template.filename_separator)
-        else:
-            file_parts = [filename_stem]
+        file_parts = split_name(
+            filename_stem,
+            template.filename_separator,
+            template.use_filename_separator,
+            getattr(template, "filename_split_from_right", False),
+            getattr(template, "filename_max_splits", 0),
+        )
 
         for idx_key, attr in template.filename_map.items():
             idx_int = int(idx_key)

@@ -21,6 +21,32 @@ BUILTIN_COLUMNS: Dict[str, str] = {
 IGNORE_TOKEN = "ignorar"
 
 
+def split_name(
+    name: str,
+    separator: str,
+    use_separator: bool,
+    from_right: bool = False,
+    max_splits: int = 0,
+) -> List[str]:
+    """Divide um nome de pasta/arquivo respeitando direção e limite.
+
+    - Se o split estiver desligado, o separador for vazio, ou não ocorrer
+      no nome, retorna [name] (uma única parte) — comportamento histórico.
+    - `from_right=True` usa `str.rsplit` (divide a partir do final).
+    - `max_splits <= 0` significa "sem limite" (todas as ocorrências).
+
+    Caso RFW: from_right=True + max_splits=1 garante que só o ÚLTIMO
+    separador divide, resultando em exatamente 2 partes mesmo que o
+    separador também apareça dentro da identidade.
+    """
+    if not (use_separator and separator and separator in name):
+        return [name]
+    limit = max_splits if max_splits and max_splits > 0 else -1
+    if from_right:
+        return name.rsplit(separator, limit)
+    return name.split(separator, limit)
+
+
 @dataclass
 class DirTemplate(JSONSerializableMixin):
     """
@@ -43,6 +69,20 @@ class DirTemplate(JSONSerializableMixin):
     use_folder_separator: bool = False
     filename_separator: str = "_"
     use_filename_separator: bool = False
+
+    # Direção e limite do split (independentes para pasta e arquivo).
+    # Defaults preservam o comportamento histórico: split da esquerda
+    # para a direita, sem limite de divisões (str.split simples).
+    #
+    # Caso de uso canônico (RFW): o "_" é separador E caractere da
+    # identidade. Com `filename_split_from_right=True` +
+    # `filename_max_splits=1`, "Aaron_Lewis_0001" → rsplit("_", 1)
+    # → ["Aaron_Lewis", "0001"]: Parte 0 = identidade, Parte 1 = índice.
+    # `max_splits=0` significa "sem limite" (equivalente ao split puro).
+    folder_split_from_right: bool = False
+    folder_max_splits: int = 0
+    filename_split_from_right: bool = False
+    filename_max_splits: int = 0
 
     # Universo de colunas custom declaradas pelo usuário.
     # Built-ins (BUILTIN_COLUMNS) ficam implícitos no código —

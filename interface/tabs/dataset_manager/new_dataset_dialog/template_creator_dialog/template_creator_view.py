@@ -5,13 +5,17 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -85,6 +89,9 @@ class TemplateCreatorView(QDialog):
         )
         layout.addWidget(self.chk_parent)
 
+        # ── Pré-visualização ──
+        self._init_preview_section(layout)
+
         # Botões
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -129,6 +136,47 @@ class TemplateCreatorView(QDialog):
             item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsEditable)
             self.list_columns.addItem(item)
 
+    def _init_preview_section(self, layout: QVBoxLayout) -> None:
+        """Seção de pré-visualização: o usuário digita um caminho de
+        exemplo (relativo à raiz do dataset) e vê, em tempo real, o
+        valor que cada coluna receberia — usando a MESMA lógica de
+        extração da ingestão real."""
+        line = QFrame(self)
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(line)
+
+        layout.addWidget(QLabel(
+            "<b>🔍 Pré-visualização</b> — caminho de exemplo "
+            "(relativo à pasta do dataset):",
+            parent=self,
+        ))
+
+        self.txt_preview_path = QLineEdit(self)
+        self.txt_preview_path.setPlaceholderText(
+            "Ex: African/Aaron_Lewis_0001.jpg"
+        )
+        layout.addWidget(self.txt_preview_path)
+
+        self.tbl_preview = QTableWidget(0, 2, self)
+        self.tbl_preview.setHorizontalHeaderLabels(["Coluna", "Valor extraído"])
+        self.tbl_preview.verticalHeader().setVisible(False)
+        self.tbl_preview.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_preview.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.tbl_preview.setMaximumHeight(150)
+        header = self.tbl_preview.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.tbl_preview)
+
+    def set_preview_rows(self, rows: list) -> None:
+        """Preenche a tabela de preview. `rows` é uma lista de
+        (label:str, valor:str)."""
+        self.tbl_preview.setRowCount(len(rows))
+        for r, (label, value) in enumerate(rows):
+            self.tbl_preview.setItem(r, 0, QTableWidgetItem(str(label)))
+            self.tbl_preview.setItem(r, 1, QTableWidgetItem(str(value)))
+
     def _init_folders_tab(self) -> None:
         layout = QVBoxLayout(self.tab_folders)
 
@@ -146,6 +194,19 @@ class TemplateCreatorView(QDialog):
         sep_row.addWidget(self.txt_folder_separator)
         sep_row.addStretch()
         layout.addLayout(sep_row)
+
+        # Divisão só no último separador (rsplit 1×). Útil quando o
+        # separador também aparece dentro do valor.
+        self.chk_folder_last_sep = QCheckBox(
+            "Usar apenas o ÚLTIMO separador como divisor", parent=self.tab_folders,
+        )
+        self.chk_folder_last_sep.setToolTip(
+            "Divide o nome da pasta só na última ocorrência do separador "
+            "(2 partes). Use quando o separador também faz parte do valor."
+        )
+        self.chk_folder_last_sep.setEnabled(False)
+        self.chk_use_folder_sep.toggled.connect(self.chk_folder_last_sep.setEnabled)
+        layout.addWidget(self.chk_folder_last_sep)
 
         layout.addWidget(QLabel("Mapeamento de Pastas (Defina o Nível):",
                                 parent=self.tab_folders))
@@ -187,6 +248,21 @@ class TemplateCreatorView(QDialog):
         sep_row.addWidget(self.txt_filename_separator)
         sep_row.addStretch()
         layout.addLayout(sep_row)
+
+        # Divisão só no último separador (rsplit 1×). Caso RFW:
+        # "Aaron_Lewis_0001" -> ["Aaron_Lewis", "0001"].
+        self.chk_filename_last_sep = QCheckBox(
+            "Usar apenas o ÚLTIMO separador como divisor", parent=self.tab_files,
+        )
+        self.chk_filename_last_sep.setToolTip(
+            "Divide o nome do arquivo só na última ocorrência do separador "
+            "(2 partes). Ex.: 'Aaron_Lewis_0001' vira 'Aaron_Lewis' (Parte 0) "
+            "+ '0001' (Parte 1). Use quando o separador também faz parte da "
+            "identidade."
+        )
+        self.chk_filename_last_sep.setEnabled(False)
+        self.chk_use_filename_sep.toggled.connect(self.chk_filename_last_sep.setEnabled)
+        layout.addWidget(self.chk_filename_last_sep)
 
         layout.addWidget(QLabel("Mapeamento de Arquivo (Split):",
                                 parent=self.tab_files))

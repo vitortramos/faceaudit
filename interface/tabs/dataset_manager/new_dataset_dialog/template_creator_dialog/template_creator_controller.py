@@ -4,7 +4,9 @@ from typing import Dict, List, Tuple
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
+from faceaudit.adapters.face_dataset_adapter import FaceDatasetAdapter
 from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN, DirTemplate
+from faceaudit.models.face_info import FaceInfo
 
 # IMPORTAÇÃO RELATIVA LOCAL
 from .template_creator_view import TemplateCreatorView
@@ -48,11 +50,22 @@ class TemplateCreatorController(QtCore.QObject):
 
         # Aba Pastas
         self.view.btn_add_f.clicked.connect(self._on_add_folder)
-        self.view.btn_rem_f.clicked.connect(self.view.remove_folder_item)
+        self.view.btn_rem_f.clicked.connect(self._on_remove_folder)
 
         # Aba Arquivos
         self.view.btn_add_file.clicked.connect(self._on_add_file)
-        self.view.btn_rem_file.clicked.connect(self.view.remove_file_item)
+        self.view.btn_rem_file.clicked.connect(self._on_remove_file)
+
+        # Pré-visualização ao vivo: qualquer mudança que afete a extração
+        # dispara um refresh da tabela de preview.
+        self.view.txt_preview_path.textChanged.connect(self._update_preview)
+        self.view.chk_use_folder_sep.toggled.connect(self._update_preview)
+        self.view.txt_folder_separator.textChanged.connect(self._update_preview)
+        self.view.chk_folder_last_sep.toggled.connect(self._update_preview)
+        self.view.chk_use_filename_sep.toggled.connect(self._update_preview)
+        self.view.txt_filename_separator.textChanged.connect(self._update_preview)
+        self.view.chk_filename_last_sep.toggled.connect(self._update_preview)
+        self.view.chk_parent.toggled.connect(self._update_preview)
 
         # Interceptação do botão Save: desconecta o handler default do QDialogButtonBox
         # antes de injetar o nosso. Qt levanta TypeError quando não há slot conectado —
@@ -98,6 +111,7 @@ class TemplateCreatorController(QtCore.QObject):
 
         self.view.add_custom_column_item(key)
         self._refresh_attribute_combos()
+        self._update_preview()
 
     def _on_remove_custom_column(self) -> None:
         key = self.view.selected_column_key()
@@ -127,6 +141,7 @@ class TemplateCreatorController(QtCore.QObject):
 
         self.view.remove_selected_custom_column()
         self._refresh_attribute_combos()
+        self._update_preview()
 
     def _find_usages_in_lists(self, column_key: str) -> Tuple[List[str], List[str]]:
         """Varre as ListWidgets de mapeamento procurando pela chave.
@@ -161,13 +176,93 @@ class TemplateCreatorController(QtCore.QObject):
         # Lemos a CHAVE canônica do combo (userData), não o label exibido.
         attr_key = self.view.cmb_folder_attr.currentData() or IGNORE_TOKEN
         self.view.add_folder_item(level, attr_key)
+        self._update_preview()
+
+    def _on_remove_folder(self):
+        self.view.remove_folder_item()
+        self._update_preview()
 
     def _on_add_file(self):
         idx = self.view.spin_file_idx.value()
         attr_key = self.view.cmb_file_attr.currentData() or IGNORE_TOKEN
         self.view.add_file_item(idx, attr_key)
+        self._update_preview()
+
+    def _on_remove_file(self):
+        self.view.remove_file_item()
+        self._update_preview()
 
     # ───────────────────────── Save ─────────────────────────────────
+
+    def _build_template_from_view(self, name: str) -> DirTemplate:
+        """Monta um DirTemplate a partir do estado atual da view.
+
+        A checkbox "usar apenas o último separador" mapeia para
+        `*_split_from_right=True` + `*_max_splits=1` (rsplit 1×). Quando
+        desmarcada, mantém o comportamento histórico (split simples).
+        Reusado tanto pelo save quanto pelo preview ao vivo.
+        """
+        folder_last = self.view.chk_folder_last_sep.isChecked()
+        filename_last = self.view.chk_filename_last_sep.isChecked()
+        return DirTemplate(
+            name=name,
+            folder_separator=self.view.txt_folder_separator.text() or "_",
+            use_folder_separator=self.view.chk_use_folder_sep.isChecked(),
+            folder_split_from_right=folder_last,
+            folder_max_splits=1 if folder_last else 0,
+            filename_separator=self.view.txt_filename_separator.text() or "_",
+            use_filename_separator=self.view.chk_use_filename_sep.isChecked(),
+            filename_split_from_right=filename_last,
+            filename_max_splits=1 if filename_last else 0,
+            custom_columns=self.view.get_custom_column_keys(),
+            folder_map=self._parse_folder_list(),
+            filename_map=self._parse_file_list(),
+            identity_from_parent=self.view.chk_parent.isChecked(),
+        )
+
+    def _update_preview(self) -> None:
+        """Aplica o template em construção a um caminho de exemplo e
+        mostra o resultado por coluna — usando o MESMO código da
+        ingestão real (FaceDatasetAdapter._apply_template) para garantir
+        fidelidade."""
+        example = self.view.txt_preview_path.text().strip()
+        if not example:
+            self.view.set_preview_rows([])
+            return
+
+        example_norm = example.replace("\\", "/").lstrip("/")
+        template = self._build_template_from_view(name="__preview__")
+
+        root = Path("preview_root")
+        file_path = root / example_norm
+
+        face = FaceInfo(image_path=str(file_path))
+        # Espelha as atribuições base de FaceDatasetAdapter.dataset_from_dir
+        face.identity = "Unknown"
+        face.origin = "Local"
+
+        try:
+            FaceDatasetAdapter._apply_template(face, file_path, root, template)
+        except Exception as e:
+            self.view.set_preview_rows([("⚠ erro", str(e))])
+            return
+
+        # Fallback de identidade (espelha o modo recursivo da ingestão).
+        if face.identity == "Unknown":
+            face.identity = file_path.parent.name
+
+        rows = []
+        for key, label in (
+            ("identity", "Identidade"),
+            ("gender", "Gênero"),
+            ("ethnicity", "Etnia"),
+            ("origin", "Origem"),
+        ):
+            val = getattr(face, key, None)
+            rows.append((label, "" if val is None else str(val)))
+        for k, v in face.extra_data.items():
+            rows.append((k, "" if v is None else str(v)))
+        self.view.set_preview_rows(rows)
 
     def _on_save_attempt(self):
         """Valida e salva o template em formato JSON."""
@@ -176,22 +271,8 @@ class TemplateCreatorController(QtCore.QObject):
             QMessageBox.warning(self.view, "Erro", "Defina um nome para o template.")
             return
 
-        f_map = self._parse_folder_list()
-        fn_map = self._parse_file_list()
-        custom_columns = self.view.get_custom_column_keys()
-
         try:
-            template = DirTemplate(
-                name=name,
-                folder_separator=self.view.txt_folder_separator.text() or "_",
-                use_folder_separator=self.view.chk_use_folder_sep.isChecked(),
-                filename_separator=self.view.txt_filename_separator.text() or "_",
-                use_filename_separator=self.view.chk_use_filename_sep.isChecked(),
-                custom_columns=custom_columns,
-                folder_map=f_map,
-                filename_map=fn_map,
-                identity_from_parent=self.view.chk_parent.isChecked(),
-            )
+            template = self._build_template_from_view(name=name)
 
             path = self.save_directory / f"{name}.json"
             template.to_json(path)
