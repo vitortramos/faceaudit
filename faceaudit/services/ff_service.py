@@ -224,6 +224,7 @@ class FFService:
         use_gpu: bool = False,
         extended: bool = True,
         batch_size: int = 32,
+        det_thresh: float = 0.5,
     ):
         if ForensicFace is None:
             raise ImportError("A biblioteca 'forensicface' não foi encontrada.")
@@ -257,6 +258,9 @@ class FFService:
         self._det_size = det_size
         self._use_gpu = use_gpu
         self._extended = extended
+        # Limiar do detector (SCRFD). ↓ pega faces de baixa confiança
+        # (pequenas/distantes em vigilância), ao custo de mais falsos positivos.
+        self._det_thresh = float(det_thresh)
         # Batch size pra inferência paralela de embedding/FIQA. Sanitizado
         # pra inteiro >= 1; 1 desliga batching (loop legado).
         try:
@@ -326,6 +330,7 @@ class FFService:
                 det_size=det_size,
                 use_gpu=use_gpu,
                 extended=extended,
+                det_thresh=det_thresh,
                 concat_embeddings=True,
             )
 

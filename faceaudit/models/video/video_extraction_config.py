@@ -35,6 +35,7 @@ class VideoExtractionConfig(JSONSerializableMixin):
     similarity_threshold: float = 0.30       # limiar de IDENTIDADE (cosseno); calibrar na prévia
     select_single_face_by: str = "size"      # "size" | "centrality" (desempate da âncora)
     det_size: int = 640                      # tamanho do detector; ↑ p/ faces pequenas (vigilância: 960)
+    det_thresh: float = 0.5                  # limiar do detector; ↓ p/ faces de baixa confiança
 
     # --- Gates de qualidade (separados da identidade) ---
     min_det_score: Optional[float] = None
@@ -64,6 +65,7 @@ class VideoExtractionConfig(JSONSerializableMixin):
             "similarity_threshold": self.similarity_threshold,
             "select_single_face_by": self.select_single_face_by,
             "det_size": self.det_size,
+            "det_thresh": self.det_thresh,
             "min_det_score": self.min_det_score,
             "min_fiqa_score": self.min_fiqa_score,
             "det_score_policy": self.det_score_policy.to_str(),

@@ -111,6 +111,13 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         for label, _v in _DET_SIZES:
             self.cmb_det.addItem(label)
         self.cmb_det.setCurrentIndex(1)  # 640
+        self.spn_det_thresh = QtWidgets.QDoubleSpinBox(self)
+        self.spn_det_thresh.setRange(0.05, 0.9)
+        self.spn_det_thresh.setSingleStep(0.05)
+        self.spn_det_thresh.setValue(0.5)
+        self.spn_det_thresh.setToolTip(
+            "Limiar do detector (SCRFD). ↓ pega faces de baixa confiança "
+            "(pequenas/distantes), ao custo de mais falsos positivos.")
         self.btn_load = QtWidgets.QPushButton("Carregar vídeo", self)
         self.btn_load.clicked.connect(self._on_load)
         row.addWidget(QtWidgets.QLabel("Vídeo:", self))
@@ -118,6 +125,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         row.addWidget(btn_browse)
         row.addWidget(QtWidgets.QLabel("Detector:", self))
         row.addWidget(self.cmb_det)
+        row.addWidget(QtWidgets.QLabel("Limiar det.:", self))
+        row.addWidget(self.spn_det_thresh)
         row.addWidget(self.btn_load)
         root.addLayout(row)
 
@@ -224,7 +233,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
             ff = FFService(models=[self._model] if self._model else None,
-                           use_gpu=self._use_gpu, det_size=self._det_size())
+                           use_gpu=self._use_gpu, det_size=self._det_size(),
+                           det_thresh=float(self.spn_det_thresh.value()))
             self._service = VideoFrameFaceExtractionService(ff)
             self._info = self._service.probe_video(path)
         except Exception as e:
@@ -284,7 +294,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             return
         built = self._service.build_target_from_click(
             self._current_frame, x, y, label=self.txt_label.text().strip() or "alvo",
-            similarity_threshold=float(self.spn_thr.value()), model=self._model)
+            similarity_threshold=float(self.spn_thr.value()), model=self._model,
+            frame_index=self.slider.value())
         if built is None:
             return
         target, det_idx, _dets = built
@@ -332,7 +343,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             if not arr:
                 return "—"
             a = np.asarray(arr, dtype=float)
-            return f"min {a.min():.2f} | p50 {np.median(a):.2f} | max {a.max():.2f}"
+            return (f"min {a.min():.2f} | p5 {np.percentile(a, 5):.2f} | "
+                    f"p50 {np.median(a):.2f} | p95 {np.percentile(a, 95):.2f} | max {a.max():.2f}")
 
         self.lbl_preview.setText(
             f"<b>Prévia ({len(idxs)} quadros amostrados, limiar {thr:.2f}):</b><br>"
@@ -366,8 +378,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             target_fps=float(self.spn_fps.value()),
             similarity_threshold=float(self.spn_thr.value()),
             margin=float(self.spn_margin.value()),
-            det_size=self._det_size(), recognition_model=self._model,
-            mode=self.get_mode(),
+            det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
+            recognition_model=self._model, mode=self.get_mode(),
             compute_ff=True, compute_ofiq=self.chk_ofiq.isChecked(),
             compute_serfiq=self.chk_serfiq.isChecked(),
         )

@@ -262,6 +262,18 @@ def test_extract_reproducible_crop_names_and_hashes(video_path, tmp_path):
     assert crop_hashes(r1) == crop_hashes(r2)
 
 
+def test_build_target_from_click_records_anchor_frame_and_bbox():
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.9)], reg)
+    frame = np.zeros((64, 64, 3), np.uint8)
+    built = service.build_target_from_click(frame, 25, 25, label="alvo",
+                                            similarity_threshold=0.5, frame_index=7)
+    assert built is not None
+    target, idx, _dets = built
+    assert target.anchor_frame_index == 7
+    assert target.anchor_bbox == [10.0, 10.0, 40.0, 40.0]
+
+
 def test_extract_multi_target_assigns_each_to_own_folder(video_path, tmp_path):
     # Fase 4: pipeline N-ready — 2 alvos, 2 rostos por quadro → 1-pra-1.
     reg = {0: (EMB_TARGET, 0.8), 1: (EMB_OTHER, 0.8)}

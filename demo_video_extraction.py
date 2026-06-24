@@ -44,6 +44,8 @@ def main() -> int:
     ap.add_argument("--model", default=None, help="Modelo de recognition (default do FFService).")
     ap.add_argument("--det-size", type=int, default=640,
                     help="Tamanho do detector. ↑ p/ faces pequenas: 640 (default), 960 (vigilância).")
+    ap.add_argument("--det-thresh", type=float, default=0.5,
+                    help="Limiar do detector (↓ p/ faces de baixa confiança; default 0.5).")
     ap.add_argument("--gpu", action="store_true", help="Usar GPU (evite em Pascal/ort>=1.20).")
     args = ap.parse_args()
 
@@ -55,7 +57,7 @@ def main() -> int:
     from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
 
     models = [args.model] if args.model else None
-    ff = FFService(models=models, use_gpu=args.gpu, det_size=args.det_size)
+    ff = FFService(models=models, use_gpu=args.gpu, det_size=args.det_size, det_thresh=args.det_thresh)
     service = VideoFrameFaceExtractionService(ff)
 
     info = service.probe_video(args.video)
@@ -106,6 +108,7 @@ def main() -> int:
 
     built = service.build_target_from_click(
         frame, cx, cy, label=args.label, similarity_threshold=args.threshold, model=args.model,
+        frame_index=anchor_idx,
     )
     if built is None:
         print("❌ Nenhuma detecção contém o ponto de âncora informado.", file=sys.stderr)
@@ -117,7 +120,7 @@ def main() -> int:
         video_path=args.video, output_root=args.output, target_fps=args.target_fps,
         start_s=args.start, end_s=args.end, margin=args.margin,
         similarity_threshold=args.threshold, recognition_model=args.model,
-        det_size=args.det_size,
+        det_size=args.det_size, det_thresh=args.det_thresh,
     )
     res = service.extract(
         cfg, [target],

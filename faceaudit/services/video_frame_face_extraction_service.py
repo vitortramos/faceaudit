@@ -235,9 +235,11 @@ class VideoFrameFaceExtractionService:
         label: str,
         similarity_threshold: float,
         model: Optional[str] = None,
+        frame_index: Optional[int] = None,
     ) -> Optional[Tuple[VideoTarget, int, List[dict]]]:
         """Constrói o alvo a partir de um clique. Retorna (target, det_idx,
-        detections) ou None se nenhuma detecção contém o ponto."""
+        detections) ou None se nenhuma detecção contém o ponto. `frame_index`
+        é registrado no alvo para salvar o quadro-âncora anotado."""
         detections = self.detect_in_frame(frame_bgr)
         idx = self.detection_containing_point(detections, x, y)
         if idx is None:
@@ -245,6 +247,7 @@ class VideoFrameFaceExtractionService:
         emb = self.compute_anchor_embedding(detections[idx], model)
         if emb is None:
             return None
+        bbox = np.asarray(detections[idx]["bbox"]).astype(float).flatten()[:4].tolist()
         target = VideoTarget(
             label=label,
             anchor_embeddings=[np.asarray(emb)],
@@ -252,8 +255,24 @@ class VideoFrameFaceExtractionService:
             similarity_threshold=float(similarity_threshold),
             similarity_threshold_source="MANUAL",
             recognition_model=model or self._ff.default_model,
+            anchor_frame_index=frame_index,
+            anchor_bbox=bbox,
         )
         return target, idx, detections
+
+    def _save_annotated_frame(self, frame_bgr, bbox, dst_path, *, label: str = "",
+                              color=(0, 200, 83)) -> None:
+        """Salva o quadro inteiro com a bbox marcada (cadeia de custódia/laudo)."""
+        try:
+            annotated = frame_bgr.copy()
+            x1, y1, x2, y2 = (int(v) for v in np.asarray(bbox).astype(float).flatten()[:4])
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+            if label:
+                cv2.putText(annotated, label, (x1, max(12, y1 - 6)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            imwrite_unicode_safe(dst_path, annotated)
+        except Exception:
+            pass
 
     def score_frame_against_target(self, frame_bgr, target, model: Optional[str] = None) -> List[Dict[str, Any]]:
         """Para a prévia de limiar (UI): similaridade + det_score + fiqa de
@@ -364,6 +383,17 @@ class VideoFrameFaceExtractionService:
                     recognition_model=t.recognition_model, embedding=ref,
                     fingerprint=t.anchor_embedding_fingerprint(),
                 )
+
+            # Quadro-âncora anotado (cadeia de custódia / laudo).
+            if config.save_annotated_anchor:
+                for t in targets:
+                    if t.anchor_frame_index is not None and t.anchor_bbox is not None:
+                        af = self.read_frame(config.video_path, t.anchor_frame_index)
+                        if af is not None:
+                            self._save_annotated_frame(
+                                af, t.anchor_bbox,
+                                run_dir / "annotated" / f"anchor_{t.label}_f{int(t.anchor_frame_index):07d}.png",
+                                label=t.label)
 
             try:
                 if start_frame > 0:
@@ -649,4 +679,12 @@ class VideoFrameFaceExtractionService:
             target_label=label, frame_index=native, det_index=assignment.det_index,
             recognition_model=model, embedding=emb,
         )
+        # Conflito (≥2 candidatos acima do limiar) → cópia em _candidates/ p/
+        # auditoria visual rápida do que ficou ambíguo.
+        if auto_decision == "conflict":
+            imwrite_unicode_safe(run_dir / "_candidates" / label / crop_name, crop)
+        # Quadro inteiro anotado dos aceitos (opcional; default OFF — explode disco).
+        if config.save_annotated_accepted:
+            self._save_annotated_frame(
+                frame, bbox, run_dir / "annotated" / f"{label}_f{native:07d}.png", label=label)
         return prov

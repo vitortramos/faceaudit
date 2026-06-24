@@ -27,6 +27,8 @@ class VideoTarget:
     similarity_threshold_source: str = "MANUAL"   # MANUAL | SUGGESTED
     anchor_frames: List[int] = field(default_factory=list)  # quadros-âncora secundários
     recognition_model: Optional[str] = None       # modelo que produziu a âncora
+    anchor_frame_index: Optional[int] = None       # quadro do clique (p/ quadro anotado)
+    anchor_bbox: Optional[List[float]] = None      # bbox da face clicada (p/ quadro anotado)
 
     # Estado de track (Fase 4) — opcional na v1.
     last_bbox: Optional[List[float]] = None
