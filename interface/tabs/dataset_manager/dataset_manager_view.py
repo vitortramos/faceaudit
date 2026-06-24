@@ -49,3 +49,12 @@ class DatasetManagerView(QWidget):
 
         self.splitter.setStretchFactor(0, 7)
         self.splitter.setStretchFactor(1, 3)
+
+        # Impede que o painel de detalhes (direita) seja colapsado a 0 quando
+        # a tabela fica larga (datasets com muitas colunas, ex.: video_*).
+        # Sem isso, o splitter dava toda a largura à tabela e o painel
+        # (imagem + infos) "sumia". Largura mínima + não-colapsável + tamanhos
+        # iniciais garantem que ele sempre apareça.
+        self.detail_container.setMinimumWidth(260)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setSizes([720, 320])
