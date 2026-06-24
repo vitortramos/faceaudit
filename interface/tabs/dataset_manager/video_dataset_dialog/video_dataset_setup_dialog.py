@@ -149,6 +149,35 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         sld_row.addWidget(self.btn_detect)
         root.addLayout(sld_row)
 
+        # Janela de extração (início/fim) — extrair só um trecho do vídeo.
+        win = QtWidgets.QGroupBox("Janela de extração (extrair só um trecho)", self)
+        wl = QtWidgets.QGridLayout(win)
+        self.sld_start = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.sld_end = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        self.sld_start.setEnabled(False)
+        self.sld_end.setEnabled(False)
+        self.lbl_start = QtWidgets.QLabel("—", self)
+        self.lbl_end = QtWidgets.QLabel("—", self)
+        self.lbl_window = QtWidgets.QLabel("", self)
+        btn_start_here = QtWidgets.QPushButton("⟸ quadro atual", self)
+        btn_end_here = QtWidgets.QPushButton("quadro atual ⟹", self)
+        btn_start_here.setToolTip("Define o início no quadro do scrubber")
+        btn_end_here.setToolTip("Define o fim no quadro do scrubber")
+        btn_start_here.clicked.connect(lambda: self.sld_start.setValue(self.slider.value()))
+        btn_end_here.clicked.connect(lambda: self.sld_end.setValue(self.slider.value()))
+        self.sld_start.valueChanged.connect(self._on_window_changed)
+        self.sld_end.valueChanged.connect(self._on_window_changed)
+        wl.addWidget(QtWidgets.QLabel("Início:", self), 0, 0)
+        wl.addWidget(self.sld_start, 0, 1)
+        wl.addWidget(self.lbl_start, 0, 2)
+        wl.addWidget(btn_start_here, 0, 3)
+        wl.addWidget(QtWidgets.QLabel("Fim:", self), 1, 0)
+        wl.addWidget(self.sld_end, 1, 1)
+        wl.addWidget(self.lbl_end, 1, 2)
+        wl.addWidget(btn_end_here, 1, 3)
+        wl.addWidget(self.lbl_window, 2, 1, 1, 3)
+        root.addWidget(win)
+
         self.lbl_anchor = QtWidgets.QLabel(
             "Âncora: <i>nenhuma</i> — clique na face do alvo num quadro com detecção.", self)
         self.lbl_anchor.setTextFormat(QtCore.Qt.TextFormat.RichText)
@@ -251,6 +280,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.slider.setEnabled(True)
         self.btn_detect.setEnabled(True)
         self.btn_preview.setEnabled(True)
+        for sl in (self.sld_start, self.sld_end):
+            sl.setEnabled(True)
+            sl.setRange(0, total - 1)
+        self.sld_start.setValue(0)
+        self.sld_end.setValue(total - 1)
+        self._on_window_changed()
         self.slider.setValue(0)
         self._show_frame(0)
         self._detect_current()
@@ -268,6 +303,27 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
     def _on_slider_changed(self, idx: int):
         self._show_frame(idx)
+
+    def _on_window_changed(self):
+        if self._info is None:
+            return
+        s, e = self.sld_start.value(), self.sld_end.value()
+        if s > e:  # mantém início <= fim (quem mudou empurra o outro)
+            if self.sender() is self.sld_start:
+                self.sld_end.blockSignals(True)
+                self.sld_end.setValue(s)
+                self.sld_end.blockSignals(False)
+                e = s
+            else:
+                self.sld_start.blockSignals(True)
+                self.sld_start.setValue(e)
+                self.sld_start.blockSignals(False)
+                s = e
+        fps = self._info.fps_reported or 1.0
+        self.lbl_start.setText(f"quadro {s} ({s / fps:.1f}s)")
+        self.lbl_end.setText(f"quadro {e} ({e / fps:.1f}s)")
+        n = max(1, e - s + 1)
+        self.lbl_window.setText(f"Janela: {n} quadro(s) · {n / fps:.1f}s")
 
     def _detect_current(self):
         if self._current_frame is None or not self._service:
@@ -373,9 +429,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         return self.txt_name.text().strip() or Path(self._video_path).stem
 
     def get_config(self, output_root: str) -> VideoExtractionConfig:
+        fps = (self._info.fps_reported if self._info and self._info.fps_reported else 30.0)
         return VideoExtractionConfig(
             video_path=self._video_path, output_root=output_root,
             target_fps=float(self.spn_fps.value()),
+            start_s=self.sld_start.value() / fps,
+            end_s=self.sld_end.value() / fps,
             similarity_threshold=float(self.spn_thr.value()),
             margin=float(self.spn_margin.value()),
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
