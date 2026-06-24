@@ -43,7 +43,8 @@ class VideoDatasetController(QtCore.QObject):
         # permitir (ou expor um toggle na janela).
         use_gpu = False
         start_dir = self._library_dir()
-        dlg = VideoDatasetSetupDialog(self._view, use_gpu=use_gpu, model=None, datasets_dir=start_dir)
+        dlg = VideoDatasetSetupDialog(self._view, use_gpu=use_gpu, model=None,
+                                      datasets_dir=start_dir, output_dir=self._runs_root())
         if not dlg.exec():
             return
         service = dlg.get_service()

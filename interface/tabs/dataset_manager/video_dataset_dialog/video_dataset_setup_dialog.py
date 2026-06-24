@@ -183,13 +183,14 @@ class _RangeScrubber(QtWidgets.QWidget):
 
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
-                 datasets_dir: Optional[str] = None):
+                 datasets_dir: Optional[str] = None, output_dir: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("🎬 Criar Dataset a partir de Vídeo")
         self.resize(960, 760)
         self._use_gpu = use_gpu
         self._model = model
         self._datasets_dir = datasets_dir
+        self._output_dir = output_dir
 
         self._service: Optional[VideoFrameFaceExtractionService] = None
         self._info = None
@@ -287,11 +288,22 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.txt_label = QtWidgets.QLineEdit("alvo", self)
         self.txt_name = QtWidgets.QLineEdit(self)
         self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
+        self.txt_output = QtWidgets.QLineEdit(self)
+        self.txt_output.setText(self._output_dir or "")
+        self.txt_output.setPlaceholderText("Pasta onde o run será criado")
+        btn_out = QtWidgets.QPushButton("Procurar…", self)
+        btn_out.clicked.connect(self._on_browse_output)
+        out_w = QtWidgets.QWidget(self)
+        out_h = QtWidgets.QHBoxLayout(out_w)
+        out_h.setContentsMargins(0, 0, 0, 0)
+        out_h.addWidget(self.txt_output, 1)
+        out_h.addWidget(btn_out)
         form.addRow("FPS-alvo:", self.spn_fps)
         form.addRow("Limiar de identidade (cosseno):", self.spn_thr)
         form.addRow("Margem do recorte:", self.spn_margin)
         form.addRow("Rótulo da identidade:", self.txt_label)
         form.addRow("Nome do dataset:", self.txt_name)
+        form.addRow("Pasta de saída:", out_w)
         root.addLayout(form)
 
         # Modo + processamento
@@ -338,6 +350,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "Vídeos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v);;Todos (*.*)")
         if path:
             self.txt_video.setText(path)
+
+    def _on_browse_output(self):
+        start = self.txt_output.text().strip() or self._output_dir or ""
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta de saída do run de vídeo", start)
+        if d:
+            self.txt_output.setText(d)
 
     def _det_size(self) -> int:
         return _DET_SIZES[self.cmb_det.currentIndex()][1]
@@ -496,8 +514,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
     def get_config(self, output_root: str) -> VideoExtractionConfig:
         fps = (self._info.fps_reported if self._info and self._info.fps_reported else 30.0)
+        out = self.txt_output.text().strip() or output_root
         return VideoExtractionConfig(
-            video_path=self._video_path, output_root=output_root,
+            video_path=self._video_path, output_root=out,
             target_fps=float(self.spn_fps.value()),
             start_s=self.scrubber.start() / fps,
             end_s=self.scrubber.end() / fps,
