@@ -8,6 +8,7 @@ explícito e auditado (aceita todas + marca skipped no manifesto).
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
@@ -23,6 +24,8 @@ class _Thumb(QtWidgets.QFrame):
     def __init__(self, rf: ReviewFace, parent=None):
         super().__init__(parent)
         self.image_file = rf.image_file
+        self.det_score = rf.det_score
+        self.fiqa_score = rf.fiqa_score
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(4, 4, 4, 4)
@@ -100,6 +103,31 @@ class VideoReviewDialog(QtWidgets.QDialog):
         scroll.setWidget(grid_host)
         root.addWidget(scroll, 1)
 
+        # ── Seleção automática por qualidade (sliders de det/fiqa) ──
+        dets = [f.det_score for f in faces if f.det_score is not None]
+        fiqas = [f.fiqa_score for f in faces if f.fiqa_score is not None]
+        self.sld_det = self._make_quality_slider(dets, (0.0, 1.0))
+        self.sld_fiqa = self._make_quality_slider(fiqas, (0.0, 2.0))
+        self.lbl_det_val = QtWidgets.QLabel("", self)
+        self.lbl_fiqa_val = QtWidgets.QLabel("", self)
+        self.lbl_qcount = QtWidgets.QLabel("", self)
+        self.sld_det.valueChanged.connect(self._update_quality_labels)
+        self.sld_fiqa.valueChanged.connect(self._update_quality_labels)
+        grp = QtWidgets.QGroupBox("Seleção automática por qualidade", self)
+        g = QtWidgets.QGridLayout(grp)
+        g.addWidget(QtWidgets.QLabel("Mín. det_score:", self), 0, 0)
+        g.addWidget(self.sld_det, 0, 1)
+        g.addWidget(self.lbl_det_val, 0, 2)
+        g.addWidget(QtWidgets.QLabel("Mín. fiqa_score:", self), 1, 0)
+        g.addWidget(self.sld_fiqa, 1, 1)
+        g.addWidget(self.lbl_fiqa_val, 1, 2)
+        btn_apply = QtWidgets.QPushButton("Selecionar faces ≥ limiares", self)
+        btn_apply.clicked.connect(self._apply_quality_selection)
+        g.addWidget(btn_apply, 2, 0)
+        g.addWidget(self.lbl_qcount, 2, 1, 1, 2)
+        root.addWidget(grp)
+        self._update_quality_labels()
+
         sel_row = QtWidgets.QHBoxLayout()
         btn_all = QtWidgets.QPushButton("Marcar todos", self)
         btn_all.clicked.connect(lambda: self._set_all(True))
@@ -160,3 +188,38 @@ class VideoReviewDialog(QtWidgets.QDialog):
         self._svc.commit_review(self._run_dir, operator=self._operator, skipped=True)
         self._outcome = "skipped"
         self.accept()
+
+    # ── seleção automática por qualidade ──
+    def _make_quality_slider(self, vals, fallback):
+        """Slider [min, max] dos dados observados (int = valor×100)."""
+        lo_f = min(vals) if vals else fallback[0]
+        hi_f = max(vals) if vals else fallback[1]
+        lo, hi = int(math.floor(lo_f * 100)), int(math.ceil(hi_f * 100))
+        if hi <= lo:
+            hi = lo + 1
+        s = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
+        s.setRange(lo, hi)
+        s.setValue(lo)  # default = mínimo observado → todos passam
+        return s
+
+    def _min_det(self) -> float:
+        return self.sld_det.value() / 100.0
+
+    def _min_fiqa(self) -> float:
+        return self.sld_fiqa.value() / 100.0
+
+    def _passes(self, t: "_Thumb") -> bool:
+        d, f = t.det_score, t.fiqa_score
+        return (d is None or d >= self._min_det()) and (f is None or f >= self._min_fiqa())
+
+    def _update_quality_labels(self):
+        self.lbl_det_val.setText(f"≥ {self._min_det():.2f}")
+        self.lbl_fiqa_val.setText(f"≥ {self._min_fiqa():.2f}")
+        n = sum(1 for t in self._thumbs if self._passes(t))
+        self.lbl_qcount.setText(f"{n} de {len(self._thumbs)} face(s) passam nos limiares")
+
+    def _apply_quality_selection(self):
+        """Marca quem passa nos dois limiares, desmarca o resto."""
+        for t in self._thumbs:
+            t.chk.setChecked(self._passes(t))
+        self._update_quality_labels()
