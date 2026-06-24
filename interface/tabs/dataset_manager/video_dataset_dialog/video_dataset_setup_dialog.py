@@ -22,9 +22,6 @@ from faceaudit.services.video_frame_face_extraction_service import (
 from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
 from faceaudit.enums.video_extraction_mode import VideoExtractionMode
 
-_DET_SIZES = [("320 (rápido)", 320), ("640 (recomendado)", 640),
-              ("960 (vigilância / faces pequenas)", 960)]
-
 
 def _bgr_to_pixmap(bgr: np.ndarray) -> QtGui.QPixmap:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -206,34 +203,50 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
 
-        # Linha 1: vídeo + det_size + carregar
-        row = QtWidgets.QHBoxLayout()
+        # ── Grupo 1: Vídeo + Detecção (aplicados ao Carregar) ──
+        g_src = QtWidgets.QGroupBox("1. Vídeo e detecção", self)
+        gs = QtWidgets.QVBoxLayout(g_src)
+        vid_row = QtWidgets.QHBoxLayout()
         self.txt_video = QtWidgets.QLineEdit(self)
         self.txt_video.setPlaceholderText("Caminho do arquivo de vídeo…")
         btn_browse = QtWidgets.QPushButton("Procurar…", self)
         btn_browse.clicked.connect(self._on_browse)
-        self.cmb_det = QtWidgets.QComboBox(self)
-        for label, _v in _DET_SIZES:
-            self.cmb_det.addItem(label)
-        self.cmb_det.setCurrentIndex(1)  # 640
+        vid_row.addWidget(QtWidgets.QLabel("Vídeo:", self))
+        vid_row.addWidget(self.txt_video, 1)
+        vid_row.addWidget(btn_browse)
+        gs.addLayout(vid_row)
+
+        det_row = QtWidgets.QHBoxLayout()
+        self.spn_det_size = QtWidgets.QSpinBox(self)
+        self.spn_det_size.setRange(256, 1280)
+        self.spn_det_size.setSingleStep(32)
+        self.spn_det_size.setValue(640)
+        self.spn_det_size.setSuffix(" px")
+        self.spn_det_size.setToolTip(
+            "<b>Resolução do detector</b> (px, múltiplos de 32). Tamanho da "
+            "imagem que entra no detector de faces.<br>"
+            "↑ Maior detecta faces menores/distantes (vigilância), mais lento.<br>"
+            "↓ Menor é mais rápido, mas perde faces pequenas.<br>"
+            "320 ≈ rápido · 640 ≈ recomendado · 960 ≈ vigilância/faces pequenas.")
         self.spn_det_thresh = QtWidgets.QDoubleSpinBox(self)
         self.spn_det_thresh.setRange(0.05, 0.9)
         self.spn_det_thresh.setSingleStep(0.05)
         self.spn_det_thresh.setValue(0.5)
         self.spn_det_thresh.setToolTip(
-            "Limiar do detector (SCRFD). ↓ pega faces de baixa confiança "
-            "(pequenas/distantes), ao custo de mais falsos positivos.")
+            "<b>Confiança mínima da detecção</b>. ↓ aceita detecções de baixa "
+            "confiança (faces pequenas/distantes/borradas), ao custo de mais "
+            "falsos positivos. Padrão 0.50.")
         self.btn_load = QtWidgets.QPushButton("Carregar vídeo", self)
         self.btn_load.clicked.connect(self._on_load)
-        row.addWidget(QtWidgets.QLabel("Vídeo:", self))
-        row.addWidget(self.txt_video, 1)
-        row.addWidget(btn_browse)
-        row.addWidget(QtWidgets.QLabel("Detector:", self))
-        row.addWidget(self.cmb_det)
-        row.addWidget(QtWidgets.QLabel("Limiar det.:", self))
-        row.addWidget(self.spn_det_thresh)
-        row.addWidget(self.btn_load)
-        root.addLayout(row)
+        det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
+        det_row.addWidget(self.spn_det_size)
+        det_row.addSpacing(14)
+        det_row.addWidget(QtWidgets.QLabel("Confiança mínima:", self))
+        det_row.addWidget(self.spn_det_thresh)
+        det_row.addStretch()
+        det_row.addWidget(self.btn_load)
+        gs.addLayout(det_row)
+        root.addWidget(g_src)
 
         # View do quadro + slider
         self.view = _FrameView(self)
@@ -272,20 +285,47 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.lbl_anchor.setTextFormat(QtCore.Qt.TextFormat.RichText)
         root.addWidget(self.lbl_anchor)
 
-        # Parâmetros
-        form = QtWidgets.QFormLayout()
+        # ── Grupo 3: Extração ──
+        g_ext = QtWidgets.QGroupBox("3. Extração", self)
+        fext = QtWidgets.QFormLayout(g_ext)
         self.spn_fps = QtWidgets.QDoubleSpinBox(self)
         self.spn_fps.setRange(0.1, 30.0)
+        self.spn_fps.setDecimals(1)
+        self.spn_fps.setSingleStep(0.5)
         self.spn_fps.setValue(2.0)
+        self.spn_fps.setToolTip(
+            "Quantos quadros por segundo de vídeo serão amostrados para "
+            "extração. ↑ mais quadros = mais faces, mais lento.")
+        self.spn_fps.valueChanged.connect(self._update_fps_hint)
+        self.lbl_fps_hint = QtWidgets.QLabel("", self)
+        self.lbl_fps_hint.setStyleSheet("color:#666;")
+        fps_w = QtWidgets.QWidget(self)
+        fps_h = QtWidgets.QHBoxLayout(fps_w)
+        fps_h.setContentsMargins(0, 0, 0, 0)
+        fps_h.addWidget(self.spn_fps)
+        fps_h.addWidget(self.lbl_fps_hint, 1)
         self.spn_thr = QtWidgets.QDoubleSpinBox(self)
         self.spn_thr.setRange(-1.0, 1.0)
         self.spn_thr.setSingleStep(0.05)
         self.spn_thr.setValue(0.30)
+        self.spn_thr.setToolTip(
+            "Similaridade de cosseno mínima com a âncora para uma face ser "
+            "aceita como o alvo. Calibre com 'Pré-visualizar limiar'.")
         self.spn_margin = QtWidgets.QDoubleSpinBox(self)
         self.spn_margin.setRange(1.0, 5.0)
         self.spn_margin.setSingleStep(0.5)
         self.spn_margin.setValue(2.0)
+        self.spn_margin.setToolTip("Contexto ao redor da face no recorte de evidência.")
+        fext.addRow("Amostragem (quadros/s):", fps_w)
+        fext.addRow("Limiar de identidade (cosseno):", self.spn_thr)
+        fext.addRow("Margem do recorte:", self.spn_margin)
+        root.addWidget(g_ext)
+
+        # ── Grupo 4: Dataset ──
+        g_ds = QtWidgets.QGroupBox("4. Dataset", self)
+        fds = QtWidgets.QFormLayout(g_ds)
         self.txt_label = QtWidgets.QLineEdit("alvo", self)
+        self.txt_label.setToolTip("Nome da identidade (vira a pasta da face e a coluna 'identity').")
         self.txt_name = QtWidgets.QLineEdit(self)
         self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
         self.txt_output = QtWidgets.QLineEdit(self)
@@ -298,28 +338,25 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         out_h.setContentsMargins(0, 0, 0, 0)
         out_h.addWidget(self.txt_output, 1)
         out_h.addWidget(btn_out)
-        form.addRow("FPS-alvo:", self.spn_fps)
-        form.addRow("Limiar de identidade (cosseno):", self.spn_thr)
-        form.addRow("Margem do recorte:", self.spn_margin)
-        form.addRow("Rótulo da identidade:", self.txt_label)
-        form.addRow("Nome do dataset:", self.txt_name)
-        form.addRow("Pasta de saída:", out_w)
-        root.addLayout(form)
-
-        # Modo + processamento
-        mode_row = QtWidgets.QHBoxLayout()
         self.rb_producer = QtWidgets.QRadioButton("Produtor (só recortes + metadados)", self)
         self.rb_e2e = QtWidgets.QRadioButton("Ponta a ponta (gera o dataset)", self)
         self.rb_producer.setChecked(True)
         self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", self)
         self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", self)
-        mode_row.addWidget(self.rb_producer)
-        mode_row.addWidget(self.rb_e2e)
-        mode_row.addStretch()
-        mode_row.addWidget(QtWidgets.QLabel("Qualidade (ponta a ponta):", self))
-        mode_row.addWidget(self.chk_ofiq)
-        mode_row.addWidget(self.chk_serfiq)
-        root.addLayout(mode_row)
+        mode_w = QtWidgets.QWidget(self)
+        mode_h = QtWidgets.QHBoxLayout(mode_w)
+        mode_h.setContentsMargins(0, 0, 0, 0)
+        mode_h.addWidget(self.rb_producer)
+        mode_h.addWidget(self.rb_e2e)
+        mode_h.addStretch()
+        mode_h.addWidget(QtWidgets.QLabel("Qualidade:", self))
+        mode_h.addWidget(self.chk_ofiq)
+        mode_h.addWidget(self.chk_serfiq)
+        fds.addRow("Rótulo da identidade:", self.txt_label)
+        fds.addRow("Nome do dataset:", self.txt_name)
+        fds.addRow("Pasta de saída:", out_w)
+        fds.addRow("Modo:", mode_w)
+        root.addWidget(g_ds)
 
         # Prévia + botões
         self.lbl_preview = QtWidgets.QLabel("", self)
@@ -358,7 +395,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.txt_output.setText(d)
 
     def _det_size(self) -> int:
-        return _DET_SIZES[self.cmb_det.currentIndex()][1]
+        return int(self.spn_det_size.value())
 
     def _on_load(self):
         path = self.txt_video.text().strip()
@@ -408,6 +445,20 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         fps = self._info.fps_reported or 1.0
         n = max(1, e - s + 1)
         self.lbl_window.setText(f"Janela: quadro {s}–{e} · {n} quadro(s) · {n / fps:.1f}s")
+        self._update_fps_hint()
+
+    def _update_fps_hint(self):
+        """Mostra ao vivo o efeito da amostragem: 1 a cada N quadros, ~M no total."""
+        if self._info is None:
+            self.lbl_fps_hint.setText("")
+            return
+        vfps = self._info.fps_reported or 30.0
+        target = max(0.1, self.spn_fps.value())
+        every_n = max(1, round(vfps / target))
+        s, e = self.scrubber.start(), self.scrubber.end()
+        window = max(1, e - s + 1)
+        est = max(1, window // every_n)
+        self.lbl_fps_hint.setText(f"≈ 1 a cada {every_n} quadros · ~{est} no total")
 
     def _detect_current(self):
         if self._current_frame is None or not self._service:
