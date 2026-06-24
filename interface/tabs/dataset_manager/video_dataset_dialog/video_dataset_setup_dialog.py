@@ -77,6 +77,110 @@ class _FrameView(QtWidgets.QGraphicsView):
         super().resizeEvent(ev)
 
 
+class _RangeScrubber(QtWidgets.QWidget):
+    """Timeline única com 3 alças arrastáveis: início (verde) e fim
+    (vermelho) delimitam a janela de extração; o playhead (laranja) é o
+    quadro atual exibido. Mantém início ≤ fim; o playhead é livre."""
+    currentChanged = QtCore.pyqtSignal(int)
+    currentReleased = QtCore.pyqtSignal(int)
+    windowChanged = QtCore.pyqtSignal()
+
+    _MARGIN = 12
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._min = self._max = self._start = self._end = self._current = 0
+        self._drag = None
+        self.setMinimumHeight(46)
+        self.setEnabled(False)
+        self.setMouseTracking(True)
+
+    def set_range(self, lo, hi):
+        self._min, self._max = int(lo), int(hi)
+        self._start, self._end, self._current = self._min, self._max, self._min
+        self.update()
+
+    def start(self) -> int:
+        return self._start
+
+    def end(self) -> int:
+        return self._end
+
+    def current(self) -> int:
+        return self._current
+
+    def _clamp(self, v) -> int:
+        return max(self._min, min(self._max, int(round(v))))
+
+    def _x(self, val) -> float:
+        m = self._MARGIN
+        w = max(1, self.width() - 2 * m)
+        if self._max <= self._min:
+            return float(m)
+        return m + (val - self._min) / (self._max - self._min) * w
+
+    def _val(self, x) -> int:
+        m = self._MARGIN
+        w = max(1, self.width() - 2 * m)
+        return self._clamp(self._min + (x - m) / w * (self._max - self._min))
+
+    def paintEvent(self, ev):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        y = self.height() // 2
+        m = self._MARGIN
+        p.setPen(QtGui.QPen(QtGui.QColor("#cfcfcf"), 4))
+        p.drawLine(m, y, self.width() - m, y)
+        if not self.isEnabled():
+            return
+        xs, xe, xc = self._x(self._start), self._x(self._end), self._x(self._current)
+        p.setPen(QtGui.QPen(QtGui.QColor("#1976d2"), 5))
+        p.drawLine(int(xs), y, int(xe), y)
+        p.setPen(QtGui.QPen(QtGui.QColor("#ff6d00"), 3))
+        p.drawLine(int(xc), 5, int(xc), self.height() - 5)
+        self._handle(p, xs, y, QtGui.QColor("#00c853"))
+        self._handle(p, xe, y, QtGui.QColor("#d32f2f"))
+
+    @staticmethod
+    def _handle(p, x, y, color):
+        p.setBrush(color)
+        p.setPen(QtGui.QPen(color.darker(130), 1))
+        p.drawEllipse(QtCore.QPointF(x, y), 7.0, 7.0)
+
+    def mousePressEvent(self, ev):
+        if not self.isEnabled():
+            return
+        x = ev.position().x()
+        # Prioridade no playhead em caso de empate (alça mais usada).
+        order = [("current", self._x(self._current)),
+                 ("start", self._x(self._start)),
+                 ("end", self._x(self._end))]
+        self._drag = min(order, key=lambda kv: abs(kv[1] - x))[0]
+        self._apply(x)
+
+    def mouseMoveEvent(self, ev):
+        if self._drag:
+            self._apply(ev.position().x())
+
+    def mouseReleaseEvent(self, ev):
+        if self._drag == "current":
+            self.currentReleased.emit(self._current)
+        self._drag = None
+
+    def _apply(self, x):
+        v = self._val(x)
+        if self._drag == "start":
+            self._start = min(v, self._end)
+            self.windowChanged.emit()
+        elif self._drag == "end":
+            self._end = max(v, self._start)
+            self.windowChanged.emit()
+        elif self._drag == "current":
+            self._current = v
+            self.currentChanged.emit(self._current)
+        self.update()
+
+
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
                  datasets_dir: Optional[str] = None):
@@ -135,48 +239,32 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.view.clicked.connect(self._on_view_clicked)
         root.addWidget(self.view, 1)
 
-        sld_row = QtWidgets.QHBoxLayout()
-        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
-        self.slider.setEnabled(False)
-        self.slider.valueChanged.connect(self._on_slider_changed)
-        self.slider.sliderReleased.connect(self._detect_current)
+        # Timeline única: 3 alças arrastáveis (início · quadro atual · fim).
+        self.scrubber = _RangeScrubber(self)
+        self.scrubber.currentChanged.connect(self._show_frame)
+        self.scrubber.currentReleased.connect(lambda _v: self._detect_current())
+        self.scrubber.windowChanged.connect(self._on_window_changed)
+        root.addWidget(self.scrubber)
+
+        info_row = QtWidgets.QHBoxLayout()
+        legend = QtWidgets.QLabel(
+            "<span style='color:#00c853'>●</span> início&nbsp;&nbsp;"
+            "<span style='color:#ff6d00'>▮</span> quadro atual&nbsp;&nbsp;"
+            "<span style='color:#d32f2f'>●</span> fim", self)
+        legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        self.lbl_frame = QtWidgets.QLabel("—", self)
+        self.lbl_window = QtWidgets.QLabel("", self)
         self.btn_detect = QtWidgets.QPushButton("Detectar neste quadro", self)
         self.btn_detect.setEnabled(False)
         self.btn_detect.clicked.connect(self._detect_current)
-        self.lbl_frame = QtWidgets.QLabel("—", self)
-        sld_row.addWidget(self.slider, 1)
-        sld_row.addWidget(self.lbl_frame)
-        sld_row.addWidget(self.btn_detect)
-        root.addLayout(sld_row)
-
-        # Janela de extração (início/fim) — extrair só um trecho do vídeo.
-        win = QtWidgets.QGroupBox("Janela de extração (extrair só um trecho)", self)
-        wl = QtWidgets.QGridLayout(win)
-        self.sld_start = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
-        self.sld_end = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self)
-        self.sld_start.setEnabled(False)
-        self.sld_end.setEnabled(False)
-        self.lbl_start = QtWidgets.QLabel("—", self)
-        self.lbl_end = QtWidgets.QLabel("—", self)
-        self.lbl_window = QtWidgets.QLabel("", self)
-        btn_start_here = QtWidgets.QPushButton("⟸ quadro atual", self)
-        btn_end_here = QtWidgets.QPushButton("quadro atual ⟹", self)
-        btn_start_here.setToolTip("Define o início no quadro do scrubber")
-        btn_end_here.setToolTip("Define o fim no quadro do scrubber")
-        btn_start_here.clicked.connect(lambda: self.sld_start.setValue(self.slider.value()))
-        btn_end_here.clicked.connect(lambda: self.sld_end.setValue(self.slider.value()))
-        self.sld_start.valueChanged.connect(self._on_window_changed)
-        self.sld_end.valueChanged.connect(self._on_window_changed)
-        wl.addWidget(QtWidgets.QLabel("Início:", self), 0, 0)
-        wl.addWidget(self.sld_start, 0, 1)
-        wl.addWidget(self.lbl_start, 0, 2)
-        wl.addWidget(btn_start_here, 0, 3)
-        wl.addWidget(QtWidgets.QLabel("Fim:", self), 1, 0)
-        wl.addWidget(self.sld_end, 1, 1)
-        wl.addWidget(self.lbl_end, 1, 2)
-        wl.addWidget(btn_end_here, 1, 3)
-        wl.addWidget(self.lbl_window, 2, 1, 1, 3)
-        root.addWidget(win)
+        info_row.addWidget(legend)
+        info_row.addStretch()
+        info_row.addWidget(self.lbl_frame)
+        info_row.addWidget(QtWidgets.QLabel("  ·  ", self))
+        info_row.addWidget(self.lbl_window)
+        info_row.addStretch()
+        info_row.addWidget(self.btn_detect)
+        root.addLayout(info_row)
 
         self.lbl_anchor = QtWidgets.QLabel(
             "Âncora: <i>nenhuma</i> — clique na face do alvo num quadro com detecção.", self)
@@ -276,17 +364,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         if not self.txt_name.text().strip():
             self.txt_name.setText(Path(path).stem)
         total = max(1, self._info.frame_count_reported)
-        self.slider.setRange(0, total - 1)
-        self.slider.setEnabled(True)
+        self.scrubber.setEnabled(True)
+        self.scrubber.set_range(0, total - 1)
         self.btn_detect.setEnabled(True)
         self.btn_preview.setEnabled(True)
-        for sl in (self.sld_start, self.sld_end):
-            sl.setEnabled(True)
-            sl.setRange(0, total - 1)
-        self.sld_start.setValue(0)
-        self.sld_end.setValue(total - 1)
         self._on_window_changed()
-        self.slider.setValue(0)
         self._show_frame(0)
         self._detect_current()
 
@@ -301,29 +383,13 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         ts = idx / self._info.fps_reported if self._info.fps_reported else 0
         self.lbl_frame.setText(f"Quadro {idx} / {self._info.frame_count_reported}  ({ts:.1f}s)")
 
-    def _on_slider_changed(self, idx: int):
-        self._show_frame(idx)
-
     def _on_window_changed(self):
         if self._info is None:
             return
-        s, e = self.sld_start.value(), self.sld_end.value()
-        if s > e:  # mantém início <= fim (quem mudou empurra o outro)
-            if self.sender() is self.sld_start:
-                self.sld_end.blockSignals(True)
-                self.sld_end.setValue(s)
-                self.sld_end.blockSignals(False)
-                e = s
-            else:
-                self.sld_start.blockSignals(True)
-                self.sld_start.setValue(e)
-                self.sld_start.blockSignals(False)
-                s = e
+        s, e = self.scrubber.start(), self.scrubber.end()
         fps = self._info.fps_reported or 1.0
-        self.lbl_start.setText(f"quadro {s} ({s / fps:.1f}s)")
-        self.lbl_end.setText(f"quadro {e} ({e / fps:.1f}s)")
         n = max(1, e - s + 1)
-        self.lbl_window.setText(f"Janela: {n} quadro(s) · {n / fps:.1f}s")
+        self.lbl_window.setText(f"Janela: quadro {s}–{e} · {n} quadro(s) · {n / fps:.1f}s")
 
     def _detect_current(self):
         if self._current_frame is None or not self._service:
@@ -351,7 +417,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         built = self._service.build_target_from_click(
             self._current_frame, x, y, label=self.txt_label.text().strip() or "alvo",
             similarity_threshold=float(self.spn_thr.value()), model=self._model,
-            frame_index=self.slider.value())
+            frame_index=self.scrubber.current())
         if built is None:
             return
         target, det_idx, _dets = built
@@ -360,7 +426,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._redraw_boxes()
         fp = target.anchor_embedding_fingerprint() or ""
         self.lbl_anchor.setText(
-            f"Âncora: <b>quadro {self.slider.value()}</b>, face #{det_idx} — "
+            f"Âncora: <b>quadro {self.scrubber.current()}</b>, face #{det_idx} — "
             f"fingerprint <code>{fp[:24]}…</code>")
         self.btn_extract.setEnabled(True)
 
@@ -433,8 +499,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         return VideoExtractionConfig(
             video_path=self._video_path, output_root=output_root,
             target_fps=float(self.spn_fps.value()),
-            start_s=self.sld_start.value() / fps,
-            end_s=self.sld_end.value() / fps,
+            start_s=self.scrubber.start() / fps,
+            end_s=self.scrubber.end() / fps,
             similarity_threshold=float(self.spn_thr.value()),
             margin=float(self.spn_margin.value()),
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
