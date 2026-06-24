@@ -431,9 +431,13 @@ class VideoFrameFaceExtractionService:
                     if status["frame_status"] == "no_detection":
                         n_no_det += 1
 
-                    if progress_callback and end_frame:
-                        pct = int(min(100, (native - start_frame) / max(1, end_frame - start_frame) * 100))
-                        progress_callback(f"Extraindo quadro {native}…", pct)
+                    if progress_callback:
+                        denom = max(1, (end_frame if end_frame is not None
+                                        else info.frame_count_reported) - start_frame)
+                        pct = int(min(99, (native - start_frame) / denom * 100))
+                        progress_callback(
+                            f"Quadro {native} · amostrados {n_sampled} · "
+                            f"aceitos {n_accepted} · sem face {n_no_det}", pct)
 
                     native += 1
             except Exception as e:

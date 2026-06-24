@@ -39,6 +39,11 @@ class VideoExtractionWorker(QtCore.QObject):
             )
             if self._stop:
                 self.cancelled.emit()
+            if result is not None:
+                self.progress_update.emit(
+                    f"Concluído: {result.n_accepted_auto} face(s) aceita(s) · "
+                    f"{result.n_frames_sampled} quadros amostrados · "
+                    f"{result.n_no_detection_frames} sem face.", 100)
             self.finished.emit(result)
         except Exception as e:
             traceback.print_exc()
