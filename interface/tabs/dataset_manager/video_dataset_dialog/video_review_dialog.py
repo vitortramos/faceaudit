@@ -47,6 +47,15 @@ class _Thumb(QtWidgets.QFrame):
         self.chk.setChecked(rf.human_review_status != "rejected")
         v.addWidget(self.chk)
 
+        # Qualidade (triagem): ajuda a decidir aceitar/rejeitar. FIQA do
+        # CR-FIQA NÃO é 0–1 (tipicamente ~1.0–1.4) — use comparativamente.
+        det_txt = f"{rf.det_score:.2f}" if rf.det_score is not None else "—"
+        fiqa_txt = f"{rf.fiqa_score:.2f}" if rf.fiqa_score is not None else "—"
+        lbl_q = QtWidgets.QLabel(f"det {det_txt} · fiqa {fiqa_txt}", self)
+        lbl_q.setToolTip("det_score (confiança da detecção) · fiqa_score (qualidade — CR-FIQA, não 0–1)")
+        lbl_q.setStyleSheet("color:#555; font-size:10px;")
+        v.addWidget(lbl_q)
+
         if rf.review_reasons:
             hint = QtWidgets.QLabel("⚠ " + ", ".join(rf.review_reasons), self)
             hint.setStyleSheet("color:#e65100; font-size:10px;")
