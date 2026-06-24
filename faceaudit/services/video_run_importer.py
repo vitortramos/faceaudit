@@ -110,6 +110,7 @@ class VideoRunImporter:
 
         faces: List[FaceInfo] = []
         n_skipped_status = n_hash_mismatch = n_missing = 0
+        any_aligned = False
         for sidecar in sorted(meta_dir.glob("*.json")):
             nm = sidecar.name
             if nm.startswith("_run_") or nm.startswith("_decisions_") or nm.startswith("_frames_"):
@@ -125,33 +126,50 @@ class VideoRunImporter:
                 n_skipped_status += 1
                 continue
 
+            artifact = d.get("artifact") or {}
             label = (d.get("identity") or {}).get("label")
-            image_file = (d.get("artifact") or {}).get("image_file")
+            image_file = artifact.get("image_file")
             if not label or not image_file:
                 continue
-            abs_path = run_dir / label / image_file
+            # Prefere a face ALINHADA 112×112 como imagem do dataset — assim o
+            # enrich extrai embedding direto (process_face_aligned), SEM
+            # re-detectar o recorte minúsculo (que falharia em vigilância).
+            # Fallback: recorte com margem (re-detectável quando a face é grande).
+            aligned_file = artifact.get("aligned_image_file")
+            if aligned_file:
+                rel_path = aligned_file
+                abs_path = run_dir / aligned_file
+                expected = artifact.get("aligned_image_sha256")
+                used_aligned = True
+            else:
+                rel_path = f"{label}/{image_file}"
+                abs_path = run_dir / label / image_file
+                expected = artifact.get("image_sha256")
+                used_aligned = False
             if not abs_path.exists():
                 n_missing += 1
                 if logger:
-                    logger(f"recorte ausente {label}/{image_file}")
+                    logger(f"recorte ausente {rel_path}")
                 continue
-            expected = (d.get("artifact") or {}).get("image_sha256")
             if validate_hashes and expected:
                 actual = self._hash.calculate_file_hash(abs_path)
                 if actual and actual != expected:
                     n_hash_mismatch += 1
                     if logger:
-                        logger(f"hash divergente {label}/{image_file}")
+                        logger(f"hash divergente {rel_path}")
                     continue
 
             extra = FaceProvenanceScalarProjection.from_sidecar_dict(d).to_extra_data()
-            fi = FaceInfo(image_path=f"{label}/{image_file}", identity=label, hash=expected)
+            fi = FaceInfo(image_path=rel_path, identity=label, hash=expected)
             fi.extra_data = extra
             faces.append(fi)
+            if used_aligned:
+                any_aligned = True
 
         name = dataset_name or run_dir.name
         ds = FaceDataset(name=name, faces=faces, path_mode=PathMode.RELATIVE, path_root=".")
         ds._parquet_dir = run_dir.resolve()
+        ds.is_aligned = any_aligned
         ds.column_specs = build_video_column_specs()
         ds.provenance_metadata = self._build_provenance_metadata(manifest)
 
@@ -163,6 +181,13 @@ class VideoRunImporter:
             if pipeline is None:
                 raise ValueError("enrich=True requer um pipeline (FeatureExtractionPipeline).")
             cfg = ingestion_config or self._default_ingestion_config(ds.name, run_dir)
+            # Força is_aligned no config do enrich: o enrich faz
+            # `dataset.is_aligned = config.is_aligned`, então sem isto ele
+            # resetaria pra False e voltaria a re-detectar.
+            try:
+                cfg.is_aligned = bool(ds.is_aligned)
+            except Exception:
+                pass
             pipeline.enrich_existing_dataset(ds, cfg)
             self._finalize_manifest(meta_dir, run_dir, ds, now=None)
 

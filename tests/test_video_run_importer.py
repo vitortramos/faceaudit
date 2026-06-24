@@ -113,3 +113,35 @@ def test_parquet_roundtrip_preserves_bias_and_video_columns(run_dir, tmp_path):
     assert "video_fiqa_score_decision" in df.columns
     assert "similarity_to_anchor" in df.columns
     assert "video_extraction_det_score" in ds2.column_specs
+
+
+def _write_face_with_aligned(run_dir, meta_dir, hs, label, frame):
+    crop_name = f"{label}_f{frame:07d}.png"
+    imwrite_unicode_safe(run_dir / label / crop_name, np.full((24, 24, 3), 50, np.uint8))
+    aligned_path = run_dir / "_aligned" / label / crop_name
+    imwrite_unicode_safe(aligned_path, np.full((112, 112, 3), 80, np.uint8))
+    prov = FaceProvenance(
+        run_id="ra", run_manifest="_run_ra.json", identity_label=label, image_file=crop_name,
+        image_sha256=hs.calculate_file_hash(run_dir / label / crop_name),
+        aligned_image_file=f"_aligned/{label}/{crop_name}",
+        aligned_image_sha256=hs.calculate_file_hash(aligned_path),
+        frame_native_index=frame, det_score=0.9, fiqa_score=0.8, similarity_to_anchor=0.8,
+        auto_decision="accepted", human_review_status="accepted",
+    )
+    (meta_dir / prov.sidecar_filename()).write_text(json.dumps(prov.to_sidecar_dict()), encoding="utf-8")
+
+
+def test_import_run_prefers_aligned_and_sets_is_aligned(tmp_path):
+    rd = tmp_path / "clip_aligned0001"
+    meta = rd / "_meta"
+    meta.mkdir(parents=True)
+    hs = HashService()
+    _write_face_with_aligned(rd, meta, hs, "alvo", 1)
+    _write_face_with_aligned(rd, meta, hs, "alvo", 2)
+    (meta / "_run_ra.json").write_text(json.dumps(
+        {"run_id": "ra", "recognition_model": "sepaelv2",
+         "targets": [{"label": "alvo", "similarity_threshold": 0.5}]}), encoding="utf-8")
+    ds = VideoRunImporter().import_run(rd)
+    assert len(ds) == 2
+    assert ds.is_aligned is True  # usou as faces alinhadas → enrich não re-detecta
+    assert all(f.image_path.startswith("_aligned/") for f in ds.faces)

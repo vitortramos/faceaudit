@@ -608,10 +608,23 @@ class VideoFrameFaceExtractionService:
         h, w = crop.shape[:2]
         margin = assignment.margin_to_second_best
 
+        # Salva a face ALINHADA 112×112 (já temos do detect_and_align). É a
+        # imagem que o dataset usa para extrair embedding SEM re-detectar —
+        # crucial para faces pequenas de vigilância, onde re-detectar o
+        # recorte com margem falharia.
+        aligned_file = aligned_sha = None
+        if aligned.aligned_face_bgr is not None:
+            aligned_rel = f"_aligned/{label}/{crop_name}"
+            aligned_abs = run_dir / "_aligned" / label / crop_name
+            if imwrite_unicode_safe(aligned_abs, aligned.aligned_face_bgr):
+                aligned_file = aligned_rel
+                aligned_sha = self._hash.calculate_file_hash(aligned_abs)
+
         prov = FaceProvenance(
             run_id=run_id, run_manifest=f"_run_{run_id}.json", identity_label=label,
             image_file=crop_name, image_sha256=image_sha, image_width_px=w, image_height_px=h,
             crop_margin_factor=config.margin, color_space="BGR", saved_at_utc=clock(), target_index=target_index,
+            aligned_image_file=aligned_file, aligned_image_sha256=aligned_sha,
             source_video_filename=info.filename, source_video_sha256=info.sha256,
             frame_native_index=native, timestamp_s_from_fps=ts_fps, timestamp_s_capture_prop=ts_cap,
             decoded_frame_sha256=decoded_sha, decoded_frame_hash_algorithm=decoded_algo,

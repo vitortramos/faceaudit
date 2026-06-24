@@ -629,6 +629,10 @@ class FeatureExtractionPipeline:
             path_root=dataset.path_root,
         )
         sub._parquet_dir = dataset._parquet_dir
+        # Propaga is_aligned ao subset — sem isto o FFService re-detectaria
+        # faces já alinhadas (112×112), o que falha em crops apertados (ex.:
+        # datasets de vídeo). Bug afetava enrich em QUALQUER dataset alinhado.
+        sub.is_aligned = dataset.is_aligned
         return sub
 
     @staticmethod

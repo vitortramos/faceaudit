@@ -86,6 +86,12 @@ class FaceProvenance:
     crop_margin_factor: Optional[float] = None
     color_space: str = "BGR"
     saved_at_utc: Optional[str] = None
+    # Face ALINHADA 112×112 (derivada da detecção em full-res). É a imagem
+    # que o dataset usa para extrair embedding SEM re-detectar (evita falha
+    # do enrich em recortes pequenos de vigilância). O recorte com margem
+    # (image_file) permanece como evidência/contexto + thumbnail de revisão.
+    aligned_image_file: Optional[str] = None
+    aligned_image_sha256: Optional[str] = None
 
     target_index: int = 0
 
@@ -154,6 +160,8 @@ class FaceProvenance:
                 "crop_margin_factor": self.crop_margin_factor,
                 "color_space": self.color_space,
                 "saved_at_utc": self.saved_at_utc,
+                "aligned_image_file": self.aligned_image_file,
+                "aligned_image_sha256": self.aligned_image_sha256,
             },
             "source_video": {
                 "filename": self.source_video_filename,
