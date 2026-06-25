@@ -44,7 +44,8 @@ class VideoDatasetController(QtCore.QObject):
         use_gpu = False
         start_dir = self._library_dir()
         dlg = VideoDatasetSetupDialog(self._view, use_gpu=use_gpu, model=None,
-                                      datasets_dir=start_dir, output_dir=self._runs_root())
+                                      datasets_dir=start_dir, output_dir=self._runs_root(),
+                                      dataset_output_dir=self._datasets_dir())
         if not dlg.exec():
             return
         service = dlg.get_service()
@@ -54,7 +55,10 @@ class VideoDatasetController(QtCore.QObject):
         name = dlg.get_dataset_name()
         config = dlg.get_config(self._runs_root())
         self._pending = {"mode": dlg.get_mode(), "name": name, "config": config,
-                         "n_targets": len(targets)}
+                         "n_targets": len(targets),
+                         "embeddings": dlg.get_dataset_embeddings(),
+                         "dataset_dir": dlg.get_dataset_output_dir() or None,
+                         "self_contained": dlg.get_dataset_self_contained()}
 
         worker = VideoExtractionWorker(service, config, targets)
         label = ("Extraindo faces do vídeo" if len(targets) == 1
@@ -117,9 +121,13 @@ class VideoDatasetController(QtCore.QObject):
             compute_ff=True,
             compute_ofiq=bool(getattr(vcfg, "compute_ofiq", False)),
             compute_serfiq=bool(getattr(vcfg, "compute_serfiq", False)),
+            ff_models=self._pending.get("embeddings") or None,
         )
-        worker = VideoImportWorker(run_dir, enrich=True, pipeline=self._pipeline,
-                                   ingestion_config=ingestion, dataset_name=name)
+        worker = VideoImportWorker(
+            run_dir, enrich=True, pipeline=self._pipeline,
+            ingestion_config=ingestion, dataset_name=name,
+            dataset_dir=self._pending.get("dataset_dir"),
+            self_contained=self._pending.get("self_contained", True))
         self._mgr._run_worker(
             worker, label="Enriquecendo dataset de vídeo",
             allow_cancel=False, determinate=False, use_log_dialog=True,
@@ -131,7 +139,7 @@ class VideoDatasetController(QtCore.QObject):
             QtWidgets.QMessageBox.warning(self._view, "Dataset de vídeo",
                                           "O enriquecimento terminou sem faces válidas.")
             return
-        parquet = Path(run_dir) / f"{ds.name}.parquet"
+        parquet = Path(getattr(ds, "_parquet_dir", None) or run_dir) / f"{ds.name}.parquet"
         self._mgr.carregar_dataset_na_tela(ds, path=str(parquet) if parquet.exists() else None)
         try:
             meta = VideoRunImporter().audit_metadata(run_dir)
@@ -146,7 +154,8 @@ class VideoDatasetController(QtCore.QObject):
             pass
         QtWidgets.QMessageBox.information(
             self._view, "Sucesso",
-            f"Dataset '{ds.name}' criado a partir de vídeo!\n\n"
+            f"Dataset '{ds.name}' criado a partir de vídeo!\n"
+            f"Salvo em: {parquet}\n\n"
             "⚠ Lembre-se: é uma seleção condicionada à similaridade com uma âncora — "
             "não representa amostra populacional neutra (vide metadados do dataset).")
 
@@ -157,3 +166,10 @@ class VideoDatasetController(QtCore.QObject):
     def _runs_root(self) -> str:
         lib = self._library_dir()
         return str(Path(lib) / "video_runs") if lib else "video_runs"
+
+    def _datasets_dir(self) -> str:
+        """Pasta global de datasets (default da 'Pasta do dataset'). Cai na
+        biblioteca quando o config não expõe `paths.datasets`."""
+        paths = getattr(self._config, "paths", None)
+        d = getattr(paths, "datasets", None) if paths else None
+        return str(d) if d else self._library_dir()

@@ -21,6 +21,7 @@ from faceaudit.services.video_frame_face_extraction_service import (
 )
 from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
 from faceaudit.enums.video_extraction_mode import VideoExtractionMode
+from faceaudit.enums.sepael_model import SepaelModel
 
 # Cores estáveis por alvo (índice → cor da caixa no quadro e da bolinha na
 # lista). Tons médios, legíveis sobre quadros de vídeo.
@@ -235,7 +236,7 @@ class _TargetRowWidget(QtWidgets.QFrame):
         self.spn_thr.setValue(threshold)
         self.spn_thr.setToolTip(
             "<b>Limiar de identidade</b> (cosseno) deste alvo — abaixo dele a face "
-            "é descartada. Cada alvo tem o seu; calibre com <b>Pré-visualizar limiar</b>.")
+            "é descartada. Cada alvo tem o seu; calibre com <b>Testar limiar</b>.")
         self.spn_thr.valueChanged.connect(lambda _v: self.threshold_changed.emit(self))
         self.lbl_status = QtWidgets.QLabel("sem âncora", self)
         self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
@@ -293,7 +294,8 @@ class _TargetRowWidget(QtWidgets.QFrame):
 
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
-                 datasets_dir: Optional[str] = None, output_dir: Optional[str] = None):
+                 datasets_dir: Optional[str] = None, output_dir: Optional[str] = None,
+                 dataset_output_dir: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("🎬 Criar Dataset a partir de Vídeo")
         self.resize(960, 760)
@@ -301,6 +303,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._model = model
         self._datasets_dir = datasets_dir
         self._output_dir = output_dir
+        self._dataset_output_dir = dataset_output_dir
 
         self._service: Optional[VideoFrameFaceExtractionService] = None
         self._info = None
@@ -312,6 +315,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
         self._build_ui()
         self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
+        self._sync_embedding_checkboxes()  # árbitro sempre marcado/travado
+        self._on_mode_changed()            # grupo Dataset oculto (modo default = Só recortes)
 
     # ───────────────────────────── UI ─────────────────────────────
     def _build_ui(self):
@@ -336,6 +341,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         gs.addLayout(vid_row)
 
         det_row = QtWidgets.QHBoxLayout()
+        self.cmb_model = QtWidgets.QComboBox(self)
+        self._populate_model_combo()
+        self.cmb_model.setToolTip(
+            "<b>Modelo de embedding</b> usado na re-identificação — é o cosseno "
+            "dele que decide se a face é o alvo. O limiar de cada alvo e o "
+            "<b>Testar limiar</b> são calibrados para este modelo; trocá-lo exige "
+            "recarregar o vídeo. Só aparecem os modelos instalados na máquina.")
+        self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
         self.spn_det_size = QtWidgets.QSpinBox(self)
         self.spn_det_size.setRange(256, 1280)
         self.spn_det_size.setSingleStep(32)
@@ -361,6 +374,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "<b>Confiança mínima</b> atuais. Alterar esses dois campos depois "
             "<b>só tem efeito ao recarregar</b>.")
         self.btn_load.clicked.connect(self._on_load)
+        det_row.addWidget(QtWidgets.QLabel("Embedding:", self))
+        det_row.addWidget(self.cmb_model)
+        det_row.addSpacing(14)
         det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
         det_row.addWidget(self.spn_det_size)
         det_row.addSpacing(14)
@@ -475,19 +491,6 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "(não é em pixels). 2.0 = recorte com o dobro da largura/altura da "
             "caixa; 1.0 = caixa original; abaixo de 1.0 corta a face. Afeta só a "
             "imagem salva para laudo/custódia — não o embedding (face alinhada 112×112).")
-        fext.addRow("Amostragem (quadros/s):", fps_w)
-        fext.addRow("Margem do recorte:", self.spn_margin)
-        root.addWidget(g_ext)
-
-        # ── Grupo 4: Dataset ──
-        g_ds = QtWidgets.QGroupBox("4. Dataset", self)
-        fds = QtWidgets.QFormLayout(g_ds)
-        self.txt_name = QtWidgets.QLineEdit(self)
-        self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
-        self.txt_name.setToolTip(
-            "Nome do <b>dataset</b> gerado no modo <b>Ponta a ponta</b> (ignorado "
-            "no modo Produtor). Se vazio, usa o nome do vídeo. Não nomeia a pasta "
-            "do run — só o dataset final.")
         self.txt_output = QtWidgets.QLineEdit(self)
         self.txt_output.setText(self._output_dir or "")
         self.txt_output.setPlaceholderText("Pasta onde o run será criado")
@@ -495,48 +498,106 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "Pasta <b>onde a subpasta do run será criada</b> (uma por execução: "
             "nome do vídeo + etiqueta). Dentro dela ficam os recortes por rótulo, "
             "as faces alinhadas (<i>_aligned/</i>) e a proveniência (<i>_meta/</i>).")
-        btn_out = QtWidgets.QPushButton("Procurar…", self)
-        btn_out.setToolTip("Escolhe a pasta de saída do run.")
-        btn_out.clicked.connect(self._on_browse_output)
-        out_w = QtWidgets.QWidget(self)
-        out_h = QtWidgets.QHBoxLayout(out_w)
-        out_h.setContentsMargins(0, 0, 0, 0)
-        out_h.addWidget(self.txt_output, 1)
-        out_h.addWidget(btn_out)
-        self.rb_producer = QtWidgets.QRadioButton("Produtor (só recortes + metadados)", self)
+        btn_run_out = QtWidgets.QPushButton("Procurar…", self)
+        btn_run_out.setToolTip("Escolhe a pasta de saída do run.")
+        btn_run_out.clicked.connect(self._on_browse_output)
+        run_out_w = QtWidgets.QWidget(self)
+        run_out_h = QtWidgets.QHBoxLayout(run_out_w)
+        run_out_h.setContentsMargins(0, 0, 0, 0)
+        run_out_h.addWidget(self.txt_output, 1)
+        run_out_h.addWidget(btn_run_out)
+        fext.addRow("Amostragem (quadros/s):", fps_w)
+        fext.addRow("Margem do recorte:", self.spn_margin)
+        fext.addRow("Pasta do run:", run_out_w)
+        root.addWidget(g_ext)
+
+        # ── Grupo 4: Modo (gate do grupo Dataset) ──
+        g_modo = QtWidgets.QGroupBox("4. Modo", self)
+        gm = QtWidgets.QVBoxLayout(g_modo)
+        self.rb_producer = QtWidgets.QRadioButton("Só recortes", self)
         self.rb_producer.setToolTip(
-            "<b>Produtor:</b> extrai os recortes + a proveniência (<i>_meta/</i>) e "
-            "para aí — você importa/usa o run depois. Os recortes são idênticos aos "
-            "do modo Ponta a ponta; muda só o que acontece em seguida.")
-        self.rb_e2e = QtWidgets.QRadioButton("Ponta a ponta (gera o dataset)", self)
+            "<b>Só recortes:</b> extrai as faces para uma pasta (recortes + "
+            "<i>_meta/</i>) e para aí — você revisa/usa/importa o run depois. "
+            "Os recortes são idênticos aos do outro modo; muda só o que vem depois.")
+        rb_prod_desc = QtWidgets.QLabel(
+            "Extrai as faces para uma pasta (revisar/usar/importar depois).", self)
+        rb_prod_desc.setStyleSheet("color:#888; font-size:11px;")
+        self.rb_e2e = QtWidgets.QRadioButton("Recortes + dataset", self)
         self.rb_e2e.setToolTip(
-            "<b>Ponta a ponta:</b> após a extração e a <b>revisão humana</b>, monta "
-            "o dataset e o enriquece (ForensicFace e, se marcados, OFIQ/SER-FIQ), "
+            "<b>Recortes + dataset:</b> após a extração e a <b>revisão humana</b>, "
+            "monta o dataset e o enriquece (embeddings + opcional OFIQ/SER-FIQ), "
             "registrando-o no Gerenciador. O dataset só é finalizado após a revisão.")
+        rb_e2e_desc = QtWidgets.QLabel(
+            "Extrai, revisa e gera o dataset pronto, com embeddings.", self)
+        rb_e2e_desc.setStyleSheet("color:#888; font-size:11px;")
         self.rb_producer.setChecked(True)
+        self.rb_producer.toggled.connect(self._on_mode_changed)
+        gm.addWidget(self.rb_producer)
+        gm.addWidget(rb_prod_desc)
+        gm.addSpacing(4)
+        gm.addWidget(self.rb_e2e)
+        gm.addWidget(rb_e2e_desc)
+        root.addWidget(g_modo)
+
+        # ── Grupo 5: Dataset (visível só em "Recortes + dataset") ──
+        self._dataset_group = QtWidgets.QGroupBox("5. Dataset", self)
+        fds = QtWidgets.QFormLayout(self._dataset_group)
+        self.txt_name = QtWidgets.QLineEdit(self)
+        self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
+        self.txt_name.setToolTip(
+            "Nome do <b>dataset</b> gerado. Se vazio, usa o nome do vídeo.")
+        emb_w = self._build_embedding_checks()
+        self.txt_dataset_output = QtWidgets.QLineEdit(self)
+        self.txt_dataset_output.setText(self._dataset_output_dir or "")
+        self.txt_dataset_output.setPlaceholderText("Pasta onde o dataset final será gravado")
+        self.txt_dataset_output.setToolTip(
+            "Pasta onde o <b>dataset final</b> (parquet) será gravado. Default: a "
+            "pasta global de datasets, para reuso entre projetos.")
+        btn_ds_out = QtWidgets.QPushButton("Procurar…", self)
+        btn_ds_out.setToolTip("Escolhe a pasta do dataset final.")
+        btn_ds_out.clicked.connect(self._on_browse_dataset_output)
+        ds_out_w = QtWidgets.QWidget(self)
+        ds_out_h = QtWidgets.QHBoxLayout(ds_out_w)
+        ds_out_h.setContentsMargins(0, 0, 0, 0)
+        ds_out_h.addWidget(self.txt_dataset_output, 1)
+        ds_out_h.addWidget(btn_ds_out)
+        self.rb_self_contained = QtWidgets.QRadioButton("Autocontido", self)
+        self.rb_self_contained.setToolTip(
+            "<b>Autocontido</b> (recomendado): copia os recortes para a pasta do "
+            "dataset, com caminhos relativos. Portátil — sobrevive a mudança de "
+            "máquina/drive (importante com o projeto no OneDrive entre casa e trabalho).")
+        self.rb_absolute = QtWidgets.QRadioButton("Caminho absoluto", self)
+        self.rb_absolute.setToolTip(
+            "<b>Caminho absoluto</b>: o dataset referencia os recortes do run por "
+            "caminho absoluto, sem copiar. Mais leve, mas <b>quebra</b> se o run "
+            "mudar de lugar, for limpo, ou for aberto noutra máquina.")
+        self.rb_self_contained.setChecked(True)
+        dest_w = QtWidgets.QWidget(self)
+        dest_h = QtWidgets.QHBoxLayout(dest_w)
+        dest_h.setContentsMargins(0, 0, 0, 0)
+        dest_h.addWidget(self.rb_self_contained)
+        dest_h.addWidget(self.rb_absolute)
+        dest_h.addStretch()
         self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", self)
         self.chk_ofiq.setToolTip(
             "Calcula o <b>OFIQ</b> (qualidade de imagem facial, ISO/IEC 29794-5) no "
-            "enriquecimento — só no modo Ponta a ponta. Não altera os recortes nem "
-            "a seleção; custo de processamento extra.")
+            "enriquecimento. Não altera os recortes nem a seleção; custo extra.")
         self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", self)
         self.chk_serfiq.setToolTip(
-            "Calcula o <b>SER-FIQ</b> (qualidade de imagem facial) no enriquecimento "
-            "— só no modo Ponta a ponta. Não altera os recortes nem a seleção; "
-            "custo de processamento extra.")
-        mode_w = QtWidgets.QWidget(self)
-        mode_h = QtWidgets.QHBoxLayout(mode_w)
-        mode_h.setContentsMargins(0, 0, 0, 0)
-        mode_h.addWidget(self.rb_producer)
-        mode_h.addWidget(self.rb_e2e)
-        mode_h.addStretch()
-        mode_h.addWidget(QtWidgets.QLabel("Qualidade:", self))
-        mode_h.addWidget(self.chk_ofiq)
-        mode_h.addWidget(self.chk_serfiq)
+            "Calcula o <b>SER-FIQ</b> (qualidade de imagem facial) no enriquecimento. "
+            "Não altera os recortes nem a seleção; custo extra.")
+        qual_w = QtWidgets.QWidget(self)
+        qual_h = QtWidgets.QHBoxLayout(qual_w)
+        qual_h.setContentsMargins(0, 0, 0, 0)
+        qual_h.addWidget(self.chk_ofiq)
+        qual_h.addWidget(self.chk_serfiq)
+        qual_h.addStretch()
         fds.addRow("Nome do dataset:", self.txt_name)
-        fds.addRow("Pasta de saída:", out_w)
-        fds.addRow("Modo:", mode_w)
-        root.addWidget(g_ds)
+        fds.addRow("Embeddings do dataset:", emb_w)
+        fds.addRow("Pasta do dataset:", ds_out_w)
+        fds.addRow("Destino:", dest_w)
+        fds.addRow("Qualidade:", qual_w)
+        root.addWidget(self._dataset_group)
 
         # Prévia + botões
         self.lbl_preview = QtWidgets.QLabel("", self)
@@ -545,7 +606,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         root.addWidget(self.lbl_preview)
 
         btn_row = QtWidgets.QHBoxLayout()
-        self.btn_preview = QtWidgets.QPushButton("Pré-visualizar limiar", self)
+        self.btn_preview = QtWidgets.QPushButton("Testar limiar", self)
         self.btn_preview.setToolTip(
             "Varre uma amostra de quadros e mostra a distribuição (mín/p5/mediana/"
             "p95/máx) de similaridade, det_score e fiqa, além de contadores por "
@@ -583,6 +644,80 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta de saída do run de vídeo", start)
         if d:
             self.txt_output.setText(d)
+
+    def _on_browse_dataset_output(self):
+        start = self.txt_dataset_output.text().strip() or self._dataset_output_dir or ""
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta do dataset final", start)
+        if d:
+            self.txt_dataset_output.setText(d)
+
+    # ──────────────────────────── modelo / embeddings ────────────────────────────
+    def _populate_model_combo(self):
+        avail = SepaelModel.available_on_disk() or list(SepaelModel)
+        for m in avail:
+            self.cmb_model.addItem(m.label_pt, m.ff_name)
+        target_ff = self._model or SepaelModel.SEPAEL_V2.ff_name
+        idx = self.cmb_model.findData(target_ff)
+        self.cmb_model.setCurrentIndex(idx if idx >= 0 else 0)
+
+    def _selected_model(self) -> Optional[str]:
+        return self.cmb_model.currentData() or self._model
+
+    def _build_embedding_checks(self) -> QtWidgets.QWidget:
+        self._emb_checks = {}  # ff_name -> QCheckBox
+        avail = SepaelModel.available_on_disk() or list(SepaelModel)
+        box = QtWidgets.QWidget(self)
+        h = QtWidgets.QHBoxLayout(box)
+        h.setContentsMargins(0, 0, 0, 0)
+        for m in avail:
+            cb = QtWidgets.QCheckBox(m.label_pt, self)
+            cb.setToolTip(
+                "Embedding que o dataset vai carregar. O modelo-árbitro (combo do "
+                "grupo 1) fica sempre marcado e travado — o dataset precisa carregar "
+                "o embedding que selecionou as faces. Os demais são extras opcionais.")
+            self._emb_checks[m.ff_name] = cb
+            h.addWidget(cb)
+        h.addStretch()
+        return box
+
+    def _sync_embedding_checkboxes(self):
+        """O árbitro (combo) fica sempre marcado e travado nos embeddings do dataset."""
+        if not getattr(self, "_emb_checks", None):
+            return
+        arb = self._selected_model()
+        for ff_name, cb in self._emb_checks.items():
+            if ff_name == arb:
+                cb.setChecked(True)
+                cb.setEnabled(False)
+            else:
+                cb.setEnabled(True)
+
+    def _on_model_changed(self, *_):
+        # O árbitro mudou → a multi-seleção de embeddings reflete o novo árbitro.
+        self._sync_embedding_checkboxes()
+        if self._service is None:
+            return  # ainda não carregou — nada a invalidar
+        # Modelo trocado após carregar: as âncoras (embeddings por modelo) ficam
+        # inválidas e o FFService está obsoleto → exige recarregar o vídeo.
+        for r in self._target_rows:
+            r.clear_anchor()
+        self._service = None
+        self._info = None
+        self._current_dets = []
+        self.scrubber.setEnabled(False)
+        self.btn_detect.setEnabled(False)
+        self.btn_preview.setEnabled(False)
+        self.btn_extract.setEnabled(False)
+        self.view.set_boxes([])
+        self._refresh_targets_count()
+        self.lbl_frame.setText("Modelo alterado — clique em “Carregar vídeo” novamente.")
+
+    def _on_mode_changed(self, *_):
+        # "Só recortes" esconde o grupo Dataset (inertes nesse modo).
+        self._dataset_group.setVisible(self.rb_e2e.isChecked())
+        w = self.width()
+        self.adjustSize()          # encolhe/cresce para caber o conteúdo
+        self.resize(w, self.height())  # preserva a largura (só a altura muda)
 
     # ──────────────────────────── alvos ────────────────────────────
     def _add_target(self, *, activate: bool = True, label: Optional[str] = None):
@@ -663,7 +798,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            ff = FFService(models=[self._model] if self._model else None,
+            model_ff = self._selected_model()
+            ff = FFService(models=[model_ff] if model_ff else None,
                            use_gpu=self._use_gpu, det_size=self._det_size(),
                            det_thresh=float(self.spn_det_thresh.value()))
             self._service = VideoFrameFaceExtractionService(ff)
@@ -760,7 +896,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             return
         built = self._service.build_target_from_click(
             self._current_frame, x, y, label=row.label_text() or "alvo",
-            similarity_threshold=row.threshold(), model=self._model,
+            similarity_threshold=row.threshold(), model=self._selected_model(),
             frame_index=self.scrubber.current())
         if built is None:
             return
@@ -789,7 +925,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
                 fr = self._service.read_frame(self._video_path, idx)
                 if fr is None:
                     continue
-                scored = self._service.score_frame_against_target(fr, target, model=self._model)
+                scored = self._service.score_frame_against_target(fr, target, model=self._selected_model())
                 if not scored:
                     n_noface += 1
                     continue
@@ -865,6 +1001,23 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def get_mode(self) -> VideoExtractionMode:
         return VideoExtractionMode.END_TO_END if self.rb_e2e.isChecked() else VideoExtractionMode.PRODUCER
 
+    def get_selected_model(self) -> Optional[str]:
+        return self._selected_model()
+
+    def get_dataset_embeddings(self) -> List[str]:
+        """ff_names marcados nos embeddings do dataset — o árbitro está sempre incluído."""
+        arb = self._selected_model()
+        out = [ff for ff, cb in getattr(self, "_emb_checks", {}).items() if cb.isChecked()]
+        if arb and arb not in out:
+            out.append(arb)
+        return out
+
+    def get_dataset_output_dir(self) -> str:
+        return self.txt_dataset_output.text().strip() or (self._dataset_output_dir or "")
+
+    def get_dataset_self_contained(self) -> bool:
+        return self.rb_self_contained.isChecked()
+
     def get_dataset_name(self) -> str:
         return self.txt_name.text().strip() or Path(self._video_path).stem
 
@@ -879,7 +1032,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             similarity_threshold=self._representative_threshold(),
             margin=float(self.spn_margin.value()),
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
-            recognition_model=self._model, mode=self.get_mode(),
+            recognition_model=self._selected_model(), mode=self.get_mode(),
             compute_ff=True, compute_ofiq=self.chk_ofiq.isChecked(),
             compute_serfiq=self.chk_serfiq.isChecked(),
         )
