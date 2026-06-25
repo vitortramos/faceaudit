@@ -22,6 +22,12 @@ from faceaudit.services.video_frame_face_extraction_service import (
 from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
 from faceaudit.enums.video_extraction_mode import VideoExtractionMode
 
+# Cores estáveis por alvo (índice → cor da caixa no quadro e da bolinha na
+# lista). Tons médios, legíveis sobre quadros de vídeo.
+_TARGET_COLORS = ["#1D9E75", "#BA7517", "#378ADD", "#D4537E",
+                  "#639922", "#7F77DD", "#D85A30", "#E24B4A"]
+_DEFAULT_THRESHOLD = 0.30
+
 
 def _bgr_to_pixmap(bgr: np.ndarray) -> QtGui.QPixmap:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -52,15 +58,30 @@ class _FrameView(QtWidgets.QGraphicsView):
         self.fitInView(self._pix_item, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
 
     def set_boxes(self, boxes):
+        """boxes: iterável de (x1, y1, x2, y2, color[, label]). O 6º elemento
+        opcional desenha uma tag de texto na cor da caixa (rótulo do alvo)."""
         for it in self._rects:
             self._scene.removeItem(it)
         self._rects = []
-        for (x1, y1, x2, y2, color) in boxes:
+        for box in boxes:
+            x1, y1, x2, y2, color = box[:5]
+            label = box[5] if len(box) > 5 else None
             pen = QtGui.QPen(QtGui.QColor(color))
             pen.setWidth(2)
             pen.setCosmetic(True)
             it = self._scene.addRect(x1, y1, x2 - x1, y2 - y1, pen)
             self._rects.append(it)
+            if label:
+                txt = self._scene.addText(label)
+                txt.setDefaultTextColor(QtGui.QColor(color))
+                f = txt.font()
+                f.setPointSize(10)
+                f.setBold(True)
+                txt.setFont(f)
+                # Tamanho de tela constante (não escala com o zoom da view).
+                txt.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                txt.setPos(x1, y1)
+                self._rects.append(txt)
 
     def mousePressEvent(self, ev):
         if self._pix_item is not None:
@@ -178,6 +199,98 @@ class _RangeScrubber(QtWidgets.QWidget):
         self.update()
 
 
+class _TargetRowWidget(QtWidgets.QFrame):
+    """Uma linha do painel de Alvos: bolinha de cor + rótulo editável +
+    limiar de identidade próprio + status da âncora + remover. Guarda o
+    `VideoTarget` construído (None enquanto sem âncora) e o índice da
+    detecção ancorada (válido apenas no quadro-âncora)."""
+    activated = QtCore.pyqtSignal(object)   # self
+    removed = QtCore.pyqtSignal(object)     # self
+    label_changed = QtCore.pyqtSignal(object)
+    threshold_changed = QtCore.pyqtSignal(object)
+
+    def __init__(self, parent, *, label: str, color: str, threshold: float):
+        super().__init__(parent)
+        self.color = color
+        self.video_target = None
+        self.anchor_det_index: Optional[int] = None
+        self._active = False
+        self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        self.setObjectName("targetRow")
+
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(8, 5, 8, 5)
+        h.setSpacing(8)
+        self._swatch = QtWidgets.QLabel(self)
+        self._swatch.setFixedSize(14, 14)
+        self._swatch.setStyleSheet(f"background:{color}; border-radius:3px;")
+        self.txt_label = QtWidgets.QLineEdit(label, self)
+        self.txt_label.setToolTip(
+            "Rótulo da identidade deste alvo (vira a pasta da face e a coluna "
+            "'identity' no dataset).")
+        self.txt_label.textChanged.connect(lambda _t: self.label_changed.emit(self))
+        self.spn_thr = QtWidgets.QDoubleSpinBox(self)
+        self.spn_thr.setRange(-1.0, 1.0)
+        self.spn_thr.setSingleStep(0.05)
+        self.spn_thr.setValue(threshold)
+        self.spn_thr.setToolTip(
+            "<b>Limiar de identidade</b> (cosseno) deste alvo — abaixo dele a face "
+            "é descartada. Cada alvo tem o seu; calibre com <b>Pré-visualizar limiar</b>.")
+        self.spn_thr.valueChanged.connect(lambda _v: self.threshold_changed.emit(self))
+        self.lbl_status = QtWidgets.QLabel("sem âncora", self)
+        self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+        self.btn_remove = QtWidgets.QToolButton(self)
+        self.btn_remove.setText("🗑")
+        self.btn_remove.setAutoRaise(True)
+        self.btn_remove.setToolTip("Remover este alvo.")
+        self.btn_remove.clicked.connect(lambda: self.removed.emit(self))
+
+        h.addWidget(self._swatch)
+        h.addWidget(self.txt_label, 2)
+        h.addWidget(QtWidgets.QLabel("limiar", self))
+        h.addWidget(self.spn_thr)
+        h.addWidget(self.lbl_status, 2)
+        h.addWidget(self.btn_remove)
+        self.set_active(False)
+
+    def label_text(self) -> str:
+        return self.txt_label.text().strip()
+
+    def threshold(self) -> float:
+        return float(self.spn_thr.value())
+
+    def has_anchor(self) -> bool:
+        return self.video_target is not None
+
+    def anchor_frame_index(self) -> Optional[int]:
+        return getattr(self.video_target, "anchor_frame_index", None)
+
+    def set_anchor(self, video_target, det_index: int):
+        self.video_target = video_target
+        self.anchor_det_index = det_index
+        self.lbl_status.setText(
+            f"âncora: quadro {video_target.anchor_frame_index}, face #{det_index}")
+        self.lbl_status.setStyleSheet("color:#2e7d32; font-size:11px;")
+
+    def clear_anchor(self):
+        self.video_target = None
+        self.anchor_det_index = None
+        self.lbl_status.setText("sem âncora")
+        self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+
+    def set_active(self, active: bool):
+        self._active = active
+        self.setStyleSheet(
+            "QFrame#targetRow { border:2px solid #1976d2; border-radius:6px; "
+            "background:#e8f1fb; }"
+            if active else
+            "QFrame#targetRow { border:0.5px solid #cfcfcf; border-radius:6px; }")
+
+    def mousePressEvent(self, ev):
+        self.activated.emit(self)
+        super().mousePressEvent(ev)
+
+
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
                  datasets_dir: Optional[str] = None, output_dir: Optional[str] = None):
@@ -194,10 +307,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._video_path: Optional[str] = None
         self._current_frame: Optional[np.ndarray] = None
         self._current_dets: list = []
-        self._target = None
-        self._anchor_det_index: Optional[int] = None
+        self._target_rows: List[_TargetRowWidget] = []
+        self._active_row: Optional[_TargetRowWidget] = None
 
         self._build_ui()
+        self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
 
     # ───────────────────────────── UI ─────────────────────────────
     def _build_ui(self):
@@ -302,10 +416,34 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         info_row.addWidget(self.btn_detect)
         root.addLayout(info_row)
 
-        self.lbl_anchor = QtWidgets.QLabel(
-            "Âncora: <i>nenhuma</i> — clique na face do alvo num quadro com detecção.", self)
-        self.lbl_anchor.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        root.addWidget(self.lbl_anchor)
+        # ── Grupo 2: Alvos (multi-alvo) ──
+        g_tgt = QtWidgets.QGroupBox("2. Alvos", self)
+        gt = QtWidgets.QVBoxLayout(g_tgt)
+        hdr = QtWidgets.QHBoxLayout()
+        self.lbl_targets_count = QtWidgets.QLabel("", self)
+        self.lbl_targets_count.setStyleSheet("color:#666;")
+        btn_add = QtWidgets.QPushButton("➕ Adicionar alvo", self)
+        btn_add.setToolTip(
+            "Adiciona um novo alvo. Depois, clique na face dele no quadro para "
+            "ancorá-lo. Cada alvo vira uma identidade no dataset.")
+        btn_add.clicked.connect(lambda: self._add_target(activate=True))
+        hdr.addWidget(self.lbl_targets_count)
+        hdr.addStretch()
+        hdr.addWidget(btn_add)
+        gt.addLayout(hdr)
+        self._targets_container = QtWidgets.QWidget(self)
+        self._targets_layout = QtWidgets.QVBoxLayout(self._targets_container)
+        self._targets_layout.setContentsMargins(0, 0, 0, 0)
+        self._targets_layout.setSpacing(4)
+        gt.addWidget(self._targets_container)
+        hint = QtWidgets.QLabel(
+            "Clique numa face do quadro para ancorar o alvo <b>ativo</b> (destacado). "
+            "O alvo ativo recebe a próxima âncora; clique numa linha para trocá-lo.", self)
+        hint.setTextFormat(QtCore.Qt.TextFormat.RichText)
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#888; font-size:11px;")
+        gt.addWidget(hint)
+        root.addWidget(g_tgt)
 
         # ── Grupo 3: Extração ──
         g_ext = QtWidgets.QGroupBox("3. Extração", self)
@@ -328,15 +466,6 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         fps_h.setContentsMargins(0, 0, 0, 0)
         fps_h.addWidget(self.spn_fps)
         fps_h.addWidget(self.lbl_fps_hint, 1)
-        self.spn_thr = QtWidgets.QDoubleSpinBox(self)
-        self.spn_thr.setRange(-1.0, 1.0)
-        self.spn_thr.setSingleStep(0.05)
-        self.spn_thr.setValue(0.30)
-        self.spn_thr.setToolTip(
-            "<b>Árbitro de identidade.</b> Similaridade de cosseno mínima (crua, "
-            "frente à âncora) para uma face ser aceita como o alvo — abaixo disso "
-            "é descartada. Calibre com <b>Pré-visualizar limiar</b>. Condiciona o "
-            "dataset à âncora (viés de seleção): não é amostra populacional neutra.")
         self.spn_margin = QtWidgets.QDoubleSpinBox(self)
         self.spn_margin.setRange(1.0, 5.0)
         self.spn_margin.setSingleStep(0.5)
@@ -347,15 +476,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "caixa; 1.0 = caixa original; abaixo de 1.0 corta a face. Afeta só a "
             "imagem salva para laudo/custódia — não o embedding (face alinhada 112×112).")
         fext.addRow("Amostragem (quadros/s):", fps_w)
-        fext.addRow("Limiar de identidade (cosseno):", self.spn_thr)
         fext.addRow("Margem do recorte:", self.spn_margin)
         root.addWidget(g_ext)
 
         # ── Grupo 4: Dataset ──
         g_ds = QtWidgets.QGroupBox("4. Dataset", self)
         fds = QtWidgets.QFormLayout(g_ds)
-        self.txt_label = QtWidgets.QLineEdit("alvo", self)
-        self.txt_label.setToolTip("Nome da identidade (vira a pasta da face e a coluna 'identity').")
         self.txt_name = QtWidgets.QLineEdit(self)
         self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
         self.txt_name.setToolTip(
@@ -407,7 +533,6 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         mode_h.addWidget(QtWidgets.QLabel("Qualidade:", self))
         mode_h.addWidget(self.chk_ofiq)
         mode_h.addWidget(self.chk_serfiq)
-        fds.addRow("Rótulo da identidade:", self.txt_label)
         fds.addRow("Nome do dataset:", self.txt_name)
         fds.addRow("Pasta de saída:", out_w)
         fds.addRow("Modo:", mode_w)
@@ -458,6 +583,75 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta de saída do run de vídeo", start)
         if d:
             self.txt_output.setText(d)
+
+    # ──────────────────────────── alvos ────────────────────────────
+    def _add_target(self, *, activate: bool = True, label: Optional[str] = None):
+        ci = getattr(self, "_color_counter", 0)
+        self._color_counter = ci + 1
+        if label is None:
+            label = "alvo" if ci == 0 else f"alvo_{ci + 1}"
+        thr = (self._active_row.threshold() if self._active_row is not None
+               else _DEFAULT_THRESHOLD)
+        color = _TARGET_COLORS[ci % len(_TARGET_COLORS)]
+        row = _TargetRowWidget(self._targets_container, label=label, color=color, threshold=thr)
+        row.activated.connect(self._set_active_row)
+        row.removed.connect(self._remove_target)
+        row.label_changed.connect(self._on_target_label_changed)
+        row.threshold_changed.connect(self._on_target_threshold_changed)
+        self._targets_layout.addWidget(row)
+        self._target_rows.append(row)
+        if activate or self._active_row is None:
+            self._set_active_row(row)
+        self._refresh_targets_count()
+
+    def _remove_target(self, row: "_TargetRowWidget"):
+        if row not in self._target_rows:
+            return
+        if len(self._target_rows) == 1:
+            # Mantém ao menos um alvo: limpa a âncora em vez de remover a linha.
+            row.clear_anchor()
+            self._redraw_boxes()
+            self._refresh_targets_count()
+            self.btn_extract.setEnabled(self._any_anchor())
+            return
+        self._target_rows.remove(row)
+        self._targets_layout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+        if self._active_row is row:
+            self._active_row = None
+            self._set_active_row(self._target_rows[-1])
+        self._redraw_boxes()
+        self._refresh_targets_count()
+        self.btn_extract.setEnabled(self._any_anchor())
+
+    def _set_active_row(self, row: "_TargetRowWidget"):
+        self._active_row = row
+        for r in self._target_rows:
+            r.set_active(r is row)
+
+    def _refresh_targets_count(self):
+        n = len(self._target_rows)
+        anchored = sum(1 for r in self._target_rows if r.has_anchor())
+        self.lbl_targets_count.setText(f"{n} alvo(s) · {anchored} com âncora")
+
+    def _any_anchor(self) -> bool:
+        return any(r.has_anchor() for r in self._target_rows)
+
+    def _representative_threshold(self) -> float:
+        for r in self._target_rows:
+            if r.has_anchor():
+                return r.threshold()
+        return self._active_row.threshold() if self._active_row else _DEFAULT_THRESHOLD
+
+    def _on_target_label_changed(self, row: "_TargetRowWidget"):
+        if row.has_anchor():
+            row.video_target.label = row.label_text() or "alvo"
+        self._redraw_boxes()
+
+    def _on_target_threshold_changed(self, row: "_TargetRowWidget"):
+        if row.has_anchor():
+            row.video_target.similarity_threshold = row.threshold()
 
     def _det_size(self) -> int:
         return int(self.spn_det_size.value())
@@ -538,48 +732,64 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.lbl_frame.setText(self.lbl_frame.text() + "  — sem face (tente outro quadro ou det. 960)")
 
     def _redraw_boxes(self):
+        # Caixas em cinza-azul por padrão; coloridas (cor do alvo) apenas onde
+        # há âncora cravada NESTE quadro — o det_index só vale no quadro-âncora.
+        cur = self.scrubber.current() if self.scrubber.isEnabled() else None
+        anchored = {}
+        for row in self._target_rows:
+            if (row.has_anchor() and row.anchor_det_index is not None
+                    and row.anchor_frame_index() == cur):
+                anchored[row.anchor_det_index] = (row.color, row.label_text() or "alvo")
         boxes = []
         for i, d in enumerate(self._current_dets):
             b = np.asarray(d["bbox"]).astype(float).flatten()
-            color = "#00c853" if i == self._anchor_det_index else "#2196f3"
-            boxes.append((b[0], b[1], b[2], b[3], color))
+            if i in anchored:
+                color, lbl = anchored[i]
+                boxes.append((b[0], b[1], b[2], b[3], color, lbl))
+            else:
+                boxes.append((b[0], b[1], b[2], b[3], "#2196f3"))
         self.view.set_boxes(boxes)
 
     def _on_view_clicked(self, x: float, y: float):
         if not self._current_dets or not self._service:
             return
+        row = self._active_row
+        if row is None:
+            QtWidgets.QMessageBox.information(
+                self, "Alvos", "Adicione ou selecione um alvo antes de clicar numa face.")
+            return
         built = self._service.build_target_from_click(
-            self._current_frame, x, y, label=self.txt_label.text().strip() or "alvo",
-            similarity_threshold=float(self.spn_thr.value()), model=self._model,
+            self._current_frame, x, y, label=row.label_text() or "alvo",
+            similarity_threshold=row.threshold(), model=self._model,
             frame_index=self.scrubber.current())
         if built is None:
             return
         target, det_idx, _dets = built
-        self._target = target
-        self._anchor_det_index = det_idx
+        row.set_anchor(target, det_idx)
         self._redraw_boxes()
-        fp = target.anchor_embedding_fingerprint() or ""
-        self.lbl_anchor.setText(
-            f"Âncora: <b>quadro {self.scrubber.current()}</b>, face #{det_idx} — "
-            f"fingerprint <code>{fp[:24]}…</code>")
-        self.btn_extract.setEnabled(True)
+        self._refresh_targets_count()
+        self.btn_extract.setEnabled(self._any_anchor())
 
     def _on_preview(self):
-        if not self._service or self._target is None:
-            QtWidgets.QMessageBox.information(self, "Prévia", "Carregue o vídeo e defina a âncora primeiro.")
+        row = self._active_row
+        if not self._service or row is None or not row.has_anchor():
+            QtWidgets.QMessageBox.information(
+                self, "Prévia",
+                "Carregue o vídeo e ancore o alvo ativo (clique na face dele) primeiro.")
             return
+        target = row.video_target
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
             total = max(1, self._info.frame_count_reported)
             idxs = [int(v) for v in np.linspace(0, total - 1, 14)]
             sims, dets, fiqas = [], [], []
             n_noface = n_accept = n_below = 0
-            thr = float(self.spn_thr.value())
+            thr = row.threshold()
             for idx in idxs:
                 fr = self._service.read_frame(self._video_path, idx)
                 if fr is None:
                     continue
-                scored = self._service.score_frame_against_target(fr, self._target, model=self._model)
+                scored = self._service.score_frame_against_target(fr, target, model=self._model)
                 if not scored:
                     n_noface += 1
                     continue
@@ -603,15 +813,39 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
                     f"p50 {np.median(a):.2f} | p95 {np.percentile(a, 95):.2f} | max {a.max():.2f}")
 
         self.lbl_preview.setText(
-            f"<b>Prévia ({len(idxs)} quadros amostrados, limiar {thr:.2f}):</b><br>"
+            f"<b>Prévia do alvo '{row.label_text() or 'alvo'}' "
+            f"({len(idxs)} quadros amostrados, limiar {thr:.2f}):</b><br>"
             f"aceitos (≥ limiar): <b>{n_accept}</b> | abaixo do limiar: {n_below} | sem face: {n_noface}<br>"
             f"similaridade c/ âncora: {_q(sims)}<br>"
             f"det_score: {_q(dets)} &nbsp;|&nbsp; fiqa_score: {_q(fiqas)} "
             f"<i>(CR-FIQA não é 0–1; calibre pela distribuição)</i>")
 
     def _on_accept(self):
-        if self._target is None or not self._video_path:
-            QtWidgets.QMessageBox.warning(self, "Extração", "Defina a âncora (clique na face) antes.")
+        if not self._video_path:
+            QtWidgets.QMessageBox.warning(self, "Extração", "Carregue um vídeo antes.")
+            return
+        if not self._any_anchor():
+            QtWidgets.QMessageBox.warning(
+                self, "Extração", "Ancore ao menos um alvo (clique na face) antes de extrair.")
+            return
+        # Bloqueia se algum alvo ficou sem âncora — destaca o pendente.
+        pending = [r for r in self._target_rows if not r.has_anchor()]
+        if pending:
+            self._set_active_row(pending[0])
+            QtWidgets.QMessageBox.warning(
+                self, "Alvo sem âncora",
+                f"O alvo '{pending[0].label_text() or 'alvo'}' está sem âncora. "
+                "Clique na face dele num quadro ou remova-o antes de extrair.")
+            return
+        # Rótulos não-vazios e únicos (cada alvo vira uma identidade distinta).
+        labels = [r.label_text() for r in self._target_rows]
+        if any(not lbl for lbl in labels):
+            QtWidgets.QMessageBox.warning(self, "Rótulo vazio", "Todo alvo precisa de um rótulo.")
+            return
+        if len(set(labels)) != len(labels):
+            QtWidgets.QMessageBox.warning(
+                self, "Rótulos repetidos",
+                "Cada alvo precisa de um rótulo único — eles viram identidades distintas no dataset.")
             return
         self.accept()
 
@@ -619,8 +853,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def get_service(self) -> VideoFrameFaceExtractionService:
         return self._service
 
+    def get_targets(self) -> List:
+        """Lista de VideoTarget ancorados (≥1 garantido após _on_accept)."""
+        return [r.video_target for r in self._target_rows if r.has_anchor()]
+
     def get_target(self):
-        return self._target
+        """Back-compat: primeiro alvo ancorado, ou None."""
+        targets = self.get_targets()
+        return targets[0] if targets else None
 
     def get_mode(self) -> VideoExtractionMode:
         return VideoExtractionMode.END_TO_END if self.rb_e2e.isChecked() else VideoExtractionMode.PRODUCER
@@ -636,7 +876,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             target_fps=float(self.spn_fps.value()),
             start_s=self.scrubber.start() / fps,
             end_s=self.scrubber.end() / fps,
-            similarity_threshold=float(self.spn_thr.value()),
+            similarity_threshold=self._representative_threshold(),
             margin=float(self.spn_margin.value()),
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
             recognition_model=self._model, mode=self.get_mode(),

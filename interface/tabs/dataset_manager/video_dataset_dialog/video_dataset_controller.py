@@ -48,16 +48,19 @@ class VideoDatasetController(QtCore.QObject):
         if not dlg.exec():
             return
         service = dlg.get_service()
-        target = dlg.get_target()
-        if service is None or target is None:
+        targets = dlg.get_targets()
+        if service is None or not targets:
             return
         name = dlg.get_dataset_name()
         config = dlg.get_config(self._runs_root())
-        self._pending = {"mode": dlg.get_mode(), "name": name, "config": config}
+        self._pending = {"mode": dlg.get_mode(), "name": name, "config": config,
+                         "n_targets": len(targets)}
 
-        worker = VideoExtractionWorker(service, config, [target])
+        worker = VideoExtractionWorker(service, config, targets)
+        label = ("Extraindo faces do vídeo" if len(targets) == 1
+                 else f"Extraindo faces do vídeo ({len(targets)} alvos)")
         self._mgr._run_worker(
-            worker, label="Extraindo faces do vídeo",
+            worker, label=label,
             allow_cancel=True, determinate=False, use_log_dialog=True,
             on_finished=self._on_extraction_done,
         )
