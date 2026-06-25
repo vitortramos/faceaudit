@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
+from faceaudit.models.ff_info import FFInfo
 from faceaudit.models.video.face_provenance import FaceProvenanceScalarProjection
 from faceaudit.services.hash_service import HashService
 from faceaudit.models.column_catalog import (
@@ -160,7 +161,31 @@ class VideoRunImporter:
                     continue
 
             extra = FaceProvenanceScalarProjection.from_sidecar_dict(d).to_extra_data()
-            fi = FaceInfo(image_path=rel_path, identity=label, hash=expected)
+            # Promove os metadados biométricos capturados NA EXTRAÇÃO (o detector
+            # roda com extended=True → genderage + pose) para as colunas canônicas
+            # via FFInfo — espelha o que o process_image faz no caminho de imagens.
+            # Sem isto, gender_est/yaw/pitch/age_est ficavam vazios no parquet,
+            # porque o enrich em faces ALINHADAS não recomputa pose/genderage.
+            # Como o enrich faz MERGE (só fiqa_score + embeddings sobrescrevem,
+            # e só quando não-None), estes campos sobrevivem ao enriquecimento.
+            det = d.get("detection") or {}
+            pose = det.get("pose") or {}
+            qg = d.get("quality_gates") or {}
+            ff = FFInfo(
+                det_score=det.get("det_score"),
+                fiqa_score=qg.get("fiqa_score"),
+                gender=det.get("gender"),
+                age=det.get("age"),
+                yaw=pose.get("yaw"),
+                pitch=pose.get("pitch"),
+                roll=pose.get("roll"),
+            )
+            fi = FaceInfo(image_path=rel_path, identity=label, hash=expected, ff_info=ff)
+            # Origem = vídeo de origem (análogo ao campo "Origem" do caminho de
+            # imagens, que registra a proveniência da face).
+            vid = (d.get("source_video") or {}).get("filename")
+            if vid:
+                fi.origin = f"Vídeo: {vid}"
             fi.extra_data = extra
             faces.append(fi)
             if used_aligned:

@@ -131,6 +131,47 @@ def _write_face_with_aligned(run_dir, meta_dir, hs, label, frame):
     (meta_dir / prov.sidecar_filename()).write_text(json.dumps(prov.to_sidecar_dict()), encoding="utf-8")
 
 
+def _write_face_full(run_dir, meta_dir, hs, label, frame):
+    """Sidecar com pose + gender + age (capturados na extração, extended=True)."""
+    crop_name = f"{label}_f{frame:07d}.png"
+    cp = run_dir / label / crop_name
+    imwrite_unicode_safe(cp, np.full((40, 40, 3), 90, np.uint8))
+    prov = FaceProvenance(
+        run_id="rf", run_manifest="_run_rf.json", identity_label=label, image_file=crop_name,
+        image_sha256=hs.calculate_file_hash(cp), source_video_filename="clip.avi",
+        frame_native_index=frame, det_score=0.91, fiqa_score=0.77,
+        pose={"yaw": 12.5, "pitch": -4.0, "roll": 1.2}, gender="M", age=33.0,
+        similarity_to_anchor=0.8, auto_decision="accepted", human_review_status="accepted",
+    )
+    (meta_dir / prov.sidecar_filename()).write_text(json.dumps(prov.to_sidecar_dict()), encoding="utf-8")
+
+
+def test_import_promotes_pose_gender_origin_to_canonical_columns(tmp_path):
+    rd = tmp_path / "clip_full0001"
+    meta = rd / "_meta"
+    meta.mkdir(parents=True)
+    hs = HashService()
+    _write_face_full(rd, meta, hs, "alvo", 1)
+    (meta / "_run_rf.json").write_text(json.dumps(
+        {"run_id": "rf", "recognition_model": "sepaelv2",
+         "targets": [{"label": "alvo", "similarity_threshold": 0.5}]}), encoding="utf-8")
+    ds = VideoRunImporter().import_run(rd)
+    assert len(ds) == 1
+    f = ds.faces[0]
+    # FFInfo populado a partir do sidecar (genderage + pose capturados na extração)
+    assert f.ff_info is not None
+    assert f.ff_info.yaw == 12.5 and f.ff_info.pitch == -4.0 and f.ff_info.roll == 1.2
+    assert f.ff_info.gender == "M" and f.ff_info.age == 33.0
+    # origem identifica o vídeo de origem (análogo ao campo Origem das imagens)
+    assert f.origin == "Vídeo: clip.avi"
+    # colunas canônicas no parquet (não vazias)
+    row = ds.to_pandas().iloc[0]
+    assert row["yaw"] == 12.5 and row["pitch"] == -4.0
+    assert row["gender_est"] == "M"   # estimativa do genderage → gender_est
+    assert row["age_est"] == 33.0
+    assert row["origin"] == "Vídeo: clip.avi"
+
+
 def test_import_run_prefers_aligned_and_sets_is_aligned(tmp_path):
     rd = tmp_path / "clip_aligned0001"
     meta = rd / "_meta"
