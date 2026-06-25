@@ -88,6 +88,7 @@ class VideoRunImporter:
         accepted_statuses: Tuple[str, ...] = ("accepted",),
         validate_hashes: bool = True,
         logger: Optional[Callable[[str], None]] = None,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
         enrich: bool = False,
         pipeline: Any = None,
         ingestion_config: Any = None,
@@ -213,7 +214,14 @@ class VideoRunImporter:
                 cfg.is_aligned = bool(ds.is_aligned)
             except Exception:
                 pass
-            pipeline.enrich_existing_dataset(ds, cfg)
+            # Heads-up: o carregamento dos modelos (N pipelines com vários
+            # embeddings) é silencioso e lento — avisa antes de mergulhar nele.
+            if progress_callback:
+                n_models = len(getattr(cfg, "ff_models", None) or [1])
+                progress_callback(
+                    f"Enriquecendo: carregando {n_models} modelo(s) e extraindo "
+                    "embeddings… (pode levar minutos com vários modelos)", 45)
+            pipeline.enrich_existing_dataset(ds, cfg, progress_callback=progress_callback)
             self._finalize_manifest(meta_dir, run_dir, ds, now=None)
 
         return ds

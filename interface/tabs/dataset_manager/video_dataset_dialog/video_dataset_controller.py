@@ -130,14 +130,17 @@ class VideoDatasetController(QtCore.QObject):
             self_contained=self._pending.get("self_contained", True))
         self._mgr._run_worker(
             worker, label="Enriquecendo dataset de vídeo",
-            allow_cancel=False, determinate=False, use_log_dialog=True,
+            allow_cancel=True, determinate=False, use_log_dialog=True,
             on_finished=lambda ds: self._on_import_done(ds, run_dir),
         )
 
     def _on_import_done(self, ds, run_dir: str):
         if ds is None or len(ds) == 0:
-            QtWidgets.QMessageBox.warning(self._view, "Dataset de vídeo",
-                                          "O enriquecimento terminou sem faces válidas.")
+            QtWidgets.QMessageBox.information(
+                self._view, "Dataset de vídeo",
+                "Enriquecimento cancelado ou sem faces válidas.\n"
+                f"O run permanece em:\n{run_dir}\n\nVocê pode reimportá-lo depois "
+                "(Importar Run de Vídeo) sem reprocessar a extração.")
             return
         parquet = Path(getattr(ds, "_parquet_dir", None) or run_dir) / f"{ds.name}.parquet"
         self._mgr.carregar_dataset_na_tela(ds, path=str(parquet) if parquet.exists() else None)

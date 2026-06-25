@@ -25,8 +25,10 @@ class _FakePipeline:
     def __init__(self):
         self.called = False
 
-    def enrich_existing_dataset(self, ds, cfg):
+    def enrich_existing_dataset(self, ds, cfg, progress_callback=None):
         self.called = True
+        if progress_callback:
+            progress_callback("enrich (fake)", 50)
         ds.to_parquet(Path(ds._parquet_dir) / f"{ds.name}.parquet")
         return ds
 

@@ -34,22 +34,36 @@ class VideoImportWorker(QtCore.QObject):
         self._dataset_dir = dataset_dir
         self._self_contained = self_contained
         self._importer = VideoRunImporter()
+        self._is_running = True
+
+    def stop(self):
+        """Cancelamento cooperativo (botão Cancelar da janela de progresso)."""
+        self._is_running = False
+
+    def _callback(self, msg, pct):
+        """Repassa o progresso do importador/enrich à UI e checa cancelamento.
+        Levanta InterruptedError quando o usuário cancela — o enrich faz save
+        parcial e re-lança; o run em disco permanece reimportável."""
+        if not self._is_running:
+            raise InterruptedError("Operação cancelada pelo usuário.")
+        self.progress_update.emit(str(msg), int(pct))
 
     def run(self):
         try:
-            self.progress_update.emit("Lendo run e validando hashes…", 10)
-
-            def logger(msg):
-                self.progress_update.emit(str(msg), 40)
-
+            self._callback("Lendo run e validando hashes…", 10)
             ds = self._importer.import_run(
                 self._run_dir, dataset_name=self._dataset_name, enrich=self._enrich,
-                pipeline=self._pipeline, ingestion_config=self._ingestion_config, logger=logger,
+                pipeline=self._pipeline, ingestion_config=self._ingestion_config,
+                logger=lambda m: self._callback(str(m), 40),
+                progress_callback=self._callback,
             )
             if ds is not None and self._enrich and self._dataset_dir:
                 ds = self._finalize_to_dataset_dir(ds)
             self.progress_update.emit("Concluído.", 100)
             self.finished.emit(ds)
+        except InterruptedError:
+            # Cancelamento controlado — não é erro.
+            self.finished.emit(None)
         except Exception as e:
             traceback.print_exc()
             self.error.emit(str(e))
