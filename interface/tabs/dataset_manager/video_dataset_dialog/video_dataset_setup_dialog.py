@@ -209,7 +209,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         vid_row = QtWidgets.QHBoxLayout()
         self.txt_video = QtWidgets.QLineEdit(self)
         self.txt_video.setPlaceholderText("Caminho do arquivo de vídeo…")
+        self.txt_video.setToolTip(
+            "Caminho do arquivo de vídeo a analisar. Use <b>Procurar…</b> para "
+            "selecionar. A <b>Resolução</b> e a <b>Confiança mínima</b> do detector "
+            "só são aplicadas ao clicar em <b>Carregar vídeo</b>.")
         btn_browse = QtWidgets.QPushButton("Procurar…", self)
+        btn_browse.setToolTip("Abre o seletor de arquivos para escolher o vídeo.")
         btn_browse.clicked.connect(self._on_browse)
         vid_row.addWidget(QtWidgets.QLabel("Vídeo:", self))
         vid_row.addWidget(self.txt_video, 1)
@@ -237,6 +242,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "confiança (faces pequenas/distantes/borradas), ao custo de mais "
             "falsos positivos. Padrão 0.50.")
         self.btn_load = QtWidgets.QPushButton("Carregar vídeo", self)
+        self.btn_load.setToolTip(
+            "Abre o vídeo e inicializa o detector com a <b>Resolução</b> e a "
+            "<b>Confiança mínima</b> atuais. Alterar esses dois campos depois "
+            "<b>só tem efeito ao recarregar</b>.")
         self.btn_load.clicked.connect(self._on_load)
         det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
         det_row.addWidget(self.spn_det_size)
@@ -250,11 +259,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
         # View do quadro + slider
         self.view = _FrameView(self)
+        self.view.setToolTip(
+            "Quadro atual do vídeo. Depois de <b>Detectar</b>, clique sobre a face "
+            "do alvo para defini-la como <b>âncora</b> — é ela que a ferramenta vai "
+            "procurar no vídeo inteiro.")
         self.view.clicked.connect(self._on_view_clicked)
         root.addWidget(self.view, 1)
 
         # Timeline única: 3 alças arrastáveis (início · quadro atual · fim).
         self.scrubber = _RangeScrubber(self)
+        self.scrubber.setToolTip(
+            "Linha do tempo com três alças: <b>início</b>, <b>quadro atual</b> e "
+            "<b>fim</b>. As alças de início/fim limitam o trecho do vídeo percorrido "
+            "na extração; a do meio só navega para visualizar e ancorar.")
         self.scrubber.currentChanged.connect(self._show_frame)
         self.scrubber.currentReleased.connect(lambda _v: self._detect_current())
         self.scrubber.windowChanged.connect(self._on_window_changed)
@@ -269,6 +286,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.lbl_frame = QtWidgets.QLabel("—", self)
         self.lbl_window = QtWidgets.QLabel("", self)
         self.btn_detect = QtWidgets.QPushButton("Detectar neste quadro", self)
+        self.btn_detect.setToolTip(
+            "Roda o detector de faces no quadro atual e desenha as caixas (sem "
+            "extrair embedding). Em seguida, clique numa caixa para escolher a "
+            "âncora. Usa a <b>Resolução</b> e a <b>Confiança mínima</b> definidas "
+            "no carregamento.")
         self.btn_detect.setEnabled(False)
         self.btn_detect.clicked.connect(self._detect_current)
         info_row.addWidget(legend)
@@ -294,8 +316,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.spn_fps.setSingleStep(0.5)
         self.spn_fps.setValue(2.0)
         self.spn_fps.setToolTip(
-            "Quantos quadros por segundo de vídeo serão amostrados para "
-            "extração. ↑ mais quadros = mais faces, mais lento.")
+            "Taxa de amostragem: quantos quadros por segundo de vídeo são "
+            "examinados (a ferramenta processa 1 a cada N quadros). ↑ amostra "
+            "mais — mais faces candidatas e mais lento. Veja o efeito na contagem "
+            "ao lado. O passo é derivado do FPS reportado pelo arquivo.")
         self.spn_fps.valueChanged.connect(self._update_fps_hint)
         self.lbl_fps_hint = QtWidgets.QLabel("", self)
         self.lbl_fps_hint.setStyleSheet("color:#666;")
@@ -309,13 +333,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.spn_thr.setSingleStep(0.05)
         self.spn_thr.setValue(0.30)
         self.spn_thr.setToolTip(
-            "Similaridade de cosseno mínima com a âncora para uma face ser "
-            "aceita como o alvo. Calibre com 'Pré-visualizar limiar'.")
+            "<b>Árbitro de identidade.</b> Similaridade de cosseno mínima (crua, "
+            "frente à âncora) para uma face ser aceita como o alvo — abaixo disso "
+            "é descartada. Calibre com <b>Pré-visualizar limiar</b>. Condiciona o "
+            "dataset à âncora (viés de seleção): não é amostra populacional neutra.")
         self.spn_margin = QtWidgets.QDoubleSpinBox(self)
         self.spn_margin.setRange(1.0, 5.0)
         self.spn_margin.setSingleStep(0.5)
         self.spn_margin.setValue(2.0)
-        self.spn_margin.setToolTip("Contexto ao redor da face no recorte de evidência.")
+        self.spn_margin.setToolTip(
+            "<b>Fator</b> de expansão da caixa da face no recorte de evidência "
+            "(não é em pixels). 2.0 = recorte com o dobro da largura/altura da "
+            "caixa; 1.0 = caixa original; abaixo de 1.0 corta a face. Afeta só a "
+            "imagem salva para laudo/custódia — não o embedding (face alinhada 112×112).")
         fext.addRow("Amostragem (quadros/s):", fps_w)
         fext.addRow("Limiar de identidade (cosseno):", self.spn_thr)
         fext.addRow("Margem do recorte:", self.spn_margin)
@@ -328,10 +358,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.txt_label.setToolTip("Nome da identidade (vira a pasta da face e a coluna 'identity').")
         self.txt_name = QtWidgets.QLineEdit(self)
         self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
+        self.txt_name.setToolTip(
+            "Nome do <b>dataset</b> gerado no modo <b>Ponta a ponta</b> (ignorado "
+            "no modo Produtor). Se vazio, usa o nome do vídeo. Não nomeia a pasta "
+            "do run — só o dataset final.")
         self.txt_output = QtWidgets.QLineEdit(self)
         self.txt_output.setText(self._output_dir or "")
         self.txt_output.setPlaceholderText("Pasta onde o run será criado")
+        self.txt_output.setToolTip(
+            "Pasta <b>onde a subpasta do run será criada</b> (uma por execução: "
+            "nome do vídeo + etiqueta). Dentro dela ficam os recortes por rótulo, "
+            "as faces alinhadas (<i>_aligned/</i>) e a proveniência (<i>_meta/</i>).")
         btn_out = QtWidgets.QPushButton("Procurar…", self)
+        btn_out.setToolTip("Escolhe a pasta de saída do run.")
         btn_out.clicked.connect(self._on_browse_output)
         out_w = QtWidgets.QWidget(self)
         out_h = QtWidgets.QHBoxLayout(out_w)
@@ -339,10 +378,26 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         out_h.addWidget(self.txt_output, 1)
         out_h.addWidget(btn_out)
         self.rb_producer = QtWidgets.QRadioButton("Produtor (só recortes + metadados)", self)
+        self.rb_producer.setToolTip(
+            "<b>Produtor:</b> extrai os recortes + a proveniência (<i>_meta/</i>) e "
+            "para aí — você importa/usa o run depois. Os recortes são idênticos aos "
+            "do modo Ponta a ponta; muda só o que acontece em seguida.")
         self.rb_e2e = QtWidgets.QRadioButton("Ponta a ponta (gera o dataset)", self)
+        self.rb_e2e.setToolTip(
+            "<b>Ponta a ponta:</b> após a extração e a <b>revisão humana</b>, monta "
+            "o dataset e o enriquece (ForensicFace e, se marcados, OFIQ/SER-FIQ), "
+            "registrando-o no Gerenciador. O dataset só é finalizado após a revisão.")
         self.rb_producer.setChecked(True)
         self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", self)
+        self.chk_ofiq.setToolTip(
+            "Calcula o <b>OFIQ</b> (qualidade de imagem facial, ISO/IEC 29794-5) no "
+            "enriquecimento — só no modo Ponta a ponta. Não altera os recortes nem "
+            "a seleção; custo de processamento extra.")
         self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", self)
+        self.chk_serfiq.setToolTip(
+            "Calcula o <b>SER-FIQ</b> (qualidade de imagem facial) no enriquecimento "
+            "— só no modo Ponta a ponta. Não altera os recortes nem a seleção; "
+            "custo de processamento extra.")
         mode_w = QtWidgets.QWidget(self)
         mode_h = QtWidgets.QHBoxLayout(mode_w)
         mode_h.setContentsMargins(0, 0, 0, 0)
@@ -366,9 +421,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
         btn_row = QtWidgets.QHBoxLayout()
         self.btn_preview = QtWidgets.QPushButton("Pré-visualizar limiar", self)
+        self.btn_preview.setToolTip(
+            "Varre uma amostra de quadros e mostra a distribuição (mín/p5/mediana/"
+            "p95/máx) de similaridade, det_score e fiqa, além de contadores por "
+            "limiar (aceitos / abaixo / sem face). Serve para <b>calibrar o limiar "
+            "de identidade</b> manualmente antes de extrair.")
         self.btn_preview.setEnabled(False)
         self.btn_preview.clicked.connect(self._on_preview)
         self.btn_extract = QtWidgets.QPushButton("Extrair ▶", self)
+        self.btn_extract.setToolTip(
+            "Inicia o run: percorre a janela escolhida e salva as faces cuja "
+            "similaridade com a âncora atinge o <b>limiar de identidade</b> "
+            "(cosseno cru), com recortes, faces alinhadas e proveniência. A "
+            "revisão e a geração do dataset acontecem depois, em etapas próprias.")
         self.btn_extract.setEnabled(False)
         self.btn_extract.clicked.connect(self._on_accept)
         btn_cancel = QtWidgets.QPushButton("Cancelar", self)

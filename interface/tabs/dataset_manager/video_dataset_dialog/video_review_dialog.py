@@ -48,6 +48,10 @@ class _Thumb(QtWidgets.QFrame):
         sim_txt = f"{sim:.2f}" if sim is not None else "—"
         self.chk = QtWidgets.QCheckBox(f"f{rf.frame_index}  sim={sim_txt}", self)
         self.chk.setChecked(rf.human_review_status != "rejected")
+        self.chk.setToolTip(
+            "Esta marcação <b>é</b> a revisão humana: marcada = a face entra no "
+            "conjunto final; desmarcada → vai para <i>_rejected/</i>. "
+            "<i>f</i> = quadro de origem; <i>sim</i> = cosseno com a âncora (cru, não LR).")
         v.addWidget(self.chk)
 
         # Qualidade (triagem): ajuda a decidir aceitar/rejeitar. FIQA do
@@ -107,7 +111,16 @@ class VideoReviewDialog(QtWidgets.QDialog):
         dets = [f.det_score for f in faces if f.det_score is not None]
         fiqas = [f.fiqa_score for f in faces if f.fiqa_score is not None]
         self.sld_det = self._make_quality_slider(dets, (0.0, 1.0))
+        self.sld_det.setToolTip(
+            "Limiar de <b>det_score</b> (confiabilidade da detecção) para "
+            "<b>pré-marcar</b> faces — não descarta nada sozinho. A faixa do "
+            "controle vem da distribuição observada neste run. "
+            "Confiabilidade ≠ identidade ≠ qualidade.")
         self.sld_fiqa = self._make_quality_slider(fiqas, (0.0, 2.0))
+        self.sld_fiqa.setToolTip(
+            "Limiar de <b>fiqa_score</b> (qualidade — CR-FIQA) para <b>pré-marcar</b> "
+            "faces. Atenção: o CR-FIQA <b>não</b> é 0–1 (tipicamente ~1,0–1,4) — use "
+            "comparativamente pela distribuição deste run, não como porcentagem.")
         self.lbl_det_val = QtWidgets.QLabel("", self)
         self.lbl_fiqa_val = QtWidgets.QLabel("", self)
         self.lbl_qcount = QtWidgets.QLabel("", self)
@@ -122,6 +135,9 @@ class VideoReviewDialog(QtWidgets.QDialog):
         g.addWidget(self.sld_fiqa, 1, 1)
         g.addWidget(self.lbl_fiqa_val, 1, 2)
         btn_apply = QtWidgets.QPushButton("Selecionar faces ≥ limiares", self)
+        btn_apply.setToolTip(
+            "Marca as faces que atingem <b>ambos</b> os limiares (det_score e fiqa) "
+            "e desmarca as demais. A decisão final continua sua — confira antes de concluir.")
         btn_apply.clicked.connect(self._apply_quality_selection)
         g.addWidget(btn_apply, 2, 0)
         g.addWidget(self.lbl_qcount, 2, 1, 1, 2)
@@ -130,8 +146,10 @@ class VideoReviewDialog(QtWidgets.QDialog):
 
         sel_row = QtWidgets.QHBoxLayout()
         btn_all = QtWidgets.QPushButton("Marcar todos", self)
+        btn_all.setToolTip("Marca todas as faces da grade.")
         btn_all.clicked.connect(lambda: self._set_all(True))
         btn_none = QtWidgets.QPushButton("Desmarcar todos", self)
+        btn_none.setToolTip("Desmarca todas as faces da grade.")
         btn_none.clicked.connect(lambda: self._set_all(False))
         sel_row.addWidget(btn_all)
         sel_row.addWidget(btn_none)
@@ -142,8 +160,15 @@ class VideoReviewDialog(QtWidgets.QDialog):
         btn_cancel = QtWidgets.QPushButton("Cancelar", self)
         btn_cancel.clicked.connect(self.reject)
         btn_skip = QtWidgets.QPushButton("Pular revisão", self)
+        btn_skip.setToolTip(
+            "<b>Override auditado:</b> aceita todas as faces sem inspeção e registra "
+            "<i>review_skipped</i> no manifesto. Use só em teste/desenvolvimento ou "
+            "com justificativa.")
         btn_skip.clicked.connect(self._on_skip)
         btn_finish = QtWidgets.QPushButton("Concluir revisão ✔", self)
+        btn_finish.setToolTip(
+            "Grava suas decisões (marcadas = aceitas; desmarcadas → <i>_rejected/</i>) "
+            "e encerra a revisão. No modo Ponta a ponta, libera a geração do dataset.")
         btn_finish.setDefault(True)
         btn_finish.clicked.connect(self._on_finish)
         btn_row.addWidget(btn_cancel)
