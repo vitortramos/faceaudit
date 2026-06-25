@@ -47,7 +47,10 @@ class _FrameView(QtWidgets.QGraphicsView):
         self._scene = QtWidgets.QGraphicsScene(self)
         self.setScene(self._scene)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
-        self.setMinimumHeight(360)
+        # Mínimo enxuto + stretch (root.addWidget(view, 1)): cede em telas
+        # baixas e cresce quando há espaço. A face continua clicável (a view
+        # escala o quadro com KeepAspectRatio).
+        self.setMinimumHeight(240)
         self._pix_item: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._rects: List[QtWidgets.QGraphicsRectItem] = []
 
@@ -298,7 +301,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
                  dataset_output_dir: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("🎬 Criar Dataset a partir de Vídeo")
-        self.resize(960, 760)
+        # Mínimo enxuto para caber em notebooks pequenos; a área de rolagem
+        # cobre o resto. O tamanho de abertura é calculado em _apply_initial_size.
+        self.setMinimumSize(700, 460)
         self._use_gpu = use_gpu
         self._model = model
         self._datasets_dir = datasets_dir
@@ -317,10 +322,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
         self._sync_embedding_checkboxes()  # árbitro sempre marcado/travado
         self._on_mode_changed()            # grupo Dataset oculto (modo default = Só recortes)
+        self._apply_initial_size()         # abre dentro da tela (telas baixas)
 
     # ───────────────────────────── UI ─────────────────────────────
     def _build_ui(self):
-        root = QtWidgets.QVBoxLayout(self)
+        # `outer` é o layout da janela: [conteúdo rolável | barra de ações fixa].
+        # Todo o formulário vai para `content` (dentro da QScrollArea), então a
+        # janela pode encolher abaixo do mínimo do conteúdo — essencial em telas
+        # baixas, onde antes os botões caíam para fora.
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        content = QtWidgets.QWidget(self)
+        root = QtWidgets.QVBoxLayout(content)
 
         # ── Grupo 1: Vídeo + Detecção (aplicados ao Carregar) ──
         g_src = QtWidgets.QGroupBox("1. Vídeo e detecção", self)
@@ -628,7 +642,20 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         btn_row.addStretch()
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(self.btn_extract)
-        root.addLayout(btn_row)
+
+        # Conteúdo rolável + barra de ações fixa embaixo (sempre alcançável).
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        outer.addWidget(scroll, 1)
+        bar = QtWidgets.QWidget(self)
+        bar.setObjectName("actionBar")
+        bar.setStyleSheet("#actionBar { border-top: 1px solid #d0d0d0; }")
+        btn_row.setContentsMargins(9, 6, 9, 9)
+        bar.setLayout(btn_row)
+        outer.addWidget(bar)
 
     # ───────────────────────────── slots ─────────────────────────────
     def _on_browse(self):
@@ -713,11 +740,18 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.lbl_frame.setText("Modelo alterado — clique em “Carregar vídeo” novamente.")
 
     def _on_mode_changed(self, *_):
-        # "Só recortes" esconde o grupo Dataset (inertes nesse modo).
+        # "Só recortes" esconde o grupo Dataset (inertes nesse modo). A área de
+        # rolagem absorve a diferença de altura — sem resize de janela.
         self._dataset_group.setVisible(self.rb_e2e.isChecked())
-        w = self.width()
-        self.adjustSize()          # encolhe/cresce para caber o conteúdo
-        self.resize(w, self.height())  # preserva a largura (só a altura muda)
+
+    def _apply_initial_size(self):
+        """Abre dentro da tela: nunca mais alta/larga que a área útil. Se não
+        couber, o conteúdo rola e a barra de ações fica sempre visível."""
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen is not None else None
+        w = min(960, avail.width() - 60) if avail is not None else 960
+        h = min(820, avail.height() - 80) if avail is not None else 760
+        self.resize(max(700, int(w)), max(480, int(h)))
 
     # ──────────────────────────── alvos ────────────────────────────
     def _add_target(self, *, activate: bool = True, label: Optional[str] = None):
