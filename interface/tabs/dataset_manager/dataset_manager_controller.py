@@ -1026,17 +1026,27 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_novo_dataset_video(self):
         """🎬 Abre o fluxo de criação de dataset a partir de vídeo."""
-        from .video_dataset_dialog.video_dataset_controller import VideoDatasetController
-        if getattr(self, "_video_ctrl", None) is None:
-            self._video_ctrl = VideoDatasetController(self)
+        self._video_ctrl_lazy()  # cursor de espera no import pesado da 1ª vez
         self._video_ctrl.run_new_from_video()
 
     def fluxo_importar_run_video(self):
         """📥 Importa um run de extração de vídeo já produzido (revisar + dataset)."""
-        from .video_dataset_dialog.video_dataset_controller import VideoDatasetController
-        if getattr(self, "_video_ctrl", None) is None:
-            self._video_ctrl = VideoDatasetController(self)
+        self._video_ctrl_lazy()
         self._video_ctrl.run_import_video_run()
+
+    def _video_ctrl_lazy(self):
+        """Cria o VideoDatasetController sob demanda. O import puxa cv2 +
+        FFService + serviços de vídeo — pesado na 1ª vez —, então mostra o
+        cursor de ocupado para dar feedback ao clicar no botão."""
+        if getattr(self, "_video_ctrl", None) is not None:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()  # paint imediato do cursor
+        try:
+            from .video_dataset_dialog.video_dataset_controller import VideoDatasetController
+            self._video_ctrl = VideoDatasetController(self)
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def fluxo_novo_dataset(self):
         templates_path = Path(self.config.paths.dir_templates)

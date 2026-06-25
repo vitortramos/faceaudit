@@ -93,7 +93,13 @@ class VideoReviewDialog(QtWidgets.QDialog):
         self._svc = VideoReviewService()
         self._outcome: Optional[str] = None  # completed | skipped | None(cancelado)
         self._thumbs: List[_Thumb] = []
-        self._build_ui()
+        # Carregar as miniaturas (imread por face) pode demorar — mostra o
+        # cursor de ocupado durante a montagem da grade.
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            self._build_ui()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def outcome(self) -> Optional[str]:
         return self._outcome

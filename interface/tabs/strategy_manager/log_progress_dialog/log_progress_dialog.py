@@ -72,7 +72,12 @@ class LogProgressDialog(QtWidgets.QDialog):
 
         self.btn_action.setText("Fechar")
         self.btn_action.setEnabled(True)
-        
+        # Sempre revela o botão ao concluir — em fluxos sem cancelamento
+        # (allow_cancel=False) o runner o esconde durante o processamento;
+        # ao terminar, "Fechar" precisa reaparecer (senão a janela fica sem
+        # botão de fechar embaixo).
+        self.btn_action.setVisible(True)
+
         if success:
             self.text_log.append("\n✅ PROCESSO CONCLUÍDO.")
             self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #28a745; }")
