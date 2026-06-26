@@ -334,6 +334,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         content = QtWidgets.QWidget(self)
+        self._scroll_content = content
         root = QtWidgets.QVBoxLayout(content)
 
         # ── Grupo 1: Vídeo + Detecção (aplicados ao Carregar) ──
@@ -651,6 +652,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         outer.addWidget(scroll, 1)
         bar = QtWidgets.QWidget(self)
+        self._action_bar = bar
         bar.setObjectName("actionBar")
         bar.setStyleSheet("#actionBar { border-top: 1px solid #d0d0d0; }")
         btn_row.setContentsMargins(9, 6, 9, 9)
@@ -745,13 +747,18 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._dataset_group.setVisible(self.rb_e2e.isChecked())
 
     def _apply_initial_size(self):
-        """Abre dentro da tela: nunca mais alta/larga que a área útil. Se não
-        couber, o conteúdo rola e a barra de ações fica sempre visível."""
+        """Abre alta o suficiente para mostrar os grupos VISÍVEIS sem rolar
+        (o grupo Dataset começa oculto), limitada à área útil da tela. Em telas
+        baixas, o conteúdo rola e a barra de ações fica sempre visível."""
         screen = self.screen() or QtWidgets.QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen is not None else None
+        # Altura natural do conteúdo visível + barra de ações → cabe sem rolar.
+        self._scroll_content.layout().activate()
+        desired_h = (self._scroll_content.sizeHint().height()
+                     + self._action_bar.sizeHint().height() + 24)
         w = min(960, avail.width() - 60) if avail is not None else 960
-        h = min(820, avail.height() - 80) if avail is not None else 760
-        self.resize(max(700, int(w)), max(480, int(h)))
+        max_h = (avail.height() - 80) if avail is not None else 900
+        self.resize(max(700, int(w)), max(480, min(int(desired_h), int(max_h))))
 
     # ──────────────────────────── alvos ────────────────────────────
     def _add_target(self, *, activate: bool = True, label: Optional[str] = None):

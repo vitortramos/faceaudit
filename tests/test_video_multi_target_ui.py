@@ -55,6 +55,19 @@ def test_seeds_one_target(app):
     assert not dlg.btn_extract.isEnabled()
 
 
+def test_initial_size_shows_visible_groups_or_caps_to_screen(app):
+    dlg = _setup_dialog()
+    sc = dlg.screen().availableGeometry()
+    content = dlg._scroll_content.sizeHint().height()
+    bar = dlg._action_bar.sizeHint().height()
+    cap = sc.height() - 80
+    # Nunca abre mais alta que a área útil da tela.
+    assert dlg.height() <= max(480, cap) + 1
+    # Quando cabe, abre mostrando conteúdo + barra (grupo Modo visível sem rolar).
+    if content + bar + 24 <= cap:
+        assert dlg.height() >= content + bar
+
+
 def test_add_targets_unique_labels_and_colors(app):
     dlg = _setup_dialog()
     dlg._add_target()
