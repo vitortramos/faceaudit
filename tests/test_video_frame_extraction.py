@@ -204,7 +204,7 @@ def test_extract_accepts_target_and_writes_crop_and_sidecar(video_path, tmp_path
     assert res.n_accepted_auto >= 1
     crops = list((Path(res.run_dir) / "alvo").glob("*.png"))
     assert crops, "deveria ter salvo recortes"
-    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_f*.json"))
+    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_v*_f*.json"))
     assert sidecars
     side = json.loads(sidecars[0].read_text(encoding="utf-8"))
     assert side["reidentification"]["similarity_to_anchor"] == pytest.approx(1.0, abs=1e-5)
@@ -244,7 +244,7 @@ def test_extract_fiqa_route_to_review_flags_reason(video_path, tmp_path):
     cfg = _cfg(video_path, tmp_path, fiqa_score_policy=QualityGatePolicy.ROUTE_TO_REVIEW, min_fiqa_score=0.5)
     res = service.extract(cfg, [_target(threshold=0.5)])
     assert res.n_accepted_auto >= 1
-    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_f*.json"))
+    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_v*_f*.json"))
     side = json.loads(sidecars[0].read_text(encoding="utf-8"))
     assert "low_fiqa" in side["review_reasons"]
     assert side["quality_gates"]["fiqa_score_decision"] == "route_to_review"
@@ -288,5 +288,94 @@ def test_extract_multi_target_assigns_each_to_own_folder(video_path, tmp_path):
     assert list((Path(res.run_dir) / "alvo_a").glob("*.png"))
     assert list((Path(res.run_dir) / "alvo_b").glob("*.png"))
     # cada alvo recebe a face do seu próprio embedding (sem cruzamento)
-    side_a = json.loads(sorted((Path(res.run_dir) / "_meta").glob("alvo_a_f*.json"))[0].read_text(encoding="utf-8"))
+    side_a = json.loads(sorted((Path(res.run_dir) / "_meta").glob("alvo_a_v*_f*.json"))[0].read_text(encoding="utf-8"))
     assert side_a["reidentification"]["similarity_to_anchor"] == pytest.approx(1.0, abs=1e-5)
+
+
+def test_extract_multivideo_combines_into_one_run(tmp_path):
+    """Fase 3 — 2 vídeos numa run só: nomes namespaced (sem colisão), manifesto
+    com source_videos[], cada face marcada pela sua origem, run nomeada pelo caso."""
+    v1, v2 = tmp_path / "camA.avi", tmp_path / "camB.avi"
+    if not (_make_video(v1) and _make_video(v2)):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    cfg = _cfg(v1, tmp_path, video_paths=[str(v1), str(v2)], case_name="caso_x")
+    res = service.extract(cfg, [_target(threshold=0.5)])
+
+    assert res.n_accepted_auto >= 2
+    crops = sorted(p.name for p in (Path(res.run_dir) / "alvo").glob("*.png"))
+    assert any(n.startswith("alvo_v00_") for n in crops)     # vídeo 0
+    assert any(n.startswith("alvo_v01_") for n in crops)     # vídeo 1
+    assert len(crops) == len(set(crops))                     # sem colisão de nome
+
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    assert len(manifest["source_videos"]) == 2
+    assert manifest["summary"]["n_videos"] == 2
+
+    sidecars = [json.loads(p.read_text(encoding="utf-8"))
+                for p in (Path(res.run_dir) / "_meta").glob("alvo_v*_f*.json")]
+    origins = {s["source_video"]["filename"] for s in sidecars}
+    assert origins == {"camA.avi", "camB.avi"}               # faces marcadas por origem
+    assert Path(res.run_dir).name.startswith("caso_x_")      # run nomeada pelo caso
+
+
+def test_extract_multivideo_cancel_mid_second_video_keeps_partial(tmp_path):
+    """Cancelar no 2º vídeo deixa o run parcial auditável (1º vídeo extraído)."""
+    v1, v2 = tmp_path / "camA.avi", tmp_path / "camB.avi"
+    if not (_make_video(v1) and _make_video(v2)):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    cfg = _cfg(v1, tmp_path, video_paths=[str(v1), str(v2)], case_name="caso_y")
+    # cancela assim que o 1º vídeo terminar (≥1 face já aceita)
+    state = {"calls": 0}
+    def cancel():
+        state["calls"] += 1
+        return state["calls"] > 6        # deixa o 1º vídeo (5 quadros) completar
+    res = service.extract(cfg, [_target(threshold=0.5)], cancel_check=cancel)
+    assert res.extraction_status == "cancelled"
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["extraction_status"] == "cancelled"
+    assert res.n_accepted_auto >= 1      # parcial preservado
+
+
+def test_extract_multivideo_failure_still_writes_manifest(tmp_path):
+    """Falha DURANTE o 2º vídeo: o run parcial continua auditável (manifesto
+    gravado com extraction_status='failed') antes do erro propagar."""
+    v1, v2 = tmp_path / "camA.avi", tmp_path / "camB.avi"
+    if not (_make_video(v1) and _make_video(v2)):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    # falha determinística no 2º vídeo (independe da contagem exata de quadros)
+    orig = service._process_frame
+    def boom(*a, **k):
+        if k.get("video_index") == 1:
+            raise RuntimeError("falha simulada no vídeo 2")
+        return orig(*a, **k)
+    service._process_frame = boom
+    cfg = _cfg(v1, tmp_path, video_paths=[str(v1), str(v2)], case_name="caso_err")
+    with pytest.raises(RuntimeError):
+        service.extract(cfg, [_target(threshold=0.5)])
+    manifests = list((tmp_path / "out").glob("*/_meta/_run_*.json"))
+    assert manifests, "run parcial deve ter manifesto mesmo após falha no laço"
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["extraction_status"] == "failed"
+    assert manifest["summary"]["n_accepted_auto"] >= 1   # vídeo 1 preservado
+
+
+def test_extract_multivideo_per_video_window(tmp_path):
+    """Janela POR vídeo: o vídeo 0 é limitado a um trecho, o vídeo 1 é inteiro."""
+    v1, v2 = tmp_path / "camA.avi", tmp_path / "camB.avi"
+    if not (_make_video(v1, n=10, fps=5) and _make_video(v2, n=10, fps=5)):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    # vídeo 0: trecho [0.0s, 0.4s] (≈ 3 quadros a 5 fps); vídeo 1: inteiro
+    cfg = _cfg(v1, tmp_path, video_paths=[str(v1), str(v2)],
+               video_windows=[[0.0, 0.4], None], case_name="caso_win")
+    res = service.extract(cfg, [_target(threshold=0.5)])
+    v0 = list((Path(res.run_dir) / "alvo").glob("alvo_v00_*.png"))
+    v1c = list((Path(res.run_dir) / "alvo").glob("alvo_v01_*.png"))
+    assert 1 <= len(v0) < len(v1c)   # a janela reduziu o vídeo 0

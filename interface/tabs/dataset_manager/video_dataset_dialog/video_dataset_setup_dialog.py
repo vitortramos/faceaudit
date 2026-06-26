@@ -16,11 +16,11 @@ import numpy as np
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.services.ff_service import FFService
+from faceaudit.services.image_io import imread_unicode_safe
 from faceaudit.services.video_frame_face_extraction_service import (
     VideoFrameFaceExtractionService,
 )
 from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
-from faceaudit.enums.video_extraction_mode import VideoExtractionMode
 from faceaudit.enums.sepael_model import SepaelModel
 
 # Cores estáveis por alvo (índice → cor da caixa no quadro e da bolinha na
@@ -122,6 +122,14 @@ class _RangeScrubber(QtWidgets.QWidget):
         self._start, self._end, self._current = self._min, self._max, self._min
         self.update()
 
+    def set_window(self, start, end):
+        """Define as alças de início/fim (quadros), mantendo início ≤ fim."""
+        s, e = self._clamp(start), self._clamp(end)
+        self._start, self._end = (s, e) if s <= e else (e, s)
+        self._current = self._clamp(self._current)
+        self.update()
+        self.windowChanged.emit()
+
     def start(self) -> int:
         return self._start
 
@@ -212,6 +220,7 @@ class _TargetRowWidget(QtWidgets.QFrame):
     removed = QtCore.pyqtSignal(object)     # self
     label_changed = QtCore.pyqtSignal(object)
     threshold_changed = QtCore.pyqtSignal(object)
+    anchors_edit_requested = QtCore.pyqtSignal(object)   # self
 
     def __init__(self, parent, *, label: str, color: str, threshold: float):
         super().__init__(parent)
@@ -243,6 +252,10 @@ class _TargetRowWidget(QtWidgets.QFrame):
         self.spn_thr.valueChanged.connect(lambda _v: self.threshold_changed.emit(self))
         self.lbl_status = QtWidgets.QLabel("sem âncora", self)
         self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+        self.btn_anchors = QtWidgets.QPushButton("Âncoras", self)
+        self.btn_anchors.setToolTip("Ver, combinar e remover âncoras deste alvo.")
+        self.btn_anchors.setEnabled(False)
+        self.btn_anchors.clicked.connect(lambda: self.anchors_edit_requested.emit(self))
         self.btn_remove = QtWidgets.QToolButton(self)
         self.btn_remove.setText("🗑")
         self.btn_remove.setAutoRaise(True)
@@ -254,6 +267,7 @@ class _TargetRowWidget(QtWidgets.QFrame):
         h.addWidget(QtWidgets.QLabel("limiar", self))
         h.addWidget(self.spn_thr)
         h.addWidget(self.lbl_status, 2)
+        h.addWidget(self.btn_anchors)
         h.addWidget(self.btn_remove)
         self.set_active(False)
 
@@ -272,15 +286,33 @@ class _TargetRowWidget(QtWidgets.QFrame):
     def set_anchor(self, video_target, det_index: int):
         self.video_target = video_target
         self.anchor_det_index = det_index
-        self.lbl_status.setText(
-            f"âncora: quadro {video_target.anchor_frame_index}, face #{det_index}")
+        self.refresh_anchor_status()
+
+    def refresh_anchor_status(self):
+        """Status com a contagem de âncoras e a mistura de fontes (vídeo/foto)."""
+        t = self.video_target
+        if t is None:
+            self.clear_anchor()
+            return
+        n = t.anchor_embedding_count
+        n_vid, n_img = t.anchor_source_counts()
+        parts = []
+        if n_vid:
+            parts.append(f"{n_vid} vídeo")
+        if n_img:
+            parts.append(f"{n_img} foto")
+        detail = (" · " + " · ".join(parts)) if parts else ""
+        plural = "âncora" if n == 1 else "âncoras"
+        self.lbl_status.setText(f"{n} {plural}{detail}")
         self.lbl_status.setStyleSheet("color:#2e7d32; font-size:11px;")
+        self.btn_anchors.setEnabled(n > 0)
 
     def clear_anchor(self):
         self.video_target = None
         self.anchor_det_index = None
         self.lbl_status.setText("sem âncora")
         self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+        self.btn_anchors.setEnabled(False)
 
     def set_active(self, active: bool):
         self._active = active
@@ -295,6 +327,180 @@ class _TargetRowWidget(QtWidgets.QFrame):
         super().mousePressEvent(ev)
 
 
+class _AnchorsDialog(QtWidgets.QDialog):
+    """Lista as âncoras de um alvo (a fonte de cada uma) e permite removê-las.
+    A referência do alvo é a média de todas as âncoras."""
+
+    def __init__(self, target, parent=None):
+        super().__init__(parent)
+        self.target = target
+        self.setWindowTitle(f"Âncoras · {getattr(target, 'label', '')}")
+        self.resize(500, 360)
+        root = QtWidgets.QVBoxLayout(self)
+        root.addWidget(QtWidgets.QLabel(
+            "Âncoras deste alvo — remova as que não quiser. O modo de combinação "
+            "define como elas pontuam cada face.", self))
+
+        mode_row = QtWidgets.QHBoxLayout()
+        mode_row.addWidget(QtWidgets.QLabel("Combinação:", self))
+        self.cmb_mode = QtWidgets.QComboBox(self)
+        self.cmb_mode.addItem("Centroide (média das âncoras)", "CENTROID")
+        self.cmb_mode.addItem("Todas as âncoras (casa com qualquer uma)", "ANY")
+        cur = getattr(target, "anchor_match_mode", "CENTROID")
+        i = self.cmb_mode.findData(cur)
+        self.cmb_mode.setCurrentIndex(i if i >= 0 else 0)
+        self.cmb_mode.setToolTip(
+            "<b>Centroide</b>: compara cada face com a <b>média</b> das âncoras — "
+            "robusto para várias aparências da MESMA pessoa; mais conservador.<br>"
+            "<b>Todas as âncoras</b>: compara com <b>cada</b> âncora e casa se "
+            "bater com <b>qualquer</b> uma (máximo) — mais permissivo, mais recall "
+            "e mais risco de falso positivo.")
+        self.cmb_mode.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self.cmb_mode, 1)
+        root.addLayout(mode_row)
+
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        self._host = QtWidgets.QWidget(scroll)
+        self._list = QtWidgets.QVBoxLayout(self._host)
+        self._list.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        scroll.setWidget(self._host)
+        root.addWidget(scroll, 1)
+        btn_close = QtWidgets.QPushButton("Fechar", self)
+        btn_close.clicked.connect(self.accept)
+        foot = QtWidgets.QHBoxLayout()
+        foot.addStretch()
+        foot.addWidget(btn_close)
+        root.addLayout(foot)
+        self._rebuild()
+
+    def _rebuild(self):
+        while self._list.count():
+            it = self._list.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        n = self.target.anchor_embedding_count
+        if n == 0:
+            self._list.addWidget(QtWidgets.QLabel("Sem âncoras.", self._host))
+            return
+        for i in range(n):
+            src = (self.target.anchor_sources[i]
+                   if i < len(self.target.anchor_sources) else {})
+            line = QtWidgets.QFrame(self._host)
+            line.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+            h = QtWidgets.QHBoxLayout(line)
+            h.setContentsMargins(8, 4, 8, 4)
+            thumb = QtWidgets.QLabel(line)
+            thumb.setFixedSize(56, 56)
+            thumb.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            thumb.setStyleSheet("background:#222; border-radius:4px;")
+            bgr = src.get("thumbnail_bgr")
+            if bgr is not None:
+                thumb.setPixmap(_bgr_to_pixmap(bgr).scaled(
+                    56, 56, QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+                    QtCore.Qt.TransformationMode.SmoothTransformation))
+            else:
+                thumb.setText("—")
+            h.addWidget(thumb)
+            h.addWidget(QtWidgets.QLabel(self._describe(i + 1, src), line), 1)
+            btn = QtWidgets.QPushButton("Remover", line)
+            btn.clicked.connect(lambda _c, idx=i: self._remove(idx))
+            h.addWidget(btn)
+            self._list.addWidget(line)
+
+    @staticmethod
+    def _describe(n: int, src: dict) -> str:
+        if src.get("type") == "image":
+            return f"{n}. 📷 foto · {src.get('filename') or src.get('path') or '—'}"
+        fi = src.get("frame_index")
+        return f"{n}. 🎞 vídeo · quadro {fi}" if fi is not None else f"{n}. 🎞 vídeo"
+
+    def _on_mode_changed(self, _idx: int):
+        self.target.anchor_match_mode = self.cmb_mode.currentData() or "CENTROID"
+
+    def _remove(self, index: int):
+        self.target.remove_anchor(index)
+        self._rebuild()
+
+
+def _secs_to_qtime(s):
+    s = max(0, int(round(s or 0)))
+    return QtCore.QTime(s // 3600, (s % 3600) // 60, s % 60)
+
+
+def _qtime_to_secs(t) -> float:
+    return float(t.hour() * 3600 + t.minute() * 60 + t.second())
+
+
+def _fmt_window(start_s, end_s) -> str:
+    def f(x):
+        x = max(0, int(round(x)))
+        h, m, sec = x // 3600, (x % 3600) // 60, x % 60
+        return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+    return f"[{f(start_s)}–{'fim' if end_s is None else f(end_s)}]"
+
+
+class _VideoWindowDialog(QtWidgets.QDialog):
+    """Define o trecho (início/fim) de UM vídeo — sem precisar carregá-lo."""
+
+    def __init__(self, parent, *, name, start_s, end_s):
+        super().__init__(parent)
+        self.setWindowTitle(f"Trecho · {name}")
+        self.resize(380, 180)
+        root = QtWidgets.QVBoxLayout(self)
+        intro = QtWidgets.QLabel(
+            "Defina o trecho do vídeo a extrair (não precisa carregar). "
+            "Marque “até o fim” se não souber a duração.", self)
+        intro.setWordWrap(True)
+        root.addWidget(intro)
+        form = QtWidgets.QFormLayout()
+        self.te_start = QtWidgets.QTimeEdit(self)
+        self.te_start.setDisplayFormat("HH:mm:ss")
+        self.te_start.setTime(_secs_to_qtime(start_s))
+        self.te_end = QtWidgets.QTimeEdit(self)
+        self.te_end.setDisplayFormat("HH:mm:ss")
+        self.te_end.setTime(_secs_to_qtime(end_s if end_s is not None else 0.0))
+        self.chk_to_end = QtWidgets.QCheckBox("até o fim do vídeo", self)
+        self.chk_to_end.setChecked(end_s is None)
+        self.te_end.setEnabled(end_s is not None)
+        self.chk_to_end.toggled.connect(lambda c: self.te_end.setEnabled(not c))
+        end_w = QtWidgets.QWidget(self)
+        eh = QtWidgets.QHBoxLayout(end_w)
+        eh.setContentsMargins(0, 0, 0, 0)
+        eh.addWidget(self.te_end)
+        eh.addWidget(self.chk_to_end)
+        form.addRow("Início:", self.te_start)
+        form.addRow("Fim:", end_w)
+        root.addLayout(form)
+        bb = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel, self)
+        bb.accepted.connect(self._on_ok)
+        bb.rejected.connect(self.reject)
+        root.addWidget(bb)
+
+    def _values(self):
+        start = _qtime_to_secs(self.te_start.time())
+        end = None if self.chk_to_end.isChecked() else _qtime_to_secs(self.te_end.time())
+        return start, end
+
+    def _on_ok(self):
+        s, e = self._values()
+        if e is not None and e <= s:
+            QtWidgets.QMessageBox.warning(self, "Trecho", "O fim deve ser depois do início.")
+            return
+        self.accept()
+
+    def result_window(self):
+        """(start_s, end_s) ou None (= vídeo inteiro)."""
+        s, e = self._values()
+        if s <= 0 and e is None:
+            return None
+        return (s, e)
+
+
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
                  datasets_dir: Optional[str] = None, output_dir: Optional[str] = None,
@@ -304,6 +510,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # Mínimo enxuto para caber em notebooks pequenos; a área de rolagem
         # cobre o resto. O tamanho de abertura é calculado em _apply_initial_size.
         self.setMinimumSize(700, 460)
+        # Botões de minimizar/maximizar/restaurar (como a janela do app).
+        self.setWindowFlags(self.windowFlags()
+                            | QtCore.Qt.WindowType.WindowMinimizeButtonHint
+                            | QtCore.Qt.WindowType.WindowMaximizeButtonHint)
         self._use_gpu = use_gpu
         self._model = model
         self._datasets_dir = datasets_dir
@@ -313,15 +523,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._service: Optional[VideoFrameFaceExtractionService] = None
         self._info = None
         self._video_path: Optional[str] = None
+        self._video_infos: dict = {}      # path → VideoInfo (cache para a prévia)
+        self._video_windows: dict = {}    # path → (start_s, end_s) — janela por vídeo
         self._current_frame: Optional[np.ndarray] = None
         self._current_dets: list = []
+        # Modo "imagem de referência": quando True, o quadro exibido é uma foto
+        # estática (não um quadro do vídeo) e a próxima âncora é do tipo "image".
+        self._anchor_source_is_image: bool = False
+        self._anchor_image_path: Optional[str] = None
         self._target_rows: List[_TargetRowWidget] = []
         self._active_row: Optional[_TargetRowWidget] = None
 
         self._build_ui()
         self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
-        self._sync_embedding_checkboxes()  # árbitro sempre marcado/travado
-        self._on_mode_changed()            # grupo Dataset oculto (modo default = Só recortes)
         self._apply_initial_size()         # abre dentro da tela (telas baixas)
 
     # ───────────────────────────── UI ─────────────────────────────
@@ -336,26 +550,75 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         content = QtWidgets.QWidget(self)
         self._scroll_content = content
         root = QtWidgets.QVBoxLayout(content)
+        # Duas colunas via splitter NÃO-colapsável: prévia + scrubber + detecção
+        # à esquerda; vídeo/alvos/extração à direita. A coluna direita nunca
+        # some (childrenCollapsible=False + largura mínima); a prévia não a engole.
+        self._columns = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal, content)
+        self._columns.setChildrenCollapsible(False)
+        root.addWidget(self._columns, 1)
+        left_w = QtWidgets.QWidget(self._columns)
+        left = QtWidgets.QVBoxLayout(left_w)
+        left.setContentsMargins(0, 0, 0, 0)
+        right_w = QtWidgets.QWidget(self._columns)
+        right = QtWidgets.QVBoxLayout(right_w)
+        right.setContentsMargins(0, 0, 0, 0)
+        left_w.setMinimumWidth(340)
+        right_w.setMinimumWidth(300)
+        self._columns.addWidget(left_w)
+        self._columns.addWidget(right_w)
+        self._columns.setStretchFactor(0, 3)
+        self._columns.setStretchFactor(1, 2)
 
-        # ── Grupo 1: Vídeo + Detecção (aplicados ao Carregar) ──
-        g_src = QtWidgets.QGroupBox("1. Vídeo e detecção", self)
+        # ── Grupo Vídeos (direita): lista multivídeo + carregar ──
+        g_src = QtWidgets.QGroupBox("Vídeos", self)
         gs = QtWidgets.QVBoxLayout(g_src)
-        vid_row = QtWidgets.QHBoxLayout()
-        self.txt_video = QtWidgets.QLineEdit(self)
-        self.txt_video.setPlaceholderText("Caminho do arquivo de vídeo…")
-        self.txt_video.setToolTip(
-            "Caminho do arquivo de vídeo a analisar. Use <b>Procurar…</b> para "
-            "selecionar. A <b>Resolução</b> e a <b>Confiança mínima</b> do detector "
-            "só são aplicadas ao clicar em <b>Carregar vídeo</b>.")
-        btn_browse = QtWidgets.QPushButton("Procurar…", self)
-        btn_browse.setToolTip("Abre o seletor de arquivos para escolher o vídeo.")
-        btn_browse.clicked.connect(self._on_browse)
-        vid_row.addWidget(QtWidgets.QLabel("Vídeo:", self))
-        vid_row.addWidget(self.txt_video, 1)
-        vid_row.addWidget(btn_browse)
-        gs.addLayout(vid_row)
+        add_row = QtWidgets.QHBoxLayout()
+        btn_add_videos = QtWidgets.QPushButton("➕ Adicionar vídeos…", self)
+        btn_add_videos.setToolTip(
+            "Escolhe um ou mais arquivos de vídeo. O alvo é procurado em <b>TODOS</b> "
+            "eles, gerando um único dataset (cada face marcada com seu vídeo de origem).")
+        btn_add_videos.clicked.connect(self._on_add_videos)
+        add_row.addWidget(btn_add_videos)
+        add_row.addStretch()
+        gs.addLayout(add_row)
+        self.lst_videos = QtWidgets.QListWidget(self)
+        self.lst_videos.setMaximumHeight(96)
+        self.lst_videos.setToolTip(
+            "Vídeos do caso. Duplo-clique (ou Carregar) abre um na prévia para você "
+            "navegar e ancorar o alvo; a extração percorre todos.")
+        self.lst_videos.itemDoubleClicked.connect(lambda _it: self._on_load_selected())
+        gs.addWidget(self.lst_videos)
+        vbtn = QtWidgets.QHBoxLayout()
+        self.btn_load = QtWidgets.QPushButton("Carregar selecionado", self)
+        self.btn_load.setToolTip(
+            "Abre o vídeo selecionado na prévia (inicializa o detector com a "
+            "Resolução/Confiança atuais) para navegar e ancorar.")
+        self.btn_load.clicked.connect(self._on_load_selected)
+        btn_rm_video = QtWidgets.QPushButton("Remover", self)
+        btn_rm_video.setToolTip("Remove o vídeo selecionado da lista.")
+        btn_rm_video.clicked.connect(self._on_remove_video)
+        btn_window = QtWidgets.QPushButton("Definir trecho…", self)
+        btn_window.setToolTip(
+            "Define o início/fim (trecho) do vídeo selecionado a extrair — <b>sem "
+            "precisar carregar</b>. Carregar + arrastar as alças do scrubber também "
+            "define o trecho daquele vídeo.")
+        btn_window.clicked.connect(self._on_set_window)
+        vbtn.addWidget(self.btn_load)
+        vbtn.addWidget(btn_rm_video)
+        vbtn.addWidget(btn_window)
+        vbtn.addStretch()
+        gs.addLayout(vbtn)
+        case_row = QtWidgets.QHBoxLayout()
+        case_row.addWidget(QtWidgets.QLabel("Nome do caso:", self))
+        self.txt_case = QtWidgets.QLineEdit(self)
+        self.txt_case.setPlaceholderText("opcional — nomeia a run com vários vídeos")
+        self.txt_case.setToolTip(
+            "Nome da run quando há mais de um vídeo (default = nome do 1º vídeo).")
+        case_row.addWidget(self.txt_case, 1)
+        gs.addLayout(case_row)
+        right.addWidget(g_src)
 
-        det_row = QtWidgets.QHBoxLayout()
+        # Widgets de detecção — montados na barra "Detecção" (esquerda, sob a prévia).
         self.cmb_model = QtWidgets.QComboBox(self)
         self._populate_model_combo()
         self.cmb_model.setToolTip(
@@ -383,24 +646,6 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "<b>Confiança mínima da detecção</b>. ↓ aceita detecções de baixa "
             "confiança (faces pequenas/distantes/borradas), ao custo de mais "
             "falsos positivos. Padrão 0.50.")
-        self.btn_load = QtWidgets.QPushButton("Carregar vídeo", self)
-        self.btn_load.setToolTip(
-            "Abre o vídeo e inicializa o detector com a <b>Resolução</b> e a "
-            "<b>Confiança mínima</b> atuais. Alterar esses dois campos depois "
-            "<b>só tem efeito ao recarregar</b>.")
-        self.btn_load.clicked.connect(self._on_load)
-        det_row.addWidget(QtWidgets.QLabel("Embedding:", self))
-        det_row.addWidget(self.cmb_model)
-        det_row.addSpacing(14)
-        det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
-        det_row.addWidget(self.spn_det_size)
-        det_row.addSpacing(14)
-        det_row.addWidget(QtWidgets.QLabel("Confiança mínima:", self))
-        det_row.addWidget(self.spn_det_thresh)
-        det_row.addStretch()
-        det_row.addWidget(self.btn_load)
-        gs.addLayout(det_row)
-        root.addWidget(g_src)
 
         # View do quadro + slider
         self.view = _FrameView(self)
@@ -409,7 +654,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "do alvo para defini-la como <b>âncora</b> — é ela que a ferramenta vai "
             "procurar no vídeo inteiro.")
         self.view.clicked.connect(self._on_view_clicked)
-        root.addWidget(self.view, 1)
+        left.addWidget(self.view, 1)
 
         # Timeline única: 3 alças arrastáveis (início · quadro atual · fim).
         self.scrubber = _RangeScrubber(self)
@@ -420,7 +665,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.scrubber.currentChanged.connect(self._show_frame)
         self.scrubber.currentReleased.connect(lambda _v: self._detect_current())
         self.scrubber.windowChanged.connect(self._on_window_changed)
-        root.addWidget(self.scrubber)
+        left.addWidget(self.scrubber)
 
         info_row = QtWidgets.QHBoxLayout()
         legend = QtWidgets.QLabel(
@@ -445,10 +690,23 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         info_row.addWidget(self.lbl_window)
         info_row.addStretch()
         info_row.addWidget(self.btn_detect)
-        root.addLayout(info_row)
+        left.addLayout(info_row)
 
-        # ── Grupo 2: Alvos (multi-alvo) ──
-        g_tgt = QtWidgets.QGroupBox("2. Alvos", self)
+        # ── Barra de detecção (esquerda, sob a prévia) ──
+        g_det = QtWidgets.QGroupBox("Detecção", self)
+        det_row = QtWidgets.QHBoxLayout(g_det)
+        det_row.addWidget(QtWidgets.QLabel("Embedding:", self))
+        det_row.addWidget(self.cmb_model, 1)
+        det_row.addSpacing(10)
+        det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
+        det_row.addWidget(self.spn_det_size)
+        det_row.addSpacing(10)
+        det_row.addWidget(QtWidgets.QLabel("Confiança:", self))
+        det_row.addWidget(self.spn_det_thresh)
+        left.addWidget(g_det)
+
+        # ── Grupo Alvos (direita) ──
+        g_tgt = QtWidgets.QGroupBox("Alvos", self)
         gt = QtWidgets.QVBoxLayout(g_tgt)
         hdr = QtWidgets.QHBoxLayout()
         self.lbl_targets_count = QtWidgets.QLabel("", self)
@@ -458,8 +716,16 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "Adiciona um novo alvo. Depois, clique na face dele no quadro para "
             "ancorá-lo. Cada alvo vira uma identidade no dataset.")
         btn_add.clicked.connect(lambda: self._add_target(activate=True))
+        self.btn_ref_image = QtWidgets.QPushButton("🖼 Imagem de referência", self)
+        self.btn_ref_image.setToolTip(
+            "Acrescenta uma âncora ao alvo <b>ativo</b> a partir de uma <b>foto</b> "
+            "(busca por imagem): escolha o arquivo, a foto aparece na prévia e você "
+            "clica na face. Serve para 'tenho a foto da pessoa, ache nos vídeos' e "
+            "para reforçar a âncora com várias aparências do alvo.")
+        self.btn_ref_image.clicked.connect(self._on_add_reference_image)
         hdr.addWidget(self.lbl_targets_count)
         hdr.addStretch()
+        hdr.addWidget(self.btn_ref_image)
         hdr.addWidget(btn_add)
         gt.addLayout(hdr)
         self._targets_container = QtWidgets.QWidget(self)
@@ -474,10 +740,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888; font-size:11px;")
         gt.addWidget(hint)
-        root.addWidget(g_tgt)
+        right.addWidget(g_tgt)
 
-        # ── Grupo 3: Extração ──
-        g_ext = QtWidgets.QGroupBox("3. Extração", self)
+        # ── Grupo Extração (direita) ──
+        g_ext = QtWidgets.QGroupBox("Extração", self)
         fext = QtWidgets.QFormLayout(g_ext)
         self.spn_fps = QtWidgets.QDoubleSpinBox(self)
         self.spn_fps.setRange(0.1, 30.0)
@@ -524,95 +790,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         fext.addRow("Amostragem (quadros/s):", fps_w)
         fext.addRow("Margem do recorte:", self.spn_margin)
         fext.addRow("Pasta do run:", run_out_w)
-        root.addWidget(g_ext)
+        right.addWidget(g_ext)
+        right.addStretch()
 
-        # ── Grupo 4: Modo (gate do grupo Dataset) ──
-        g_modo = QtWidgets.QGroupBox("4. Modo", self)
-        gm = QtWidgets.QVBoxLayout(g_modo)
-        self.rb_producer = QtWidgets.QRadioButton("Só recortes", self)
-        self.rb_producer.setToolTip(
-            "<b>Só recortes:</b> extrai as faces para uma pasta (recortes + "
-            "<i>_meta/</i>) e para aí — você revisa/usa/importa o run depois. "
-            "Os recortes são idênticos aos do outro modo; muda só o que vem depois.")
-        rb_prod_desc = QtWidgets.QLabel(
-            "Extrai as faces para uma pasta (revisar/usar/importar depois).", self)
-        rb_prod_desc.setStyleSheet("color:#888; font-size:11px;")
-        self.rb_e2e = QtWidgets.QRadioButton("Recortes + dataset", self)
-        self.rb_e2e.setToolTip(
-            "<b>Recortes + dataset:</b> após a extração e a <b>revisão humana</b>, "
-            "monta o dataset e o enriquece (embeddings + opcional OFIQ/SER-FIQ), "
-            "registrando-o no Gerenciador. O dataset só é finalizado após a revisão.")
-        rb_e2e_desc = QtWidgets.QLabel(
-            "Extrai, revisa e gera o dataset pronto, com embeddings.", self)
-        rb_e2e_desc.setStyleSheet("color:#888; font-size:11px;")
-        self.rb_producer.setChecked(True)
-        self.rb_producer.toggled.connect(self._on_mode_changed)
-        gm.addWidget(self.rb_producer)
-        gm.addWidget(rb_prod_desc)
-        gm.addSpacing(4)
-        gm.addWidget(self.rb_e2e)
-        gm.addWidget(rb_e2e_desc)
-        root.addWidget(g_modo)
-
-        # ── Grupo 5: Dataset (visível só em "Recortes + dataset") ──
-        self._dataset_group = QtWidgets.QGroupBox("5. Dataset", self)
-        fds = QtWidgets.QFormLayout(self._dataset_group)
-        self.txt_name = QtWidgets.QLineEdit(self)
-        self.txt_name.setPlaceholderText("Nome do dataset (default = nome do vídeo)")
-        self.txt_name.setToolTip(
-            "Nome do <b>dataset</b> gerado. Se vazio, usa o nome do vídeo.")
-        emb_w = self._build_embedding_checks()
-        self.txt_dataset_output = QtWidgets.QLineEdit(self)
-        self.txt_dataset_output.setText(self._dataset_output_dir or "")
-        self.txt_dataset_output.setPlaceholderText("Pasta onde o dataset final será gravado")
-        self.txt_dataset_output.setToolTip(
-            "Pasta onde o <b>dataset final</b> (parquet) será gravado. Default: a "
-            "pasta global de datasets, para reuso entre projetos.")
-        btn_ds_out = QtWidgets.QPushButton("Procurar…", self)
-        btn_ds_out.setToolTip("Escolhe a pasta do dataset final.")
-        btn_ds_out.clicked.connect(self._on_browse_dataset_output)
-        ds_out_w = QtWidgets.QWidget(self)
-        ds_out_h = QtWidgets.QHBoxLayout(ds_out_w)
-        ds_out_h.setContentsMargins(0, 0, 0, 0)
-        ds_out_h.addWidget(self.txt_dataset_output, 1)
-        ds_out_h.addWidget(btn_ds_out)
-        self.rb_self_contained = QtWidgets.QRadioButton("Autocontido", self)
-        self.rb_self_contained.setToolTip(
-            "<b>Autocontido</b> (recomendado): copia os recortes para a pasta do "
-            "dataset, com caminhos relativos. Portátil — sobrevive a mudança de "
-            "máquina/drive (importante com o projeto no OneDrive entre casa e trabalho).")
-        self.rb_absolute = QtWidgets.QRadioButton("Caminho absoluto", self)
-        self.rb_absolute.setToolTip(
-            "<b>Caminho absoluto</b>: o dataset referencia os recortes do run por "
-            "caminho absoluto, sem copiar. Mais leve, mas <b>quebra</b> se o run "
-            "mudar de lugar, for limpo, ou for aberto noutra máquina.")
-        self.rb_self_contained.setChecked(True)
-        dest_w = QtWidgets.QWidget(self)
-        dest_h = QtWidgets.QHBoxLayout(dest_w)
-        dest_h.setContentsMargins(0, 0, 0, 0)
-        dest_h.addWidget(self.rb_self_contained)
-        dest_h.addWidget(self.rb_absolute)
-        dest_h.addStretch()
-        self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", self)
-        self.chk_ofiq.setToolTip(
-            "Calcula o <b>OFIQ</b> (qualidade de imagem facial, ISO/IEC 29794-5) no "
-            "enriquecimento. Não altera os recortes nem a seleção; custo extra.")
-        self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", self)
-        self.chk_serfiq.setToolTip(
-            "Calcula o <b>SER-FIQ</b> (qualidade de imagem facial) no enriquecimento. "
-            "Não altera os recortes nem a seleção; custo extra.")
-        qual_w = QtWidgets.QWidget(self)
-        qual_h = QtWidgets.QHBoxLayout(qual_w)
-        qual_h.setContentsMargins(0, 0, 0, 0)
-        qual_h.addWidget(self.chk_ofiq)
-        qual_h.addWidget(self.chk_serfiq)
-        qual_h.addStretch()
-        fds.addRow("Nome do dataset:", self.txt_name)
-        fds.addRow("Embeddings do dataset:", emb_w)
-        fds.addRow("Pasta do dataset:", ds_out_w)
-        fds.addRow("Destino:", dest_w)
-        fds.addRow("Qualidade:", qual_w)
-        root.addWidget(self._dataset_group)
+        # Modo + Dataset migraram para a janela de revisão (configurados lá, pois
+        # "Importar Run de Vídeo" abre direto naquela janela). Aqui só se extrai.
 
         # Prévia + botões
         self.lbl_preview = QtWidgets.QLabel("", self)
@@ -649,7 +831,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         scroll.setWidget(content)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         outer.addWidget(scroll, 1)
         bar = QtWidgets.QWidget(self)
         self._action_bar = bar
@@ -660,25 +842,102 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         outer.addWidget(bar)
 
     # ───────────────────────────── slots ─────────────────────────────
-    def _on_browse(self):
+    def _on_add_videos(self):
         start = self._datasets_dir or ""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Escolher vídeo", start,
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Escolher vídeo(s)", start,
             "Vídeos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v);;Todos (*.*)")
-        if path:
-            self.txt_video.setText(path)
+        if not paths:
+            return
+        existing = set(self._video_paths())
+        for p in paths:
+            if p in existing:
+                continue
+            it = QtWidgets.QListWidgetItem(Path(p).name, self.lst_videos)
+            it.setData(QtCore.Qt.ItemDataRole.UserRole, p)
+            it.setToolTip(p)
+            existing.add(p)
+        if self.lst_videos.currentRow() < 0 and self.lst_videos.count() > 0:
+            self.lst_videos.setCurrentRow(self.lst_videos.count() - 1)
+
+    def _video_paths(self) -> List[str]:
+        return [self.lst_videos.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
+                for i in range(self.lst_videos.count())]
+
+    def _on_load_selected(self):
+        it = self.lst_videos.currentItem()
+        if it is None and self.lst_videos.count() == 1:
+            it = self.lst_videos.item(0)
+        if it is None:
+            QtWidgets.QMessageBox.information(self, "Vídeo", "Selecione um vídeo na lista.")
+            return
+        self._load_video(it.data(QtCore.Qt.ItemDataRole.UserRole))
+
+    def _on_remove_video(self):
+        it = self.lst_videos.currentItem()
+        if it is None:
+            return
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole)
+        self.lst_videos.takeItem(self.lst_videos.row(it))
+        self._video_infos.pop(path, None)
+        self._video_windows.pop(path, None)
+        if path == self._video_path:
+            self._video_path = None
+            self._info = None
+            self._current_frame = None
+            self._current_dets = []
+            self.scrubber.setEnabled(False)
+            self.btn_detect.setEnabled(False)
+            self.btn_preview.setEnabled(False)
+            self.view.set_boxes([])
+            self.lbl_frame.setText("—")
+
+    def _on_set_window(self):
+        it = self.lst_videos.currentItem()
+        if it is None:
+            QtWidgets.QMessageBox.information(self, "Trecho", "Selecione um vídeo na lista.")
+            return
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole)
+        cur = self._video_windows.get(path)
+        start_s = cur[0] if cur else 0.0
+        end_s = cur[1] if cur else None
+        dlg = _VideoWindowDialog(self, name=Path(path).name, start_s=start_s, end_s=end_s)
+        if not dlg.exec():
+            return
+        win = dlg.result_window()
+        if win is None:
+            self._video_windows.pop(path, None)
+        else:
+            self._video_windows[path] = win
+        if path == self._video_path and self._info is not None:
+            self._apply_window_to_scrubber(path)   # reflete no scrubber se carregado
+        self._refresh_video_item(path)
+
+    def _refresh_video_item(self, path: str):
+        for i in range(self.lst_videos.count()):
+            it = self.lst_videos.item(i)
+            if it.data(QtCore.Qt.ItemDataRole.UserRole) == path:
+                w = self._video_windows.get(path)
+                suffix = ("  " + _fmt_window(w[0], w[1])) if w else ""
+                it.setText(Path(path).name + suffix)
+                return
+
+    def _apply_window_to_scrubber(self, path: str):
+        """Reflete a janela salva do vídeo nas alças do scrubber (ao carregar)."""
+        w = self._video_windows.get(path)
+        if not w or self._info is None:
+            return
+        fps = self._info.fps_reported or 30.0
+        last = max(0, self._info.frame_count_reported - 1)
+        s_frame = max(0, min(last, int(round(w[0] * fps))))
+        e_frame = last if w[1] is None else max(s_frame, min(last, int(round(w[1] * fps))))
+        self.scrubber.set_window(s_frame, e_frame)
 
     def _on_browse_output(self):
         start = self.txt_output.text().strip() or self._output_dir or ""
         d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta de saída do run de vídeo", start)
         if d:
             self.txt_output.setText(d)
-
-    def _on_browse_dataset_output(self):
-        start = self.txt_dataset_output.text().strip() or self._dataset_output_dir or ""
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta do dataset final", start)
-        if d:
-            self.txt_dataset_output.setText(d)
 
     # ──────────────────────────── modelo / embeddings ────────────────────────────
     def _populate_model_combo(self):
@@ -692,38 +951,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def _selected_model(self) -> Optional[str]:
         return self.cmb_model.currentData() or self._model
 
-    def _build_embedding_checks(self) -> QtWidgets.QWidget:
-        self._emb_checks = {}  # ff_name -> QCheckBox
-        avail = SepaelModel.available_on_disk() or list(SepaelModel)
-        box = QtWidgets.QWidget(self)
-        h = QtWidgets.QHBoxLayout(box)
-        h.setContentsMargins(0, 0, 0, 0)
-        for m in avail:
-            cb = QtWidgets.QCheckBox(m.label_pt, self)
-            cb.setToolTip(
-                "Embedding que o dataset vai carregar. O modelo-árbitro (combo do "
-                "grupo 1) fica sempre marcado e travado — o dataset precisa carregar "
-                "o embedding que selecionou as faces. Os demais são extras opcionais.")
-            self._emb_checks[m.ff_name] = cb
-            h.addWidget(cb)
-        h.addStretch()
-        return box
-
-    def _sync_embedding_checkboxes(self):
-        """O árbitro (combo) fica sempre marcado e travado nos embeddings do dataset."""
-        if not getattr(self, "_emb_checks", None):
-            return
-        arb = self._selected_model()
-        for ff_name, cb in self._emb_checks.items():
-            if ff_name == arb:
-                cb.setChecked(True)
-                cb.setEnabled(False)
-            else:
-                cb.setEnabled(True)
-
     def _on_model_changed(self, *_):
-        # O árbitro mudou → a multi-seleção de embeddings reflete o novo árbitro.
-        self._sync_embedding_checkboxes()
+        # O árbitro mudou: as âncoras (embeddings por modelo) ficam inválidas.
         if self._service is None:
             return  # ainda não carregou — nada a invalidar
         # Modelo trocado após carregar: as âncoras (embeddings por modelo) ficam
@@ -741,24 +970,28 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._refresh_targets_count()
         self.lbl_frame.setText("Modelo alterado — clique em “Carregar vídeo” novamente.")
 
-    def _on_mode_changed(self, *_):
-        # "Só recortes" esconde o grupo Dataset (inertes nesse modo). A área de
-        # rolagem absorve a diferença de altura — sem resize de janela.
-        self._dataset_group.setVisible(self.rb_e2e.isChecked())
-
     def _apply_initial_size(self):
-        """Abre alta o suficiente para mostrar os grupos VISÍVEIS sem rolar
-        (o grupo Dataset começa oculto), limitada à área útil da tela. Em telas
-        baixas, o conteúdo rola e a barra de ações fica sempre visível."""
+        """Abre num tamanho confortável para as DUAS colunas: largura suficiente
+        para a coluna de controles aparecer inteira (não só ao aumentar a janela)
+        e altura folgada para a prévia, sempre limitado à área útil da tela. Em
+        telas estreitas, a área de rolagem cobre o excedente e a coluna direita
+        não colapsa (splitter não-colapsável)."""
         screen = self.screen() or QtWidgets.QApplication.primaryScreen()
         avail = screen.availableGeometry() if screen is not None else None
-        # Altura natural do conteúdo visível + barra de ações → cabe sem rolar.
         self._scroll_content.layout().activate()
-        desired_h = (self._scroll_content.sizeHint().height()
-                     + self._action_bar.sizeHint().height() + 24)
-        w = min(960, avail.width() - 60) if avail is not None else 960
-        max_h = (avail.height() - 80) if avail is not None else 900
-        self.resize(max(700, int(w)), max(480, min(int(desired_h), int(max_h))))
+        hint = self._scroll_content.sizeHint()
+        desired_w = hint.width() + 24
+        desired_h = hint.height() + self._action_bar.sizeHint().height() + 24
+        target_w = max(1120, desired_w)
+        target_h = max(700, desired_h)
+        if avail is not None:
+            target_w = min(target_w, avail.width() - 60)
+            target_h = min(target_h, avail.height() - 80)
+        w = max(820, int(target_w))
+        h = max(480, int(target_h))
+        self.resize(w, h)
+        # Divisão inicial ~57/43 entre prévia e controles (arrastável depois).
+        self._columns.setSizes([int(w * 0.57), int(w * 0.43)])
 
     # ──────────────────────────── alvos ────────────────────────────
     def _add_target(self, *, activate: bool = True, label: Optional[str] = None):
@@ -774,6 +1007,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         row.removed.connect(self._remove_target)
         row.label_changed.connect(self._on_target_label_changed)
         row.threshold_changed.connect(self._on_target_threshold_changed)
+        row.anchors_edit_requested.connect(self._on_edit_anchors)
         self._targets_layout.addWidget(row)
         self._target_rows.append(row)
         if activate or self._active_row is None:
@@ -829,21 +1063,42 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         if row.has_anchor():
             row.video_target.similarity_threshold = row.threshold()
 
+    def _on_edit_anchors(self, row: "_TargetRowWidget"):
+        if row.video_target is None:
+            return
+        _AnchorsDialog(row.video_target, parent=self).exec()
+        # Remover todas as âncoras esvazia o alvo (volta a "sem âncora").
+        if row.video_target.anchor_embedding_count == 0:
+            row.clear_anchor()
+        else:
+            row.refresh_anchor_status()
+        self._redraw_boxes()
+        self._refresh_targets_count()
+        self.btn_extract.setEnabled(self._any_anchor())
+
     def _det_size(self) -> int:
         return int(self.spn_det_size.value())
 
-    def _on_load(self):
-        path = self.txt_video.text().strip()
+    def _ensure_service(self, *, rebuild: bool = False):
+        """Constrói o FFService/serviço de extração SOB DEMANDA — não exige
+        carregar o vídeo (basta o modelo/detector atuais). Usado tanto pelo
+        Carregar (rebuild=True, aplica novos parâmetros) quanto pela âncora por
+        imagem e pela extração (build se ainda não existe)."""
+        if self._service is not None and not rebuild:
+            return
+        model_ff = self._selected_model()
+        ff = FFService(models=[model_ff] if model_ff else None,
+                       use_gpu=self._use_gpu, det_size=self._det_size(),
+                       det_thresh=float(self.spn_det_thresh.value()))
+        self._service = VideoFrameFaceExtractionService(ff)
+
+    def _load_video(self, path: str):
         if not path or not Path(path).exists():
-            QtWidgets.QMessageBox.warning(self, "Vídeo", "Escolha um arquivo de vídeo válido.")
+            QtWidgets.QMessageBox.warning(self, "Vídeo", "Arquivo de vídeo inválido.")
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            model_ff = self._selected_model()
-            ff = FFService(models=[model_ff] if model_ff else None,
-                           use_gpu=self._use_gpu, det_size=self._det_size(),
-                           det_thresh=float(self.spn_det_thresh.value()))
-            self._service = VideoFrameFaceExtractionService(ff)
+            self._ensure_service(rebuild=True)
             self._info = self._service.probe_video(path)
         except Exception as e:
             QtWidgets.QApplication.restoreOverrideCursor()
@@ -852,11 +1107,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         QtWidgets.QApplication.restoreOverrideCursor()
 
         self._video_path = path
-        if not self.txt_name.text().strip():
-            self.txt_name.setText(Path(path).stem)
+        self._video_infos[path] = self._info
+        self._anchor_source_is_image = False
         total = max(1, self._info.frame_count_reported)
         self.scrubber.setEnabled(True)
         self.scrubber.set_range(0, total - 1)
+        self._apply_window_to_scrubber(path)   # restaura a janela salva do vídeo
         self.btn_detect.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._on_window_changed()
@@ -870,6 +1126,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         if frame is None:
             return
         self._current_frame = frame
+        self._anchor_source_is_image = False   # voltou a exibir um quadro do vídeo
         self.view.set_frame(_bgr_to_pixmap(frame))
         ts = idx / self._info.fps_reported if self._info.fps_reported else 0
         self.lbl_frame.setText(f"Quadro {idx} / {self._info.frame_count_reported}  ({ts:.1f}s)")
@@ -882,6 +1139,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         n = max(1, e - s + 1)
         self.lbl_window.setText(f"Janela: quadro {s}–{e} · {n} quadro(s) · {n / fps:.1f}s")
         self._update_fps_hint()
+        # Persiste a janela POR vídeo (faixa cheia → vídeo inteiro = sem entrada).
+        if self._video_path:
+            last = max(0, self._info.frame_count_reported - 1)
+            if s <= 0 and e >= last:
+                self._video_windows.pop(self._video_path, None)
+            else:
+                self._video_windows[self._video_path] = (s / fps, e / fps)
+            self._refresh_video_item(self._video_path)
 
     def _update_fps_hint(self):
         """Mostra ao vivo o efeito da amostragem: 1 a cada N quadros, ~M no total."""
@@ -935,50 +1200,130 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(
                 self, "Alvos", "Adicione ou selecione um alvo antes de clicar numa face.")
             return
-        built = self._service.build_target_from_click(
-            self._current_frame, x, y, label=row.label_text() or "alvo",
-            similarity_threshold=row.threshold(), model=self._selected_model(),
-            frame_index=self.scrubber.current())
-        if built is None:
-            return
-        target, det_idx, _dets = built
-        row.set_anchor(target, det_idx)
+        model = self._selected_model()
+        is_image = self._anchor_source_is_image
+        src = self._current_anchor_source()
+        if row.has_anchor():
+            # Acrescenta âncora ao alvo ativo (multifonte: outro quadro/vídeo/foto).
+            before = row.video_target.anchor_embedding_count
+            res = self._service.add_anchor_from_click(
+                row.video_target, self._current_frame, x, y, model=model, source=src)
+            if res is None:
+                return
+            if row.video_target.anchor_embedding_count == before:
+                self.lbl_frame.setText("Essa face já está ancorada — âncora não duplicada.")
+            row.refresh_anchor_status()
+        else:
+            built = self._service.build_target_from_click(
+                self._current_frame, x, y, label=row.label_text() or "alvo",
+                similarity_threshold=row.threshold(), model=model,
+                frame_index=(None if is_image else self.scrubber.current()))
+            if built is None:
+                return
+            target, det_idx, _dets = built
+            # Registra a fonte real (vídeo ou foto) preservando bbox/det_index.
+            if target.anchor_sources:
+                merged = dict(target.anchor_sources[-1])
+                merged.update(src)
+                target.anchor_sources[-1] = merged
+            row.set_anchor(target, det_idx)
         self._redraw_boxes()
         self._refresh_targets_count()
         self.btn_extract.setEnabled(self._any_anchor())
 
-    def _on_preview(self):
+    def _current_anchor_source(self) -> dict:
+        """Proveniência da fonte do quadro atualmente exibido (vídeo ou foto)."""
+        if self._anchor_source_is_image:
+            p = self._anchor_image_path
+            return {"type": "image", "path": p,
+                    "filename": Path(p).name if p else None, "frame_index": None}
+        return {"type": "video", "path": self._video_path,
+                "filename": Path(self._video_path).name if self._video_path else None,
+                "frame_index": self.scrubber.current() if self.scrubber.isEnabled() else None}
+
+    def _on_add_reference_image(self):
         row = self._active_row
-        if not self._service or row is None or not row.has_anchor():
+        if row is None:
             QtWidgets.QMessageBox.information(
-                self, "Prévia",
-                "Carregue o vídeo e ancore o alvo ativo (clique na face dele) primeiro.")
+                self, "Imagem de referência", "Selecione um alvo antes.")
             return
-        target = row.video_target
+        start = self._datasets_dir or ""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Escolher imagem de referência", start,
+            "Imagens (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;Todos (*.*)")
+        if not path:
+            return
+        img = imread_unicode_safe(path)
+        if img is None:
+            QtWidgets.QMessageBox.warning(self, "Imagem", "Não foi possível ler a imagem.")
+            return
+        # NÃO exige carregar o vídeo — o detector/embedding é construído sob
+        # demanda aqui (pode levar alguns segundos na 1ª vez).
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            total = max(1, self._info.frame_count_reported)
-            idxs = [int(v) for v in np.linspace(0, total - 1, 14)]
-            sims, dets, fiqas = [], [], []
-            n_noface = n_accept = n_below = 0
-            thr = row.threshold()
-            for idx in idxs:
-                fr = self._service.read_frame(self._video_path, idx)
-                if fr is None:
-                    continue
-                scored = self._service.score_frame_against_target(fr, target, model=self._selected_model())
-                if not scored:
-                    n_noface += 1
-                    continue
-                best = max(scored, key=lambda s: s["similarity"])
-                sims.append(best["similarity"])
-                dets.append(best["det_score"])
-                if best["fiqa"] is not None:
-                    fiqas.append(best["fiqa"])
-                if best["similarity"] >= thr:
-                    n_accept += 1
-                else:
-                    n_below += 1
+            self._ensure_service()
+        except Exception as e:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(self, "Erro", f"Falha ao iniciar o detector:\n{e}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        # Exibe a foto na MESMA prévia e entra no modo "imagem": a próxima âncora
+        # é do tipo foto (frame_index None). Mover o scrubber volta ao vídeo.
+        self._anchor_source_is_image = True
+        self._anchor_image_path = path
+        self._current_frame = img
+        self.view.set_frame(_bgr_to_pixmap(img))
+        self.lbl_frame.setText(
+            f"Imagem de referência: {Path(path).name} — clique na face do alvo ativo")
+        self._detect_current()
+
+    def _on_preview(self):
+        row = self._active_row
+        if row is None or not row.has_anchor():
+            QtWidgets.QMessageBox.information(
+                self, "Prévia", "Ancore o alvo ativo (clique na face dele) primeiro.")
+            return
+        paths = self._video_paths() or ([self._video_path] if self._video_path else [])
+        if not paths:
+            QtWidgets.QMessageBox.information(
+                self, "Prévia", "Adicione ao menos um vídeo primeiro.")
+            return
+        target = row.video_target
+        thr = row.threshold()
+        n_per = max(2, (14 + len(paths) - 1) // len(paths))   # ~14 quadros no total
+        sims, dets, fiqas = [], [], []
+        n_noface = n_accept = n_below = n_sampled = 0
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            self._ensure_service()
+            for p in paths:
+                info = self._video_infos.get(p)
+                if info is None:
+                    try:
+                        info = self._service.probe_video(p)
+                        self._video_infos[p] = info
+                    except Exception:
+                        continue
+                total = max(1, info.frame_count_reported)
+                for idx in (int(v) for v in np.linspace(0, total - 1, n_per)):
+                    fr = self._service.read_frame(p, idx)
+                    if fr is None:
+                        continue
+                    n_sampled += 1
+                    scored = self._service.score_frame_against_target(
+                        fr, target, model=self._selected_model())
+                    if not scored:
+                        n_noface += 1
+                        continue
+                    best = max(scored, key=lambda s: s["similarity"])
+                    sims.append(best["similarity"])
+                    dets.append(best["det_score"])
+                    if best["fiqa"] is not None:
+                        fiqas.append(best["fiqa"])
+                    if best["similarity"] >= thr:
+                        n_accept += 1
+                    else:
+                        n_below += 1
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
@@ -989,17 +1334,24 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             return (f"min {a.min():.2f} | p5 {np.percentile(a, 5):.2f} | "
                     f"p50 {np.median(a):.2f} | p95 {np.percentile(a, 95):.2f} | max {a.max():.2f}")
 
+        scope = f"{len(paths)} vídeo(s)" if len(paths) > 1 else "1 vídeo"
         self.lbl_preview.setText(
             f"<b>Prévia do alvo '{row.label_text() or 'alvo'}' "
-            f"({len(idxs)} quadros amostrados, limiar {thr:.2f}):</b><br>"
+            f"({n_sampled} quadros de {scope}, limiar {thr:.2f}):</b><br>"
             f"aceitos (≥ limiar): <b>{n_accept}</b> | abaixo do limiar: {n_below} | sem face: {n_noface}<br>"
             f"similaridade c/ âncora: {_q(sims)}<br>"
             f"det_score: {_q(dets)} &nbsp;|&nbsp; fiqa_score: {_q(fiqas)} "
             f"<i>(CR-FIQA não é 0–1; calibre pela distribuição)</i>")
 
     def _on_accept(self):
-        if not self._video_path:
-            QtWidgets.QMessageBox.warning(self, "Extração", "Carregue um vídeo antes.")
+        paths = self._video_paths()
+        if not paths:
+            QtWidgets.QMessageBox.warning(self, "Extração", "Adicione ao menos um vídeo.")
+            return
+        missing = [p for p in paths if not Path(p).exists()]
+        if missing:
+            QtWidgets.QMessageBox.warning(
+                self, "Extração", f"Vídeo não encontrado:\n{missing[0]}")
             return
         if not self._any_anchor():
             QtWidgets.QMessageBox.warning(
@@ -1039,41 +1391,41 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         targets = self.get_targets()
         return targets[0] if targets else None
 
-    def get_mode(self) -> VideoExtractionMode:
-        return VideoExtractionMode.END_TO_END if self.rb_e2e.isChecked() else VideoExtractionMode.PRODUCER
-
     def get_selected_model(self) -> Optional[str]:
         return self._selected_model()
 
-    def get_dataset_embeddings(self) -> List[str]:
-        """ff_names marcados nos embeddings do dataset — o árbitro está sempre incluído."""
-        arb = self._selected_model()
-        out = [ff for ff, cb in getattr(self, "_emb_checks", {}).items() if cb.isChecked()]
-        if arb and arb not in out:
-            out.append(arb)
-        return out
-
-    def get_dataset_output_dir(self) -> str:
-        return self.txt_dataset_output.text().strip() or (self._dataset_output_dir or "")
-
-    def get_dataset_self_contained(self) -> bool:
-        return self.rb_self_contained.isChecked()
-
-    def get_dataset_name(self) -> str:
-        return self.txt_name.text().strip() or Path(self._video_path).stem
+    def _effective_video_path(self) -> Optional[str]:
+        """1º vídeo efetivo (carregado ou o 1º da lista) — para compat de campo
+        único; a extração usa `video_paths` (lista inteira)."""
+        if self._video_path:
+            return self._video_path
+        paths = self._video_paths()
+        return paths[0] if paths else None
 
     def get_config(self, output_root: str) -> VideoExtractionConfig:
-        fps = (self._info.fps_reported if self._info and self._info.fps_reported else 30.0)
+        # Modo e configuração do dataset (embeddings/OFIQ/SER-FIQ/destino) são
+        # decididos na janela de revisão; aqui só vão os parâmetros de extração.
         out = self.txt_output.text().strip() or output_root
+        paths = self._video_paths()
+        if not paths and self._effective_video_path():
+            paths = [self._effective_video_path()]
+        # Janela de tempo POR vídeo (paralela a paths): cada vídeo guarda a sua
+        # (definida carregando+scrubando ou pelo diálogo "Definir trecho…").
+        # Sem entrada = vídeo inteiro.
+        video_windows = []
+        for p in paths:
+            w = self._video_windows.get(p)
+            video_windows.append([w[0], w[1]] if w else None)
         return VideoExtractionConfig(
-            video_path=self._video_path, output_root=out,
+            video_path=(paths[0] if paths else ""), video_paths=paths,
+            video_windows=video_windows,
+            case_name=(self.txt_case.text().strip() or None),
+            output_root=out,
             target_fps=float(self.spn_fps.value()),
-            start_s=self.scrubber.start() / fps,
-            end_s=self.scrubber.end() / fps,
+            start_s=0.0, end_s=None,    # janela é por vídeo (video_windows)
             similarity_threshold=self._representative_threshold(),
             margin=float(self.spn_margin.value()),
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
-            recognition_model=self._selected_model(), mode=self.get_mode(),
-            compute_ff=True, compute_ofiq=self.chk_ofiq.isChecked(),
-            compute_serfiq=self.chk_serfiq.isChecked(),
+            recognition_model=self._selected_model(),
+            compute_ff=True,
         )

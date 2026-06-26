@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 from faceaudit.enums.quality_gate_policy import QualityGatePolicy
@@ -23,6 +23,17 @@ class VideoExtractionConfig(JSONSerializableMixin):
 
     video_path: str
     output_root: str
+
+    # --- Multivídeo (Fase 3) ---
+    # Busca o(s) alvo(s) em VÁRIOS vídeos numa run só. `video_path` (1º vídeo)
+    # é mantido para compat; `resolved_video_paths()` devolve a lista efetiva.
+    # `case_name` nomeia a run quando há >1 vídeo (default = stem do 1º).
+    video_paths: List[str] = field(default_factory=list)
+    case_name: Optional[str] = None
+    # Janela de tempo POR vídeo (paralela a `video_paths`). Cada item:
+    # [start_s, end_s] (end_s None = até o fim) ou None = vídeo inteiro. Quando
+    # ausente/None, cai na janela global (start_s/end_s).
+    video_windows: List[Optional[List[float]]] = field(default_factory=list)
 
     # --- Amostragem temporal ---
     target_fps: float = 2.0
@@ -54,9 +65,27 @@ class VideoExtractionConfig(JSONSerializableMixin):
     save_decoded_frame_hash: bool = True     # default ON só para aceitos
     run_tag: Optional[str] = None            # sufixo do run/parquet; None → derivado
 
+    def resolved_video_paths(self) -> List[str]:
+        """Lista efetiva de vídeos a percorrer (multivídeo); cai no `video_path`
+        único quando `video_paths` está vazio (compat)."""
+        return list(self.video_paths) if self.video_paths else [self.video_path]
+
+    def window_for(self, index: int) -> Tuple[float, Optional[float]]:
+        """Janela (start_s, end_s) do vídeo `index`: usa `video_windows[index]`
+        se definida (end_s None = até o fim), senão a janela global."""
+        if 0 <= index < len(self.video_windows):
+            w = self.video_windows[index]
+            if w:
+                start = float(w[0]) if w[0] is not None else 0.0
+                end = None if (len(w) < 2 or w[1] is None) else float(w[1])
+                return start, end
+        return self.start_s, self.end_s
+
     def to_manifest_dict(self) -> dict:
         """Projeção dos parâmetros para o manifesto (enums como string)."""
         return {
+            "case_name": self.case_name,
+            "video_windows": self.video_windows,
             "target_fps": self.target_fps,
             "every_n_frames": self.every_n_frames,
             "start_s": self.start_s,

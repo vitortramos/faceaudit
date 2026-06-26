@@ -29,7 +29,7 @@ from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_io import imwrite_unicode_safe
 from faceaudit.services.video_provenance_writer import VideoProvenanceWriter
 from faceaudit.services.target_assignment import (
-    Candidate, TargetState, assign_frame, cosine,
+    Candidate, TargetState, assign_frame, cosine, score,
 )
 from faceaudit.enums.quality_gate_policy import QualityGatePolicy
 from faceaudit.enums.sepael_model import SepaelModel
@@ -250,15 +250,65 @@ class VideoFrameFaceExtractionService:
         bbox = np.asarray(detections[idx]["bbox"]).astype(float).flatten()[:4].tolist()
         target = VideoTarget(
             label=label,
-            anchor_embeddings=[np.asarray(emb)],
-            anchor_policy="SINGLE",
             similarity_threshold=float(similarity_threshold),
             similarity_threshold_source="MANUAL",
             recognition_model=model or self._ff.default_model,
-            anchor_frame_index=frame_index,
-            anchor_bbox=bbox,
         )
+        target.add_anchor(np.asarray(emb), {
+            "type": "video", "frame_index": frame_index,
+            "bbox": bbox, "det_index": idx,
+            "thumbnail_bgr": self._anchor_thumbnail(detections[idx]),
+        })
         return target, idx, detections
+
+    @staticmethod
+    def _anchor_thumbnail(detection: dict):
+        """Miniatura da face alinhada (112×112 BGR) da detecção — só p/ exibir
+        a âncora na UI. Runtime-only: NÃO vai para o manifesto/parquet."""
+        rgb = detection.get("aligned_face")
+        if rgb is None:
+            return None
+        try:
+            return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+
+    def add_anchor_from_click(
+        self,
+        target: VideoTarget,
+        frame_bgr: np.ndarray,
+        x: float,
+        y: float,
+        *,
+        model: Optional[str] = None,
+        source: Optional[dict] = None,
+    ) -> Optional[Tuple[int, List[dict]]]:
+        """Acrescenta uma âncora a um alvo EXISTENTE a partir de um clique. O
+        `frame_bgr` é só um ndarray BGR — um quadro de vídeo OU uma imagem
+        estática lida por `imread_unicode_safe` (busca por foto) entram pelo
+        mesmo caminho. Retorna (det_idx, detections) ou None se nenhuma
+        detecção contém o ponto. O `source` (type/path/filename/sha256/
+        frame_index) é registrado na proveniência do alvo."""
+        detections = self.detect_in_frame(frame_bgr)
+        idx = self.detection_containing_point(detections, x, y)
+        if idx is None:
+            return None
+        emb = self.compute_anchor_embedding(detections[idx], model)
+        if emb is None:
+            return None
+        emb = np.asarray(emb)
+        # Não duplica a mesma face (clicar 2× na mesma detecção dá o MESMO
+        # embedding). A âncora não é adicionada, mas o retorno não é None.
+        if target.has_near_duplicate_anchor(emb):
+            return idx, detections
+        bbox = np.asarray(detections[idx]["bbox"]).astype(float).flatten()[:4].tolist()
+        src = dict(source or {})
+        src.setdefault("type", "video")
+        src.setdefault("bbox", bbox)
+        src.setdefault("det_index", idx)
+        src.setdefault("thumbnail_bgr", self._anchor_thumbnail(detections[idx]))
+        target.add_anchor(emb, src)
+        return idx, detections
 
     def _save_annotated_frame(self, frame_bgr, bbox, dst_path, *, label: str = "",
                               color=(0, 200, 83)) -> None:
@@ -312,13 +362,29 @@ class VideoFrameFaceExtractionService:
         return None
 
     @staticmethod
-    def _derive_run_tag(video_sha: Optional[str], config_manifest: dict, fingerprints: List[Optional[str]]) -> str:
+    def _derive_run_tag(video_shas, config_manifest: dict, fingerprints: List[Optional[str]]) -> str:
         h = hashlib.sha256()
-        h.update((video_sha or "").encode("utf-8"))
+        shas = video_shas if isinstance(video_shas, (list, tuple)) else [video_shas]
+        for sha in shas:
+            h.update((sha or "").encode("utf-8"))
         h.update(json.dumps(config_manifest, sort_keys=True, ensure_ascii=False).encode("utf-8"))
         for fp in fingerprints:
             h.update((fp or "").encode("utf-8"))
         return h.hexdigest()[:10]
+
+    @staticmethod
+    def _safe_run_name(name: str) -> str:
+        """Nome de pasta seguro para a run multivídeo (a partir do 'nome do caso')."""
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (name or "").strip())
+        return safe or "caso"
+
+    @staticmethod
+    def _primary_video_anchor_source(target):
+        """1ª fonte de âncora de VÍDEO do alvo (usada para o quadro anotado)."""
+        for s in getattr(target, "anchor_sources", []):
+            if s.get("type") == "video" and s.get("frame_index") is not None:
+                return s
+        return None
 
     # ─────────────────────────────── extract ───────────────────────────────
 
@@ -338,41 +404,32 @@ class VideoFrameFaceExtractionService:
         model = config.recognition_model or self._ff.default_model
         clock = now_utc or _utc_now_iso
 
-        # Estado de track por alvo (mutável ao longo do laço). A lista pode
-        # ter N; a v1 da UI expõe 1, mas o pipeline já é multi-alvo (N-ready).
-        target_states = [
-            TargetState(label=t.label, reference_embedding=t.reference_embedding(),
-                        threshold=t.similarity_threshold)
-            for t in targets
-        ]
+        # Multivídeo: percorre TODOS os vídeos numa run/_meta só; cada face já
+        # carrega seu vídeo de origem. Mapas de alvo são estáveis entre vídeos;
+        # o ESTADO de track é recriado por vídeo (não vaza prior espacial).
+        video_paths = config.resolved_video_paths()
+        if not video_paths or not all(video_paths):
+            raise ValueError("extract requer ao menos um caminho de vídeo.")
         target_by_label = {t.label: t for t in targets}
         target_index_by_label = {t.label: i for i, t in enumerate(targets)}
 
-        info = self.probe_video(config.video_path)
-        fps = info.fps_reported if info.fps_reported > 0 else 30.0
-        every_n = config.every_n_frames or max(1, int(round(fps / max(1e-6, config.target_fps))))
-        # Tolerância de gap do track em quadros NATIVOS: por padrão ~3 quadros
-        # amostrados (every_n*3) — além disso, o re-id re-adquire (recovery).
-        eff_gap_tolerance = gap_tolerance if gap_tolerance is not None else max(1, every_n * 3)
-        start_frame = int(round(fps * max(0.0, config.start_s)))
-        end_frame = int(round(fps * config.end_s)) if config.end_s is not None else None
-
+        infos = [self.probe_video(p) for p in video_paths]
         run_tag = config.run_tag or self._derive_run_tag(
-            info.sha256, config.to_manifest_dict(), [t.anchor_embedding_fingerprint() for t in targets]
+            [i.sha256 for i in infos], config.to_manifest_dict(),
+            [t.anchor_embedding_fingerprint() for t in targets],
         )
-        video_stem = Path(config.video_path).stem
-        run_dir = Path(config.output_root) / f"{video_stem}_{run_tag}"
+        if len(video_paths) == 1:
+            run_name = f"{Path(video_paths[0]).stem}_{run_tag}"
+        else:
+            case = (config.case_name or "").strip() or Path(video_paths[0]).stem
+            run_name = f"{self._safe_run_name(case)}_{run_tag}"
+        run_dir = Path(config.output_root) / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
         run_id = run_tag
 
         n_sampled = n_det_total = n_accepted = n_rejected = n_no_det = 0
         accepted_faces: List[FaceProvenance] = []
         extraction_status = "completed"
-
-        cap = cv2.VideoCapture(str(config.video_path))
-        if not cap.isOpened():
-            cap.release()
-            raise VideoOpenError(f"Não foi possível abrir o vídeo: {config.video_path}")
 
         with VideoProvenanceWriter(run_dir, run_id) as writer:
             # embedding da âncora na auditoria
@@ -384,100 +441,107 @@ class VideoFrameFaceExtractionService:
                     fingerprint=t.anchor_embedding_fingerprint(),
                 )
 
-            # Quadro-âncora anotado (cadeia de custódia / laudo).
+            # Quadro-âncora anotado (custódia/laudo) — lê do VÍDEO em que a
+            # âncora foi cravada (fonte primária de vídeo do alvo), não
+            # necessariamente o 1º da lista.
             if config.save_annotated_anchor:
                 for t in targets:
-                    if t.anchor_frame_index is not None and t.anchor_bbox is not None:
-                        af = self.read_frame(config.video_path, t.anchor_frame_index)
+                    s = self._primary_video_anchor_source(t)
+                    if s and s.get("path") and s.get("frame_index") is not None:
+                        af = self.read_frame(s["path"], int(s["frame_index"]))
                         if af is not None:
                             self._save_annotated_frame(
-                                af, t.anchor_bbox,
-                                run_dir / "annotated" / f"anchor_{t.label}_f{int(t.anchor_frame_index):07d}.png",
+                                af, s.get("bbox") or t.anchor_bbox,
+                                run_dir / "annotated" / f"anchor_{t.label}_f{int(s['frame_index']):07d}.png",
                                 label=t.label)
 
+            def _write_manifest():
+                writer.write_manifest({
+                    "created_at_utc": clock(),
+                    "source_video": infos[0].to_manifest_dict(),
+                    "source_videos": [i.to_manifest_dict() for i in infos],
+                    "versions": _library_versions(),
+                    "parameters": config.to_manifest_dict(),
+                    "derived": {"n_videos": len(video_paths),
+                                "fps_used": [i.fps_reported for i in infos]},
+                    "targets": [
+                        {
+                            "label": t.label,
+                            "anchor_policy": t.anchor_policy,
+                            "anchor_match_mode": t.anchor_match_mode,
+                            "anchor_embedding_count": t.anchor_embedding_count,
+                            "anchor_embedding_fingerprint": t.anchor_embedding_fingerprint(),
+                            "similarity_threshold": t.similarity_threshold,
+                            "similarity_threshold_source": t.similarity_threshold_source,
+                            "recognition_model": t.recognition_model,
+                            "anchor_sources": [
+                                {"type": s.get("type"), "filename": s.get("filename"),
+                                 "sha256": s.get("sha256"), "frame_index": s.get("frame_index")}
+                                for s in getattr(t, "anchor_sources", [])
+                            ],
+                        }
+                        for t in targets
+                    ],
+                    "recognition_model": model,
+                    "extraction_status": extraction_status,
+                    "review_status": "not_started",
+                    "dataset_status": "not_imported",
+                    "summary": {
+                        "n_videos": len(video_paths),
+                        "n_frames_sampled": n_sampled,
+                        "n_detections": n_det_total,
+                        "n_accepted_auto": n_accepted,
+                        "n_rejected_auto": n_rejected,
+                        "n_no_detection_frames": n_no_det,
+                    },
+                })
+
+            span = 100.0 / len(video_paths)
             try:
-                if start_frame > 0:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-                native = start_frame
-                while True:
+                for vid_idx, (vpath, vinfo) in enumerate(zip(video_paths, infos)):
                     if cancel_check is not None and cancel_check():
                         extraction_status = "cancelled"
                         break
-                    pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    if end_frame is not None and native > end_frame:
-                        break
-                    if (native - start_frame) % every_n != 0:
-                        native += 1
-                        continue
-
-                    n_sampled += 1
-                    ts_fps = native / fps if fps > 0 else None
-                    ts_cap = (pos_msec / 1000.0) if pos_msec and pos_msec > 0 else None
-
-                    status = self._process_frame(
-                        frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap,
-                        target_states=target_states, target_by_label=target_by_label,
-                        target_index_by_label=target_index_by_label, model=model,
-                        config=config, info=info, run_dir=run_dir, run_id=run_id,
-                        writer=writer, clock=clock, accepted_faces=accepted_faces,
-                        spatial_weight=spatial_weight, gap_tolerance=eff_gap_tolerance,
+                    # Estado de track FRESCO por vídeo (sem vazamento espacial
+                    # de um vídeo para o próximo).
+                    target_states = [
+                        TargetState(label=t.label, reference_embedding=t.reference_embedding(),
+                                    threshold=t.similarity_threshold,
+                                    anchor_embeddings=list(t.anchor_embeddings),
+                                    match_mode=t.anchor_match_mode)
+                        for t in targets
+                    ]
+                    vres = self._extract_one_video(
+                        video_path=vpath, info=vinfo, video_index=vid_idx,
+                        n_videos=len(video_paths), window_s=config.window_for(vid_idx),
+                        config=config, model=model,
+                        targets=targets, target_states=target_states,
+                        target_by_label=target_by_label, target_index_by_label=target_index_by_label,
+                        run_dir=run_dir, run_id=run_id, writer=writer, clock=clock,
+                        accepted_faces=accepted_faces, spatial_weight=spatial_weight,
+                        gap_tolerance=gap_tolerance, progress_callback=progress_callback,
+                        cancel_check=cancel_check, base_pct=vid_idx * span, span_pct=span,
                     )
-                    n_det_total += status["n_detections"]
-                    n_accepted += status["n_accepted"]
-                    n_rejected += status["n_rejected"]
-                    if status["frame_status"] == "no_detection":
-                        n_no_det += 1
-
-                    if progress_callback:
-                        denom = max(1, (end_frame if end_frame is not None
-                                        else info.frame_count_reported) - start_frame)
-                        pct = int(min(99, (native - start_frame) / denom * 100))
-                        progress_callback(
-                            f"Quadro {native} · amostrados {n_sampled} · "
-                            f"aceitos {n_accepted} · sem face {n_no_det}", pct)
-
-                    native += 1
+                    n_sampled += vres["n_sampled"]
+                    n_det_total += vres["n_detections"]
+                    n_accepted += vres["n_accepted"]
+                    n_rejected += vres["n_rejected"]
+                    n_no_det += vres["n_no_detection"]
+                    if vres["cancelled"]:
+                        extraction_status = "cancelled"
+                        break
             except Exception as e:
                 extraction_status = "failed"
                 print(f"❌ [VideoExtraction] erro no laço: {e}")
+                # Run parcial continua auditável mesmo na falha (ex.: 1 vídeo do
+                # lote falha): grava o manifesto antes de propagar o erro.
+                try:
+                    _write_manifest()
+                except Exception:
+                    pass
                 raise
-            finally:
-                cap.release()
 
-            manifest = {
-                "created_at_utc": clock(),
-                "source_video": info.to_manifest_dict(),
-                "versions": _library_versions(),
-                "parameters": config.to_manifest_dict(),
-                "derived": {"every_n_frames": every_n, "start_frame": start_frame, "end_frame": end_frame, "fps_used": fps},
-                "targets": [
-                    {
-                        "label": t.label,
-                        "anchor_policy": t.anchor_policy,
-                        "anchor_embedding_count": t.anchor_embedding_count,
-                        "anchor_embedding_fingerprint": t.anchor_embedding_fingerprint(),
-                        "similarity_threshold": t.similarity_threshold,
-                        "similarity_threshold_source": t.similarity_threshold_source,
-                        "recognition_model": t.recognition_model,
-                    }
-                    for t in targets
-                ],
-                "recognition_model": model,
-                "extraction_status": extraction_status,
-                "review_status": "not_started",
-                "dataset_status": "not_imported",
-                "summary": {
-                    "n_frames_sampled": n_sampled,
-                    "n_detections": n_det_total,
-                    "n_accepted_auto": n_accepted,
-                    "n_rejected_auto": n_rejected,
-                    "n_no_detection_frames": n_no_det,
-                },
-            }
-            writer.write_manifest(manifest)
+            _write_manifest()
 
             return VideoExtractionResult(
                 run_dir=str(run_dir), run_id=run_id, extraction_status=extraction_status,
@@ -488,15 +552,91 @@ class VideoFrameFaceExtractionService:
                 faces=accepted_faces,
             )
 
+    def _extract_one_video(
+        self, *, video_path, info, video_index, n_videos, window_s, config, model, targets,
+        target_states, target_by_label, target_index_by_label, run_dir, run_id,
+        writer, clock, accepted_faces, spatial_weight, gap_tolerance,
+        progress_callback, cancel_check, base_pct, span_pct,
+    ) -> Dict[str, Any]:
+        """Percorre UM vídeo, escrevendo no writer/run COMPARTILHADOS. Deriva
+        fps/every_n do próprio vídeo (cada vídeo tem seu fps) e usa a janela de
+        tempo `window_s=(start_s, end_s)` daquele vídeo (end_s None = até o fim).
+        Devolve contagens parciais + flag de cancelamento."""
+        fps = info.fps_reported if info.fps_reported > 0 else 30.0
+        every_n = config.every_n_frames or max(1, int(round(fps / max(1e-6, config.target_fps))))
+        eff_gap = gap_tolerance if gap_tolerance is not None else max(1, every_n * 3)
+        start_s, end_s = window_s
+        start_frame = int(round(fps * max(0.0, start_s)))
+        end_frame = int(round(fps * end_s)) if end_s is not None else None
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            cap.release()
+            raise VideoOpenError(f"Não foi possível abrir o vídeo: {video_path}")
+
+        n_sampled = n_det_total = n_acc = n_rej = n_nodet = 0
+        cancelled = False
+        try:
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            native = start_frame
+            while True:
+                if cancel_check is not None and cancel_check():
+                    cancelled = True
+                    break
+                pos_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if end_frame is not None and native > end_frame:
+                    break
+                if (native - start_frame) % every_n != 0:
+                    native += 1
+                    continue
+
+                n_sampled += 1
+                ts_fps = native / fps if fps > 0 else None
+                ts_cap = (pos_msec / 1000.0) if pos_msec and pos_msec > 0 else None
+
+                status = self._process_frame(
+                    frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap,
+                    target_states=target_states, target_by_label=target_by_label,
+                    target_index_by_label=target_index_by_label, model=model,
+                    config=config, info=info, video_index=video_index,
+                    run_dir=run_dir, run_id=run_id, writer=writer, clock=clock,
+                    accepted_faces=accepted_faces, spatial_weight=spatial_weight,
+                    gap_tolerance=eff_gap,
+                )
+                n_det_total += status["n_detections"]
+                n_acc += status["n_accepted"]
+                n_rej += status["n_rejected"]
+                if status["frame_status"] == "no_detection":
+                    n_nodet += 1
+
+                if progress_callback:
+                    denom = max(1, (end_frame if end_frame is not None
+                                    else info.frame_count_reported) - start_frame)
+                    within = min(1.0, (native - start_frame) / denom)
+                    pct = int(min(99, base_pct + within * span_pct))
+                    prefix = f"Vídeo {video_index + 1}/{n_videos} · " if n_videos > 1 else ""
+                    progress_callback(
+                        f"{prefix}quadro {native} · amostrados {n_sampled} · aceitos {n_acc}", pct)
+
+                native += 1
+        finally:
+            cap.release()
+        return {"n_sampled": n_sampled, "n_detections": n_det_total, "n_accepted": n_acc,
+                "n_rejected": n_rej, "n_no_detection": n_nodet, "cancelled": cancelled}
+
     def _process_frame(
         self, *, frame, native, ts_fps, ts_cap, target_states, target_by_label,
-        target_index_by_label, model, config, info, run_dir, run_id, writer, clock,
-        accepted_faces, spatial_weight, gap_tolerance,
+        target_index_by_label, model, config, info, video_index, run_dir, run_id,
+        writer, clock, accepted_faces, spatial_weight, gap_tolerance,
     ) -> Dict[str, Any]:
         detections = self.detect_in_frame(frame)
         n_det = len(detections)
         if n_det == 0:
-            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+            writer.write_frame({"frame_index": native, "video_index": video_index,"timestamp_s_from_fps": ts_fps,
                                 "n_detections": 0, "n_above_threshold": 0, "status": "no_detection"})
             return {"n_detections": 0, "n_accepted": 0, "n_rejected": 0, "frame_status": "no_detection"}
 
@@ -506,12 +646,12 @@ class VideoFrameFaceExtractionService:
             ds = float(d.get("det_score", 0.0))
             if config.det_score_policy == QualityGatePolicy.HARD_REJECT and \
                config.min_det_score is not None and ds < config.min_det_score:
-                writer.write_decision({"frame_index": native, "det_index": i, "det_score": ds,
+                writer.write_decision({"frame_index": native, "video_index": video_index,"det_index": i, "det_score": ds,
                                        "decision": "hard_reject_det_pre_embedding", "reason": "low_det_score"})
                 continue
             survivors.append((i, d))
         if not survivors:
-            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+            writer.write_frame({"frame_index": native, "video_index": video_index,"timestamp_s_from_fps": ts_fps,
                                 "n_detections": n_det, "n_above_threshold": 0, "status": "below_threshold"})
             return {"n_detections": n_det, "n_accepted": 0, "n_rejected": 1, "frame_status": "below_threshold"}
 
@@ -541,7 +681,7 @@ class VideoFrameFaceExtractionService:
             best_label = None
             above = False
             for t in target_states:
-                s = cosine(t.reference_embedding, c.embedding)
+                s = score(t, c.embedding)
                 if s > best_sim:
                     best_sim, best_label = s, t.label
                 if s >= t.threshold:
@@ -550,7 +690,7 @@ class VideoFrameFaceExtractionService:
                 n_above += 1
             d, ff_info, _ = cand_map[c.det_index]
             writer.write_decision({
-                "frame_index": native, "det_index": c.det_index, "det_score": c.det_score,
+                "frame_index": native, "video_index": video_index, "det_index": c.det_index, "det_score": c.det_score,
                 "fiqa_score": (float(ff_info.fiqa_score) if ff_info and ff_info.fiqa_score is not None else None),
                 "similarity_to_anchor": (None if best_sim == float("-inf") else best_sim),
                 "best_target": best_label, "above_threshold": above,
@@ -561,7 +701,7 @@ class VideoFrameFaceExtractionService:
         assignments = assign_frame(target_states, candidates, native,
                                    spatial_weight=spatial_weight, gap_tolerance=gap_tolerance)
         if not assignments:
-            writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+            writer.write_frame({"frame_index": native, "video_index": video_index,"timestamp_s_from_fps": ts_fps,
                                 "n_detections": n_det, "n_above_threshold": n_above, "status": "no_match"})
             return {"n_detections": n_det, "n_accepted": 0, "n_rejected": 0, "frame_status": "no_match"}
 
@@ -574,7 +714,7 @@ class VideoFrameFaceExtractionService:
             fiqa_val = float(ff_info.fiqa_score) if ff_info and ff_info.fiqa_score is not None else None
             fiqa_decision = _gate_decision(config.fiqa_score_policy, fiqa_val, config.min_fiqa_score)
             if det_decision == "hard_reject" or fiqa_decision == "hard_reject":
-                writer.write_decision({"frame_index": native, "det_index": a.det_index, "target": a.target_label,
+                writer.write_decision({"frame_index": native, "video_index": video_index,"det_index": a.det_index, "target": a.target_label,
                                        "decision": "hard_reject_quality",
                                        "det_score_decision": det_decision, "fiqa_score_decision": fiqa_decision})
                 n_rej += 1
@@ -591,7 +731,8 @@ class VideoFrameFaceExtractionService:
             prov = self._save_accepted_face(
                 frame=frame, native=native, ts_fps=ts_fps, ts_cap=ts_cap, d=d, ff_info=ff_info, emb=emb,
                 target=target, target_index=target_index_by_label.get(a.target_label, 0), assignment=a,
-                model=model, config=config, info=info, run_dir=run_dir, run_id=run_id, writer=writer,
+                model=model, config=config, info=info, video_index=video_index,
+                run_dir=run_dir, run_id=run_id, writer=writer,
                 clock=clock, auto_decision=auto_decision, review_reasons=review_reasons,
                 det_decision=det_decision, fiqa_decision=fiqa_decision, fiqa_val=fiqa_val,
             )
@@ -607,13 +748,13 @@ class VideoFrameFaceExtractionService:
             frame_status = "below_threshold"
         else:
             frame_status = "no_match"
-        writer.write_frame({"frame_index": native, "timestamp_s_from_fps": ts_fps,
+        writer.write_frame({"frame_index": native, "video_index": video_index,"timestamp_s_from_fps": ts_fps,
                             "n_detections": n_det, "n_above_threshold": n_above, "status": frame_status})
         return {"n_detections": n_det, "n_accepted": n_acc, "n_rejected": n_rej, "frame_status": frame_status}
 
     def _save_accepted_face(
         self, *, frame, native, ts_fps, ts_cap, d, ff_info, emb, target, target_index, assignment,
-        model, config, info, run_dir, run_id, writer, clock, auto_decision, review_reasons,
+        model, config, info, video_index, run_dir, run_id, writer, clock, auto_decision, review_reasons,
         det_decision, fiqa_decision, fiqa_val,
     ) -> Optional[FaceProvenance]:
         bbox = np.asarray(d["bbox"]).astype(float).flatten()[:4]
@@ -626,7 +767,9 @@ class VideoFrameFaceExtractionService:
             return None
 
         label = target.label
-        crop_name = f"{label}_f{native:07d}.png"
+        # Namespace por vídeo (`_vNN_`) evita colisão de nome quando o mesmo
+        # frame_index existe em vídeos diferentes da mesma run.
+        crop_name = f"{label}_v{int(video_index):02d}_f{native:07d}.png"
         crop_path = run_dir / label / crop_name
         if not imwrite_unicode_safe(crop_path, crop):
             print(f"⚠️ [VideoExtraction] falha ao gravar recorte {crop_path}")
@@ -690,7 +833,10 @@ class VideoFrameFaceExtractionService:
         if auto_decision == "conflict":
             imwrite_unicode_safe(run_dir / "_candidates" / label / crop_name, crop)
         # Quadro inteiro anotado dos aceitos (opcional; default OFF — explode disco).
+        # Namespaced por vídeo igual ao recorte (evita colisão entre vídeos).
         if config.save_annotated_accepted:
             self._save_annotated_frame(
-                frame, bbox, run_dir / "annotated" / f"{label}_f{native:07d}.png", label=label)
+                frame, bbox,
+                run_dir / "annotated" / f"{label}_v{int(video_index):02d}_f{native:07d}.png",
+                label=label)
         return prov

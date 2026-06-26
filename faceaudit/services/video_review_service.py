@@ -42,6 +42,9 @@ class ReviewFace:
     review_reasons: List[str] = field(default_factory=list)
     human_review_status: str = "pending"
     crop_path: Optional[str] = None      # localização atual no disco (ou None se ausente)
+    yaw: Optional[float] = None          # pose (graus) — filtro de revisão
+    pitch: Optional[float] = None
+    source_video_filename: Optional[str] = None  # origem (filtro por vídeo)
 
 
 class VideoReviewService:
@@ -138,6 +141,9 @@ class VideoReviewService:
         frame = d.get("frame") or {}
         hr = d.get("human_review") or {}
         artifact = d.get("artifact") or {}
+        detection = d.get("detection") or {}
+        pose = detection.get("pose") or {}
+        src = d.get("source_video") or {}
         label = ident.get("label")
         image_file = artifact.get("image_file")
         crop = VideoReviewService._locate_crop(run_dir, label, image_file)
@@ -150,6 +156,8 @@ class VideoReviewService:
             review_reasons=list(d.get("review_reasons") or []),
             human_review_status=hr.get("status", "pending"),
             crop_path=(str(crop) if crop else None),
+            yaw=pose.get("yaw"), pitch=pose.get("pitch"),
+            source_video_filename=src.get("filename"),
         )
 
     @staticmethod

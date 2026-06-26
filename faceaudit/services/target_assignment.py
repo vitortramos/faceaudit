@@ -42,6 +42,8 @@ class TargetState:
     last_bbox: Optional[BBox] = None
     last_frame_index: Optional[int] = None
     velocity: Tuple[float, float] = (0.0, 0.0)   # delta de centro por quadro
+    anchor_embeddings: Optional[List[np.ndarray]] = None   # usado quando match_mode=ANY
+    match_mode: str = "CENTROID"                            # CENTROID | ANY
 
 
 @dataclass
@@ -64,6 +66,16 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
     if a is None or b is None:
         return float("-inf")
     return float(np.dot(_l2(a), _l2(b)))
+
+
+def score(t: "TargetState", embedding: np.ndarray) -> float:
+    """Similaridade alvo×embedding conforme o modo de combinação das âncoras:
+    CENTROID = cosseno com a referência média; ANY = melhor cosseno entre as
+    âncoras (casa se bater com QUALQUER uma)."""
+    if getattr(t, "match_mode", "CENTROID") == "ANY" and t.anchor_embeddings:
+        return max((cosine(a, embedding) for a in t.anchor_embeddings),
+                   default=float("-inf"))
+    return cosine(t.reference_embedding, embedding)
 
 
 def _center(b: BBox) -> Tuple[float, float]:
@@ -116,7 +128,7 @@ def assign_frame(
     for t in targets:
         lst = []
         for ci, c in enumerate(candidates):
-            s = cosine(t.reference_embedding, c.embedding)
+            s = score(t, c.embedding)
             if s >= t.threshold:
                 lst.append((ci, s))
         lst.sort(key=lambda p: p[1], reverse=True)

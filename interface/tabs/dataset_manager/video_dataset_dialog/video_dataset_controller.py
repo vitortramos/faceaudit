@@ -52,13 +52,9 @@ class VideoDatasetController(QtCore.QObject):
         targets = dlg.get_targets()
         if service is None or not targets:
             return
-        name = dlg.get_dataset_name()
+        # Modo + dataset são decididos na janela de revisão; aqui só a extração.
         config = dlg.get_config(self._runs_root())
-        self._pending = {"mode": dlg.get_mode(), "name": name, "config": config,
-                         "n_targets": len(targets),
-                         "embeddings": dlg.get_dataset_embeddings(),
-                         "dataset_dir": dlg.get_dataset_output_dir() or None,
-                         "self_contained": dlg.get_dataset_self_contained()}
+        self._pending = {"config": config}
 
         worker = VideoExtractionWorker(service, config, targets)
         label = ("Extraindo faces do vídeo" if len(targets) == 1
@@ -79,8 +75,7 @@ class VideoDatasetController(QtCore.QObject):
             QtWidgets.QMessageBox.warning(self._view, "Importar",
                                           "A pasta escolhida não parece ser um run de vídeo (sem _meta/).")
             return
-        self._pending = {"mode": VideoExtractionMode.END_TO_END, "name": Path(run_dir).name,
-                         "config": None}
+        self._pending = {"config": None}
         self._open_review_then_finish(run_dir)
 
     # ───────────────────────── etapas ─────────────────────────
@@ -96,38 +91,40 @@ class VideoDatasetController(QtCore.QObject):
         self._open_review_then_finish(result.run_dir)
 
     def _open_review_then_finish(self, run_dir: str):
-        dlg = VideoReviewDialog(self._view, run_dir, operator="perito")
+        # A janela de revisão é dona da configuração do dataset (Modo, nome,
+        # embeddings, destino, OFIQ/SER-FIQ) — vale para os dois fluxos (criar
+        # e importar). Lemos tudo dela após a revisão.
+        dlg = VideoReviewDialog(self._view, run_dir, operator="perito",
+                                dataset_output_dir=self._datasets_dir())
         if not dlg.exec():
             QtWidgets.QMessageBox.information(
                 self._view, "Revisão",
                 f"Revisão cancelada. O run permanece em:\n{run_dir}")
             return
 
-        mode = self._pending.get("mode", VideoExtractionMode.PRODUCER)
-        if mode == VideoExtractionMode.PRODUCER:
+        if dlg.get_mode() == VideoExtractionMode.PRODUCER:
             res = QtWidgets.QMessageBox.question(
-                self._view, "Produtor",
+                self._view, "Só recortes",
                 f"Recortes revisados em:\n{run_dir}\n\nAbrir a pasta?",
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
             if res == QtWidgets.QMessageBox.StandardButton.Yes:
                 QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(run_dir))
             return
 
-        # Ponta a ponta: enriquecer + registrar
-        name = self._pending.get("name") or Path(run_dir).name
-        vcfg = self._pending.get("config")
+        # Recortes + dataset: enriquecer + registrar
+        name = dlg.get_dataset_name() or Path(run_dir).name
         ingestion = DatasetIngestionConfig(
             input_path=Path(run_dir), dataset_name=name,
             compute_ff=True,
-            compute_ofiq=bool(getattr(vcfg, "compute_ofiq", False)),
-            compute_serfiq=bool(getattr(vcfg, "compute_serfiq", False)),
-            ff_models=self._pending.get("embeddings") or None,
+            compute_ofiq=dlg.compute_ofiq(),
+            compute_serfiq=dlg.compute_serfiq(),
+            ff_models=dlg.get_dataset_embeddings() or None,
         )
         worker = VideoImportWorker(
             run_dir, enrich=True, pipeline=self._pipeline,
             ingestion_config=ingestion, dataset_name=name,
-            dataset_dir=self._pending.get("dataset_dir"),
-            self_contained=self._pending.get("self_contained", True))
+            dataset_dir=dlg.get_dataset_output_dir() or None,
+            self_contained=dlg.get_dataset_self_contained())
         self._mgr._run_worker(
             worker, label="Enriquecendo dataset de vídeo",
             allow_cancel=True, determinate=False, use_log_dialog=True,

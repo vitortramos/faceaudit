@@ -264,9 +264,14 @@ class VideoRunImporter:
         manifest = self._load_manifest(Path(run_dir) / "_meta")
         summary = manifest.get("summary") or {}
         review = manifest.get("review") or {}
+        src_videos = manifest.get("source_videos") or (
+            [manifest.get("source_video")] if manifest.get("source_video") else [])
         return {
             "run_id": manifest.get("run_id"),
+            # 1º vídeo (compat) + lista completa (multivídeo) para a cadeia de custódia.
             "video_sha256": (manifest.get("source_video") or {}).get("sha256"),
+            "video_sha256_all": [(v or {}).get("sha256") for v in src_videos],
+            "n_videos": summary.get("n_videos"),
             "n_frames_sampled": summary.get("n_frames_sampled"),
             "n_accepted_auto": summary.get("n_accepted_auto"),
             "n_accepted_after_review": review.get("n_accepted"),

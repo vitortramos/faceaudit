@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -23,6 +23,16 @@ class VideoTarget:
     label: str
     anchor_embeddings: List[np.ndarray] = field(default_factory=list)
     anchor_policy: str = "SINGLE"                 # SINGLE | AGGREGATED
+    # Proveniência por âncora, paralela a `anchor_embeddings`. Cada item:
+    # {type: "video"|"image", path, filename, frame_index, bbox, sha256, det_index}.
+    # Permite ancorar o mesmo alvo em vários quadros/vídeos E em fotos estáticas.
+    anchor_sources: List[dict] = field(default_factory=list)
+    # Como as âncoras são combinadas no scoring:
+    #   CENTROID = cosseno com a referência média (robusto p/ aparências da
+    #              MESMA pessoa; conservador);
+    #   ANY      = melhor cosseno entre as âncoras (casa se bater com QUALQUER
+    #              uma; mais permissivo, mais recall e mais risco).
+    anchor_match_mode: str = "CENTROID"           # CENTROID | ANY
     similarity_threshold: float = 0.30
     similarity_threshold_source: str = "MANUAL"   # MANUAL | SUGGESTED
     anchor_frames: List[int] = field(default_factory=list)  # quadros-âncora secundários
@@ -39,6 +49,50 @@ class VideoTarget:
     def anchor_embedding_count(self) -> int:
         return len(self.anchor_embeddings)
 
+    def add_anchor(self, embedding: np.ndarray, source: dict) -> None:
+        """Acrescenta uma âncora (embedding + proveniência da fonte). A política
+        vira AGGREGATED a partir da 2ª âncora. A 1ª âncora de VÍDEO define o
+        quadro/bbox usados no quadro-âncora anotado (fotos não têm quadro)."""
+        self.anchor_embeddings.append(np.asarray(embedding))
+        self.anchor_sources.append(dict(source))
+        self.anchor_policy = "AGGREGATED" if len(self.anchor_embeddings) > 1 else "SINGLE"
+        if (self.anchor_frame_index is None and source.get("type") == "video"
+                and source.get("frame_index") is not None):
+            self.anchor_frame_index = source.get("frame_index")
+            self.anchor_bbox = source.get("bbox")
+
+    def has_near_duplicate_anchor(self, embedding: np.ndarray, *, tol: float = 0.9999) -> bool:
+        """True se `embedding` é praticamente idêntico (cosseno ≥ tol) a uma
+        âncora já existente — usado para NÃO duplicar a mesma face (clicar duas
+        vezes na mesma detecção)."""
+        if embedding is None or not self.anchor_embeddings:
+            return False
+        e = self._l2(np.asarray(embedding, dtype=np.float64))
+        return any(float(np.dot(self._l2(a), e)) >= tol for a in self.anchor_embeddings)
+
+    def anchor_source_counts(self) -> Tuple[int, int]:
+        """(n_video, n_image) entre as fontes de âncora registradas."""
+        n_video = sum(1 for s in self.anchor_sources if s.get("type") == "video")
+        n_image = sum(1 for s in self.anchor_sources if s.get("type") == "image")
+        return n_video, n_image
+
+    def remove_anchor(self, index: int) -> None:
+        """Remove a âncora `index` (embedding + fonte). Recalcula a política e
+        reassocia o quadro/bbox anotado à 1ª âncora de vídeo remanescente."""
+        if not (0 <= index < len(self.anchor_embeddings)):
+            return
+        self.anchor_embeddings.pop(index)
+        if index < len(self.anchor_sources):
+            self.anchor_sources.pop(index)
+        self.anchor_policy = "AGGREGATED" if len(self.anchor_embeddings) > 1 else "SINGLE"
+        self.anchor_frame_index = None
+        self.anchor_bbox = None
+        for s in self.anchor_sources:
+            if s.get("type") == "video" and s.get("frame_index") is not None:
+                self.anchor_frame_index = s.get("frame_index")
+                self.anchor_bbox = s.get("bbox")
+                break
+
     def reference_embedding(self) -> Optional[np.ndarray]:
         """Embedding de referência (média L2-normalizada das âncoras),
         normalizado. None se não há âncora."""
@@ -49,11 +103,18 @@ class VideoTarget:
         return self._l2(mean)
 
     def similarity_to(self, embedding: np.ndarray) -> float:
-        """Similaridade de cosseno entre `embedding` e a referência."""
-        ref = self.reference_embedding()
-        if ref is None or embedding is None:
+        """Similaridade do alvo com `embedding`, conforme `anchor_match_mode`:
+        CENTROID = cosseno com a referência média; ANY = melhor cosseno entre
+        as âncoras (casa se bater com QUALQUER uma)."""
+        if embedding is None:
             return float("-inf")
         e = self._l2(np.asarray(embedding, dtype=np.float64))
+        if self.anchor_match_mode == "ANY" and self.anchor_embeddings:
+            return max((float(np.dot(self._l2(a), e)) for a in self.anchor_embeddings),
+                       default=float("-inf"))
+        ref = self.reference_embedding()
+        if ref is None:
+            return float("-inf")
         return float(np.dot(ref, e))
 
     def anchor_embedding_fingerprint(self) -> Optional[str]:
