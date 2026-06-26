@@ -172,6 +172,7 @@ class VideoRunImporter:
             det = d.get("detection") or {}
             pose = det.get("pose") or {}
             qg = d.get("quality_gates") or {}
+            akps = det.get("aligned_keypoints")  # 5×2 no sistema 112×112 (KPRPE)
             ff = FFInfo(
                 det_score=det.get("det_score"),
                 fiqa_score=qg.get("fiqa_score"),
@@ -180,7 +181,12 @@ class VideoRunImporter:
                 yaw=pose.get("yaw"),
                 pitch=pose.get("pitch"),
                 roll=pose.get("roll"),
+                keypoints=akps,  # alinhados (112×112) — usados pelos modelos KPRPE
             )
+            # Persiste os keypoints no parquet (via extra_data, JSON) — assim o
+            # KPRPE/sepaelv6 funciona tanto no enrich E2E quanto num re-enrich.
+            if akps:
+                extra["aligned_keypoints_112"] = json.dumps(akps)
             fi = FaceInfo(image_path=rel_path, identity=label, hash=expected, ff_info=ff)
             # Origem = vídeo de origem (análogo ao campo "Origem" do caminho de
             # imagens, que registra a proveniência da face).

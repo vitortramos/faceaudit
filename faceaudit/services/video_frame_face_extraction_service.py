@@ -667,6 +667,8 @@ class VideoFrameFaceExtractionService:
             keypoints_5pt=aligned.keypoints_5pt, align_matrix_2x3=aligned.align_matrix_2x3,
             align_matrix_available=aligned.align_matrix_available, pose=aligned.pose,
             gender=aligned.gender, age=aligned.age,
+            aligned_keypoints=(aligned.aligned_keypoints.tolist()
+                               if aligned.aligned_keypoints is not None else None),
             reid_method="embedding+tracking", similarity_to_anchor=float(assignment.similarity),
             similarity_threshold=target.similarity_threshold, assigned_by=assignment.assigned_by,
             track_id=target_index, recognition_model=model,

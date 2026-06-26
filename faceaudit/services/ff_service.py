@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import cv2
 from pathlib import Path
@@ -191,6 +192,30 @@ _FFINFO_MERGE_KEYS: Tuple[str, ...] = (
 _FFINFO_EMBEDDING_SLOTS: Tuple[str, ...] = tuple(
     m.ffinfo_slot for m in SepaelModel
 )
+
+# Chave em FaceInfo.extra_data onde o fluxo de vídeo persiste os 5 keypoints
+# alinhados (JSON, sistema 112×112) — exigidos pelos modelos KPRPE (sepaelv6).
+ALIGNED_KEYPOINTS_EXTRA_KEY = "aligned_keypoints_112"
+
+
+def _aligned_keypoints_from_face(face) -> Optional[np.ndarray]:
+    """5 keypoints alinhados (sistema 112×112) de uma FaceInfo `(5, 2)`, ou None.
+    Fonte: `ff_info.keypoints` (em memória, fluxo ponta-a-ponta) ou
+    `extra_data['aligned_keypoints_112']` (JSON persistido no parquet, para
+    re-enriquecimento). Necessário para os modelos KPRPE (sepaelv6)."""
+    ff = getattr(face, "ff_info", None)
+    kp = getattr(ff, "keypoints", None) if ff is not None else None
+    if kp is not None:
+        arr = np.asarray(kp, dtype=np.float32)
+        return arr if arr.shape == (5, 2) else None
+    raw = (getattr(face, "extra_data", None) or {}).get(ALIGNED_KEYPOINTS_EXTRA_KEY)
+    if raw:
+        try:
+            arr = np.asarray(json.loads(raw), dtype=np.float32)
+            return arr if arr.shape == (5, 2) else None
+        except Exception:
+            return None
+    return None
 
 
 class FFService:
@@ -1502,9 +1527,11 @@ class FFService:
             target_models = [self._default_model]
 
         # Buffers paralelos: crops carregados + ponteiros pras FaceInfo
-        # correspondentes. Flush quando atinge `_batch_size`.
+        # correspondentes + keypoints alinhados (p/ KPRPE). Flush quando
+        # atinge `_batch_size`.
         buffer_crops: List[np.ndarray] = []
         buffer_faces: List[FaceInfo] = []
+        buffer_keypoints: List[Optional[np.ndarray]] = []
 
         # Mesma motivação do helper cached: erros internos do batch
         # precisam virar linhas de log no LogProgressDialog em vez de
@@ -1519,9 +1546,16 @@ class FFService:
             if not buffer_crops:
                 return
             arr = np.stack(buffer_crops, axis=0)  # (N, 112, 112, 3)
+            # Passa os keypoints alinhados quando TODAS as faces do batch os têm
+            # (KPRPE/sepaelv6 exige; os demais ignoram). Se faltar em alguma, vai
+            # None — modelos que exigem keypoints falham com mensagem clara.
+            kps_batch = None
+            if buffer_keypoints and all(k is not None for k in buffer_keypoints):
+                kps_batch = np.stack(buffer_keypoints, axis=0)  # (N, 5, 2)
             try:
                 ff_infos = self.extract_embeddings_from_aligned_faces_batch(
-                    arr, models=target_models, error_callback=_err_cb,
+                    arr, models=target_models,
+                    aligned_keypoints_batch=kps_batch, error_callback=_err_cb,
                 )
             except Exception as e:
                 _err_cb(
@@ -1543,6 +1577,7 @@ class FFService:
                         setattr(existing, key, val)
             buffer_crops.clear()
             buffer_faces.clear()
+            buffer_keypoints.clear()
 
         processed = 0
         for face in tqdm(
@@ -1565,6 +1600,7 @@ class FFService:
             else:
                 buffer_crops.append(crop)
                 buffer_faces.append(face)
+                buffer_keypoints.append(_aligned_keypoints_from_face(face))
 
             if len(buffer_crops) >= self._batch_size:
                 flush()

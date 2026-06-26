@@ -118,6 +118,9 @@ class FaceProvenance:
     pose: Optional[Dict[str, float]] = None
     gender: Optional[str] = None
     age: Optional[float] = None
+    # 5 keypoints alinhados no sistema 112×112 (lista de [x, y]). Exigidos pelos
+    # modelos KPRPE (sepaelv6) no enriquecimento a partir do recorte alinhado.
+    aligned_keypoints: Optional[List[List[float]]] = None
 
     # re-identificação
     reid_method: str = "embedding"
@@ -186,6 +189,7 @@ class FaceProvenance:
                 "pose": self.pose,
                 "gender": self.gender,
                 "age": self.age,
+                "aligned_keypoints": self.aligned_keypoints,
             },
             "reidentification": {
                 "method": self.reid_method,
