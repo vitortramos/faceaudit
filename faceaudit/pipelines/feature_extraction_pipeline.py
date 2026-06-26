@@ -1,3 +1,4 @@
+import gc
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
@@ -321,6 +322,23 @@ class FeatureExtractionPipeline:
             batch_size=batch_size,
         )
 
+    def _build_single_model_ff_service(self, config: DatasetIngestionConfig, model: str) -> FFService:
+        """FFService de UM modelo só, para o processamento sequencial multi-modelo
+        em faces alinhadas — o pico de VRAM fica limitado a ~1 pipeline (em vez
+        de N simultâneos), garantindo execução em GPUs menores sem OOM/thrashing.
+        Reusa o singleton quando ele JÁ é exatamente esse modelo (evita recarga);
+        senão constrói um temporário que o caller libera após usar."""
+        det_size = int(config.ff_det_size)
+        extended = bool(config.ff_extended)
+        if self.ff_service.matches_config(models=[model], det_size=det_size, extended=extended):
+            return self.ff_service
+        use_gpu = getattr(self.ff_service, "_use_gpu", False)
+        batch_size = getattr(self.ff_service, "_batch_size", 32)
+        return FFService(
+            models=[model], det_size=det_size, use_gpu=use_gpu,
+            extended=extended, batch_size=batch_size,
+        )
+
     def _resolve_serfiq_service(
         self, config: DatasetIngestionConfig
     ) -> SERFIQService:
@@ -424,7 +442,6 @@ class FeatureExtractionPipeline:
                 base_pct = self._calc_pct(current_stage_idx, total_stages)
                 next_pct = self._calc_pct(current_stage_idx + 1, total_stages)
 
-                ff_svc = self._resolve_ff_service(config)
                 wanted_models = list(config.ff_models or [SepaelModel.default().ff_name])
 
                 def ff_callback(msg: str, internal_pct: int):
@@ -441,11 +458,37 @@ class FeatureExtractionPipeline:
                 if target is not None:
                     for f in target.faces:
                         touched_face_ids.add(id(f))
-                    ff_svc.process_dataset(
-                        target,
-                        progress_callback=ff_callback,
-                        models=wanted_models,
-                    )
+                    # Multi-modelo em faces ALINHADAS: processa UM modelo por vez,
+                    # liberando a VRAM entre eles → pico ≈ 1 pipeline (em vez de N
+                    # simultâneos), o que garante rodar em GPUs menores sem
+                    # OOM/thrashing e torna o cancelamento responsivo (checado a
+                    # cada face/modelo). Em faces NÃO-alinhadas a detecção seria
+                    # refeita por modelo (e com 1 modelo não há ganho) → nesses
+                    # casos mantém o caminho único multi-modelo.
+                    if bool(getattr(dataset, "is_aligned", False)) and len(wanted_models) > 1:
+                        n_models = len(wanted_models)
+                        for mi, model in enumerate(wanted_models):
+                            m_base = base_pct + int((mi / n_models) * (next_pct - base_pct))
+                            m_next = base_pct + int(((mi + 1) / n_models) * (next_pct - base_pct))
+
+                            def ff_callback_seq(msg, internal_pct, _b=m_base, _n=m_next, _m=model):
+                                if progress_callback:
+                                    scaled = _b + int((internal_pct / 100) * (_n - _b))
+                                    progress_callback(f"[{_m}] {msg}", scaled)
+
+                            ff_svc = self._build_single_model_ff_service(config, model)
+                            try:
+                                ff_svc.process_dataset(
+                                    target, progress_callback=ff_callback_seq, models=[model])
+                            finally:
+                                # Libera a VRAM do modelo antes de carregar o próximo
+                                # (não toca no singleton da app, que é compartilhado).
+                                if ff_svc is not self.ff_service:
+                                    del ff_svc
+                                    gc.collect()
+                    else:
+                        self._resolve_ff_service(config).process_dataset(
+                            target, progress_callback=ff_callback, models=wanted_models)
                     self._log_stage_summary(
                         "FF", target, lambda f: f.ff_info is not None,
                     )
