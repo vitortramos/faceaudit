@@ -55,6 +55,15 @@ class ToolbarButton(QPushButton):
                 display = self._label_text
         self.setText(display)
 
+    def set_label(self, text: str, icon_char: str = None) -> None:
+        """Atualiza o rótulo (e opcionalmente o ícone) exibido em runtime,
+        respeitando o modo atual (compact/full). Usado por botões que mudam de
+        função conforme o estado — ex.: o toggle Galeria↔Tabela."""
+        self._label_text = text
+        if icon_char is not None:
+            self._icon_char = icon_char
+        self._refresh_display_text()
+
     def set_compact(self, compact: bool) -> None:
         """Alterna entre modo full (icon + texto) e compact (só ícone)."""
         if compact == self._compact:

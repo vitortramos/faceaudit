@@ -41,6 +41,11 @@ class GalleryWidget(QtWidgets.QWidget):
     # PR 15.2: usuário pediu comparação de par via context menu, com
     # exatamente 2 thumbs selecionadas.
     compare_pair_requested = QtCore.pyqtSignal(int, int)
+    # Ações de seleção (N faces) via context menu. Emitem a lista de
+    # face_idx (índices em dataset.faces) — o controller faz a mutação.
+    remove_faces_requested = QtCore.pyqtSignal(list)
+    create_dataset_from_selection_requested = QtCore.pyqtSignal(list)
+    set_column_value_requested = QtCore.pyqtSignal(list)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -250,14 +255,25 @@ class GalleryWidget(QtWidgets.QWidget):
     # ── Context menu ──────────────────────────────────────────────────
 
     def _open_context_menu(self, position) -> None:
-        """Menu de contexto: por enquanto só "Comparar par" gated em 2 sel."""
         menu = QtWidgets.QMenu(self.list_widget)
+        self._populate_context_menu(menu)
+        menu.exec(self.list_widget.viewport().mapToGlobal(position))
+
+    def _populate_context_menu(self, menu) -> None:
+        """Popula o menu de contexto da galeria. Ações por seleção (N faces):
+        comparar par (exatamente 2), remover, definir valor de coluna e criar
+        dataset a partir da seleção. Cada ação emite um sinal; o controller faz
+        a mutação sobre `dataset.faces` (cujo índice é o que cada item carrega).
+        Separado do exec() para ser testável sem bloquear no event loop."""
         selected_idxs = sorted({
             it.data(QtCore.Qt.ItemDataRole.UserRole)
             for it in self.list_widget.selectedItems()
             if isinstance(it.data(QtCore.Qt.ItemDataRole.UserRole), int)
         })
-        if len(selected_idxs) == 2:
+        n = len(selected_idxs)
+
+        # ── Comparar par (exatamente 2) ──
+        if n == 2:
             a, b = selected_idxs
             act = menu.addAction("⚖️ Comparar este par lado a lado…")
             act.triggered.connect(
@@ -265,11 +281,34 @@ class GalleryWidget(QtWidgets.QWidget):
                     self.compare_pair_requested.emit(ia, ib)
             )
         else:
-            act = menu.addAction(
-                f"⚖️ Comparar par (selecione 2 — {len(selected_idxs)})"
-            )
+            act = menu.addAction(f"⚖️ Comparar par (selecione 2 — {n})")
             act.setEnabled(False)
-        menu.exec(self.list_widget.viewport().mapToGlobal(position))
+
+        menu.addSeparator()
+
+        # ── Ações sobre a seleção (N ≥ 1) ──
+        act_setval = menu.addAction(f"✏️ Definir valor de coluna… ({n})")
+        act_setval.setEnabled(n >= 1)
+        act_setval.triggered.connect(
+            lambda _checked=False, idxs=list(selected_idxs):
+                self.set_column_value_requested.emit(idxs)
+        )
+
+        act_subset = menu.addAction(f"🧩 Criar dataset a partir da seleção… ({n})")
+        act_subset.setEnabled(n >= 1)
+        act_subset.triggered.connect(
+            lambda _checked=False, idxs=list(selected_idxs):
+                self.create_dataset_from_selection_requested.emit(idxs)
+        )
+
+        menu.addSeparator()
+
+        act_remove = menu.addAction(f"🗑️ Remover do dataset ({n})")
+        act_remove.setEnabled(n >= 1)
+        act_remove.triggered.connect(
+            lambda _checked=False, idxs=list(selected_idxs):
+                self.remove_faces_requested.emit(idxs)
+        )
 
 
 # ── Helpers livres ────────────────────────────────────────────────────

@@ -181,6 +181,13 @@ class DatasetManagerController(QtCore.QObject):
             self.table_ctrl.compare_pair_requested.connect(self._on_compare_pair)
         self.gallery_widget.compare_pair_requested.connect(self._on_compare_pair)
 
+        # Ações de seleção do menu de contexto da galeria (N faces).
+        self.gallery_widget.remove_faces_requested.connect(self._on_gallery_remove_faces)
+        self.gallery_widget.create_dataset_from_selection_requested.connect(
+            self._on_gallery_create_dataset_from_selection)
+        self.gallery_widget.set_column_value_requested.connect(
+            self._on_gallery_set_column_value)
+
         # PR 16 — Adicionar à Biblioteca Global
         if hasattr(self.toolbar_ctrl, "action_save_to_library"):
             self.toolbar_ctrl.action_save_to_library.connect(self.fluxo_salvar_biblioteca)
@@ -267,6 +274,205 @@ class DatasetManagerController(QtCore.QObject):
             dataset=self.dataset,
         )
         cmp_ctrl.exec()
+
+    # ── Ações de seleção do menu de contexto da galeria ───────────────
+    #
+    # As ações recebem face_idx (índices em dataset.faces na ordem em que a
+    # galeria foi populada). Ordenar a TABELA reordena o dataframe — e o
+    # `sync_changes_from_table` reconstrói dataset.faces a partir dele —, então
+    # índices posicionais podem deixar de bater após um sync. Por isso cada
+    # handler captura os `image_path` ALVO ANTES de sincronizar e, após o sync,
+    # recupera as faces por caminho (mesma chave que o próprio sync usa).
+    #
+    # IMPORTANTE — NÃO-DESTRUTIVO: "Remover" só tira a face do dataset (em
+    # memória, efetivado ao Salvar). NENHUM arquivo de imagem é apagado do
+    # disco, em nenhum modo. `path_mode==RELATIVE` NÃO garante que as imagens
+    # sejam cópias do dataset (REWRITE_RELATIVE referencia os ORIGINAIS; o
+    # parquet_dir pode ser None → cwd), então apagar arquivo arriscaria destruir
+    # evidência original. Cópias órfãs num autocontido apenas permanecem em disco.
+
+    def _gallery_target_paths(self, idxs) -> list:
+        """`image_path` das faces selecionadas, em ordem crescente de índice de
+        dataset.faces (a seleção já vem ordenada da galeria). Capturar ANTES de
+        qualquer sync — depois a ordem de dataset.faces pode mudar."""
+        if not self.dataset:
+            return []
+        faces = self.dataset.faces
+        n = len(faces)
+        out = []
+        for i in sorted(set(idxs)):
+            if isinstance(i, int) and 0 <= i < n:
+                p = getattr(faces[i], "image_path", None)
+                if p:
+                    out.append(p)
+        return out
+
+    def _gallery_match_after_sync(self, idxs, action_label: str):
+        """Captura os caminhos da seleção, sincroniza a tabela e devolve as
+        faces correspondentes em self.dataset.faces. Aborta (devolve None) se um
+        caminho casar com MAIS faces do que as selecionadas — sinal de
+        `image_path` duplicado (raro; ex.: localização HASH com conteúdo
+        idêntico). Operar por caminho aí afetaria faces NÃO selecionadas, então
+        paramos por segurança em vez de adivinhar."""
+        paths = self._gallery_target_paths(idxs)
+        if not paths:
+            return None
+        n_selected = len(paths)
+        self.sync_changes_from_table()              # não perder edições da tabela
+        path_set = set(paths)
+        matched = [f for f in self.dataset.faces
+                   if getattr(f, "image_path", None) in path_set]
+        if len(matched) > n_selected:
+            QMessageBox.warning(
+                self.view, action_label,
+                "Algumas faces selecionadas compartilham o caminho de imagem com "
+                "faces NÃO selecionadas (imagens de conteúdo idêntico podem "
+                "apontar para o mesmo arquivo). Para não afetar faces que você "
+                "não escolheu, a operação foi cancelada.")
+            return None
+        return matched
+
+    def _refresh_after_structural_change(self) -> None:
+        """Reconstrói tabela + galeria a partir de self.dataset (fonte de
+        verdade) e marca modificado. Reseta a ordenação da tabela para a ordem
+        do dataset (efeito colateral aceitável de uma mutação estrutural)."""
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        self.gallery_widget.populate(list(self.dataset.faces))
+        self.detail_ctrl.load_face_data(None)
+        self.set_dirty(True)
+
+    def _on_gallery_remove_faces(self, idxs) -> None:
+        matched = self._gallery_match_after_sync(idxs, "Remover do dataset")
+        if not matched:
+            return
+        n = len(matched)
+        res = QMessageBox.question(
+            self.view, "Remover do dataset",
+            f"Remover {n} face(s) do dataset?\n\n"
+            "Só remove do dataset — os arquivos de imagem NÃO são apagados. "
+            "Efetivado ao Salvar.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if res != QMessageBox.StandardButton.Yes:
+            return
+        matched_ids = {id(f) for f in matched}      # remove EXATAMENTE as faces casadas
+        self.dataset.faces = [f for f in self.dataset.faces if id(f) not in matched_ids]
+        self._refresh_after_structural_change()
+        QMessageBox.information(
+            self.view, "Removido",
+            f"{n} face(s) removida(s) do dataset. Salve para efetivar.")
+
+    def _on_gallery_create_dataset_from_selection(self, idxs) -> None:
+        import copy as _copy
+        from PyQt6.QtWidgets import QInputDialog
+        matched = self._gallery_match_after_sync(idxs, "Criar dataset a partir da seleção")
+        if not matched:
+            return
+        suggested = f"{self.dataset.name}_sel"
+        name, ok = QInputDialog.getText(
+            self.view, "Criar dataset a partir da seleção",
+            f"Nome do novo dataset ({len(matched)} face(s)):", text=suggested)
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+        if self.is_dirty():
+            res = QMessageBox.question(
+                self.view, "Dataset modificado",
+                "O dataset atual tem alterações não salvas; criar o subset "
+                "substitui o que está na tela.\nContinuar?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if res != QMessageBox.StandardButton.Yes:
+                return
+        subset = FaceDataset(
+            name=name, description=getattr(self.dataset, "description", "") or "",
+            faces=[_copy.copy(f) for f in matched],
+            column_specs=dict(self.dataset.column_specs) if self.dataset.column_specs else {},
+            path_mode=self.dataset.path_mode, path_root=self.dataset.path_root,
+            is_aligned=self.dataset.is_aligned,
+        )
+        subset._parquet_dir = self.dataset._parquet_dir
+        subset.hash = None
+        # O subset SUBSTITUI o dataset na tela — zera o estado de filtro do
+        # anterior, senão "Limpar filtro" restauraria o dataset antigo por cima
+        # do subset (dataset_original ficaria obsoleto).
+        self.dataset_original = None
+        self.current_filter_config = FilterConfig()
+        self.carregar_dataset_na_tela(subset, path=None)
+        self.set_dirty(True)
+        QMessageBox.information(
+            self.view, "Subset criado",
+            f"Dataset '{name}' com {len(subset.faces)} face(s) carregado na tela.\n"
+            "Use Salvar Como para gravá-lo num arquivo.")
+
+    def _on_gallery_set_column_value(self, idxs) -> None:
+        matched = self._gallery_match_after_sync(idxs, "Definir valor de coluna")
+        if not matched:
+            return
+        # Alinha a ordem da tabela à de dataset.faces (df row == faces index).
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        model = self.table_ctrl.model
+        # Colunas EDITÁVEIS (label, key, vocabulary, dtype) para o diálogo —
+        # dtype faz o campo de valor se adaptar (bool→combo, numérico→validação).
+        cols = []
+        for c in model.visible_columns:
+            if getattr(c, "editable", False):
+                spec = (self.dataset.column_specs or {}).get(getattr(c, "key", None))
+                vocab = getattr(spec, "vocabulary", None) if spec else None
+                dtype = getattr(spec, "dtype", None) if spec else None
+                dtype_str = getattr(dtype, "value", None) or (dtype if isinstance(dtype, str) else None)
+                cols.append((getattr(c, "label", None) or c.key, c.key, vocab, dtype_str))
+        if not cols:
+            QMessageBox.information(
+                self.view, "Definir valor de coluna",
+                "Este dataset não tem colunas editáveis.")
+            return
+        matched_ids = {id(f) for f in matched}
+        rows = [r for r, f in enumerate(self.dataset.faces) if id(f) in matched_ids]
+        if not rows:
+            return
+        from .set_column_value_dialog import SetColumnValueDialog
+        dlg = SetColumnValueDialog(cols, len(rows), parent=self.view)
+        if not dlg.exec():
+            return
+        result = dlg.get_result()
+        if not result:
+            return
+        key, value = result
+        n_ok = self._apply_column_value_to_rows(rows, key, value)
+        if n_ok == 0:
+            QMessageBox.information(
+                self.view, "Definir valor de coluna",
+                f"Nenhuma face alterada — '{value}' pode estar fora do "
+                "vocabulário da coluna.")
+            return
+        # Propaga df→dataset e repinta a galeria (caption pode mudar — ex. identidade).
+        self.sync_changes_from_table()
+        self.gallery_widget.populate(list(self.dataset.faces))
+        self.set_dirty(True)
+        msg = f"'{key}' = '{value}' aplicado a {n_ok} face(s)."
+        if n_ok < len(rows):
+            msg += (f"\n{len(rows) - n_ok} rejeitada(s) — valor fora do "
+                    "vocabulário da coluna?")
+        QMessageBox.information(self.view, "Valor definido", msg)
+
+    def _apply_column_value_to_rows(self, rows, key, value) -> int:
+        """Seta `value` na coluna `key` para as `rows` (índices do model, já
+        alinhados a dataset.faces) via model.setData — que valida vocabulário.
+        Retorna quantas foram aceitas."""
+        model = self.table_ctrl.model
+        col_idx = next((i for i, c in enumerate(model.visible_columns)
+                        if getattr(c, "key", None) == key), None)
+        if col_idx is None:
+            return 0
+        model.layoutAboutToBeChanged.emit()
+        n_ok = 0
+        for r in rows:
+            if 0 <= r < model.rowCount():
+                if model.setData(model.index(r, col_idx), value, Qt.ItemDataRole.EditRole):
+                    n_ok += 1
+        model.layoutChanged.emit()
+        return n_ok
 
     # ── PR 8: Spreadsheet UX (add column + show/hide) ─────────────────
 
@@ -494,7 +700,7 @@ class DatasetManagerController(QtCore.QObject):
             self.gallery_widget.populate([])
 
         self.set_dirty(False)
-        
+
         text, tooltip = self._build_dataset_status(filtered=False)
         self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
 

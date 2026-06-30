@@ -19,12 +19,16 @@ class ExibirRibbon(ResponsiveRibbon):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
 
+        # Toggle Tabela↔Galeria — o rótulo mostra o DESTINO: em modo tabela
+        # exibe "Galeria" (clique = ir pra galeria); em modo galeria exibe
+        # "Tabela" (clique = voltar). Estado interno via isChecked (checked =
+        # galeria), preservado.
         self.btn_toggle_gallery = ToolbarButton(
             "Galeria", "🖼",
-            tooltip="Alternar entre visualização de tabela e grid "
-                    "de thumbnails",
+            tooltip="Alternar para o grid de thumbnails (galeria)",
         )
         self.btn_toggle_gallery.setCheckable(True)
+        self.btn_toggle_gallery.toggled.connect(self._on_gallery_toggled)
 
         self.btn_schema_report = ToolbarButton(
             "Colunas", "📋",
@@ -38,3 +42,14 @@ class ExibirRibbon(ResponsiveRibbon):
         layout.addStretch()
 
         self._install_responsive_behavior()
+
+    def _on_gallery_toggled(self, is_gallery: bool) -> None:
+        """Rótulo/ícone refletem o DESTINO da troca: tabela → 'Galeria',
+        galeria → 'Tabela'. Dirigido por `toggled`, então setChecked
+        programático (ex.: ao fechar o dataset) também reverte o rótulo."""
+        if is_gallery:
+            self.btn_toggle_gallery.set_label("Tabela", "▦")
+            self.btn_toggle_gallery.setToolTip("Voltar para a visualização de tabela")
+        else:
+            self.btn_toggle_gallery.set_label("Galeria", "🖼")
+            self.btn_toggle_gallery.setToolTip("Alternar para o grid de thumbnails (galeria)")
