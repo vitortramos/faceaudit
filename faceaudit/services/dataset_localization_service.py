@@ -40,8 +40,28 @@ from faceaudit.models.localization_result import LocalizationResult
 from faceaudit.services.image_path_resolver import resolve_image_path
 
 
-# Subpasta onde imagens são copiadas em COPY_ORIGINALS.
+# Subpasta-padrão onde imagens são copiadas em COPY_ORIGINALS. Usada quando o
+# caller NÃO informa `copy_subdir` — preserva o layout legado e o fluxo de selar/
+# importar projeto, que isola por `<id>/` e depende deste nome.
 _COPY_SUBDIR = "images"
+
+
+def _sanitize_subdir_component(name: str) -> str:
+    """Torna `name` seguro como componente de pasta (sem `/`, `\\`, `:` etc.)."""
+    safe = "".join(
+        c if (c.isalnum() or c in "-_.") else "_" for c in (name or "").strip()
+    ).strip("._")
+    return safe or "dataset"
+
+
+def dataset_images_subdir(dataset_name: str) -> str:
+    """Nome da subpasta de imagens POR dataset: ``<nome>_images``.
+
+    Use ao finalizar um dataset autocontido numa pasta COMPARTILHADA por vários
+    datasets (criação a partir de vídeo, "Localizar dataset"): cada dataset ganha
+    a sua própria pasta de imagens, em vez de todos despejarem em ``images/``.
+    """
+    return f"{_sanitize_subdir_component(dataset_name)}_images"
 
 
 class DatasetLocalizationService:
@@ -113,6 +133,7 @@ class DatasetLocalizationService:
         naming: NamingStrategy = NamingStrategy.PRESERVE,
         skip_existing: bool = True,
         old_prefix: Optional[str] = None,
+        copy_subdir: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> LocalizationResult:
         """Localiza um dataset.
@@ -120,13 +141,18 @@ class DatasetLocalizationService:
         Args:
             dataset: dataset de entrada (não é mutado).
             target_dir: pasta âncora. Em COPY_ORIGINALS, imagens são
-                copiadas pra `target_dir/images/`. Em REWRITE_RELATIVE,
+                copiadas pra `target_dir/<copy_subdir>/`. Em REWRITE_RELATIVE,
                 paths viram relativos a `target_dir`.
             mode: REWRITE_RELATIVE ou COPY_ORIGINALS.
             naming: estratégia de nome de arquivo (só relevante em
                 COPY_ORIGINALS; ignorada em REWRITE_RELATIVE).
             skip_existing: idempotência — em COPY_ORIGINALS, pula faces
                 cujo destino já existe com mesmo hash.
+            copy_subdir: nome da subpasta de imagens em COPY_ORIGINALS
+                (vira o `path_root` do dataset resultante). `None` → `"images"`
+                (legado; usado por selar/importar projeto, que isolam por `<id>/`).
+                Para várias autocontidas na MESMA pasta, passe
+                `dataset_images_subdir(name)` → `<nome>_images` (sem colisão).
             progress_callback: chamado por face com `(idx, total, msg)`.
 
         Returns:
@@ -145,6 +171,7 @@ class DatasetLocalizationService:
         elif mode == LocalizationMode.COPY_ORIGINALS:
             result = self._copy_originals(
                 dataset, target, naming, skip_existing, progress_callback,
+                copy_subdir=copy_subdir or _COPY_SUBDIR,
             )
         elif mode == LocalizationMode.REBASE_PREFIX:
             if not old_prefix:
@@ -352,13 +379,19 @@ class DatasetLocalizationService:
         naming: NamingStrategy,
         skip_existing: bool,
         progress_callback: Optional[Callable[[int, int, str], None]],
+        *,
+        copy_subdir: str = _COPY_SUBDIR,
     ) -> LocalizationResult:
-        """Copia imagens pra `target_dir/images/` com naming dinâmico.
+        """Copia imagens pra `target_dir/<copy_subdir>/` com naming dinâmico.
+
+        `copy_subdir` vira o `path_root` do dataset resultante — imagens e
+        `path_root` andam juntos, então a resolução fica idêntica, só sob outro
+        nome de pasta.
 
         Reentrante: `skip_existing=True` pula faces cujo destino já
         tem o mesmo hash que a fonte (idempotência).
         """
-        images_dir = target_dir / _COPY_SUBDIR
+        images_dir = target_dir / copy_subdir
         images_dir.mkdir(parents=True, exist_ok=True)
 
         new_faces: List[FaceInfo] = []
@@ -423,7 +456,7 @@ class DatasetLocalizationService:
             faces=new_faces,
             column_specs=dict(dataset.column_specs) if dataset.column_specs else {},
             path_mode=PathMode.RELATIVE,
-            path_root=_COPY_SUBDIR,
+            path_root=copy_subdir,
             is_aligned=dataset.is_aligned,
         )
         new_dataset.hash = None

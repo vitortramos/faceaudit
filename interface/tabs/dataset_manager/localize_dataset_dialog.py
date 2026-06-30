@@ -27,9 +27,11 @@ from faceaudit.enums.localization_naming import NamingStrategy
 _MODE_OPTIONS = [
     (LocalizationMode.COPY_ORIGINALS,
      "Copiar imagens originais",
-     "Copia as imagens pra <pasta destino>/images/. As imagens "
-     "originais ficam intocadas. Resultado totalmente portátil — pode "
-     "ser movido/zipado e aberto em outra máquina sem quebrar."),
+     "Copia as imagens pra <pasta destino>/<nome do dataset>_images/. As "
+     "imagens originais ficam intocadas. Como cada dataset usa a sua própria "
+     "subpasta, vários datasets podem ser localizados na MESMA pasta sem "
+     "misturar imagens. Resultado totalmente portátil — pode ser movido/zipado "
+     "e aberto em outra máquina sem quebrar."),
     (LocalizationMode.REWRITE_RELATIVE,
      "Reescrever caminhos (sem cópia)",
      "Apenas reescreve os caminhos no parquet como relativos à pasta "

@@ -18,6 +18,7 @@ from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.localization_result import LocalizationResult
 from faceaudit.services.dataset_localization_service import (
     DatasetLocalizationService,
+    dataset_images_subdir,
 )
 
 
@@ -69,6 +70,10 @@ class LocalizeDatasetWorker(QtCore.QObject):
                 naming=self.naming,
                 skip_existing=self.skip_existing,
                 old_prefix=self.old_prefix,
+                # Subpasta de imagens POR dataset (`<nome>_images`): localizar
+                # vários datasets para a mesma pasta não mistura as imagens.
+                # Só tem efeito em COPY_ORIGINALS.
+                copy_subdir=dataset_images_subdir(self.dataset.name),
                 progress_callback=self._on_progress,
             )
             if not self._is_running:

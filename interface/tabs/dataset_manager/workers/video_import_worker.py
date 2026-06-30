@@ -83,7 +83,9 @@ class VideoImportWorker(QtCore.QObject):
         parquet_path = dataset_dir / f"{name}.parquet"
 
         if self._self_contained:
-            from faceaudit.services.dataset_localization_service import DatasetLocalizationService
+            from faceaudit.services.dataset_localization_service import (
+                DatasetLocalizationService, dataset_images_subdir,
+            )
             from faceaudit.enums.localization_mode import LocalizationMode
 
             self.progress_update.emit("Copiando recortes para a pasta do dataset…", 90)
@@ -92,8 +94,11 @@ class VideoImportWorker(QtCore.QObject):
                 if total:
                     self.progress_update.emit(f"Copiando recortes… {idx + 1}/{total}", 90)
 
+            # Subpasta de imagens POR dataset (`<nome>_images`) — evita que vários
+            # datasets autocontidos na mesma pasta misturem suas imagens em `images/`.
             res = DatasetLocalizationService().localize(
-                ds, dataset_dir, mode=LocalizationMode.COPY_ORIGINALS, progress_callback=cb,
+                ds, dataset_dir, mode=LocalizationMode.COPY_ORIGINALS,
+                copy_subdir=dataset_images_subdir(name), progress_callback=cb,
             )
             final = res.dataset
             final.name = name
