@@ -67,6 +67,100 @@ def test_setup_columns_non_collapsible(app):
     assert dlg._columns.widget(1).minimumWidth() >= 300
 
 
+# ──────────── scrubber: arraste estrangulado + libera capture (perf) ────────────
+def test_scrub_drag_throttles_frame_read(app):
+    # Arrastar a alça não lê o quadro na hora: arma o timer e guarda o índice
+    # pendente. Sem isso o seek por movimento travava o arraste em vídeos longos.
+    dlg = _setup_dialog()
+    dlg._on_scrub_changed(7)
+    assert dlg._pending_scrub_idx == 7
+    assert dlg._scrub_timer.isActive()
+    dlg._scrub_timer.stop()
+
+
+def test_scrub_release_clears_pending(app):
+    # Soltar a alça encerra o estrangulamento (mostra o quadro exato + detecta).
+    dlg = _setup_dialog()
+    dlg._on_scrub_changed(3)
+    dlg._on_scrub_released(3)               # sem vídeo carregado: handlers são no-op seguros
+    assert dlg._pending_scrub_idx is None
+    assert not dlg._scrub_timer.isActive()
+
+
+def test_scrub_timeout_reads_latest_pending_frame(app, monkeypatch):
+    # A metade "disparo" do estrangulamento: o timeout lê o ÚLTIMO índice
+    # pendente (coalescência latest-wins) e chama _show_frame com ele.
+    dlg = _setup_dialog()
+    seen = []
+    monkeypatch.setattr(dlg, "_show_frame", lambda idx: seen.append(idx))
+    dlg._on_scrub_changed(7)
+    dlg._on_scrub_changed(12)               # arraste avançou antes de o timer disparar
+    dlg._on_scrub_timeout()
+    assert seen == [12]
+    dlg._scrub_timer.stop()
+
+
+def test_load_video_rebuilds_only_when_detector_changes(app, monkeypatch, tmp_path):
+    # O ganho de perf de #1: trocar de vídeo com o MESMO detector NÃO reconstrói
+    # a FFService; mudar Resolução/Confiança reconstrói. Exercita _load_video de
+    # verdade (não só o helper de assinatura), gravando o `rebuild` por chamada.
+    dlg = _setup_dialog()
+    vid = tmp_path / "clip.avi"
+    vid.write_bytes(b"fake")               # probe_video é fake; só precisa existir
+
+    rebuilds = []
+
+    def fake_ensure(*, rebuild=False):
+        rebuilds.append(rebuild)
+        if dlg._service is None or rebuild:
+            dlg._service = types.SimpleNamespace(
+                probe_video=lambda p, compute_hash=True: types.SimpleNamespace(
+                    frame_count_reported=100, fps_reported=30.0),
+                close_preview_cap=lambda: None,
+            )
+            dlg._service_sig = dlg._detector_signature()
+
+    monkeypatch.setattr(dlg, "_ensure_service", fake_ensure)
+    monkeypatch.setattr(dlg, "_show_frame", lambda *a, **k: None)
+    monkeypatch.setattr(dlg, "_detect_current", lambda *a, **k: None)
+
+    dlg._load_video(str(vid))              # 1º load → constrói
+    dlg._load_video(str(vid))              # mesmo detector → reusa
+    assert rebuilds == [True, False]
+    dlg.spn_det_thresh.setValue(dlg.spn_det_thresh.value() + 0.1)
+    dlg._load_video(str(vid))              # detector mudou → reconstrói
+    assert rebuilds[-1] is True
+
+
+def test_done_releases_preview_capture(app):
+    # Fechar a janela (aceitar OU cancelar) libera o capture de prévia — a
+    # extração abre os seus próprios; o de prévia não pode segurar o arquivo.
+    dlg = _setup_dialog()
+
+    class _FakeSvc:
+        def __init__(self):
+            self.closed = 0
+
+        def close_preview_cap(self):
+            self.closed += 1
+
+    fake = _FakeSvc()
+    dlg._service = fake
+    dlg.done(0)
+    assert fake.closed == 1
+
+
+def test_detector_signature_tracks_params(app):
+    # Teste unitário do helper de assinatura (complementa o teste comportamental
+    # acima): a assinatura muda com os parâmetros do detector.
+    dlg = _setup_dialog()
+    assert dlg._service_sig is None
+    sig0 = dlg._detector_signature()
+    assert sig0 == dlg._detector_signature()          # estável quando nada muda
+    dlg.spn_det_thresh.setValue(dlg.spn_det_thresh.value() + 0.1)
+    assert sig0 != dlg._detector_signature()          # limiar mudou → assinatura nova
+
+
 # ───────────────────────── _RangeSlider ─────────────────────────
 def _slider(lo=0.0, hi=1.0):
     from interface.tabs.dataset_manager.video_dataset_dialog.range_slider import _RangeSlider
@@ -147,10 +241,13 @@ def test_review_mode_toggles_dataset_panel(app, tmp_path):
     run = _make_run(tmp_path, [(1, "camA.mp4", 2.0, 0.9, 1.3)])
     dlg = _review(run)
     assert dlg.get_mode() == VideoExtractionMode.PRODUCER
-    assert not dlg._dataset_inner.isVisibleTo(dlg)
+    assert not dlg._dataset_group.isVisibleTo(dlg)
     dlg.rb_e2e.setChecked(True)
     assert dlg.get_mode() == VideoExtractionMode.END_TO_END
-    assert dlg._dataset_inner.isVisibleTo(dlg)
+    assert dlg._dataset_group.isVisibleTo(dlg)
+    assert dlg.get_image_type() == "aligned"          # default
+    dlg.rb_img_crop.setChecked(True)
+    assert dlg.get_image_type() == "crop"
 
 
 def test_review_thumbs_carry_pose(app, tmp_path):
@@ -253,6 +350,9 @@ class _FakeReview:
     def get_dataset_self_contained(self):
         return False
 
+    def get_image_type(self):
+        return "crop"
+
 
 class _FakeWorker:
     def __init__(self, run_dir, **kw):
@@ -296,9 +396,90 @@ def test_controller_end_to_end_reads_review_config(app, monkeypatch):
     assert worker.kw["dataset_name"] == "ds1"
     assert worker.kw["dataset_dir"] == "D:/out"
     assert worker.kw["self_contained"] is False
+    assert worker.kw["image_kind"] == "crop"
 
 
 def test_controller_producer_runs_no_worker(app, monkeypatch):
     ctrl, mgr = _controller(monkeypatch, VideoExtractionMode.PRODUCER)
     ctrl._open_review_then_finish("D:/runs/run01")
     assert mgr.captured is None
+
+
+# ─────────────── cancelar a revisão: descartar vs manter o run ───────────────
+class _FakeReviewCancel:
+    def __init__(self, *a, **k):
+        pass
+
+    def exec(self):
+        return 0          # usuário cancela a revisão
+
+
+def _make_run_dir(tmp_path, name="run01"):
+    run = tmp_path / name
+    (run / "_meta").mkdir(parents=True)
+    (run / "_meta" / "_run_x.json").write_text("{}", encoding="utf-8")
+    (run / "alvo").mkdir()
+    return run
+
+
+def _cancel_controller(monkeypatch, *, confirm_delete):
+    import interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_controller as cm
+    monkeypatch.setattr(cm, "VideoReviewDialog", lambda *a, **k: _FakeReviewCancel())
+    ans = (QtWidgets.QMessageBox.StandardButton.Yes if confirm_delete
+           else QtWidgets.QMessageBox.StandardButton.No)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question", staticmethod(lambda *a, **k: ans))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    return cm.VideoDatasetController(_FakeMgr())
+
+
+def test_cancel_owned_run_confirm_yes_deletes(app, monkeypatch, tmp_path):
+    run = _make_run_dir(tmp_path)
+    ctrl = _cancel_controller(monkeypatch, confirm_delete=True)
+    ctrl._open_review_then_finish(str(run), owns_run=True)
+    assert not run.exists()                       # run novo + confirmou → apagado
+
+
+def test_cancel_owned_run_confirm_no_keeps(app, monkeypatch, tmp_path):
+    run = _make_run_dir(tmp_path)
+    ctrl = _cancel_controller(monkeypatch, confirm_delete=False)
+    ctrl._open_review_then_finish(str(run), owns_run=True)
+    assert run.exists()                           # run novo + recusou → mantido
+
+
+def test_cancel_imported_run_never_deletes(app, monkeypatch, tmp_path):
+    run = _make_run_dir(tmp_path)
+    # 'question' devolveria Yes, mas em run importado nem é perguntado.
+    ctrl = _cancel_controller(monkeypatch, confirm_delete=True)
+    ctrl._open_review_then_finish(str(run), owns_run=False)
+    assert run.exists()                           # run importado → nunca apaga
+
+
+# ───── flag owns_run nos pontos de entrada reais (segurança contra perda) ─────
+def test_entry_points_pass_correct_owns_run(app, monkeypatch, tmp_path):
+    # A propriedade de segurança (run novo = descartável; run importado = nunca
+    # apagado) depende do flag certo nos DOIS pontos de entrada. Captura-o.
+    ctrl = cm_controller(monkeypatch)
+    captured = {}
+    monkeypatch.setattr(ctrl, "_open_review_then_finish",
+                        lambda run_dir, *, owns_run=False: captured.update(
+                            run_dir=run_dir, owns_run=owns_run))
+
+    # 1) extração concluída → run recém-criado → owns_run=True (descartável)
+    ctrl._on_extraction_done(types.SimpleNamespace(run_dir="D:/runs/new01", n_accepted_auto=3))
+    assert captured["owns_run"] is True
+
+    # 2) importar run pré-existente → owns_run=False (nunca apaga)
+    captured.clear()
+    run = _make_run_dir(tmp_path, "imported01")     # tem _meta/ → passa o gate de importação
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getExistingDirectory",
+                        staticmethod(lambda *a, **k: str(run)))
+    ctrl.run_import_video_run()
+    assert captured["owns_run"] is False
+
+
+def cm_controller(monkeypatch):
+    import interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_controller as cm
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    return cm.VideoDatasetController(_FakeMgr())

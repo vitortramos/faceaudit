@@ -114,7 +114,7 @@ class VideoFrameFaceExtractionService:
 
     # ─────────────────────────── probe / leitura ───────────────────────────
 
-    def probe_video(self, video_path) -> VideoInfo:
+    def probe_video(self, video_path, *, compute_hash: bool = True) -> VideoInfo:
         p = Path(video_path)
         cap = cv2.VideoCapture(str(p))
         if not cap.isOpened():
@@ -135,7 +135,10 @@ class VideoFrameFaceExtractionService:
         finally:
             cap.release()
         duration = (frame_count / fps) if fps > 0 else 0.0
-        sha = self._hash.calculate_file_hash(p)
+        # O hash do arquivo INTEIRO é caro em vídeos longos. Só é necessário na
+        # EXTRAÇÃO (vai para o manifesto/cadeia de custódia); para a prévia/
+        # scrubber a UI passa compute_hash=False e o carregamento fica rápido.
+        sha = self._hash.calculate_file_hash(p) if compute_hash else None
         size = p.stat().st_size if p.exists() else 0
         return VideoInfo(
             path=str(p),
@@ -151,7 +154,28 @@ class VideoFrameFaceExtractionService:
         )
 
     def read_frame(self, video_path, index: int) -> Optional[np.ndarray]:
-        """Lê um quadro específico (uso do scrubber da UI; seek pontual)."""
+        """Lê um quadro específico — uso EXCLUSIVO da thread da UI (scrubber).
+        Reusa UM capture aberto por caminho (reabrir o vídeo a cada quadro
+        travava o arraste do slider em vídeos longos); liberar com
+        `close_preview_cap()`. Chamadas FORA da UI (ex.: quadro-âncora anotado na
+        extração, que roda na thread do worker) devem usar `_read_frame_uncached`
+        para não tocar no capture de prévia cacheado."""
+        cap = self._preview_cap(str(video_path))
+        if cap is None:
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+            ret, frame = cap.read()
+        except Exception:
+            # Capture corrompido: descarta para a próxima leitura reabrir limpo.
+            self.close_preview_cap()
+            return None
+        return frame if ret else None
+
+    def _read_frame_uncached(self, video_path, index: int) -> Optional[np.ndarray]:
+        """Leitura pontual com capture LOCAL (aberto e liberado na hora). Para
+        uso fora da thread da UI — não toca no `_pv_cap` cacheado do scrubber, que
+        é exclusivo da UI. É o comportamento histórico do `read_frame`."""
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             cap.release()
@@ -162,6 +186,30 @@ class VideoFrameFaceExtractionService:
         finally:
             cap.release()
         return frame if ret else None
+
+    def _preview_cap(self, path: str):
+        """Capture de prévia cacheado (um por caminho). Recria ao trocar de
+        vídeo."""
+        if getattr(self, "_pv_cap", None) is None or getattr(self, "_pv_cap_path", None) != path:
+            self.close_preview_cap()
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                cap.release()
+                return None
+            self._pv_cap = cap
+            self._pv_cap_path = path
+        return self._pv_cap
+
+    def close_preview_cap(self):
+        """Libera o capture de prévia do scrubber (chamar ao fechar a janela)."""
+        cap = getattr(self, "_pv_cap", None)
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        self._pv_cap = None
+        self._pv_cap_path = None
 
     def detect_in_frame(self, frame_bgr: np.ndarray) -> List[dict]:
         """Detecta + alinha todas as faces do quadro (SEM embedding)."""
@@ -448,7 +496,10 @@ class VideoFrameFaceExtractionService:
                 for t in targets:
                     s = self._primary_video_anchor_source(t)
                     if s and s.get("path") and s.get("frame_index") is not None:
-                        af = self.read_frame(s["path"], int(s["frame_index"]))
+                        # Capture LOCAL (não o de prévia cacheado da UI): isto roda
+                        # na thread do worker e não deve deixar handle aberto no
+                        # vídeo de origem (lock no Windows / trava sync do OneDrive).
+                        af = self._read_frame_uncached(s["path"], int(s["frame_index"]))
                         if af is not None:
                             self._save_annotated_frame(
                                 af, s.get("bbox") or t.anchor_bbox,

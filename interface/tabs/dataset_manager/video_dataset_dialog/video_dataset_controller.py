@@ -76,7 +76,8 @@ class VideoDatasetController(QtCore.QObject):
                                           "A pasta escolhida não parece ser um run de vídeo (sem _meta/).")
             return
         self._pending = {"config": None}
-        self._open_review_then_finish(run_dir)
+        # Run pré-existente (importado) — NUNCA apagar no cancelar.
+        self._open_review_then_finish(run_dir, owns_run=False)
 
     # ───────────────────────── etapas ─────────────────────────
     def _on_extraction_done(self, result):
@@ -88,18 +89,19 @@ class VideoDatasetController(QtCore.QObject):
                 "Nenhuma face foi aceita (tente um limiar menor, det. 960, ou outra âncora).\n"
                 f"Run em: {result.run_dir}")
             return
-        self._open_review_then_finish(result.run_dir)
+        # Run recém-criado NESTA sessão — pode ser descartado no cancelar (com confirmação).
+        self._open_review_then_finish(result.run_dir, owns_run=True)
 
-    def _open_review_then_finish(self, run_dir: str):
+    def _open_review_then_finish(self, run_dir: str, *, owns_run: bool = False):
         # A janela de revisão é dona da configuração do dataset (Modo, nome,
         # embeddings, destino, OFIQ/SER-FIQ) — vale para os dois fluxos (criar
-        # e importar). Lemos tudo dela após a revisão.
+        # e importar). Lemos tudo dela após a revisão. `owns_run`: o run foi
+        # criado NESTA sessão (criação) — só ele pode ser descartado no cancelar;
+        # run importado (pré-existente) nunca é apagado.
         dlg = VideoReviewDialog(self._view, run_dir, operator="perito",
                                 dataset_output_dir=self._datasets_dir())
         if not dlg.exec():
-            QtWidgets.QMessageBox.information(
-                self._view, "Revisão",
-                f"Revisão cancelada. O run permanece em:\n{run_dir}")
+            self._handle_review_cancelled(run_dir, owns_run)
             return
 
         if dlg.get_mode() == VideoExtractionMode.PRODUCER:
@@ -124,7 +126,8 @@ class VideoDatasetController(QtCore.QObject):
             run_dir, enrich=True, pipeline=self._pipeline,
             ingestion_config=ingestion, dataset_name=name,
             dataset_dir=dlg.get_dataset_output_dir() or None,
-            self_contained=dlg.get_dataset_self_contained())
+            self_contained=dlg.get_dataset_self_contained(),
+            image_kind=dlg.get_image_type())
         self._mgr._run_worker(
             worker, label="Enriquecendo dataset de vídeo",
             allow_cancel=True, determinate=False, use_log_dialog=True,
@@ -160,6 +163,43 @@ class VideoDatasetController(QtCore.QObject):
             "não representa amostra populacional neutra (vide metadados do dataset).")
 
     # ───────────────────────── helpers ─────────────────────────
+    def _handle_review_cancelled(self, run_dir: str, owns_run: bool):
+        """Cancelamento da revisão. Run recém-criado (`owns_run`) pode ser
+        descartado mediante confirmação; run importado (pré-existente) nunca é
+        apagado — apenas fechamos e avisamos onde ele está."""
+        if owns_run:
+            res = QtWidgets.QMessageBox.question(
+                self._view, "Descartar extração?",
+                "Revisão cancelada.\n\nDescartar os recortes desta extração? "
+                "Isso APAGA a pasta do run:\n" + str(run_dir),
+                QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+                QtWidgets.QMessageBox.StandardButton.No)
+            if res == QtWidgets.QMessageBox.StandardButton.Yes:
+                self._delete_run_dir(run_dir)
+                return
+        QtWidgets.QMessageBox.information(
+            self._view, "Revisão",
+            f"Revisão cancelada. O run permanece em:\n{run_dir}\n\n"
+            "Você pode revisá-lo/importá-lo depois (Importar Run de Vídeo).")
+
+    def _delete_run_dir(self, run_dir: str):
+        """Apaga a pasta do run. Guarda de segurança: só apaga se for mesmo um
+        run de vídeo (tem _meta/) — evita apagar a pasta errada por engano."""
+        import shutil
+        p = Path(run_dir)
+        if not (p / "_meta").is_dir():
+            QtWidgets.QMessageBox.warning(
+                self._view, "Descartar",
+                "A pasta não parece um run de vídeo (sem _meta/) — não apaguei por segurança.")
+            return
+        try:
+            shutil.rmtree(p)
+            QtWidgets.QMessageBox.information(
+                self._view, "Descartado", "Os recortes desta extração foram apagados.")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                self._view, "Descartar", f"Não foi possível apagar a pasta do run:\n{e}")
+
     def _library_dir(self) -> str:
         return str(getattr(getattr(self._config, "paths", None), "library", "") or "")
 

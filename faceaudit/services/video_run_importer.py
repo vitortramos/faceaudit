@@ -86,6 +86,7 @@ class VideoRunImporter:
         *,
         dataset_name: Optional[str] = None,
         accepted_statuses: Tuple[str, ...] = ("accepted",),
+        image_kind: str = "aligned",   # "aligned" (face 112×112) | "crop" (recorte c/ margem)
         validate_hashes: bool = True,
         logger: Optional[Callable[[str], None]] = None,
         progress_callback: Optional[Callable[[str, int], None]] = None,
@@ -133,12 +134,14 @@ class VideoRunImporter:
             image_file = artifact.get("image_file")
             if not label or not image_file:
                 continue
-            # Prefere a face ALINHADA 112×112 como imagem do dataset — assim o
-            # enrich extrai embedding direto (process_face_aligned), SEM
-            # re-detectar o recorte minúsculo (que falharia em vigilância).
-            # Fallback: recorte com margem (re-detectável quando a face é grande).
+            # Imagem do dataset conforme `image_kind`:
+            #  - "aligned" (default): face ALINHADA 112×112 → enrich extrai o
+            #    embedding direto, SEM re-detectar (essencial p/ faces pequenas).
+            #    Cai no recorte se o run não tiver a face alinhada.
+            #  - "crop": recorte COM MARGEM (evidência) → o enrich re-detecta a
+            #    face (pode falhar em faces muito pequenas).
             aligned_file = artifact.get("aligned_image_file")
-            if aligned_file:
+            if image_kind == "aligned" and aligned_file:
                 rel_path = aligned_file
                 abs_path = run_dir / aligned_file
                 expected = artifact.get("aligned_image_sha256")

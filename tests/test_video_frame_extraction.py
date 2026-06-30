@@ -210,9 +210,13 @@ def test_extract_accepts_target_and_writes_crop_and_sidecar(video_path, tmp_path
     assert side["reidentification"]["similarity_to_anchor"] == pytest.approx(1.0, abs=1e-5)
     assert side["human_review"]["status"] == "pending"
     assert side["artifact"]["image_sha256"]
+    # Cadeia de custódia: a extração mantém o SHA-256 do vídeo de origem mesmo
+    # depois de a prévia da UI passar a carregar com compute_hash=False.
+    assert len(side["source_video"]["sha256"]) == 64
     # manifesto com status de ciclo de vida
     manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
     assert manifest["extraction_status"] == "completed"
+    assert len(manifest["source_video"]["sha256"]) == 64   # custódia no manifesto
     assert manifest["review_status"] == "not_started"
     assert manifest["dataset_status"] == "not_imported"
 
@@ -379,3 +383,78 @@ def test_extract_multivideo_per_video_window(tmp_path):
     v0 = list((Path(res.run_dir) / "alvo").glob("alvo_v00_*.png"))
     v1c = list((Path(res.run_dir) / "alvo").glob("alvo_v01_*.png"))
     assert 1 <= len(v0) < len(v1c)   # a janela reduziu o vídeo 0
+
+
+def test_import_run_image_kind_crop_vs_aligned(video_path, tmp_path):
+    """Tipo de imagem: 'aligned' usa a face 112×112 (is_aligned=True); 'crop'
+    usa o recorte com margem (is_aligned=False)."""
+    from faceaudit.services.video_review_service import VideoReviewService
+    from faceaudit.services.video_run_importer import VideoRunImporter
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    res = service.extract(_cfg(video_path, tmp_path), [_target(threshold=0.5)])
+    # a extração deixa pending; o importador só pega 'accepted'
+    rvs = VideoReviewService()
+    for f in rvs.list_faces(res.run_dir):
+        rvs.set_face_decision(res.run_dir, f.image_file, status="accepted", operator="t")
+
+    imp = VideoRunImporter()
+    ds_aligned = imp.import_run(res.run_dir, image_kind="aligned")
+    ds_crop = imp.import_run(res.run_dir, image_kind="crop")
+    assert ds_aligned.is_aligned is True
+    assert ds_crop.is_aligned is False
+    assert all("_aligned/" in f.image_path for f in ds_aligned.faces)
+    assert all("_aligned/" not in f.image_path for f in ds_crop.faces)
+    # Custódia preservada nos DOIS tipos de imagem (crop = imagem de evidência):
+    # cada face rastreia o vídeo de origem por hash + origem rotulada.
+    for f in (*ds_aligned.faces, *ds_crop.faces):
+        assert f.extra_data.get("source_video_sha256")
+        assert f.origin.startswith("Vídeo:")
+
+
+# ─────────── prévia do scrubber: hash adiado + capture cacheado (perf) ───────────
+
+def test_probe_video_skips_hash_when_requested(video_path):
+    """A prévia da UI carrega com compute_hash=False (rápido): sem hash do
+    arquivo inteiro. A extração mantém o hash para a cadeia de custódia."""
+    service = _service(lambda call: [], {})
+    fast = service.probe_video(video_path, compute_hash=False)
+    full = service.probe_video(video_path)  # default = com hash
+    assert fast.sha256 is None
+    assert full.sha256 and len(full.sha256) == 64
+    # demais metadados continuam disponíveis no carregamento rápido
+    assert fast.frame_count_reported == full.frame_count_reported
+    assert fast.fps_reported == full.fps_reported
+
+
+def test_read_frame_reuses_cached_capture(video_path):
+    """read_frame reusa UM capture aberto por caminho (não reabre o vídeo a
+    cada quadro) — é o que destrava o arraste do slider em vídeos longos."""
+    service = _service(lambda call: [], {})
+    assert getattr(service, "_pv_cap", None) is None
+    f0 = service.read_frame(video_path, 0)
+    f1 = service.read_frame(video_path, 1)
+    assert f0 is not None and f1 is not None
+    cap_after = service._pv_cap
+    assert cap_after is not None
+    assert service._pv_cap_path == str(video_path)
+    # uma segunda leitura não recria o capture
+    service.read_frame(video_path, 2)
+    assert service._pv_cap is cap_after
+    # e fechar a prévia libera o handle
+    service.close_preview_cap()
+    assert service._pv_cap is None and service._pv_cap_path is None
+
+
+def test_preview_capture_switches_on_new_path(tmp_path):
+    """Trocar de vídeo recria o capture cacheado para o novo caminho."""
+    a, b = tmp_path / "a.avi", tmp_path / "b.avi"
+    if not (_make_video(a) and _make_video(b)):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    service = _service(lambda call: [], {})
+    service.read_frame(a, 0)
+    cap_a = service._pv_cap
+    service.read_frame(b, 0)
+    assert service._pv_cap is not cap_a
+    assert service._pv_cap_path == str(b)
+    service.close_preview_cap()

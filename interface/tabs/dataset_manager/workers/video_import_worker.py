@@ -24,7 +24,8 @@ class VideoImportWorker(QtCore.QObject):
     error = QtCore.pyqtSignal(str)
 
     def __init__(self, run_dir, *, enrich, pipeline=None, ingestion_config=None,
-                 dataset_name=None, dataset_dir=None, self_contained=True):
+                 dataset_name=None, dataset_dir=None, self_contained=True,
+                 image_kind="aligned"):
         super().__init__()
         self._run_dir = run_dir
         self._enrich = enrich
@@ -33,6 +34,7 @@ class VideoImportWorker(QtCore.QObject):
         self._dataset_name = dataset_name
         self._dataset_dir = dataset_dir
         self._self_contained = self_contained
+        self._image_kind = image_kind
         self._importer = VideoRunImporter()
         self._is_running = True
 
@@ -53,6 +55,7 @@ class VideoImportWorker(QtCore.QObject):
             self._callback("Lendo run e validando hashes…", 10)
             ds = self._importer.import_run(
                 self._run_dir, dataset_name=self._dataset_name, enrich=self._enrich,
+                image_kind=self._image_kind,
                 pipeline=self._pipeline, ingestion_config=self._ingestion_config,
                 logger=lambda m: self._callback(str(m), 40),
                 progress_callback=self._callback,

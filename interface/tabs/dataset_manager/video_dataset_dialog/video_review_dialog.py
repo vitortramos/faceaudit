@@ -4,11 +4,12 @@ dataset (janela B, duas colunas).
 Esquerda: grupo **filtros** (sliders de intervalo det/fiqa/yaw/pitch + botão
 "Aplicar filtros" que marca/desmarca os recortes visíveis pelos intervalos) e
 grupo **recortes** (combos Alvo + Vídeo que escopam a grade + miniaturas +
-marcar/desmarcar + contadores). Direita: painel **dataset** (Modo, Nome,
-embeddings com o árbitro travado lido do manifesto, pasta, destino, OFIQ/
-SER-FIQ) + ações. Os dois fluxos (criar / importar run) passam por aqui — é
-nesta janela que o dataset é configurado. "Concluir revisão" grava as decisões
-humanas; "Pular revisão" é override auditado.
+marcar/desmarcar + contadores). Direita: grupo **Modo** (Só recortes /
+Recortes + dataset) e grupo **Dataset** (visível só em "Recortes + dataset":
+Nome, pasta, tipo de dataset, tipo de imagem [face alinhada/recorte], embeddings
+com o árbitro travado lido do manifesto, OFIQ/SER-FIQ) + ações. Os dois fluxos
+(criar / importar run) passam por aqui — é nesta janela que o dataset é
+configurado. "Concluir revisão" grava as decisões humanas.
 """
 
 from __future__ import annotations
@@ -125,7 +126,7 @@ class VideoReviewDialog(QtWidgets.QDialog):
     def __init__(self, parent, run_dir, *, operator: str = "perito",
                  dataset_output_dir: Optional[str] = None):
         super().__init__(parent)
-        self.setWindowTitle("Revisão das faces extraídas e dataset")
+        self.setWindowTitle("Revisão das faces extraídas e configuração do dataset")
         self._run_dir = run_dir
         self._operator = operator
         self._dataset_output_dir = dataset_output_dir
@@ -335,17 +336,14 @@ class VideoReviewDialog(QtWidgets.QDialog):
         col = QtWidgets.QWidget(self)
         v = QtWidgets.QVBoxLayout(col)
         v.setContentsMargins(0, 0, 0, 0)
-        v.addWidget(self._build_dataset_panel(), 1)
+        v.setSpacing(10)
+        v.addWidget(self._build_mode_group())
+        v.addWidget(self._build_dataset_group())
+        v.addStretch()
 
         btn_row = QtWidgets.QHBoxLayout()
         btn_cancel = QtWidgets.QPushButton("Cancelar", col)
         btn_cancel.clicked.connect(self.reject)
-        btn_skip = QtWidgets.QPushButton("Pular revisão", col)
-        btn_skip.setToolTip(
-            "<b>Override auditado:</b> aceita todas as faces sem inspeção e registra "
-            "<i>review_skipped</i> no manifesto. Use só em teste/desenvolvimento ou "
-            "com justificativa.")
-        btn_skip.clicked.connect(self._on_skip)
         btn_finish = QtWidgets.QPushButton("Concluir revisão ✔", col)
         btn_finish.setToolTip(
             "Grava suas decisões (marcadas = aceitas; desmarcadas → <i>_rejected/</i>) "
@@ -354,15 +352,14 @@ class VideoReviewDialog(QtWidgets.QDialog):
         btn_finish.clicked.connect(self._on_finish)
         btn_row.addWidget(btn_cancel)
         btn_row.addStretch()
-        btn_row.addWidget(btn_skip)
         btn_row.addWidget(btn_finish)
         v.addLayout(btn_row)
         return col
 
-    def _build_dataset_panel(self) -> QtWidgets.QWidget:
-        grp = QtWidgets.QGroupBox("Dataset", self)
-        outer = QtWidgets.QVBoxLayout(grp)
-
+    def _build_mode_group(self) -> QtWidgets.QWidget:
+        grp = QtWidgets.QGroupBox("Modo", self)
+        v = QtWidgets.QVBoxLayout(grp)
+        v.setSpacing(8)
         self.rb_producer = QtWidgets.QRadioButton("Só recortes", grp)
         self.rb_producer.setToolTip(
             "<b>Só recortes:</b> grava a revisão e para — você usa/importa o run "
@@ -373,69 +370,100 @@ class VideoReviewDialog(QtWidgets.QDialog):
             "enriquece (embeddings + opcional OFIQ/SER-FIQ) e o registra no Gerenciador.")
         self.rb_producer.setChecked(True)
         self.rb_producer.toggled.connect(self._on_mode_changed)
-        outer.addWidget(self.rb_producer)
-        outer.addWidget(self.rb_e2e)
+        v.addWidget(self.rb_producer)
+        v.addWidget(self.rb_e2e)
+        return grp
 
-        self._dataset_inner = QtWidgets.QWidget(grp)
-        fds = QtWidgets.QFormLayout(self._dataset_inner)
-        fds.setContentsMargins(0, 6, 0, 0)
-        self.txt_name = QtWidgets.QLineEdit(self._dataset_inner)
+    def _build_dataset_group(self) -> QtWidgets.QWidget:
+        grp = QtWidgets.QGroupBox("Dataset", self)
+        self._dataset_group = grp
+        fds = QtWidgets.QFormLayout(grp)
+        fds.setContentsMargins(10, 12, 10, 12)
+        fds.setVerticalSpacing(12)
+        fds.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+        self.txt_name = QtWidgets.QLineEdit(grp)
         self.txt_name.setText(Path(self._run_dir).name)
         self.txt_name.setToolTip("Nome do <b>dataset</b> gerado. Default = nome do run.")
-        emb_w = self._build_embedding_checks()
-        self.txt_dataset_output = QtWidgets.QLineEdit(self._dataset_inner)
+
+        self.txt_dataset_output = QtWidgets.QLineEdit(grp)
         self.txt_dataset_output.setText(self._dataset_output_dir or "")
         self.txt_dataset_output.setPlaceholderText("Pasta onde o dataset final será gravado")
         self.txt_dataset_output.setToolTip(
             "Pasta onde o <b>dataset final</b> (parquet) será gravado. Default: a "
             "pasta global de datasets, para reuso entre projetos.")
-        btn_ds_out = QtWidgets.QPushButton("Procurar…", self._dataset_inner)
+        btn_ds_out = QtWidgets.QPushButton("Procurar…", grp)
         btn_ds_out.clicked.connect(self._on_browse_dataset_output)
-        ds_out_w = QtWidgets.QWidget(self._dataset_inner)
+        ds_out_w = QtWidgets.QWidget(grp)
         ds_out_h = QtWidgets.QHBoxLayout(ds_out_w)
         ds_out_h.setContentsMargins(0, 0, 0, 0)
         ds_out_h.addWidget(self.txt_dataset_output, 1)
         ds_out_h.addWidget(btn_ds_out)
-        self.rb_self_contained = QtWidgets.QRadioButton("Autocontido", self._dataset_inner)
+
+        # Tipo de dataset: autocontido (copia recortes) vs caminho absoluto.
+        self.rb_self_contained = QtWidgets.QRadioButton("Autocontido", grp)
         self.rb_self_contained.setToolTip(
             "<b>Autocontido</b> (recomendado): copia os recortes para a pasta do "
             "dataset, com caminhos relativos. Portátil entre máquinas/drives.")
-        self.rb_absolute = QtWidgets.QRadioButton("Caminho absoluto", self._dataset_inner)
+        self.rb_absolute = QtWidgets.QRadioButton("Caminho absoluto", grp)
         self.rb_absolute.setToolTip(
             "<b>Caminho absoluto</b>: referencia os recortes do run sem copiar. "
             "Mais leve, mas <b>quebra</b> se o run mudar de lugar.")
         self.rb_self_contained.setChecked(True)
-        dest_w = QtWidgets.QWidget(self._dataset_inner)
+        dest_w = QtWidgets.QWidget(grp)
         dest_h = QtWidgets.QHBoxLayout(dest_w)
         dest_h.setContentsMargins(0, 0, 0, 0)
         dest_h.addWidget(self.rb_self_contained)
         dest_h.addWidget(self.rb_absolute)
         dest_h.addStretch()
-        self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", self._dataset_inner)
+
+        # Tipo de imagem: face alinhada (112×112) vs recorte com margem.
+        self.rb_img_aligned = QtWidgets.QRadioButton("Face alinhada", grp)
+        self.rb_img_aligned.setToolTip(
+            "<b>Face alinhada</b> (recomendado): usa a face 112×112 já alinhada — o "
+            "embedding é extraído direto, <b>sem re-detectar</b>. Essencial para faces "
+            "pequenas de vigilância, onde re-detectar o recorte falharia.")
+        self.rb_img_crop = QtWidgets.QRadioButton("Face recortada", grp)
+        self.rb_img_crop.setToolTip(
+            "<b>Face recortada</b>: usa o recorte com margem (imagem de evidência). O "
+            "enrich <b>re-detecta</b> a face no recorte — pode falhar em faces muito "
+            "pequenas. Útil quando você quer o recorte com contexto como imagem do dataset.")
+        self.rb_img_aligned.setChecked(True)
+        img_w = QtWidgets.QWidget(grp)
+        img_h = QtWidgets.QHBoxLayout(img_w)
+        img_h.setContentsMargins(0, 0, 0, 0)
+        img_h.addWidget(self.rb_img_aligned)
+        img_h.addWidget(self.rb_img_crop)
+        img_h.addStretch()
+
+        emb_w = self._build_embedding_checks(grp)
+
+        self.chk_ofiq = QtWidgets.QCheckBox("OFIQ", grp)
         self.chk_ofiq.setToolTip(
             "Calcula o <b>OFIQ</b> (qualidade de imagem facial) no enriquecimento. "
             "Não altera os recortes nem a seleção; custo extra.")
-        self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", self._dataset_inner)
+        self.chk_serfiq = QtWidgets.QCheckBox("SER-FIQ", grp)
         self.chk_serfiq.setToolTip(
             "Calcula o <b>SER-FIQ</b> (qualidade de imagem facial) no enriquecimento. "
             "Não altera os recortes nem a seleção; custo extra.")
-        qual_w = QtWidgets.QWidget(self._dataset_inner)
+        qual_w = QtWidgets.QWidget(grp)
         qual_h = QtWidgets.QHBoxLayout(qual_w)
         qual_h.setContentsMargins(0, 0, 0, 0)
         qual_h.addWidget(self.chk_ofiq)
         qual_h.addWidget(self.chk_serfiq)
         qual_h.addStretch()
+
         fds.addRow("Nome do dataset:", self.txt_name)
-        fds.addRow("Embeddings do dataset:", emb_w)
         fds.addRow("Pasta do dataset:", ds_out_w)
-        fds.addRow("Destino:", dest_w)
+        fds.addRow("Tipo de dataset:", dest_w)
+        fds.addRow("Tipo de imagem:", img_w)
+        fds.addRow("Embeddings:", emb_w)
         fds.addRow("Qualidade:", qual_w)
-        outer.addWidget(self._dataset_inner)
-        outer.addStretch()
-        self._on_mode_changed()
+        self._on_mode_changed()   # esconde o grupo inteiro em "Só recortes"
         return grp
 
-    def _build_embedding_checks(self) -> QtWidgets.QWidget:
+    def _build_embedding_checks(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         self._emb_checks: Dict[str, QtWidgets.QCheckBox] = {}  # ff_name -> QCheckBox
         avail = SepaelModel.available_on_disk() or list(SepaelModel)
         # Garante o árbitro presente mesmo se não instalado nesta máquina — o
@@ -444,7 +472,7 @@ class VideoReviewDialog(QtWidgets.QDialog):
             extra = next((m for m in SepaelModel if m.ff_name == self._arbiter), None)
             if extra is not None:
                 avail = [extra] + list(avail)
-        box = QtWidgets.QWidget(self._dataset_inner)
+        box = QtWidgets.QWidget(parent)
         h = QtWidgets.QHBoxLayout(box)
         h.setContentsMargins(0, 0, 0, 0)
         for m in avail:
@@ -469,7 +497,7 @@ class VideoReviewDialog(QtWidgets.QDialog):
                 cb.setEnabled(True)
 
     def _on_mode_changed(self, *_):
-        self._dataset_inner.setVisible(self.rb_e2e.isChecked())
+        self._dataset_group.setVisible(self.rb_e2e.isChecked())
 
     def _on_browse_dataset_output(self):
         start = self.txt_dataset_output.text().strip() or self._dataset_output_dir or ""
@@ -556,27 +584,6 @@ class VideoReviewDialog(QtWidgets.QDialog):
         self._outcome = "completed"
         self.accept()
 
-    def _on_skip(self):
-        res = QtWidgets.QMessageBox.warning(
-            self, "Pular revisão",
-            "Você está criando um dataset final SEM revisão humana dos candidatos.\n"
-            "Use apenas em teste/desenvolvimento ou com justificativa.\n\nContinuar?",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No)
-        if res != QtWidgets.QMessageBox.StandardButton.Yes:
-            return
-        # skip = aceita todas (sem inspeção) + marca skipped no manifesto.
-        for t in self._thumbs:
-            try:
-                self._svc.set_face_decision(self._run_dir, t.image_file,
-                                            status="accepted", operator=self._operator,
-                                            reason="review_skipped")
-            except Exception:
-                pass
-        self._svc.commit_review(self._run_dir, operator=self._operator, skipped=True)
-        self._outcome = "skipped"
-        self.accept()
-
     # ──────────────────── getters do dataset (lidos pelo controller) ────────────────────
     def get_mode(self) -> VideoExtractionMode:
         return VideoExtractionMode.END_TO_END if self.rb_e2e.isChecked() else VideoExtractionMode.PRODUCER
@@ -596,6 +603,10 @@ class VideoReviewDialog(QtWidgets.QDialog):
 
     def get_dataset_self_contained(self) -> bool:
         return self.rb_self_contained.isChecked()
+
+    def get_image_type(self) -> str:
+        """'aligned' (face 112×112 alinhada) ou 'crop' (recorte com margem)."""
+        return "crop" if self.rb_img_crop.isChecked() else "aligned"
 
     def compute_ofiq(self) -> bool:
         return self.chk_ofiq.isChecked()

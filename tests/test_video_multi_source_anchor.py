@@ -70,6 +70,9 @@ class _FakeSvc:
     def detect_in_frame(self, frame):
         return [{"bbox": [0, 0, 10, 10]}]
 
+    def close_preview_cap(self):
+        pass
+
     def _new_emb(self):
         v = np.zeros(512, np.float32)
         v[self._k % 512] = 1.0
@@ -104,6 +107,9 @@ def _setup_dialog_plain():
 def _dlg_with_fake():
     dlg = _setup_dialog_plain()
     dlg._service = _FakeSvc()
+    # Marca o fake como compatível com o detector atual (como o código real faz
+    # ao construir o serviço) — senão _ensure_service_current() o reconstruiria.
+    dlg._service_sig = dlg._detector_signature()
     dlg._current_frame = np.zeros((20, 20, 3), np.uint8)
     dlg._current_dets = [{"bbox": [0, 0, 10, 10]}]
     dlg.scrubber.set_range(0, 100)

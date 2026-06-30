@@ -534,6 +534,18 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._target_rows: List[_TargetRowWidget] = []
         self._active_row: Optional[_TargetRowWidget] = None
 
+        # Estrangulamento do scrubber: arrastar a alça dispara muitos
+        # currentChanged; ler o quadro (seek) a cada um trava o arraste em
+        # vídeos longos. O rótulo atualiza ao vivo (barato); a leitura é adiada.
+        self._scrub_timer = QtCore.QTimer(self)
+        self._scrub_timer.setSingleShot(True)
+        self._scrub_timer.setInterval(90)
+        self._scrub_timer.timeout.connect(self._on_scrub_timeout)
+        self._pending_scrub_idx: Optional[int] = None
+        # Assinatura (modelo, det_size, det_thresh) do serviço já construído —
+        # evita recriar a FFService (recarregar modelos) ao só trocar de vídeo.
+        self._service_sig: Optional[tuple] = None
+
         self._build_ui()
         self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
         self._apply_initial_size()         # abre dentro da tela (telas baixas)
@@ -662,8 +674,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "Linha do tempo com três alças: <b>início</b>, <b>quadro atual</b> e "
             "<b>fim</b>. As alças de início/fim limitam o trecho do vídeo percorrido "
             "na extração; a do meio só navega para visualizar e ancorar.")
-        self.scrubber.currentChanged.connect(self._show_frame)
-        self.scrubber.currentReleased.connect(lambda _v: self._detect_current())
+        self.scrubber.currentChanged.connect(self._on_scrub_changed)
+        self.scrubber.currentReleased.connect(self._on_scrub_released)
         self.scrubber.windowChanged.connect(self._on_window_changed)
         left.addWidget(self.scrubber)
 
@@ -959,7 +971,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # inválidas e o FFService está obsoleto → exige recarregar o vídeo.
         for r in self._target_rows:
             r.clear_anchor()
+        # Libera o capture de prévia antes de soltar o serviço — senão o handle
+        # do vídeo fica aberto até o GC (lock no Windows).
+        try:
+            self._service.close_preview_cap()
+        except Exception:
+            pass
         self._service = None
+        self._service_sig = None
         self._info = None
         self._current_dets = []
         self.scrubber.setEnabled(False)
@@ -1079,6 +1098,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def _det_size(self) -> int:
         return int(self.spn_det_size.value())
 
+    def _detector_signature(self) -> tuple:
+        return (self._selected_model(), self._det_size(),
+                float(self.spn_det_thresh.value()))
+
     def _ensure_service(self, *, rebuild: bool = False):
         """Constrói o FFService/serviço de extração SOB DEMANDA — não exige
         carregar o vídeo (basta o modelo/detector atuais). Usado tanto pelo
@@ -1086,11 +1109,27 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         imagem e pela extração (build se ainda não existe)."""
         if self._service is not None and not rebuild:
             return
+        # Libera o capture de prévia do serviço antigo antes de descartá-lo.
+        if self._service is not None:
+            try:
+                self._service.close_preview_cap()
+            except Exception:
+                pass
         model_ff = self._selected_model()
         ff = FFService(models=[model_ff] if model_ff else None,
                        use_gpu=self._use_gpu, det_size=self._det_size(),
                        det_thresh=float(self.spn_det_thresh.value()))
         self._service = VideoFrameFaceExtractionService(ff)
+        self._service_sig = self._detector_signature()
+
+    def _ensure_service_current(self):
+        """Garante o serviço aplicando os parâmetros ATUAIS do detector:
+        reconstrói só quando a assinatura (modelo/det_size/det_thresh) mudou —
+        senão reusa (não recarrega modelos). Usado por Carregar, Testar limiar e
+        Imagem de referência, para que mudar Resolução/Confiança tenha efeito sem
+        recarregar o vídeo."""
+        need = (self._service is None) or (self._service_sig != self._detector_signature())
+        self._ensure_service(rebuild=need)
 
     def _load_video(self, path: str):
         if not path or not Path(path).exists():
@@ -1098,8 +1137,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            self._ensure_service(rebuild=True)
-            self._info = self._service.probe_video(path)
+            # Só recria a FFService (recarrega modelos) se os parâmetros do
+            # detector mudaram; trocar de vídeo reusa o serviço existente.
+            self._ensure_service_current()
+            # compute_hash=False: o hash do arquivo inteiro é caro e só é
+            # necessário na extração (vai para o manifesto), não para a prévia.
+            self._info = self._service.probe_video(path, compute_hash=False)
         except Exception as e:
             QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.critical(self, "Erro", f"Falha ao carregar:\n{e}")
@@ -1130,6 +1173,45 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.view.set_frame(_bgr_to_pixmap(frame))
         ts = idx / self._info.fps_reported if self._info.fps_reported else 0
         self.lbl_frame.setText(f"Quadro {idx} / {self._info.frame_count_reported}  ({ts:.1f}s)")
+
+    # ─────────────── scrubber: rótulo ao vivo + leitura estrangulada ───────────────
+    def _on_scrub_changed(self, idx: int):
+        """Arraste da alça do meio. Atualiza o rótulo do quadro imediatamente
+        (barato) e adia a leitura do quadro (seek/decode caro) para o timer —
+        mantém o arraste fluido mesmo em vídeos longos."""
+        if self._info is not None:
+            fps = self._info.fps_reported or 0.0
+            ts = (idx / fps) if fps else 0.0
+            self.lbl_frame.setText(
+                f"Quadro {idx} / {self._info.frame_count_reported}  ({ts:.1f}s)")
+        self._pending_scrub_idx = int(idx)
+        if not self._scrub_timer.isActive():
+            self._scrub_timer.start()
+
+    def _on_scrub_timeout(self):
+        if self._pending_scrub_idx is not None:
+            self._show_frame(self._pending_scrub_idx)
+
+    def _on_scrub_released(self, value: int):
+        """Soltou a alça: garante o quadro exato + roda a detecção (cara)."""
+        self._scrub_timer.stop()
+        self._pending_scrub_idx = None
+        self._show_frame(int(value))
+        self._detect_current()
+
+    def done(self, r: int):
+        # Para o timer de scrub ANTES de liberar o capture — senão um
+        # _on_scrub_timeout ainda na fila reabriria o capture logo após o release.
+        self._scrub_timer.stop()
+        self._pending_scrub_idx = None
+        # Libera o capture de prévia ao fechar (aceitar OU cancelar). A extração
+        # abre seus próprios captures; o de prévia não deve segurar o arquivo.
+        try:
+            if self._service is not None:
+                self._service.close_preview_cap()
+        except Exception:
+            pass
+        super().done(r)
 
     def _on_window_changed(self):
         if self._info is None:
@@ -1261,7 +1343,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # demanda aqui (pode levar alguns segundos na 1ª vez).
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            self._ensure_service()
+            self._ensure_service_current()
         except Exception as e:
             QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.critical(self, "Erro", f"Falha ao iniciar o detector:\n{e}")
@@ -1295,12 +1377,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         n_noface = n_accept = n_below = n_sampled = 0
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
-            self._ensure_service()
+            self._ensure_service_current()
             for p in paths:
                 info = self._video_infos.get(p)
                 if info is None:
                     try:
-                        info = self._service.probe_video(p)
+                        info = self._service.probe_video(p, compute_hash=False)
                         self._video_infos[p] = info
                     except Exception:
                         continue
