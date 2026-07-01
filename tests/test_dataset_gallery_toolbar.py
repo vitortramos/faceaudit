@@ -281,3 +281,25 @@ def test_match_ok_when_all_duplicates_selected(app, monkeypatch):
     matched = _ctrl()._gallery_match_after_sync(fake, [0, 1], "X")
     assert matched is not None and len(matched) == 2
     assert "warned" not in seen
+
+
+# ───────────────────── fechar dataset limpa a galeria ─────────────────────
+def test_close_clears_gallery(app):
+    # Bug: fechar em modo galeria deixava as miniaturas do dataset anterior.
+    g, _ = _gallery_with_faces(3)
+    assert g.list_widget.count() == 3
+    fake = types.SimpleNamespace(
+        dataset=types.SimpleNamespace(name="ds"),
+        gallery_widget=g,
+        sync_changes_from_table=lambda: None,
+        is_dirty=lambda: False,
+        _audit=lambda *a, **k: None,
+        table_ctrl=types.SimpleNamespace(load_dataframe=lambda *a: None),
+        detail_ctrl=types.SimpleNamespace(load_face_data=lambda *a: None),
+        toolbar_ctrl=types.SimpleNamespace(set_dataset_loaded_state=lambda *a, **k: None),
+        set_dirty=lambda *a: None,
+    )
+    ok = _ctrl().request_close(fake)
+    assert ok is True
+    assert g.list_widget.count() == 0          # galeria limpa ao fechar
+    assert fake.dataset is None

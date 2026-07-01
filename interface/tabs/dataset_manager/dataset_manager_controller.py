@@ -1222,6 +1222,10 @@ class DatasetManagerController(QtCore.QObject):
         self.current_path = None
         self.dataset_original = None
         self.table_ctrl.load_dataframe(None)
+        # Limpa a galeria também — senão, ao fechar em modo galeria, as
+        # miniaturas do dataset anterior continuam aparecendo.
+        self.gallery_widget.clear_cache()
+        self.gallery_widget.populate([])
         self.detail_ctrl.load_face_data(None)
         self.toolbar_ctrl.set_dataset_loaded_state(False, "Nenhum dataset carregado.")
         self.set_dirty(False)
@@ -1256,11 +1260,13 @@ class DatasetManagerController(QtCore.QObject):
 
     def fluxo_novo_dataset(self):
         templates_path = Path(self.config.paths.dir_templates)
+        default_dataset_dir = str(getattr(self.config.paths, "datasets", "") or "")
         dialog = NewDatasetController(
             self.view,
             templates_path=templates_path,
             ff_available=self.ff_available,
             ofiq_available=self.ofiq_available,
+            default_dataset_dir=default_dataset_dir,
         )
         
         if dialog.exec():
