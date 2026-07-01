@@ -38,6 +38,25 @@ _EMPTY_PREVIEW_MSG = (
 )
 
 
+def _bbox_iou(a, b) -> float:
+    """IoU entre duas bboxes [x1,y1,x2,y2]. Usado para casar uma âncora salva com
+    a detecção correspondente no quadro atual (robusto a reordenação da detecção)."""
+    if a is None or b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = (float(v) for v in np.asarray(a).flatten()[:4])
+    bx1, by1, bx2, by2 = (float(v) for v in np.asarray(b).flatten()[:4])
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return (inter / union) if union > 0.0 else 0.0
+
+
 def _bgr_to_pixmap(bgr: np.ndarray) -> QtGui.QPixmap:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     h, w, ch = rgb.shape
@@ -1480,14 +1499,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.lbl_frame.setText(self.lbl_frame.text() + "  — sem face (tente outro quadro ou det. 960)")
 
     def _redraw_boxes(self):
-        # Caixas em cinza-azul por padrão; coloridas (cor do alvo) apenas onde
-        # há âncora cravada NESTE quadro — o det_index só vale no quadro-âncora.
-        cur = self.scrubber.current() if self.scrubber.isEnabled() else None
-        anchored = {}
-        for row in self._target_rows:
-            if (row.has_anchor() and row.anchor_det_index is not None
-                    and row.anchor_frame_index() == cur):
-                anchored[row.anchor_det_index] = (row.color, row.label_text() or "alvo")
+        # Caixas em cinza-azul por padrão; coloridas (cor do alvo) em TODA face já
+        # ancorada visível NESTE quadro/foto — não só na âncora primária. Assim
+        # cada clique de âncora (1ª ou adicional, em qualquer quadro/vídeo) recebe
+        # confirmação visual.
+        anchored = self._anchored_dets_in_current_view()
         boxes = []
         for i, d in enumerate(self._current_dets):
             b = np.asarray(d["bbox"]).astype(float).flatten()
@@ -1497,6 +1513,60 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             else:
                 boxes.append((b[0], b[1], b[2], b[3], "#2196f3"))
         self.view.set_boxes(boxes)
+
+    def _match_anchor_detection(self, bbox, det_index):
+        """Índice da detecção ATUAL que corresponde a uma âncora salva: casa pelo
+        IoU do bbox (robusto a reordenação da detecção ao revisitar o quadro) e
+        cai no det_index salvo se o bbox não bater bem."""
+        dets = self._current_dets
+        if not dets:
+            return None
+        best_i, best_iou = None, 0.0
+        for i, d in enumerate(dets):
+            iou = _bbox_iou(bbox, np.asarray(d["bbox"]).astype(float).flatten()[:4])
+            if iou > best_iou:
+                best_i, best_iou = i, iou
+        if best_i is not None and best_iou >= 0.5:
+            return best_i
+        if det_index is not None and 0 <= int(det_index) < len(dets):
+            return int(det_index)
+        return None
+
+    def _anchored_dets_in_current_view(self) -> dict:
+        """Mapeia índice-da-detecção-atual → (cor, rótulo) para TODAS as faces já
+        ancoradas visíveis no que está exibido: as âncoras de vídeo do quadro
+        atual (mesmo vídeo) ou, quando uma foto de referência está na tela, as
+        âncoras de imagem daquela foto. Cobre âncoras adicionais, não só a 1ª."""
+        result: dict = {}
+        if self._anchor_source_is_image:
+            img = self._anchor_image_path
+            for row in self._target_rows:
+                t = row.video_target
+                if t is None:
+                    continue
+                for s in getattr(t, "anchor_sources", []):
+                    if s.get("type") == "image" and s.get("path") == img:
+                        i = self._match_anchor_detection(s.get("bbox"), s.get("det_index"))
+                        if i is not None:
+                            result[i] = (row.color, row.label_text() or "alvo")
+            return result
+        cur = self.scrubber.current() if self.scrubber.isEnabled() else None
+        if cur is None:
+            return result
+        for row in self._target_rows:
+            t = row.video_target
+            if t is None:
+                continue
+            for s in getattr(t, "anchor_sources", []):
+                if s.get("type") != "video" or s.get("frame_index") != cur:
+                    continue
+                sp = s.get("path")
+                if sp is not None and self._video_path is not None and sp != self._video_path:
+                    continue          # âncora de OUTRO vídeo — não pinta aqui
+                i = self._match_anchor_detection(s.get("bbox"), s.get("det_index"))
+                if i is not None:
+                    result[i] = (row.color, row.label_text() or "alvo")
+        return result
 
     def _on_view_clicked(self, x: float, y: float):
         if not self._current_dets or not self._service:

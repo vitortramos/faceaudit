@@ -142,6 +142,80 @@ def test_second_click_adds_anchor_aggregated(app):
     assert "2 âncoras" in row.lbl_status.text()
 
 
+def test_redraw_colors_all_video_anchors_per_frame(app):
+    # Regressão: só a âncora PRIMÁRIA (1º quadro) ficava colorida; âncoras
+    # adicionais em OUTROS quadros não recebiam confirmação visual (parecia que
+    # a seleção não funcionou).
+    dlg = _setup_dialog_plain()
+    row = dlg._active_row
+    t = VideoTarget(label="alvo", recognition_model="m")
+    t.add_anchor(np.ones(8, np.float32),
+                 {"type": "video", "path": "C:/v/a.mp4", "frame_index": 10,
+                  "bbox": [0, 0, 10, 10], "det_index": 0})
+    t.add_anchor(np.full(8, 2.0, np.float32),
+                 {"type": "video", "path": "C:/v/a.mp4", "frame_index": 25,
+                  "bbox": [50, 50, 70, 70], "det_index": 0})
+    row.set_anchor(t, 0)
+    dlg._video_path = "C:/v/a.mp4"
+    dlg.scrubber.set_range(0, 100)
+    dlg.scrubber.setEnabled(True)
+
+    dlg.scrubber._current = 10                       # âncora primária
+    dlg._current_dets = [{"bbox": [0, 0, 10, 10]}]
+    assert dlg._anchored_dets_in_current_view() == {0: (row.color, "alvo")}
+
+    dlg.scrubber._current = 25                       # âncora ADICIONAL (era o bug)
+    dlg._current_dets = [{"bbox": [50, 50, 70, 70]}]
+    assert dlg._anchored_dets_in_current_view() == {0: (row.color, "alvo")}
+
+    dlg.scrubber._current = 99                       # quadro sem âncora
+    dlg._current_dets = [{"bbox": [0, 0, 10, 10]}]
+    assert dlg._anchored_dets_in_current_view() == {}
+
+
+def test_redraw_anchor_of_other_video_not_colored(app):
+    # A âncora é do vídeo A; exibindo o vídeo B no MESMO índice de quadro, não pinta.
+    dlg = _setup_dialog_plain()
+    row = dlg._active_row
+    t = VideoTarget(label="alvo", recognition_model="m")
+    t.add_anchor(np.ones(8, np.float32),
+                 {"type": "video", "path": "C:/v/a.mp4", "frame_index": 10,
+                  "bbox": [0, 0, 10, 10], "det_index": 0})
+    row.set_anchor(t, 0)
+    dlg._video_path = "C:/v/OUTRO.mp4"               # vídeo diferente carregado
+    dlg.scrubber.set_range(0, 100)
+    dlg.scrubber.setEnabled(True)
+    dlg.scrubber._current = 10
+    dlg._current_dets = [{"bbox": [0, 0, 10, 10]}]
+    assert dlg._anchored_dets_in_current_view() == {}
+
+
+def test_match_anchor_detection_bbox_iou_robust_to_reorder(app):
+    # âncora salva com det_index=0 mas cuja bbox agora corresponde à detecção 1
+    # (reordenação ao revisitar) casa pela bbox, não pelo índice obsoleto.
+    dlg = _setup_dialog_plain()
+    dlg._current_dets = [{"bbox": [100, 100, 120, 120]}, {"bbox": [0, 0, 10, 10]}]
+    assert dlg._match_anchor_detection([0, 0, 10, 10], 0) == 1     # IoU vence
+    assert dlg._match_anchor_detection(None, 0) == 0               # cai no det_index
+
+
+def test_redraw_colors_image_anchor_on_reference_photo(app):
+    # âncora de FOTO recebe confirmação visual enquanto a foto está na tela.
+    dlg = _setup_dialog_plain()
+    row = dlg._active_row
+    t = VideoTarget(label="alvo", recognition_model="m")
+    t.add_anchor(np.ones(8, np.float32),
+                 {"type": "image", "path": "C:/p/foto.png", "frame_index": None,
+                  "bbox": [2, 2, 12, 12], "det_index": 0})
+    row.set_anchor(t, 0)
+    dlg._anchor_source_is_image = True
+    dlg._anchor_image_path = "C:/p/foto.png"
+    dlg._current_dets = [{"bbox": [2, 2, 12, 12]}]
+    assert dlg._anchored_dets_in_current_view() == {0: (row.color, "alvo")}
+    dlg._anchor_image_path = "C:/p/outra.png"        # outra foto → não pinta
+    assert dlg._anchored_dets_in_current_view() == {}
+
+
 def test_reference_image_adds_photo_anchor(app, monkeypatch, tmp_path):
     dlg = _dlg_with_fake()
     p = tmp_path / "foto.png"
