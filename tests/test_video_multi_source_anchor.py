@@ -244,17 +244,22 @@ def test_video_list_add_dedup_and_remove(app, monkeypatch):
     assert dlg._video_paths() == ["C:/v/b.mp4"]
 
 
-# ─────────────────────────── janela por vídeo ───────────────────────────
-def test_video_window_dialog_result(app):
+# ─────────────────────────── janela por vídeo (linha inline) ───────────────────────────
+def test_video_row_widget(app):
     from interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog import (
-        _VideoWindowDialog,
+        _VideoRowWidget,
     )
-    d = _VideoWindowDialog(None, name="x", start_s=300.0, end_s=600.0)
-    assert d.result_window() == (300.0, 600.0)
-    d.chk_to_end.setChecked(True)
-    assert d.result_window() == (300.0, None)
-    d.te_start.setTime(QtCore.QTime(0, 0, 0))
-    assert d.result_window() is None              # 0 + até o fim = vídeo inteiro
+    seen = []
+    row = _VideoRowWidget(None, path="C:/v/x.mp4", duration_s=600.0)   # 10 min
+    row.window_changed.connect(lambda p, s, e: seen.append((p, s, e)))
+    assert row.get_window_secs() == (0.0, 600.0)          # default = vídeo inteiro
+    row.te_start.setTime(QtCore.QTime(0, 5, 0))           # início 05:00
+    assert seen[-1] == ("C:/v/x.mp4", 300.0, 600.0)
+    row.te_end.setTime(QtCore.QTime(0, 20, 0))            # 20:00 > duração → travado em 10:00
+    assert row.get_window_secs()[1] == 600.0
+    n = len(seen)
+    row.set_window_secs(120.0, 480.0)                     # sync do scrubber NÃO emite
+    assert len(seen) == n and row.get_window_secs() == (120.0, 480.0)
 
 
 def test_get_config_per_video_windows(app, monkeypatch):
@@ -269,20 +274,19 @@ def test_get_config_per_video_windows(app, monkeypatch):
     assert cfg.window_for(1) == (0.0, None)
 
 
-def test_on_set_window_no_load(app, monkeypatch):
-    import interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog as mod
+def test_set_window_via_row_no_load(app, monkeypatch):
+    # Definir o trecho SEM carregar o vídeo — só editando os campos da linha.
     dlg = _setup_dialog_plain()
-    _add_video_to_list(dlg, "C:/v/a.mp4")
-    dlg.lst_videos.setCurrentRow(0)
-
-    class FakeWin:                                 # diálogo "Definir trecho…" sem carregar
-        def __init__(self, *a, **k): pass
-        def exec(self): return 1
-        def result_window(self): return (300.0, 600.0)
-    monkeypatch.setattr(mod, "_VideoWindowDialog", FakeWin)
-    dlg._on_set_window()
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: (["C:/v/a.mp4"], "")))
+    dlg._on_add_videos()
+    row = dlg._row_for_path("C:/v/a.mp4")
+    assert row is not None
+    row.te_start.setTime(QtCore.QTime(0, 5, 0))    # 5 min
+    row.te_end.setTime(QtCore.QTime(0, 10, 0))     # 10 min
     assert dlg._video_windows["C:/v/a.mp4"] == (300.0, 600.0)
-    assert "5:00" in dlg.lst_videos.item(0).text()   # trecho mostrado no item
+    cfg = dlg.get_config("C:/out")
+    assert cfg.video_windows == [[300.0, 600.0]]
 
 
 def test_on_window_changed_saves_per_video_window(app):
@@ -350,3 +354,30 @@ def test_edit_anchors_clears_row_when_all_removed(app, monkeypatch):
     assert not row.has_anchor()
     assert not dlg.btn_extract.isEnabled()
     assert not row.btn_anchors.isEnabled()
+
+
+# ─────────── sincronização scrubber ↔ campos da linha (vídeo carregado) ───────────
+def _loaded_dialog_with_row(monkeypatch):
+    import types
+    dlg = _setup_dialog_plain()
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: (["C:/v/a.mp4"], "")))
+    dlg._on_add_videos()
+    dlg._video_path = "C:/v/a.mp4"
+    dlg._info = types.SimpleNamespace(fps_reported=10.0, frame_count_reported=100)
+    dlg.scrubber.setEnabled(True); dlg.scrubber.set_range(0, 99)
+    return dlg
+
+
+def test_scrubber_syncs_row_fields(app, monkeypatch):
+    dlg = _loaded_dialog_with_row(monkeypatch)
+    dlg.scrubber.set_window(50, 80)                    # 5–8 s a 10 fps
+    assert dlg._row_for_path("C:/v/a.mp4").get_window_secs() == (5.0, 8.0)
+
+
+def test_row_fields_sync_scrubber(app, monkeypatch):
+    dlg = _loaded_dialog_with_row(monkeypatch)
+    row = dlg._row_for_path("C:/v/a.mp4")
+    row.te_start.setTime(QtCore.QTime(0, 0, 3))        # 3 s → quadro 30
+    row.te_end.setTime(QtCore.QTime(0, 0, 7))          # 7 s → quadro 70
+    assert dlg.scrubber.start() == 30 and dlg.scrubber.end() == 70

@@ -442,63 +442,72 @@ def _fmt_window(start_s, end_s) -> str:
     return f"[{f(start_s)}–{'fim' if end_s is None else f(end_s)}]"
 
 
-class _VideoWindowDialog(QtWidgets.QDialog):
-    """Define o trecho (início/fim) de UM vídeo — sem precisar carregá-lo."""
+class _VideoRowWidget(QtWidgets.QWidget):
+    """Linha de um vídeo na lista: nome + trecho (início/fim em HH:mm:ss)
+    editável SEM carregar o vídeo. Default = vídeo inteiro (0 → duração); o fim
+    é travado na duração. Sincroniza com o scrubber quando o vídeo é carregado."""
+    window_changed = QtCore.pyqtSignal(str, float, float)   # path, start_s, end_s
 
-    def __init__(self, parent, *, name, start_s, end_s):
+    def __init__(self, parent, *, path: str, duration_s: float):
         super().__init__(parent)
-        self.setWindowTitle(f"Trecho · {name}")
-        self.resize(380, 180)
-        root = QtWidgets.QVBoxLayout(self)
-        intro = QtWidgets.QLabel(
-            "Defina o trecho do vídeo a extrair (não precisa carregar). "
-            "Marque “até o fim” se não souber a duração.", self)
-        intro.setWordWrap(True)
-        root.addWidget(intro)
-        form = QtWidgets.QFormLayout()
+        self._path = path
+        self._duration = max(0.0, float(duration_s or 0.0))
+
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(6, 2, 6, 2)
+        h.setSpacing(6)
+
+        self._lbl = QtWidgets.QLabel(Path(path).name, self)
+        self._lbl.setMinimumWidth(80)
+        h.addWidget(self._lbl, 1)
+
+        h.addWidget(QtWidgets.QLabel("Início", self))
         self.te_start = QtWidgets.QTimeEdit(self)
         self.te_start.setDisplayFormat("HH:mm:ss")
-        self.te_start.setTime(_secs_to_qtime(start_s))
+        self.te_start.setFixedWidth(84)
+        h.addWidget(self.te_start)
+        h.addWidget(QtWidgets.QLabel("Fim", self))
         self.te_end = QtWidgets.QTimeEdit(self)
         self.te_end.setDisplayFormat("HH:mm:ss")
-        self.te_end.setTime(_secs_to_qtime(end_s if end_s is not None else 0.0))
-        self.chk_to_end = QtWidgets.QCheckBox("até o fim do vídeo", self)
-        self.chk_to_end.setChecked(end_s is None)
-        self.te_end.setEnabled(end_s is not None)
-        self.chk_to_end.toggled.connect(lambda c: self.te_end.setEnabled(not c))
-        end_w = QtWidgets.QWidget(self)
-        eh = QtWidgets.QHBoxLayout(end_w)
-        eh.setContentsMargins(0, 0, 0, 0)
-        eh.addWidget(self.te_end)
-        eh.addWidget(self.chk_to_end)
-        form.addRow("Início:", self.te_start)
-        form.addRow("Fim:", end_w)
-        root.addLayout(form)
-        bb = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.StandardButton.Ok
-            | QtWidgets.QDialogButtonBox.StandardButton.Cancel, self)
-        bb.accepted.connect(self._on_ok)
-        bb.rejected.connect(self.reject)
-        root.addWidget(bb)
+        self.te_end.setFixedWidth(84)
+        h.addWidget(self.te_end)
 
-    def _values(self):
-        start = _qtime_to_secs(self.te_start.time())
-        end = None if self.chk_to_end.isChecked() else _qtime_to_secs(self.te_end.time())
-        return start, end
+        # Máximos travam na duração; default = vídeo inteiro (0 → duração).
+        dur_q = _secs_to_qtime(self._duration) if self._duration > 0 else QtCore.QTime(23, 59, 59)
+        self.te_start.setMaximumTime(dur_q)
+        self.te_end.setMaximumTime(dur_q)
+        self.te_start.setTime(QtCore.QTime(0, 0, 0))
+        self.te_end.setTime(dur_q)
+        self._lbl.setToolTip(f"{path}\nDuração: {dur_q.toString('HH:mm:ss')}")
 
-    def _on_ok(self):
-        s, e = self._values()
-        if e is not None and e <= s:
-            QtWidgets.QMessageBox.warning(self, "Trecho", "O fim deve ser depois do início.")
-            return
-        self.accept()
+        self.te_start.timeChanged.connect(self._on_edit)
+        self.te_end.timeChanged.connect(self._on_edit)
 
-    def result_window(self):
-        """(start_s, end_s) ou None (= vídeo inteiro)."""
-        s, e = self._values()
-        if s <= 0 and e is None:
-            return None
-        return (s, e)
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def _on_edit(self):
+        # Trava cruzada início ≤ fim: empurra o campo que NÃO foi editado.
+        if self.te_start.time() > self.te_end.time():
+            if self.sender() is self.te_start:
+                self.te_end.blockSignals(True); self.te_end.setTime(self.te_start.time()); self.te_end.blockSignals(False)
+            else:
+                self.te_start.blockSignals(True); self.te_start.setTime(self.te_end.time()); self.te_start.blockSignals(False)
+        s, e = self.get_window_secs()
+        self.window_changed.emit(self._path, s, e)
+
+    def get_window_secs(self):
+        return _qtime_to_secs(self.te_start.time()), _qtime_to_secs(self.te_end.time())
+
+    def set_window_secs(self, start_s, end_s):
+        """Atualiza os campos sem emitir (sincronização vinda do scrubber)."""
+        self.te_start.blockSignals(True); self.te_end.blockSignals(True)
+        try:
+            self.te_start.setTime(_secs_to_qtime(start_s))
+            self.te_end.setTime(_secs_to_qtime(end_s))
+        finally:
+            self.te_start.blockSignals(False); self.te_end.blockSignals(False)
 
 
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
@@ -524,7 +533,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._info = None
         self._video_path: Optional[str] = None
         self._video_infos: dict = {}      # path → VideoInfo (cache para a prévia)
-        self._video_windows: dict = {}    # path → (start_s, end_s) — janela por vídeo
+        self._video_windows: dict = {}    # path → (start_s, end_s) — só quando PARCIAL
+        self._video_durations: dict = {}  # path → duração em segundos (probe no add)
+        self._syncing_window = False      # evita loop scrubber ↔ campos da linha
         self._current_frame: Optional[np.ndarray] = None
         self._current_dets: list = []
         # Modo "imagem de referência": quando True, o quadro exibido é uma foto
@@ -594,10 +605,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         add_row.addStretch()
         gs.addLayout(add_row)
         self.lst_videos = QtWidgets.QListWidget(self)
-        self.lst_videos.setMaximumHeight(96)
+        self.lst_videos.setMaximumHeight(132)
         self.lst_videos.setToolTip(
-            "Vídeos do caso. Duplo-clique (ou Carregar) abre um na prévia para você "
-            "navegar e ancorar o alvo; a extração percorre todos.")
+            "Vídeos do caso. Defina o trecho (início/fim) direto na linha — sem "
+            "carregar. Duplo-clique (ou Carregar) abre um na prévia para navegar e "
+            "ancorar; a extração percorre todos.")
         self.lst_videos.itemDoubleClicked.connect(lambda _it: self._on_load_selected())
         gs.addWidget(self.lst_videos)
         vbtn = QtWidgets.QHBoxLayout()
@@ -609,15 +621,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         btn_rm_video = QtWidgets.QPushButton("Remover", self)
         btn_rm_video.setToolTip("Remove o vídeo selecionado da lista.")
         btn_rm_video.clicked.connect(self._on_remove_video)
-        btn_window = QtWidgets.QPushButton("Definir trecho…", self)
-        btn_window.setToolTip(
-            "Define o início/fim (trecho) do vídeo selecionado a extrair — <b>sem "
-            "precisar carregar</b>. Carregar + arrastar as alças do scrubber também "
-            "define o trecho daquele vídeo.")
-        btn_window.clicked.connect(self._on_set_window)
         vbtn.addWidget(self.btn_load)
         vbtn.addWidget(btn_rm_video)
-        vbtn.addWidget(btn_window)
         vbtn.addStretch()
         gs.addLayout(vbtn)
         case_row = QtWidgets.QHBoxLayout()
@@ -865,12 +870,55 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         for p in paths:
             if p in existing:
                 continue
-            it = QtWidgets.QListWidgetItem(Path(p).name, self.lst_videos)
+            dur = self._probe_duration_secs(p)     # metadados — sem carregar modelo
+            self._video_durations[p] = dur
+            it = QtWidgets.QListWidgetItem(self.lst_videos)
             it.setData(QtCore.Qt.ItemDataRole.UserRole, p)
-            it.setToolTip(p)
+            row = _VideoRowWidget(self.lst_videos, path=p, duration_s=dur)
+            row.window_changed.connect(self._on_row_window_changed)
+            it.setSizeHint(row.sizeHint())
+            self.lst_videos.setItemWidget(it, row)
             existing.add(p)
         if self.lst_videos.currentRow() < 0 and self.lst_videos.count() > 0:
             self.lst_videos.setCurrentRow(self.lst_videos.count() - 1)
+
+    def _probe_duration_secs(self, path) -> float:
+        """Duração em segundos via metadados do cv2 — sem carregar o vídeo nem o
+        detector (rápido, não decodifica quadros)."""
+        try:
+            import cv2
+            cap = cv2.VideoCapture(str(path))
+            if not cap.isOpened():
+                cap.release()
+                return 0.0
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            n = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+            cap.release()
+            return (n / fps) if fps > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def _row_for_path(self, path):
+        for i in range(self.lst_videos.count()):
+            it = self.lst_videos.item(i)
+            if it.data(QtCore.Qt.ItemDataRole.UserRole) == path:
+                return self.lst_videos.itemWidget(it)
+        return None
+
+    def _on_row_window_changed(self, path: str, start_s: float, end_s: float):
+        """Campos de trecho de uma linha mudaram: persiste a janela (parcial-only)
+        e, se aquele vídeo estiver carregado, reflete no scrubber."""
+        dur = self._video_durations.get(path, 0.0)
+        if start_s <= 0.01 and (dur <= 0 or end_s >= dur - 0.5):
+            self._video_windows.pop(path, None)        # vídeo inteiro
+        else:
+            self._video_windows[path] = (start_s, end_s)
+        if path == self._video_path and self._info is not None:
+            self._syncing_window = True
+            try:
+                self._apply_window_to_scrubber(path)
+            finally:
+                self._syncing_window = False
 
     def _video_paths(self) -> List[str]:
         return [self.lst_videos.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
@@ -890,9 +938,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         if it is None:
             return
         path = it.data(QtCore.Qt.ItemDataRole.UserRole)
-        self.lst_videos.takeItem(self.lst_videos.row(it))
+        self.lst_videos.takeItem(self.lst_videos.row(it))   # remove item + row widget
         self._video_infos.pop(path, None)
         self._video_windows.pop(path, None)
+        self._video_durations.pop(path, None)
         if path == self._video_path:
             self._video_path = None
             self._info = None
@@ -904,43 +953,17 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.view.set_boxes([])
             self.lbl_frame.setText("—")
 
-    def _on_set_window(self):
-        it = self.lst_videos.currentItem()
-        if it is None:
-            QtWidgets.QMessageBox.information(self, "Trecho", "Selecione um vídeo na lista.")
-            return
-        path = it.data(QtCore.Qt.ItemDataRole.UserRole)
-        cur = self._video_windows.get(path)
-        start_s = cur[0] if cur else 0.0
-        end_s = cur[1] if cur else None
-        dlg = _VideoWindowDialog(self, name=Path(path).name, start_s=start_s, end_s=end_s)
-        if not dlg.exec():
-            return
-        win = dlg.result_window()
-        if win is None:
-            self._video_windows.pop(path, None)
-        else:
-            self._video_windows[path] = win
-        if path == self._video_path and self._info is not None:
-            self._apply_window_to_scrubber(path)   # reflete no scrubber se carregado
-        self._refresh_video_item(path)
-
-    def _refresh_video_item(self, path: str):
-        for i in range(self.lst_videos.count()):
-            it = self.lst_videos.item(i)
-            if it.data(QtCore.Qt.ItemDataRole.UserRole) == path:
-                w = self._video_windows.get(path)
-                suffix = ("  " + _fmt_window(w[0], w[1])) if w else ""
-                it.setText(Path(path).name + suffix)
-                return
-
     def _apply_window_to_scrubber(self, path: str):
-        """Reflete a janela salva do vídeo nas alças do scrubber (ao carregar)."""
+        """Reflete a janela do vídeo nas alças do scrubber (ao carregar ou ao
+        editar os campos da linha). Janela ausente = vídeo inteiro."""
+        if self._info is None:
+            return
+        last = max(0, self._info.frame_count_reported - 1)
         w = self._video_windows.get(path)
-        if not w or self._info is None:
+        if not w:
+            self.scrubber.set_window(0, last)              # vídeo inteiro
             return
         fps = self._info.fps_reported or 30.0
-        last = max(0, self._info.frame_count_reported - 1)
         s_frame = max(0, min(last, int(round(w[0] * fps))))
         e_frame = last if w[1] is None else max(s_frame, min(last, int(round(w[1] * fps))))
         self.scrubber.set_window(s_frame, e_frame)
@@ -1221,14 +1244,22 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         n = max(1, e - s + 1)
         self.lbl_window.setText(f"Janela: quadro {s}–{e} · {n} quadro(s) · {n / fps:.1f}s")
         self._update_fps_hint()
-        # Persiste a janela POR vídeo (faixa cheia → vídeo inteiro = sem entrada).
+        # Se a mudança veio dos CAMPOS da linha, não re-sobrescreve (evita loop
+        # + não sobrepõe o que o usuário acabou de digitar).
+        if self._syncing_window:
+            return
+        # Scrubber → persiste a janela POR vídeo (faixa cheia = sem entrada) e
+        # reflete nos campos da linha daquele vídeo.
         if self._video_path:
             last = max(0, self._info.frame_count_reported - 1)
+            start_s, end_s = s / fps, e / fps
             if s <= 0 and e >= last:
                 self._video_windows.pop(self._video_path, None)
             else:
-                self._video_windows[self._video_path] = (s / fps, e / fps)
-            self._refresh_video_item(self._video_path)
+                self._video_windows[self._video_path] = (start_s, end_s)
+            row = self._row_for_path(self._video_path)
+            if row is not None:
+                row.set_window_secs(start_s, end_s)
 
     def _update_fps_hint(self):
         """Mostra ao vivo o efeito da amostragem: 1 a cada N quadros, ~M no total."""
