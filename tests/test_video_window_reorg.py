@@ -73,7 +73,41 @@ def test_setup_video_buttons_consolidated_and_renamed(app):
     dlg = _setup_dialog()
     assert dlg.btn_load.text() == "Carregar selecionado"
     assert dlg.btn_rm_video.text() == "Remover selecionado"
-    assert dlg.lst_videos.maximumHeight() > 1000     # sem o cap de 132px
+    assert dlg.lst_videos.maximumHeight() <= 200     # lista contida (não sprawl)
+
+
+def test_setup_load_button_emphasis_follows_state(app, monkeypatch, tmp_path):
+    # Destaque azul segue o próximo passo: Adicionar (lista vazia) → Carregar
+    # (há vídeo) → Adicionar (esvaziou). Sempre um único botão aceso.
+    from interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog import (
+        _BTN_PRIMARY_QSS,
+    )
+    dlg = _setup_dialog()
+    # lista vazia → Adicionar destacado, Carregar neutro
+    assert dlg.btn_add_videos.styleSheet() == _BTN_PRIMARY_QSS
+    assert dlg.btn_load.styleSheet() == ""
+
+    vid = tmp_path / "clip.mp4"
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([str(vid)], "")))
+    dlg._on_add_videos()
+    # há vídeo → destaque passa para Carregar
+    assert dlg.btn_add_videos.styleSheet() == ""
+    assert dlg.btn_load.styleSheet() == _BTN_PRIMARY_QSS
+
+    dlg.lst_videos.setCurrentRow(0)
+    dlg._on_remove_video()
+    # esvaziou → destaque volta para Adicionar
+    assert dlg.btn_add_videos.styleSheet() == _BTN_PRIMARY_QSS
+    assert dlg.btn_load.styleSheet() == ""
+
+
+def test_setup_section_titles_emphasized(app):
+    # Títulos das seções (QGroupBox) ganham destaque (negrito + acento) via
+    # stylesheet do diálogo — separa-os dos rótulos de campo.
+    dlg = _setup_dialog()
+    qss = dlg.styleSheet()
+    assert "QGroupBox::title" in qss and "font-weight:bold" in qss
 
 
 def test_setup_preview_empty_state(app):

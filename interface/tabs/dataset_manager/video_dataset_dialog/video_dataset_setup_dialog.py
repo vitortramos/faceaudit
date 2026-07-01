@@ -37,6 +37,26 @@ _EMPTY_PREVIEW_MSG = (
     "para navegar os quadros e clicar na face do alvo (âncora)."
 )
 
+# Estilo de botão primário (azul de acento do app). O destaque segue o estado:
+# ver `_refresh_video_button_emphasis`. Neutro = setStyleSheet("").
+_BTN_PRIMARY_QSS = (
+    "QPushButton { background:#1976d2; color:white; border:none;"
+    " border-radius:4px; padding:4px 8px; font-weight:bold; }"
+    "QPushButton:hover { background:#1e88e5; }"
+    "QPushButton:pressed { background:#1565c0; }"
+)
+
+# Destaque das seções: título do QGroupBox em negrito + acento + um pouco maior,
+# com a seção emoldurada. Aplicado no diálogo (escopo = os QGroupBox das 4 seções:
+# Detecção, Vídeos, Alvos, Extração de vídeo) para separá-los dos rótulos de campo.
+# Nota: uma vez que se estiliza o QGroupBox, o Fusion deixa de desenhar a moldura
+# nativa — por isso a borda é declarada explicitamente aqui.
+_GROUPBOX_TITLE_QSS = (
+    "QGroupBox { border:1px solid #d7dbe0; border-radius:6px; margin-top:10px; }"
+    "QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left;"
+    " left:8px; padding:1px 6px; color:#1a3a6b; font-weight:bold; font-size:13px; }"
+)
+
 
 def _bbox_iou(a, b) -> float:
     """IoU entre duas bboxes [x1,y1,x2,y2]. Usado para casar uma âncora salva com
@@ -665,7 +685,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         g_src = QtWidgets.QGroupBox("Vídeos", self)
         gs = QtWidgets.QVBoxLayout(g_src)
         self.lst_videos = QtWidgets.QListWidget(self)
-        self.lst_videos.setMinimumHeight(96)   # cresce para preencher a coluna
+        # Altura contida: mostra ~4 vídeos e rola o resto — evita um box gigante
+        # e vazio quando há poucos vídeos (rola quando há muitos).
+        self.lst_videos.setMinimumHeight(84)
+        self.lst_videos.setMaximumHeight(150)
         self.lst_videos.setToolTip(
             "Vídeos do caso. Defina o trecho (início/fim) direto na linha — sem "
             "carregar. Duplo-clique (ou Carregar) abre um na prévia para navegar e "
@@ -676,11 +699,11 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # Uma linha só: Adicionar · Carregar · … · Remover (destrutivo à direita,
         # separado por um espaçador para evitar clique acidental).
         vbtn = QtWidgets.QHBoxLayout()
-        btn_add_videos = QtWidgets.QPushButton("➕ Adicionar vídeos…", self)
-        btn_add_videos.setToolTip(
+        self.btn_add_videos = QtWidgets.QPushButton("➕ Adicionar vídeos…", self)
+        self.btn_add_videos.setToolTip(
             "Escolhe um ou mais arquivos de vídeo. O alvo é procurado em <b>TODOS</b> "
             "eles, gerando um único dataset (cada face marcada com seu vídeo de origem).")
-        btn_add_videos.clicked.connect(self._on_add_videos)
+        self.btn_add_videos.clicked.connect(self._on_add_videos)
         self.btn_load = QtWidgets.QPushButton("Carregar selecionado", self)
         self.btn_load.setToolTip(
             "Abre o vídeo selecionado na prévia (inicializa o detector com a "
@@ -689,15 +712,22 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.btn_rm_video = QtWidgets.QPushButton("Remover selecionado", self)
         self.btn_rm_video.setToolTip("Remove o vídeo selecionado da lista.")
         self.btn_rm_video.clicked.connect(self._on_remove_video)
-        vbtn.addWidget(btn_add_videos)
+        vbtn.addWidget(self.btn_add_videos)
         vbtn.addWidget(self.btn_load)
         vbtn.addStretch()
         vbtn.addWidget(self.btn_rm_video)
         gs.addLayout(vbtn)
-        right.addWidget(g_src, 5)   # expande na vertical (muitos vídeos visíveis)
+        # Destaque azul segue o próximo passo (Adicionar quando vazio → Carregar
+        # quando há vídeo). Estado inicial: lista vazia → Adicionar destacado.
+        self._refresh_video_button_emphasis()
+        right.addWidget(g_src)   # altura natural (lista contida acima)
 
         # Widgets de detecção — montados na barra "Detecção" (esquerda, sob a prévia).
         self.cmb_model = QtWidgets.QComboBox(self)
+        # Largura contida: o combo não precisa varrer a linha inteira (nomes de
+        # modelo são curtos). Cresce até o teto em janelas estreitas; em tela
+        # cheia o espaço extra vira margem, não combo esticado.
+        self.cmb_model.setMaximumWidth(340)
         self._populate_model_combo()
         self.cmb_model.setToolTip(
             "<b>Modelo de embedding</b> usado na re-identificação — é o cosseno "
@@ -783,12 +813,13 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         det_row = QtWidgets.QHBoxLayout(g_det)
         det_row.addWidget(QtWidgets.QLabel("Embedding:", self))
         det_row.addWidget(self.cmb_model, 1)
-        det_row.addSpacing(10)
+        det_row.addSpacing(16)
         det_row.addWidget(QtWidgets.QLabel("Resolução:", self))
         det_row.addWidget(self.spn_det_size)
-        det_row.addSpacing(10)
+        det_row.addSpacing(16)
         det_row.addWidget(QtWidgets.QLabel("Confiança:", self))
         det_row.addWidget(self.spn_det_thresh)
+        det_row.addStretch(1)     # cluster à esquerda; excesso vira margem à direita
         left.addWidget(g_det)
 
         # ── Grupo Alvos (direita) ──
@@ -819,13 +850,15 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._targets_layout.setContentsMargins(0, 0, 0, 0)
         self._targets_layout.setSpacing(4)
         self._targets_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
-        # Área rolável: as linhas de alvo ficam no topo e a lista cresce/rola
-        # em vez de empurrar a Extração para fora quando há muitos alvos.
+        # Área rolável contida: mostra ~3 alvos e rola o resto — não empurra a
+        # Extração para fora nem vira um box gigante quando há um alvo só.
         tgt_scroll = QtWidgets.QScrollArea(self)
         tgt_scroll.setWidgetResizable(True)
         tgt_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         tgt_scroll.setWidget(self._targets_container)
-        gt.addWidget(tgt_scroll, 1)
+        tgt_scroll.setMinimumHeight(64)
+        tgt_scroll.setMaximumHeight(150)
+        gt.addWidget(tgt_scroll)
         hint = QtWidgets.QLabel(
             "Clique numa face do quadro para ancorar o alvo <b>ativo</b> (destacado). "
             "O alvo ativo recebe a próxima âncora; clique numa linha para trocá-lo.", self)
@@ -833,7 +866,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888; font-size:11px;")
         gt.addWidget(hint)
-        right.addWidget(g_tgt, 3)   # expande junto dos Vídeos; Extração fica compacta
+        right.addWidget(g_tgt)   # altura natural (lista de alvos contida acima)
 
         # ── Grupo Extração de vídeo (direita) ──
         g_ext = QtWidgets.QGroupBox("Extração de vídeo", self)
@@ -911,7 +944,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         fext.addRow("Nome da extração:", name_w)
         fext.addRow("Amostragem (quadros/s):", fps_w)
         fext.addRow("Margem do recorte:", self.spn_margin)
-        right.addWidget(g_ext, 0)
+        right.addWidget(g_ext)
+        right.addStretch(1)   # seções no topo; sobra vira respiro embaixo
 
         # Valida o nome da extração quando o diretório ou o nome mudam (colisão de
         # pasta → aviso + bloqueia Extrair). Conectado após o setText inicial.
@@ -966,6 +1000,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         bar.setLayout(btn_row)
         outer.addWidget(bar)
 
+        # Destaca os títulos das seções (QGroupBox) — negrito + acento + moldura.
+        self.setStyleSheet(_GROUPBOX_TITLE_QSS)
+
     # ───────────────────────────── slots ─────────────────────────────
     def _on_add_videos(self):
         start = self._datasets_dir or ""
@@ -991,6 +1028,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.lst_videos.setCurrentRow(self.lst_videos.count() - 1)
         self._suggest_extraction_name()   # pré-preenche um nome de extração livre
         self._revalidate_extraction_name()  # revalida colisão mesmo se o nome já estava preenchido
+        self._refresh_video_button_emphasis()  # há vídeo → destaque passa p/ Carregar
 
     # ─────────────────────────── nome da extração ───────────────────────────
     @staticmethod
@@ -1053,6 +1091,15 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         """Extrair só habilita com ≥1 âncora e sem colisão de nome de extração."""
         if hasattr(self, "btn_extract"):
             self.btn_extract.setEnabled(self._any_anchor() and not self._name_conflict)
+
+    def _refresh_video_button_emphasis(self):
+        """Destaque azul segue o próximo passo: 'Adicionar vídeos' enquanto a
+        lista está vazia; assim que há vídeo, o destaque passa para 'Carregar
+        selecionado' (Adicionar volta a neutro, mas segue clicável). Sempre um
+        único botão aceso — e é o passo correto."""
+        has_videos = self.lst_videos.count() > 0
+        self.btn_add_videos.setStyleSheet("" if has_videos else _BTN_PRIMARY_QSS)
+        self.btn_load.setStyleSheet(_BTN_PRIMARY_QSS if has_videos else "")
 
     def _probe_duration_secs(self, path) -> float:
         """Duração em segundos via metadados do cv2 — sem carregar o vídeo nem o
@@ -1157,6 +1204,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # revalida a colisão de pasta.
         self._suggest_extraction_name()
         self._revalidate_extraction_name()
+        self._refresh_video_button_emphasis()  # lista vazia → destaque volta p/ Adicionar
 
     def _apply_window_to_scrubber(self, path: str):
         """Reflete a janela do vídeo nas alças do scrubber (ao carregar ou ao
