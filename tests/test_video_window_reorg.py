@@ -67,6 +67,47 @@ def test_setup_columns_non_collapsible(app):
     assert dlg._columns.widget(1).minimumWidth() >= 300
 
 
+def test_setup_video_buttons_consolidated_and_renamed(app):
+    # Botões numa linha só; "Remover" vira "Remover selecionado"; a lista de
+    # vídeos deixa de ter o teto de altura antigo (cresce para preencher).
+    dlg = _setup_dialog()
+    assert dlg.btn_load.text() == "Carregar selecionado"
+    assert dlg.btn_rm_video.text() == "Remover selecionado"
+    assert dlg.lst_videos.maximumHeight() > 1000     # sem o cap de 132px
+
+
+def test_setup_preview_empty_state(app):
+    # Estado-vazio semeado na prévia; carregar um quadro esconde o overlay.
+    from PyQt6 import QtGui
+    dlg = _setup_dialog()
+    assert dlg.view._empty.text()                    # mensagem-guia presente
+    assert not dlg.view._empty.isHidden()            # visível quando nada carregado
+    dlg.view.set_frame(QtGui.QPixmap(4, 4))
+    assert dlg.view._empty.isHidden()
+
+
+def test_setup_extraction_name_default_and_conflict_gate(app, monkeypatch, tmp_path):
+    # Nome default livre no add; colisão de pasta bloqueia (aviso + flag); trocar
+    # para um nome livre libera de novo.
+    dlg = _setup_dialog()
+    dlg.txt_output.setText(str(tmp_path))
+    vid = tmp_path / "clip.mp4"
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([str(vid)], "")))
+    dlg._on_add_videos()
+    assert dlg.txt_case.text() == "clip"             # default = stem, livre
+    assert dlg._name_conflict is False
+
+    (tmp_path / "clip").mkdir()                       # cria a pasta colidente
+    dlg._revalidate_extraction_name()
+    assert dlg._name_conflict is True
+    assert dlg.lbl_name_warn.text()                  # aviso não-vazio
+
+    dlg.txt_case.setText("clip_novo")                # nome livre → revalida no sinal
+    assert dlg._name_conflict is False
+    assert dlg.lbl_name_warn.text() == ""
+
+
 # ──────────── scrubber: arraste estrangulado + libera capture (perf) ────────────
 def test_scrub_drag_throttles_frame_read(app):
     # Arrastar a alça não lê o quadro na hora: arma o timer e guarda o índice

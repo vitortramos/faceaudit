@@ -322,7 +322,39 @@ def test_extract_multivideo_combines_into_one_run(tmp_path):
                 for p in (Path(res.run_dir) / "_meta").glob("alvo_v*_f*.json")]
     origins = {s["source_video"]["filename"] for s in sidecars}
     assert origins == {"camA.avi", "camB.avi"}               # faces marcadas por origem
-    assert Path(res.run_dir).name.startswith("caso_x_")      # run nomeada pelo caso
+    assert Path(res.run_dir).name == "caso_x"                # nomeada pelo caso, SEM hash
+
+
+def test_extract_run_name_no_hash_and_no_overwrite(tmp_path):
+    """Nome da pasta = 'Nome da extração' SEM hash; repetir o mesmo nome NÃO
+    sobrescreve — desambigua com sufixo numérico (rede de segurança do serviço)."""
+    v1 = tmp_path / "camA.avi"
+    if not _make_video(v1):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+
+    def run():
+        service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+        cfg = _cfg(v1, tmp_path, case_name="minha_extracao")
+        return service.extract(cfg, [_target(threshold=0.5)])
+
+    r1 = run()
+    assert Path(r1.run_dir).name == "minha_extracao"       # sem hash no nome
+    r2 = run()
+    assert Path(r2.run_dir).name == "minha_extracao_2"     # não sobrescreve a anterior
+    assert Path(r1.run_dir).exists() and Path(r2.run_dir).exists()
+    assert r1.run_dir != r2.run_dir
+
+
+def test_extract_single_video_run_name_is_stem_no_hash(tmp_path):
+    """Sem 'Nome da extração', a pasta usa o stem do vídeo (sem hash)."""
+    v1 = tmp_path / "clip_alfa.avi"
+    if not _make_video(v1):
+        pytest.skip("cv2.VideoWriter MJPG indisponível neste ambiente")
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    res = service.extract(_cfg(v1, tmp_path), [_target(threshold=0.5)])
+    assert Path(res.run_dir).name == "clip_alfa"
 
 
 def test_extract_multivideo_cancel_mid_second_video_keeps_partial(tmp_path):

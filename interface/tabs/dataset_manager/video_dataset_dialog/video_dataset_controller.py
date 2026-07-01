@@ -68,12 +68,12 @@ class VideoDatasetController(QtCore.QObject):
     def run_import_video_run(self):
         start = self._runs_root()
         run_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self._view, "Escolher pasta do run de vídeo", start)
+            self._view, "Escolher pasta da extração de vídeo", start)
         if not run_dir:
             return
         if not (Path(run_dir) / "_meta").is_dir():
             QtWidgets.QMessageBox.warning(self._view, "Importar",
-                                          "A pasta escolhida não parece ser um run de vídeo (sem _meta/).")
+                                          "A pasta escolhida não parece ser uma extração de vídeo (sem _meta/).")
             return
         self._pending = {"config": None}
         # Run pré-existente (importado) — NUNCA apagar no cancelar.
@@ -87,7 +87,7 @@ class VideoDatasetController(QtCore.QObject):
             QtWidgets.QMessageBox.information(
                 self._view, "Extração",
                 "Nenhuma face foi aceita (tente um limiar menor, det. 960, ou outra âncora).\n"
-                f"Run em: {result.run_dir}")
+                f"Extração em: {result.run_dir}")
             return
         # Run recém-criado NESTA sessão — pode ser descartado no cancelar (com confirmação).
         self._open_review_then_finish(result.run_dir, owns_run=True)
@@ -139,8 +139,8 @@ class VideoDatasetController(QtCore.QObject):
             QtWidgets.QMessageBox.information(
                 self._view, "Dataset de vídeo",
                 "Enriquecimento cancelado ou sem faces válidas.\n"
-                f"O run permanece em:\n{run_dir}\n\nVocê pode reimportá-lo depois "
-                "(Importar Run de Vídeo) sem reprocessar a extração.")
+                f"A extração permanece em:\n{run_dir}\n\nVocê pode reimportá-la depois "
+                "(Importar extração de vídeo) sem reprocessar.")
             return
         parquet = Path(getattr(ds, "_parquet_dir", None) or run_dir) / f"{ds.name}.parquet"
         self._mgr.carregar_dataset_na_tela(ds, path=str(parquet) if parquet.exists() else None)
@@ -171,7 +171,7 @@ class VideoDatasetController(QtCore.QObject):
             res = QtWidgets.QMessageBox.question(
                 self._view, "Descartar extração?",
                 "Revisão cancelada.\n\nDescartar os recortes desta extração? "
-                "Isso APAGA a pasta do run:\n" + str(run_dir),
+                "Isso APAGA a pasta da extração:\n" + str(run_dir),
                 QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
                 QtWidgets.QMessageBox.StandardButton.No)
             if res == QtWidgets.QMessageBox.StandardButton.Yes:
@@ -179,18 +179,18 @@ class VideoDatasetController(QtCore.QObject):
                 return
         QtWidgets.QMessageBox.information(
             self._view, "Revisão",
-            f"Revisão cancelada. O run permanece em:\n{run_dir}\n\n"
-            "Você pode revisá-lo/importá-lo depois (Importar Run de Vídeo).")
+            f"Revisão cancelada. A extração permanece em:\n{run_dir}\n\n"
+            "Você pode revisá-la/importá-la depois (Importar extração de vídeo).")
 
     def _delete_run_dir(self, run_dir: str):
-        """Apaga a pasta do run. Guarda de segurança: só apaga se for mesmo um
-        run de vídeo (tem _meta/) — evita apagar a pasta errada por engano."""
+        """Apaga a pasta da extração. Guarda de segurança: só apaga se for mesmo
+        uma extração de vídeo (tem _meta/) — evita apagar a pasta errada por engano."""
         import shutil
         p = Path(run_dir)
         if not (p / "_meta").is_dir():
             QtWidgets.QMessageBox.warning(
                 self._view, "Descartar",
-                "A pasta não parece um run de vídeo (sem _meta/) — não apaguei por segurança.")
+                "A pasta não parece uma extração de vídeo (sem _meta/) — não apaguei por segurança.")
             return
         try:
             shutil.rmtree(p)
@@ -198,7 +198,7 @@ class VideoDatasetController(QtCore.QObject):
                 self._view, "Descartado", "Os recortes desta extração foram apagados.")
         except Exception as e:
             QtWidgets.QMessageBox.warning(
-                self._view, "Descartar", f"Não foi possível apagar a pasta do run:\n{e}")
+                self._view, "Descartar", f"Não foi possível apagar a pasta da extração:\n{e}")
 
     def _library_dir(self) -> str:
         return str(getattr(getattr(self._config, "paths", None), "library", "") or "")

@@ -29,8 +29,8 @@ class ArquivoRibbon(ResponsiveRibbon):
             tooltip="Criar dataset extraindo faces de um arquivo de vídeo",
         )
         self.btn_import_video_run = ToolbarButton(
-            "Importar Run de Vídeo", "📥",
-            tooltip="Importar um run de extração de vídeo já produzido (revisar + gerar dataset)",
+            "Importar extração de vídeo", "📥",
+            tooltip="Importar uma extração de vídeo já produzida (revisar + gerar dataset)",
         )
         self.btn_load = ToolbarButton("Abrir", "📂", style="primary")
 

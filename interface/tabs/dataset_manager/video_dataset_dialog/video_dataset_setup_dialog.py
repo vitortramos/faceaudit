@@ -29,6 +29,14 @@ _TARGET_COLORS = ["#1D9E75", "#BA7517", "#378ADD", "#D4537E",
                   "#639922", "#7F77DD", "#D85A30", "#E24B4A"]
 _DEFAULT_THRESHOLD = 0.30
 
+# Estado-vazio da prévia (nada carregado): guia o ponto de entrada em vez de
+# deixar um retângulo cinza sem propósito.
+_EMPTY_PREVIEW_MSG = (
+    "🎬 Nenhum vídeo carregado\n\n"
+    "Adicione vídeos no painel ao lado e clique em “Carregar selecionado” "
+    "para navegar os quadros e clicar na face do alvo (âncora)."
+)
+
 
 def _bgr_to_pixmap(bgr: np.ndarray) -> QtGui.QPixmap:
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -53,6 +61,35 @@ class _FrameView(QtWidgets.QGraphicsView):
         self.setMinimumHeight(240)
         self._pix_item: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._rects: List[QtWidgets.QGraphicsRectItem] = []
+        # Overlay de estado-vazio (mensagem centrada quando não há quadro).
+        self._empty = QtWidgets.QLabel("", self)
+        self._empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self._empty.setWordWrap(True)
+        self._empty.setStyleSheet(
+            "color:#8a929e; font-size:14px; background:transparent;")
+        self._empty.hide()
+
+    def set_empty_message(self, text: Optional[str]):
+        """Mostra (ou esconde, se None/'') a mensagem de estado-vazio centrada."""
+        if text:
+            self._empty.setText(text)
+            self._reposition_empty()
+            self._empty.show()
+            self._empty.raise_()
+        else:
+            self._empty.hide()
+
+    def _reposition_empty(self):
+        m = 28
+        self._empty.setGeometry(m, m, max(0, self.width() - 2 * m),
+                                max(0, self.height() - 2 * m))
+
+    def clear_frame(self):
+        """Esvazia a cena (some com o último quadro) — usado ao remover o vídeo
+        carregado ou trocar o modelo, antes de reexibir o estado-vazio."""
+        self._scene.clear()
+        self._pix_item = None
+        self._rects = []
 
     def set_frame(self, pixmap: QtGui.QPixmap):
         self._scene.clear()
@@ -60,6 +97,7 @@ class _FrameView(QtWidgets.QGraphicsView):
         self._pix_item = self._scene.addPixmap(pixmap)
         self._scene.setSceneRect(QtCore.QRectF(pixmap.rect()))
         self.fitInView(self._pix_item, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        self._empty.hide()
 
     def set_boxes(self, boxes):
         """boxes: iterável de (x1, y1, x2, y2, color[, label]). O 6º elemento
@@ -96,6 +134,7 @@ class _FrameView(QtWidgets.QGraphicsView):
     def resizeEvent(self, ev):
         if self._pix_item is not None:
             self.fitInView(self._pix_item, QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        self._reposition_empty()
         super().resizeEvent(ev)
 
 
@@ -509,6 +548,16 @@ class _VideoRowWidget(QtWidgets.QWidget):
         finally:
             self.te_start.blockSignals(False); self.te_end.blockSignals(False)
 
+    def set_selected(self, selected: bool):
+        """Ajusta a cor dos rótulos (nome/Início/Fim) para contrastar com o
+        fundo — pretos sobre a seleção azul ficavam ilegíveis. Os QTimeEdit têm
+        fundo próprio, não precisam."""
+        role = (QtGui.QPalette.ColorRole.HighlightedText if selected
+                else QtGui.QPalette.ColorRole.WindowText)
+        css = f"color: {self.palette().color(role).name()};"
+        for lbl in self.findChildren(QtWidgets.QLabel):
+            lbl.setStyleSheet(css)
+
 
 class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def __init__(self, parent=None, *, use_gpu: bool = False, model: Optional[str] = None,
@@ -536,6 +585,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._video_windows: dict = {}    # path → (start_s, end_s) — só quando PARCIAL
         self._video_durations: dict = {}  # path → duração em segundos (probe no add)
         self._syncing_window = False      # evita loop scrubber ↔ campos da linha
+        self._name_conflict = False       # nome da extração colide com pasta existente
         self._current_frame: Optional[np.ndarray] = None
         self._current_dets: list = []
         # Modo "imagem de referência": quando True, o quadro exibido é uma foto
@@ -592,48 +642,40 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._columns.setStretchFactor(0, 3)
         self._columns.setStretchFactor(1, 2)
 
-        # ── Grupo Vídeos (direita): lista multivídeo + carregar ──
+        # ── Grupo Vídeos (direita): lista multivídeo + botões numa linha ──
         g_src = QtWidgets.QGroupBox("Vídeos", self)
         gs = QtWidgets.QVBoxLayout(g_src)
-        add_row = QtWidgets.QHBoxLayout()
-        btn_add_videos = QtWidgets.QPushButton("➕ Adicionar vídeos…", self)
-        btn_add_videos.setToolTip(
-            "Escolhe um ou mais arquivos de vídeo. O alvo é procurado em <b>TODOS</b> "
-            "eles, gerando um único dataset (cada face marcada com seu vídeo de origem).")
-        btn_add_videos.clicked.connect(self._on_add_videos)
-        add_row.addWidget(btn_add_videos)
-        add_row.addStretch()
-        gs.addLayout(add_row)
         self.lst_videos = QtWidgets.QListWidget(self)
-        self.lst_videos.setMaximumHeight(132)
+        self.lst_videos.setMinimumHeight(96)   # cresce para preencher a coluna
         self.lst_videos.setToolTip(
             "Vídeos do caso. Defina o trecho (início/fim) direto na linha — sem "
             "carregar. Duplo-clique (ou Carregar) abre um na prévia para navegar e "
             "ancorar; a extração percorre todos.")
         self.lst_videos.itemDoubleClicked.connect(lambda _it: self._on_load_selected())
-        gs.addWidget(self.lst_videos)
+        self.lst_videos.itemSelectionChanged.connect(self._refresh_video_row_selection)
+        gs.addWidget(self.lst_videos, 1)
+        # Uma linha só: Adicionar · Carregar · … · Remover (destrutivo à direita,
+        # separado por um espaçador para evitar clique acidental).
         vbtn = QtWidgets.QHBoxLayout()
+        btn_add_videos = QtWidgets.QPushButton("➕ Adicionar vídeos…", self)
+        btn_add_videos.setToolTip(
+            "Escolhe um ou mais arquivos de vídeo. O alvo é procurado em <b>TODOS</b> "
+            "eles, gerando um único dataset (cada face marcada com seu vídeo de origem).")
+        btn_add_videos.clicked.connect(self._on_add_videos)
         self.btn_load = QtWidgets.QPushButton("Carregar selecionado", self)
         self.btn_load.setToolTip(
             "Abre o vídeo selecionado na prévia (inicializa o detector com a "
             "Resolução/Confiança atuais) para navegar e ancorar.")
         self.btn_load.clicked.connect(self._on_load_selected)
-        btn_rm_video = QtWidgets.QPushButton("Remover", self)
-        btn_rm_video.setToolTip("Remove o vídeo selecionado da lista.")
-        btn_rm_video.clicked.connect(self._on_remove_video)
+        self.btn_rm_video = QtWidgets.QPushButton("Remover selecionado", self)
+        self.btn_rm_video.setToolTip("Remove o vídeo selecionado da lista.")
+        self.btn_rm_video.clicked.connect(self._on_remove_video)
+        vbtn.addWidget(btn_add_videos)
         vbtn.addWidget(self.btn_load)
-        vbtn.addWidget(btn_rm_video)
         vbtn.addStretch()
+        vbtn.addWidget(self.btn_rm_video)
         gs.addLayout(vbtn)
-        case_row = QtWidgets.QHBoxLayout()
-        case_row.addWidget(QtWidgets.QLabel("Nome do caso:", self))
-        self.txt_case = QtWidgets.QLineEdit(self)
-        self.txt_case.setPlaceholderText("opcional — nomeia a run com vários vídeos")
-        self.txt_case.setToolTip(
-            "Nome da run quando há mais de um vídeo (default = nome do 1º vídeo).")
-        case_row.addWidget(self.txt_case, 1)
-        gs.addLayout(case_row)
-        right.addWidget(g_src)
+        right.addWidget(g_src, 5)   # expande na vertical (muitos vídeos visíveis)
 
         # Widgets de detecção — montados na barra "Detecção" (esquerda, sob a prévia).
         self.cmb_model = QtWidgets.QComboBox(self)
@@ -665,6 +707,13 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "falsos positivos. Padrão 0.50.")
 
         # View do quadro + slider
+        # Cabeçalho: o que está CARREGADO na prévia (≠ do que está selecionado
+        # na lista à direita — o vídeo só carrega ao clicar "Carregar selecionado").
+        self.lbl_loaded = QtWidgets.QLabel(self)
+        self.lbl_loaded.setWordWrap(True)
+        left.addWidget(self.lbl_loaded)
+        self._set_loaded_label(None)
+
         self.view = _FrameView(self)
         self.view.setToolTip(
             "Quadro atual do vídeo. Depois de <b>Detectar</b>, clique sobre a face "
@@ -672,6 +721,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "procurar no vídeo inteiro.")
         self.view.clicked.connect(self._on_view_clicked)
         left.addWidget(self.view, 1)
+        self.view.set_empty_message(_EMPTY_PREVIEW_MSG)
 
         # Timeline única: 3 alças arrastáveis (início · quadro atual · fim).
         self.scrubber = _RangeScrubber(self)
@@ -749,7 +799,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._targets_layout = QtWidgets.QVBoxLayout(self._targets_container)
         self._targets_layout.setContentsMargins(0, 0, 0, 0)
         self._targets_layout.setSpacing(4)
-        gt.addWidget(self._targets_container)
+        self._targets_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+        # Área rolável: as linhas de alvo ficam no topo e a lista cresce/rola
+        # em vez de empurrar a Extração para fora quando há muitos alvos.
+        tgt_scroll = QtWidgets.QScrollArea(self)
+        tgt_scroll.setWidgetResizable(True)
+        tgt_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        tgt_scroll.setWidget(self._targets_container)
+        gt.addWidget(tgt_scroll, 1)
         hint = QtWidgets.QLabel(
             "Clique numa face do quadro para ancorar o alvo <b>ativo</b> (destacado). "
             "O alvo ativo recebe a próxima âncora; clique numa linha para trocá-lo.", self)
@@ -757,11 +814,50 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         hint.setWordWrap(True)
         hint.setStyleSheet("color:#888; font-size:11px;")
         gt.addWidget(hint)
-        right.addWidget(g_tgt)
+        right.addWidget(g_tgt, 3)   # expande junto dos Vídeos; Extração fica compacta
 
-        # ── Grupo Extração (direita) ──
-        g_ext = QtWidgets.QGroupBox("Extração", self)
+        # ── Grupo Extração de vídeo (direita) ──
+        g_ext = QtWidgets.QGroupBox("Extração de vídeo", self)
         fext = QtWidgets.QFormLayout(g_ext)
+
+        # 1) Diretório de saída
+        self.txt_output = QtWidgets.QLineEdit(self)
+        self.txt_output.setPlaceholderText("Pasta onde a extração será criada")
+        self.txt_output.setToolTip(
+            "Pasta <b>onde a subpasta da extração será criada</b> (uma por "
+            "execução, nomeada pelo <i>Nome da extração</i>). Dentro dela ficam os "
+            "recortes por rótulo, as faces alinhadas (<i>_aligned/</i>) e a "
+            "proveniência (<i>_meta/</i>).")
+        self.txt_output.setText(self._output_dir or "")   # antes de conectar o sinal
+        btn_run_out = QtWidgets.QPushButton("Procurar…", self)
+        btn_run_out.setToolTip("Escolhe o diretório de saída da extração.")
+        btn_run_out.clicked.connect(self._on_browse_output)
+        run_out_w = QtWidgets.QWidget(self)
+        run_out_h = QtWidgets.QHBoxLayout(run_out_w)
+        run_out_h.setContentsMargins(0, 0, 0, 0)
+        run_out_h.addWidget(self.txt_output, 1)
+        run_out_h.addWidget(btn_run_out)
+
+        # 2) Nome da extração — vira a pasta criada; validado contra colisão.
+        self.txt_case = QtWidgets.QLineEdit(self)
+        self.txt_case.setPlaceholderText("nome da pasta desta extração (ex.: nome do caso)")
+        self.txt_case.setToolTip(
+            "<b>Nome da extração</b> — vira a pasta criada dentro do diretório de "
+            "saída (a rastreabilidade fica em <i>_meta/</i>, não no nome). Default = "
+            "nome do 1º vídeo; se já existir uma pasta com esse nome, um número é "
+            "acrescentado. Não sobrescreve extrações anteriores.")
+        self.lbl_name_warn = QtWidgets.QLabel("", self)
+        self.lbl_name_warn.setWordWrap(True)
+        self.lbl_name_warn.setStyleSheet("color:#c62828; font-size:11px;")
+        self.lbl_name_warn.setVisible(False)
+        name_w = QtWidgets.QWidget(self)
+        name_v = QtWidgets.QVBoxLayout(name_w)
+        name_v.setContentsMargins(0, 0, 0, 0)
+        name_v.setSpacing(2)
+        name_v.addWidget(self.txt_case)
+        name_v.addWidget(self.lbl_name_warn)
+
+        # 3) Amostragem (quadros/s)
         self.spn_fps = QtWidgets.QDoubleSpinBox(self)
         self.spn_fps.setRange(0.1, 30.0)
         self.spn_fps.setDecimals(1)
@@ -780,6 +876,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         fps_h.setContentsMargins(0, 0, 0, 0)
         fps_h.addWidget(self.spn_fps)
         fps_h.addWidget(self.lbl_fps_hint, 1)
+
+        # 4) Margem do recorte
         self.spn_margin = QtWidgets.QDoubleSpinBox(self)
         self.spn_margin.setRange(1.0, 5.0)
         self.spn_margin.setSingleStep(0.5)
@@ -789,29 +887,20 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "(não é em pixels). 2.0 = recorte com o dobro da largura/altura da "
             "caixa; 1.0 = caixa original; abaixo de 1.0 corta a face. Afeta só a "
             "imagem salva para laudo/custódia — não o embedding (face alinhada 112×112).")
-        self.txt_output = QtWidgets.QLineEdit(self)
-        self.txt_output.setText(self._output_dir or "")
-        self.txt_output.setPlaceholderText("Pasta onde o run será criado")
-        self.txt_output.setToolTip(
-            "Pasta <b>onde a subpasta do run será criada</b> (uma por execução: "
-            "nome do vídeo + etiqueta). Dentro dela ficam os recortes por rótulo, "
-            "as faces alinhadas (<i>_aligned/</i>) e a proveniência (<i>_meta/</i>).")
-        btn_run_out = QtWidgets.QPushButton("Procurar…", self)
-        btn_run_out.setToolTip("Escolhe a pasta de saída do run.")
-        btn_run_out.clicked.connect(self._on_browse_output)
-        run_out_w = QtWidgets.QWidget(self)
-        run_out_h = QtWidgets.QHBoxLayout(run_out_w)
-        run_out_h.setContentsMargins(0, 0, 0, 0)
-        run_out_h.addWidget(self.txt_output, 1)
-        run_out_h.addWidget(btn_run_out)
+
+        fext.addRow("Diretório de saída:", run_out_w)
+        fext.addRow("Nome da extração:", name_w)
         fext.addRow("Amostragem (quadros/s):", fps_w)
         fext.addRow("Margem do recorte:", self.spn_margin)
-        fext.addRow("Pasta do run:", run_out_w)
-        right.addWidget(g_ext)
-        right.addStretch()
+        right.addWidget(g_ext, 0)
+
+        # Valida o nome da extração quando o diretório ou o nome mudam (colisão de
+        # pasta → aviso + bloqueia Extrair). Conectado após o setText inicial.
+        self.txt_output.textChanged.connect(lambda _t: self._revalidate_extraction_name())
+        self.txt_case.textChanged.connect(lambda _t: self._revalidate_extraction_name())
 
         # Modo + Dataset migraram para a janela de revisão (configurados lá, pois
-        # "Importar Run de Vídeo" abre direto naquela janela). Aqui só se extrai.
+        # "Importar extração de vídeo" abre direto naquela janela). Aqui só se extrai.
 
         # Prévia + botões
         self.lbl_preview = QtWidgets.QLabel("", self)
@@ -881,6 +970,70 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             existing.add(p)
         if self.lst_videos.currentRow() < 0 and self.lst_videos.count() > 0:
             self.lst_videos.setCurrentRow(self.lst_videos.count() - 1)
+        self._suggest_extraction_name()   # pré-preenche um nome de extração livre
+        self._revalidate_extraction_name()  # revalida colisão mesmo se o nome já estava preenchido
+
+    # ─────────────────────────── nome da extração ───────────────────────────
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """Sanitiza para nome de pasta (espelha `_safe_run_name` do serviço)."""
+        safe = "".join(c if (c.isalnum() or c in "-_.") else "_"
+                       for c in (name or "").strip())
+        return safe or "extracao"
+
+    def _default_extraction_name(self) -> str:
+        """Nome default: stem do 1º vídeo (ou do vídeo carregado)."""
+        paths = self._video_paths()
+        if paths:
+            return Path(paths[0]).stem
+        return Path(self._video_path).stem if self._video_path else ""
+
+    def _free_name(self, base: str) -> str:
+        """`base` livre no diretório de saída, ou `base_2`, `base_3`… se a pasta
+        já existir (mesma desambiguação da rede de segurança do serviço)."""
+        out = self.txt_output.text().strip() or self._output_dir or ""
+        if not out or not base:
+            return base
+        root = Path(out)
+        if not (root / self._safe_name(base)).exists():
+            return base
+        i = 2
+        while (root / self._safe_name(f"{base}_{i}")).exists():
+            i += 1
+        return f"{base}_{i}"
+
+    def _suggest_extraction_name(self):
+        """Pré-preenche 'Nome da extração' com um default livre quando o campo
+        está vazio (não sobrescreve o que o usuário digitou)."""
+        if self.txt_case.text().strip():
+            return
+        base = self._default_extraction_name()
+        if base:
+            self.txt_case.setText(self._free_name(base))   # dispara revalidação
+
+    def _effective_extraction_name(self) -> str:
+        """Nome que a extração usará: o digitado ou o default (stem do 1º vídeo)."""
+        return self.txt_case.text().strip() or self._default_extraction_name()
+
+    def _revalidate_extraction_name(self):
+        """Bloqueia Extrair e mostra aviso quando a pasta da extração já existe no
+        diretório de saída — não sobrescrevemos extrações anteriores. Nome vazio
+        cai no default (stem do 1º vídeo) e é validado do mesmo jeito."""
+        name = self._effective_extraction_name()
+        out = self.txt_output.text().strip() or self._output_dir or ""
+        problem = ""
+        if name and out and (Path(out) / self._safe_name(name)).exists():
+            problem = (f"Já existe uma extração “{self._safe_name(name)}” nesse "
+                       "diretório — escolha outro nome (não sobrescrevemos).")
+        self._name_conflict = bool(problem)
+        self.lbl_name_warn.setText(problem)
+        self.lbl_name_warn.setVisible(bool(problem))
+        self._refresh_extract_enabled()
+
+    def _refresh_extract_enabled(self):
+        """Extrair só habilita com ≥1 âncora e sem colisão de nome de extração."""
+        if hasattr(self, "btn_extract"):
+            self.btn_extract.setEnabled(self._any_anchor() and not self._name_conflict)
 
     def _probe_duration_secs(self, path) -> float:
         """Duração em segundos via metadados do cv2 — sem carregar o vídeo nem o
@@ -904,6 +1057,32 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             if it.data(QtCore.Qt.ItemDataRole.UserRole) == path:
                 return self.lst_videos.itemWidget(it)
         return None
+
+    def _refresh_video_row_selection(self):
+        """Rótulos da linha selecionada usam a cor de texto da seleção (legível
+        sobre o azul); as demais voltam ao preto padrão."""
+        for i in range(self.lst_videos.count()):
+            it = self.lst_videos.item(i)
+            w = self.lst_videos.itemWidget(it)
+            if isinstance(w, _VideoRowWidget):
+                w.set_selected(it.isSelected())
+
+    def _set_loaded_label(self, name, *, is_image: bool = False):
+        """Cabeçalho da prévia: nome do vídeo/imagem CARREGADO (não o que está
+        SELECIONADO na lista — só carrega ao clicar “Carregar selecionado”)."""
+        if not name:
+            self.lbl_loaded.setText(
+                "Nenhum vídeo carregado — selecione um e clique em “Carregar selecionado”.")
+            self.lbl_loaded.setStyleSheet(
+                "background:#f4f4f4; border:1px solid #e0e0e0; border-radius:4px; "
+                "padding:4px 8px; color:#888; font-style:italic;")
+        else:
+            kind, icon, part = (("Imagem", "🖼", "carregada") if is_image
+                                else ("Vídeo", "🎬", "carregado"))
+            self.lbl_loaded.setText(f"{icon} {kind} {part}: {name}")
+            self.lbl_loaded.setStyleSheet(
+                "background:#e8f0fe; border:1px solid #c5d9f7; border-radius:4px; "
+                "padding:4px 8px; color:#1a3a6b; font-weight:bold;")
 
     def _on_row_window_changed(self, path: str, start_s: float, end_s: float):
         """Campos de trecho de uma linha mudaram: persiste a janela (parcial-only)
@@ -951,7 +1130,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.btn_detect.setEnabled(False)
             self.btn_preview.setEnabled(False)
             self.view.set_boxes([])
+            self.view.clear_frame()
+            self.view.set_empty_message(_EMPTY_PREVIEW_MSG)
             self.lbl_frame.setText("—")
+            self._set_loaded_label(None)
+        # O default de nome pode ter mudado (removeu o 1º vídeo); re-sugere e
+        # revalida a colisão de pasta.
+        self._suggest_extraction_name()
+        self._revalidate_extraction_name()
 
     def _apply_window_to_scrubber(self, path: str):
         """Reflete a janela do vídeo nas alças do scrubber (ao carregar ou ao
@@ -970,7 +1156,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
 
     def _on_browse_output(self):
         start = self.txt_output.text().strip() or self._output_dir or ""
-        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Pasta de saída do run de vídeo", start)
+        d = QtWidgets.QFileDialog.getExistingDirectory(self, "Diretório de saída da extração de vídeo", start)
         if d:
             self.txt_output.setText(d)
 
@@ -1009,8 +1195,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.btn_preview.setEnabled(False)
         self.btn_extract.setEnabled(False)
         self.view.set_boxes([])
+        self.view.clear_frame()
+        self.view.set_empty_message(
+            "🔄 Modelo alterado\n\n"
+            "Clique em “Carregar selecionado” para recarregar o vídeo com o novo "
+            "modelo — as âncoras foram invalidadas.")
         self._refresh_targets_count()
-        self.lbl_frame.setText("Modelo alterado — clique em “Carregar vídeo” novamente.")
+        self.lbl_frame.setText("Modelo alterado — clique em “Carregar selecionado” novamente.")
+        self._set_loaded_label(None)   # serviço/quadro invalidados → nada carregado
 
     def _apply_initial_size(self):
         """Abre num tamanho confortável para as DUAS colunas: largura suficiente
@@ -1064,7 +1256,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             row.clear_anchor()
             self._redraw_boxes()
             self._refresh_targets_count()
-            self.btn_extract.setEnabled(self._any_anchor())
+            self._refresh_extract_enabled()
             return
         self._target_rows.remove(row)
         self._targets_layout.removeWidget(row)
@@ -1075,7 +1267,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self._set_active_row(self._target_rows[-1])
         self._redraw_boxes()
         self._refresh_targets_count()
-        self.btn_extract.setEnabled(self._any_anchor())
+        self._refresh_extract_enabled()
 
     def _set_active_row(self, row: "_TargetRowWidget"):
         self._active_row = row
@@ -1116,7 +1308,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             row.refresh_anchor_status()
         self._redraw_boxes()
         self._refresh_targets_count()
-        self.btn_extract.setEnabled(self._any_anchor())
+        self._refresh_extract_enabled()
 
     def _det_size(self) -> int:
         return int(self.spn_det_size.value())
@@ -1173,6 +1365,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         QtWidgets.QApplication.restoreOverrideCursor()
 
         self._video_path = path
+        self._set_loaded_label(Path(path).name)
         self._video_infos[path] = self._info
         self._anchor_source_is_image = False
         total = max(1, self._info.frame_count_reported)
@@ -1342,7 +1535,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             row.set_anchor(target, det_idx)
         self._redraw_boxes()
         self._refresh_targets_count()
-        self.btn_extract.setEnabled(self._any_anchor())
+        self._refresh_extract_enabled()
 
     def _current_anchor_source(self) -> dict:
         """Proveniência da fonte do quadro atualmente exibido (vídeo ou foto)."""
@@ -1384,6 +1577,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # é do tipo foto (frame_index None). Mover o scrubber volta ao vídeo.
         self._anchor_source_is_image = True
         self._anchor_image_path = path
+        self._set_loaded_label(Path(path).name, is_image=True)
         self._current_frame = img
         self.view.set_frame(_bgr_to_pixmap(img))
         self.lbl_frame.setText(
@@ -1489,6 +1683,17 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
                 self, "Rótulos repetidos",
                 "Cada alvo precisa de um rótulo único — eles viram identidades distintas no dataset.")
             return
+        # Rede de segurança: revalida o nome da extração (a pasta pode ter surgido
+        # entre a última edição e agora) — nunca sobrescreve extração anterior.
+        self._revalidate_extraction_name()
+        if self._name_conflict:
+            QtWidgets.QMessageBox.warning(
+                self, "Nome da extração",
+                "Já existe uma extração com esse nome no diretório de saída. "
+                "Escolha outro nome antes de extrair.")
+            self.txt_case.setFocus()
+            self.txt_case.selectAll()
+            return
         self.accept()
 
     # ──────────────────────────── resultados ────────────────────────────
@@ -1532,7 +1737,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         return VideoExtractionConfig(
             video_path=(paths[0] if paths else ""), video_paths=paths,
             video_windows=video_windows,
-            case_name=(self.txt_case.text().strip() or None),
+            # "Nome da extração" vira o nome da pasta; vazio cai no default
+            # (stem do 1º vídeo). Sem hash: a rastreabilidade fica em _meta/.
+            case_name=(self._effective_extraction_name() or None),
             output_root=out,
             target_fps=float(self.spn_fps.value()),
             start_s=0.0, end_s=None,    # janela é por vídeo (video_windows)

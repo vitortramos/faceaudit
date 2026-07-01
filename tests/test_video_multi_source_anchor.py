@@ -381,3 +381,30 @@ def test_row_fields_sync_scrubber(app, monkeypatch):
     row.te_start.setTime(QtCore.QTime(0, 0, 3))        # 3 s → quadro 30
     row.te_end.setTime(QtCore.QTime(0, 0, 7))          # 7 s → quadro 70
     assert dlg.scrubber.start() == 30 and dlg.scrubber.end() == 70
+
+
+def test_row_selected_labels_colored(app):
+    # Selecionar a linha recolore os rótulos (nome/Início/Fim) — pretos sobre o
+    # azul da seleção ficavam ilegíveis.
+    from interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog import (
+        _VideoRowWidget,
+    )
+    row = _VideoRowWidget(None, path="C:/v/x.mp4", duration_s=100.0)
+    labels = row.findChildren(QtWidgets.QLabel)
+    assert labels
+    row.set_selected(True)
+    assert all("color:" in lbl.styleSheet() for lbl in labels)
+    row.set_selected(False)
+    assert all("color:" in lbl.styleSheet() for lbl in labels)
+
+
+def test_loaded_label_states(app):
+    # Cabeçalho da prévia mostra o que está CARREGADO (≠ do selecionado).
+    dlg = _setup_dialog_plain()
+    assert "Nenhum" in dlg.lbl_loaded.text()              # nada carregado no início
+    dlg._set_loaded_label("teste.mp4")
+    assert "Vídeo carregado" in dlg.lbl_loaded.text() and "teste.mp4" in dlg.lbl_loaded.text()
+    dlg._set_loaded_label("foto.jpg", is_image=True)
+    assert "Imagem carregada" in dlg.lbl_loaded.text() and "foto.jpg" in dlg.lbl_loaded.text()
+    dlg._set_loaded_label(None)
+    assert "Nenhum" in dlg.lbl_loaded.text()

@@ -427,9 +427,24 @@ class VideoFrameFaceExtractionService:
 
     @staticmethod
     def _safe_run_name(name: str) -> str:
-        """Nome de pasta seguro para a run multivídeo (a partir do 'nome do caso')."""
+        """Nome de pasta seguro para a extração (a partir do 'Nome da extração')."""
         safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (name or "").strip())
-        return safe or "caso"
+        return safe or "extracao"
+
+    @staticmethod
+    def _unique_run_dir(root: Path, name: str) -> Path:
+        """Pasta da extração dentro de `root`, garantindo NÃO sobrescrever uma já
+        existente (o nome não carrega hash — a proveniência fica em _meta/). Se
+        `name` já existe, desambigua com sufixo numérico (name_2, name_3…). A UI
+        já valida o nome antes de extrair; isto é a rede de segurança contra
+        corrida/sobrescrita silenciosa (evita `mkdir(exist_ok=True)` mascarar
+        uma extração anterior)."""
+        if not (root / name).exists():
+            return root / name
+        i = 2
+        while (root / f"{name}_{i}").exists():
+            i += 1
+        return root / f"{name}_{i}"
 
     @staticmethod
     def _primary_video_anchor_source(target):
@@ -471,13 +486,13 @@ class VideoFrameFaceExtractionService:
             [i.sha256 for i in infos], config.to_manifest_dict(),
             [t.anchor_embedding_fingerprint() for t in targets],
         )
-        if len(video_paths) == 1:
-            run_name = f"{Path(video_paths[0]).stem}_{run_tag}"
-        else:
-            case = (config.case_name or "").strip() or Path(video_paths[0]).stem
-            run_name = f"{self._safe_run_name(case)}_{run_tag}"
-        run_dir = Path(config.output_root) / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
+        # Nome da pasta = "Nome da extração" (case_name) ou stem do 1º vídeo, SEM
+        # hash: a rastreabilidade fica em _meta/. `run_id` preserva o hash para a
+        # proveniência. Nunca sobrescreve uma extração anterior (desambigua).
+        base = (config.case_name or "").strip() or Path(video_paths[0]).stem
+        run_name = self._safe_run_name(base)
+        run_dir = self._unique_run_dir(Path(config.output_root), run_name)
+        run_dir.mkdir(parents=True, exist_ok=False)
         run_id = run_tag
 
         n_sampled = n_det_total = n_accepted = n_rejected = n_no_det = 0
