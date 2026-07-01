@@ -31,6 +31,7 @@ from faceaudit.services import video_frame_face_extraction_service as svc_mod
 from faceaudit.services.video_frame_face_extraction_service import (
     VideoFrameFaceExtractionService,
     _gate_decision,
+    _pose_to_dict,
 )
 
 DIM = 8
@@ -58,7 +59,7 @@ class _FakeEngine:
         return faces
 
 
-def _face(face_id, bbox, det_score):
+def _face(face_id, bbox, det_score, pose=(0.0, 0.0, 0.0)):
     aligned = np.zeros((112, 112, 3), dtype=np.uint8)
     aligned[0, 0, :] = face_id  # id em todos os canais sobrevive ao swap RGB↔BGR
     return {
@@ -67,7 +68,7 @@ def _face(face_id, bbox, det_score):
         "bbox": np.asarray(bbox, dtype=float),
         "keypoints": np.zeros((5, 2), dtype=float),
         "det_score": float(det_score),
-        "pose": (0.0, 0.0, 0.0),
+        "pose": pose,   # ForensicFace detect_and_align: cru = [pitch, yaw, roll]
         "gender": "M",
         "age": 30,
     }
@@ -458,3 +459,27 @@ def test_preview_capture_switches_on_new_path(tmp_path):
     assert service._pv_cap is not cap_a
     assert service._pv_cap_path == str(b)
     service.close_preview_cap()
+
+
+# ─────────── pose: ordem yaw/pitch/roll (ForensicFace cru = [pitch, yaw, roll]) ───────────
+
+def test_pose_to_dict_reorders_pitch_yaw():
+    # detect_and_align devolve [pitch, yaw, roll]; _pose_to_dict deve mapear
+    # para {yaw, pitch, roll} — NÃO ler pose[0] como yaw.
+    assert _pose_to_dict([10.0, 20.0, 30.0]) == {"yaw": 20.0, "pitch": 10.0, "roll": 30.0}
+    assert _pose_to_dict(None) is None
+    assert _pose_to_dict("lixo") is None
+    assert _pose_to_dict([1.0, 2.0]) is None          # tamanho errado → None
+
+
+def test_extract_sidecar_pose_order(video_path, tmp_path):
+    # End-to-end: face com pose crua [pitch=10, yaw=20, roll=30] → o sidecar
+    # deve gravar yaw=20, pitch=10, roll=30 (sem a troca yaw↔pitch).
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(
+        lambda call: [_face(0, [10, 10, 40, 40], 0.95, pose=(10.0, 20.0, 30.0))], reg)
+    res = service.extract(_cfg(video_path, tmp_path), [_target(threshold=0.5)])
+    sidecars = list((Path(res.run_dir) / "_meta").glob("alvo_v*_f*.json"))
+    assert sidecars
+    pose = json.loads(sidecars[0].read_text(encoding="utf-8"))["detection"]["pose"]
+    assert pose == {"yaw": 20.0, "pitch": 10.0, "roll": 30.0}

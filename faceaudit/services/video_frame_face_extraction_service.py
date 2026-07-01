@@ -81,10 +81,15 @@ def _gate_decision(
 
 
 def _pose_to_dict(pose: Any) -> Optional[Dict[str, float]]:
+    # O `detect_and_align` do ForensicFace devolve a pose CRUA na ordem
+    # [pitch, yaw, roll] (matrix2angle) — NÃO (yaw, pitch, roll). Só o
+    # process_image reordena via pose_angles; este caminho (vídeo) lê o cru,
+    # então desempacotamos na ordem certa aqui. Ler como (yaw, pitch, roll)
+    # trocava yaw↔pitch no dataset de vídeo (roll ficava correto).
     if pose is None:
         return None
     try:
-        yaw, pitch, roll = pose
+        pitch, yaw, roll = pose
         return {"yaw": float(yaw), "pitch": float(pitch), "roll": float(roll)}
     except Exception:
         return None
