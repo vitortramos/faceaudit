@@ -21,7 +21,13 @@ from faceaudit.models.video.face_provenance import FaceProvenance
 
 
 RUN_SCHEMA = "faceaudit.video_extraction.run_manifest"
-RUN_SCHEMA_VERSION = 1
+# v2: campos aditivos de reprodutibilidade (reference_images, timestamps de
+# início/fim/duração, versão+commit do app, proveniência completa das âncoras)
+# + cópia legível na raiz. Retrocompatível: leitores usam .get().
+RUN_SCHEMA_VERSION = 2
+
+# Nome ASCII (sem diacríticos) por robustez de FS/sync/zip cross-plataforma.
+ROOT_MANIFEST_NAME = "manifesto_extracao.json"
 
 
 def _json_default(o: Any) -> Any:
@@ -36,6 +42,23 @@ def _json_default(o: Any) -> Any:
     raise TypeError(f"Tipo não serializável em JSON: {type(o)!r}")
 
 
+def mirror_manifest_to_root(run_dir) -> None:
+    """Reflete o manifesto autoritativo (_meta/_run_*.json) na cópia legível da
+    raiz (<run_dir>/manifesto_extracao.json). DEVE ser chamado após QUALQUER
+    mutação do manifesto (fim da revisão, importação/enriquecimento) — senão a
+    cópia da raiz congela no estado de extração e engana o perito (mostraria
+    review_status=not_started / sem final_dataset). Best-effort."""
+    try:
+        run_dir = Path(run_dir)
+        metas = sorted((run_dir / "_meta").glob("_run_*.json"))
+        if not metas:
+            return
+        (run_dir / ROOT_MANIFEST_NAME).write_text(
+            metas[0].read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception as e:
+        print(f"⚠️ [video_provenance] falha ao sincronizar cópia do manifesto na raiz: {e}")
+
+
 class VideoProvenanceWriter:
     """Escreve incrementalmente os artefatos de um run. Use como context
     manager para garantir o fechamento dos arquivos JSONL."""
@@ -47,6 +70,10 @@ class VideoProvenanceWriter:
         self.meta_dir.mkdir(parents=True, exist_ok=True)
 
         self.manifest_path = self.meta_dir / f"_run_{run_id}.json"
+        # Cópia legível do manifesto na RAIZ da pasta (nome óbvio p/ o perito
+        # achar sem entrar em _meta/). O _meta/_run_<id>.json continua sendo o
+        # autoritativo lido pela importação; a cópia é inerte para ela.
+        self.root_manifest_path = self.run_dir / ROOT_MANIFEST_NAME
         self.decisions_path = self.meta_dir / f"_decisions_{run_id}.jsonl"
         self.frames_path = self.meta_dir / f"_frames_{run_id}.jsonl"
         self.embeddings_path = self.run_dir / f"_embeddings_{run_id}.parquet"
@@ -151,8 +178,12 @@ class VideoProvenanceWriter:
             "run_id": self.run_id,
             **manifest,
         }
-        self.manifest_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default),
-            encoding="utf-8",
-        )
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default)
+        self.manifest_path.write_text(text, encoding="utf-8")
+        # Cópia idêntica na raiz (visibilidade/reprodutibilidade). Best-effort:
+        # nunca deixa a extração falhar só por causa da cópia.
+        try:
+            self.root_manifest_path.write_text(text, encoding="utf-8")
+        except Exception as e:
+            print(f"⚠️ [VideoProvenanceWriter] falha ao gravar cópia do manifesto na raiz: {e}")
         return self.manifest_path

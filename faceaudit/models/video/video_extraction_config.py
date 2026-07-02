@@ -65,6 +65,13 @@ class VideoExtractionConfig(JSONSerializableMixin):
     save_decoded_frame_hash: bool = True     # default ON só para aceitos
     run_tag: Optional[str] = None            # sufixo do run/parquet; None → derivado
 
+    # --- Proveniência (reprodutibilidade; NÃO afeta a extração) ---
+    # Lista COMPLETA das imagens de referência carregadas na janela — inclusive
+    # as que não viraram âncora de nenhum alvo. Só alimenta o manifesto; fica
+    # FORA de `to_manifest_dict()`/run_tag (não muda a saída da extração nem o
+    # run_id).
+    reference_images: List[str] = field(default_factory=list)
+
     def resolved_video_paths(self) -> List[str]:
         """Lista efetiva de vídeos a percorrer (multivídeo); cai no `video_path`
         único quando `video_paths` está vazio (compat)."""

@@ -418,6 +418,107 @@ def test_extract_multivideo_per_video_window(tmp_path):
     assert 1 <= len(v0) < len(v1c)   # a janela reduziu o vídeo 0
 
 
+# ─────────── manifesto de reprodutibilidade (schema v2) ───────────
+
+def test_reference_images_field_is_provenance_only():
+    # Fica fora de to_manifest_dict()/run_tag (não muda a saída da extração).
+    cfg = VideoExtractionConfig(video_path="v", output_root="o")
+    assert cfg.reference_images == []
+    assert "reference_images" not in cfg.to_manifest_dict()
+    cfg2 = VideoExtractionConfig(video_path="v", output_root="o",
+                                 reference_images=["a.png", "b.png"])
+    assert cfg2.reference_images == ["a.png", "b.png"]
+    assert "reference_images" not in cfg2.to_manifest_dict()
+
+
+def test_extract_manifest_v2_fields_and_root_copy(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    ref = tmp_path / "foto_ref.png"
+    imwrite_unicode_safe(ref, np.zeros((8, 8, 3), np.uint8))
+    cfg = _cfg(video_path, tmp_path, reference_images=[str(ref)])
+    res = service.extract(cfg, [_target(threshold=0.5)])
+
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 2
+    # início/fim/duração da extração
+    assert manifest["extraction_started_at_utc"] and manifest["extraction_ended_at_utc"]
+    assert "extraction_duration_s" in manifest
+    assert manifest["created_at_utc"] == manifest["extraction_ended_at_utc"]   # compat
+    # versão do app + commit git (chaves presentes; valores podem ser None fora de checkout)
+    assert "faceaudit" in manifest["versions"] and "faceaudit_git_commit" in manifest["versions"]
+    # lista COMPLETA de imagens de referência (a foto não virou âncora)
+    ri = manifest["reference_images"]
+    assert len(ri) == 1 and ri[0]["filename"] == "foto_ref.png"
+    assert len(ri[0]["sha256"]) == 64 and ri[0]["used_as_anchor"] is False
+
+    # cópia legível na raiz, idêntica ao _meta/_run_*.json
+    root = Path(res.run_dir) / "manifesto_extracao.json"
+    assert root.exists()
+    assert json.loads(root.read_text(encoding="utf-8")) == manifest
+
+
+def test_extract_manifest_anchor_sources_full_provenance(video_path, tmp_path):
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    ref = tmp_path / "foto_ref.png"
+    imwrite_unicode_safe(ref, np.zeros((8, 8, 3), np.uint8))
+    t = _target(threshold=0.5)
+    # âncora vinda de imagem de referência com proveniência completa
+    t.anchor_sources = [{"type": "image", "path": str(ref), "filename": "foto_ref.png",
+                         "sha256": "deadbeef", "frame_index": None,
+                         "bbox": [1.0, 2.0, 3.0, 4.0], "det_index": 2}]
+    cfg = _cfg(video_path, tmp_path, reference_images=[str(ref)])
+    res = service.extract(cfg, [t])
+
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    src = manifest["targets"][0]["anchor_sources"][0]
+    assert src["path"] == str(ref)                  # antes cortado
+    assert src["bbox"] == [1.0, 2.0, 3.0, 4.0]      # antes cortado
+    assert src["det_index"] == 2                    # antes cortado
+    # a imagem de referência agora é marcada como usada em âncora
+    assert manifest["reference_images"][0]["used_as_anchor"] is True
+
+
+def test_reference_images_used_as_anchor_no_basename_false_positive(video_path, tmp_path):
+    # Duas fotos de MESMO nome em pastas diferentes; só uma é âncora. O casamento
+    # por caminho não pode marcar a outra como usada em âncora.
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    dirA, dirB = tmp_path / "setA", tmp_path / "setB"
+    dirA.mkdir(); dirB.mkdir()
+    a, b = dirA / "foto.png", dirB / "foto.png"
+    imwrite_unicode_safe(a, np.zeros((8, 8, 3), np.uint8))
+    imwrite_unicode_safe(b, np.zeros((8, 8, 3), np.uint8))
+    t = _target(threshold=0.5)
+    t.anchor_sources = [{"type": "image", "path": str(b), "filename": "foto.png",
+                         "sha256": "x", "frame_index": None, "bbox": None, "det_index": 0}]
+    cfg = _cfg(video_path, tmp_path, reference_images=[str(a), str(b)])
+    res = service.extract(cfg, [t])
+    manifest = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    by_path = {r["path"]: r for r in manifest["reference_images"]}
+    assert by_path[str(a)]["used_as_anchor"] is False   # mesma basename, NÃO âncora
+    assert by_path[str(b)]["used_as_anchor"] is True
+
+
+def test_root_manifest_copy_stays_in_sync_after_review(video_path, tmp_path):
+    # A cópia legível da raiz acompanha o autoritativo (_meta) após a revisão —
+    # senão ficaria congelada em review_status=not_started e enganaria o perito.
+    from faceaudit.services.video_review_service import VideoReviewService
+    reg = {0: (EMB_TARGET, 0.8)}
+    service = _service(lambda call: [_face(0, [10, 10, 40, 40], 0.95)], reg)
+    res = service.extract(_cfg(video_path, tmp_path), [_target(threshold=0.5)])
+    root = Path(res.run_dir) / "manifesto_extracao.json"
+    assert json.loads(root.read_text(encoding="utf-8"))["review_status"] == "not_started"
+
+    VideoReviewService().commit_review(res.run_dir, operator="perito", skipped=True)
+    meta = json.loads(Path(res.manifest_path).read_text(encoding="utf-8"))
+    root_after = json.loads(root.read_text(encoding="utf-8"))
+    assert meta["review_status"] == "skipped"
+    assert root_after == meta                       # raiz sincronizada
+    assert root_after["review"]["operator"] == "perito"
+
+
 def test_import_run_image_kind_crop_vs_aligned(video_path, tmp_path):
     """Tipo de imagem: 'aligned' usa a face 112×112 (is_aligned=True); 'crop'
     usa o recorte com margem (is_aligned=False)."""

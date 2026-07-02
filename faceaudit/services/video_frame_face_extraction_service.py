@@ -100,14 +100,68 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _faceaudit_version() -> Optional[str]:
+    """Versão do pacote faceaudit — `__version__` se exportado, senão a metadata
+    do pacote instalado (editable)."""
+    try:
+        import faceaudit
+        v = getattr(faceaudit, "__version__", None)
+        if v:
+            return str(v)
+    except Exception:
+        pass
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version("faceaudit")
+        except PackageNotFoundError:
+            return None
+    except Exception:
+        return None
+
+
+def _git_commit_short() -> Optional[str]:
+    """Hash curto do commit git do código em execução (cadeia de custódia /
+    reprodutibilidade), com sufixo `-dirty` quando há arquivos RASTREADOS
+    modificados — pois nesse caso o commit sozinho não reproduz o código.
+    Best-effort: None fora de um checkout git ou sem git no PATH (ex.: exe
+    empacotado). `untracked-files=no` ignora dados/config não versionados."""
+    try:
+        import subprocess
+        repo_root = Path(__file__).resolve().parents[2]
+
+        def _git(*args):
+            return subprocess.run(["git", *args], cwd=str(repo_root),
+                                  capture_output=True, text=True, timeout=3)
+
+        head = _git("rev-parse", "--short=10", "HEAD")
+        if head.returncode != 0:
+            return None
+        commit = head.stdout.strip()
+        if not commit:
+            return None
+        # Dirty ESCOPADO aos diretórios de CÓDIGO (faceaudit/, interface/): evita
+        # marcar dirty por dados/config versionados que não afetam a extração
+        # (ex.: config.json, quase sempre modificado localmente).
+        status = _git("status", "--porcelain", "--untracked-files=no",
+                      "--", "faceaudit", "interface")
+        if status.returncode == 0 and status.stdout.strip():
+            commit += "-dirty"
+        return commit
+    except Exception:
+        return None
+
+
 def _library_versions() -> Dict[str, Optional[str]]:
     versions: Dict[str, Optional[str]] = {"opencv": cv2.__version__, "numpy": np.__version__}
-    for mod_name, key in (("forensicface", "forensicface"), ("onnxruntime", "onnxruntime"), ("faceaudit", "faceaudit")):
+    for mod_name, key in (("forensicface", "forensicface"), ("onnxruntime", "onnxruntime")):
         try:
             mod = __import__(mod_name)
             versions[key] = getattr(mod, "__version__", None)
         except Exception:
             versions[key] = None
+    versions["faceaudit"] = _faceaudit_version()
+    versions["faceaudit_git_commit"] = _git_commit_short()
     return versions
 
 
@@ -471,6 +525,10 @@ class VideoFrameFaceExtractionService:
             raise ValueError("extract requer ao menos um VideoTarget.")
         model = config.recognition_model or self._ff.default_model
         clock = now_utc or _utc_now_iso
+        # Início do run inteiro. Inclui o hash SHA-256 dos vídeos de origem
+        # (probe_video, parte da custódia): extraction_duration_s é o wall-clock
+        # do extract() completo, não só do laço de quadros.
+        started_at = clock()
 
         # Multivídeo: percorre TODOS os vídeos numa run/_meta só; cada face já
         # carrega seu vídeo de origem. Mapas de alvo são estáveis entre vídeos;
@@ -526,13 +584,48 @@ class VideoFrameFaceExtractionService:
                                 run_dir / "annotated" / f"anchor_{t.label}_f{int(s['frame_index']):07d}.png",
                                 label=t.label)
 
+            # Proveniência das imagens de referência (reprodutibilidade): a lista
+            # COMPLETA das fotos carregadas na janela, marcando quais viraram
+            # âncora de algum alvo. Fica fora de run_tag (não muda a saída).
+            # Casa SÓ por caminho: o path da âncora (_anchor_image_path) e o de
+            # reference_images vêm ambos do UserRole do mesmo QListWidgetItem
+            # (string idêntica). Casar por basename daria FALSO-POSITIVO entre
+            # duas fotos de mesmo nome em pastas diferentes.
+            _anchor_image_paths = set()
+            for _t in targets:
+                for _s in getattr(_t, "anchor_sources", []):
+                    if _s.get("type") == "image" and _s.get("path"):
+                        _anchor_image_paths.add(_s.get("path"))
+            reference_images_manifest = []
+            for _rp in (getattr(config, "reference_images", None) or []):
+                try:
+                    _sha = self._hash.calculate_file_hash(_rp)
+                except Exception:
+                    _sha = None
+                reference_images_manifest.append({
+                    "filename": Path(_rp).name,
+                    "path": _rp,
+                    "sha256": _sha,
+                    "used_as_anchor": _rp in _anchor_image_paths,
+                })
+
             def _write_manifest():
+                ended_at = clock()
+                try:
+                    duration_s = (datetime.fromisoformat(ended_at)
+                                  - datetime.fromisoformat(started_at)).total_seconds()
+                except Exception:
+                    duration_s = None
                 writer.write_manifest({
-                    "created_at_utc": clock(),
+                    "created_at_utc": ended_at,   # = fim da extração (compat)
+                    "extraction_started_at_utc": started_at,
+                    "extraction_ended_at_utc": ended_at,
+                    "extraction_duration_s": duration_s,
                     "source_video": infos[0].to_manifest_dict(),
                     "source_videos": [i.to_manifest_dict() for i in infos],
                     "versions": _library_versions(),
                     "parameters": config.to_manifest_dict(),
+                    "reference_images": reference_images_manifest,
                     "derived": {"n_videos": len(video_paths),
                                 "fps_used": [i.fps_reported for i in infos]},
                     "targets": [
@@ -547,7 +640,9 @@ class VideoFrameFaceExtractionService:
                             "recognition_model": t.recognition_model,
                             "anchor_sources": [
                                 {"type": s.get("type"), "filename": s.get("filename"),
-                                 "sha256": s.get("sha256"), "frame_index": s.get("frame_index")}
+                                 "path": s.get("path"), "sha256": s.get("sha256"),
+                                 "frame_index": s.get("frame_index"),
+                                 "bbox": s.get("bbox"), "det_index": s.get("det_index")}
                                 for s in getattr(t, "anchor_sources", [])
                             ],
                         }

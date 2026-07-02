@@ -124,6 +124,9 @@ class VideoReviewService:
             "n_pending": summary["pending"],
         }
         mpath.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Mantém a cópia legível da raiz em sincronia com o autoritativo.
+        from faceaudit.services.video_provenance_writer import mirror_manifest_to_root
+        mirror_manifest_to_root(run_dir)
         return manifest["review"]
 
     def review_summary(self, run_dir) -> Dict[str, int]:

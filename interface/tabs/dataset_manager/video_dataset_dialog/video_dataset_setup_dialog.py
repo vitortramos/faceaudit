@@ -2049,4 +2049,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
             recognition_model=self._selected_model(),
             compute_ff=True,
+            # Proveniência: lista COMPLETA das imagens de referência carregadas
+            # (mesmo as não usadas como âncora) para o manifesto de reprodutibilidade.
+            reference_images=self._ref_image_paths(),
         )

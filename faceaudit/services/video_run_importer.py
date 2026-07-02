@@ -261,6 +261,10 @@ class VideoRunImporter:
             "n_faces": len(ds),
         }
         manifests[0].write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Mantém a cópia legível da raiz em sincronia com o autoritativo (senão
+        # ficaria congelada em dataset_status=not_imported / sem final_dataset).
+        from faceaudit.services.video_provenance_writer import mirror_manifest_to_root
+        mirror_manifest_to_root(run_dir)
 
     def audit_metadata(self, run_dir) -> Dict[str, Any]:
         """Metadata para o audit log VIDEO_EXTRACT (emitido pela UI na Fase 5)."""
