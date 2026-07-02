@@ -38,6 +38,27 @@ xvfb-run -a -s "-screen 0 2560x1440x24" python capture_dataset_manager.py
 
 PNGs serão escritos em `../assets/`.
 
+## Diálogos de vídeo + Novo/Enriquecer (offscreen, Windows)
+
+`capture_video_dialogs.py` gera **quatro** telas sem depender de Xvfb,
+parquet de teste nem GPU — roda com o QPA `offscreen` (funciona no
+Windows):
+
+```bash
+QT_QPA_PLATFORM=offscreen python capture_video_dialogs.py
+```
+
+Produz `44_video_setup.png`, `45_video_review.png` (a partir de uma pasta
+de run **sintética** construída na hora) e regenera `30_novo_dataset.png`
+e `32_enriquecer.png` com o layout redesenhado (o Enriquecer usa um
+dataset sintético de cobertura mista para exibir os selos
+presente/parcial/ausente).
+
+> ⚠️ O QPA `offscreen` sobe com **0 fontes** — o script carrega TTFs do
+> Windows (`segoeui.ttf` etc.) na base de fontes do Qt, senão o texto
+> vira tofu (□□□). Em Linux/macOS, ajuste os caminhos de fonte em
+> `_load_fonts()` ou rode via `xvfb-run` como o script principal.
+
 ## Stub do ForensicFace
 
 A pasta `fake_forensicface/forensicface/` contém um stub mínimo da

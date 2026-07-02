@@ -1,0 +1,5 @@
+# Binários deste guia: sem conversão de fim de linha (autocrlf) nem diff textual.
+# Necessário porque o heurístico do git classifica o PDF (cabeçalho ASCII, sem
+# bytes NUL nos primeiros 8 KB) como texto e o corromperia com CRLF.
+*.pdf   binary
+*.png   binary

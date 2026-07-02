@@ -373,4 +373,4 @@ preservando a cadeia de custódia.
 
 ---
 
-[← Capítulo 02 — Criando um dataset](02_criando_dataset.md) · [Capítulo 04 — Navegando no dataset →](04_navegando_dataset.md)
+[← Capítulo 02b — Criando a partir de vídeo](02b_criando_dataset_de_video.md) · [Capítulo 04 — Navegando no dataset →](04_navegando_dataset.md)

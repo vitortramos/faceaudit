@@ -4,21 +4,25 @@ Este capítulo descreve o fluxo completo de **criar um dataset do zero**,
 a partir de uma pasta de imagens faciais. O ponto de entrada é o botão
 ➕ **Novo** da aba *Arquivo* da toolbar.
 
+> 🎬 Para criar um dataset **a partir de vídeo** (procurar um investigado
+> ao longo de gravações de CFTV/celular), veja o
+> [capítulo 02b](02b_criando_dataset_de_video.md) — é um fluxo próprio,
+> com âncora e revisão humana.
+
 ## Sumário do capítulo
 
 1. [Antes de começar — o que você precisa](#antes-de-começar)
-2. [O diálogo *Novo Dataset* — visão geral](#o-diálogo-novo-dataset)
-3. [Pasta de imagens e nome do dataset](#pasta-de-imagens-e-nome)
-4. [Modo `flat` ou `recursivo`](#modo-flat-ou-recursivo)
-5. [O Criador de Template — mapeando metadados a partir da estrutura de pastas](#o-criador-de-template)
-6. [Metadados gerais (origem e descrição)](#metadados-gerais)
-7. [O bloco *Processamento*](#o-bloco-processamento)
-8. [Opções avançadas do *Forensic Face*](#opções-avançadas-do-forensic-face)
-9. [Opções avançadas do *SER-FIQ*](#opções-avançadas-do-ser-fiq)
-10. [Alinhamento facial — três cenários](#alinhamento-facial)
-11. [O que acontece quando você clica **OK**](#o-que-acontece-quando-você-clica-ok)
-12. [Erros comuns e como evitá-los](#erros-comuns)
-13. [Workflows recomendados](#workflows-recomendados)
+2. [O diálogo *Novo dataset* — os quatro grupos](#o-diálogo-novo-dataset)
+3. [Grupo 1 — Pasta de imagens e tipo de entrada](#grupo-1)
+4. [Grupo 2 — Características do dataset](#grupo-2)
+5. [Identidade: subdiretório, única ou template](#identidade)
+6. [O Criador de Template — mapeando metadados a partir da estrutura de pastas](#o-criador-de-template)
+7. [Grupo 3 — Configurações ForensicFace](#grupo-3)
+8. [Grupo 4 — Conteúdo do dataset (por tipo de coluna)](#grupo-4)
+9. [Alinhamento — original ou já alinhada](#alinhamento-facial)
+10. [O que acontece quando você clica **Criar dataset**](#o-que-acontece)
+11. [Erros comuns e como evitá-los](#erros-comuns)
+12. [Workflows recomendados](#workflows-recomendados)
 
 ---
 
@@ -37,62 +41,61 @@ Para criar um dataset você precisa de:
 > 💡 Se você só vai abrir um `.parquet` que outra pessoa preparou,
 > nada disso é necessário — vá direto para [capítulo 03](03_carregando_e_localizando.md).
 
-## O diálogo *Novo Dataset*
+## O diálogo Novo dataset
 
-Ao clicar em ➕ **Novo** abre-se o diálogo abaixo, dividido em quatro
-seções principais:
+Ao clicar em ➕ **Novo** abre-se o diálogo **"Novo dataset"**, empilhado
+em quatro grupos numerados:
 
-![Diálogo Novo Dataset, visão completa](assets/30_novo_dataset.png)
+![Diálogo Novo dataset, visão completa](assets/30_novo_dataset.png)
 
-| Seção | O que controla |
+| Grupo | O que controla |
 |---|---|
-| **1 — Entrada** | Pasta de origem, nome do dataset, recursividade, status de alinhamento |
-| **2 — Estratégia de metadados** | Como derivar `identity`/`gender`/`ethnicity` a partir da estrutura de pastas + nomes de arquivo |
-| **3 — Metadados gerais** | `origin` e `description` aplicados ao dataset inteiro |
-| **4 — Processamento** | Quais extractors rodar: Forensic Face, OFIQ, SER-FIQ — cada um com seu painel avançado retrátil |
+| **1 · Pasta de imagens** | Caminho da pasta + tipo de entrada (fotos originais vs faces já alinhadas) |
+| **2 · Características do dataset** | Nome, pasta de destino, tipo de armazenamento e de imagem, descrição opcional |
+| **3 · Configurações ForensicFace** | GPU, *batch size* e *det size* do motor de detecção/embedding |
+| **4 · Conteúdo do dataset** | Quais colunas gerar (embeddings, qualidade, pose, demografia), a origem e a estratégia de identidade |
 
-## Pasta de imagens e nome
+No rodapé, um **resumo dinâmico** cinza descreve a configuração atual
+(ex.: *"originais · caminho absoluto · identidade por subpasta · FF
+(Sepael V2) · rápido"*), um **aviso vermelho** aponta o primeiro
+impedimento, e o botão **Criar dataset** só habilita quando não há
+bloqueio.
+
+## Grupo 1 — Pasta de imagens e tipo de entrada
 
 | Campo | Descrição |
 |---|---|
-| **Pasta Imagens:** | Caminho da pasta a ser ingerida. O botão `…` à direita abre um seletor nativo do SO. Ao selecionar, o campo *Nome* é **auto-preenchido** com o nome da pasta (sem extensão), mas pode ser editado livremente. |
-| **Nome:** | Nome lógico do dataset — vira o nome do arquivo `.parquet` final e a string que identifica o dataset em todos os diálogos posteriores. Caracteres válidos: letras, números, `_`, `-`. |
-| ☑️ **Buscar em subpastas (Recursivo)** | Quando marcado, o ingestor desce em todas as subpastas. Quando desmarcado, considera apenas os arquivos diretos da pasta selecionada (modo *flat*). Marcado por padrão. |
+| **Caminho:** | Pasta a ser ingerida. O botão `…` abre um seletor nativo. Ao escolher, se o **Nome** ainda estiver vazio, ele é preenchido com o nome da pasta. |
+| ⦿ **Fotos originais (detectar e alinhar)** *(padrão)* | Suas imagens estão "como saíram da câmera". O ForensicFace **detecta e alinha** cada face durante a extração. |
+| ⦿ **Faces já alinhadas 112×112 (pular detecção)** | Seu input já é crop 112×112 pós-ForensicFace. Pula detect+align (**~50% mais rápido**). Este rádio é o **interruptor mestre**: ao marcá-lo, some tudo que só existe na foto original (pose, demografia, OFIQ, *det size*). |
 
-## Modo *flat* ou *recursivo*
+## Grupo 2 — Características do dataset
 
-A escolha entre **flat** e **recursivo** muda completamente a seção 2
-do diálogo:
+| Campo | Padrão | Descrição |
+|---|---|---|
+| **Nome:** | (vazio) | Nome lógico do dataset — vira o arquivo `.parquet` e identifica o dataset em todos os diálogos. |
+| **Destino:** | pasta de datasets | Pasta onde o `.parquet` será gravado (+ botão `…`). |
+| **Tipo:** | **Caminho absoluto** | *Autocontido (copia imagens)* torna o dataset portátil; *Caminho absoluto (referencia originais)* é mais leve mas quebra se as imagens mudarem de lugar. |
+| **Imagem:** | Face alinhada | **Só aparece no modo Autocontido** — decide *o que copiar*: *Face original* ou *Face alinhada*. (Em *Faces já alinhadas*, *Face original* fica desabilitada.) |
+| ▸ **Descrição (opcional)** | (recolhido) | Painel colapsável com um campo de texto livre — metadado do **dataset inteiro** (não é coluna). |
 
-### Modo `flat` (sem subpastas)
+## Identidade
 
-> Quando você desmarca **Buscar em subpastas**, todas as imagens da
-> pasta selecionada são tratadas como **da mesma pessoa**. Os campos
-> abaixo aplicam-se a *todas* as faces ingeridas:
+A estratégia de identidade fica no **grupo 4**, controlada pelo checkbox
+**Usar template de colunas**:
 
-| Campo | Tipo | Obrigatório | Observação |
-|---|---|---|---|
-| **Identidade:** | Texto livre | ✅ Sim | Vira a coluna `identity` para todas as imagens |
-| **Gênero:** | `""` / `Male` / `Female` | Não | Vira a coluna `gender` |
-| **Etnia:** | Texto livre | Não | Vira a coluna `ethnicity` |
+**Sem template** (padrão) — o campo **Identidade (como obter):** oferece:
 
-> 💡 Use o modo *flat* quando estiver criando um dataset de **uma
-> única pessoa** (por exemplo, para um caso pericial onde você só tem
-> as fotos do investigado).
-
-### Modo `recursivo` (com subpastas)
-
-> No modo recursivo, o sistema percorre toda a árvore de subpastas e
-> precisa de uma **estratégia para descobrir a identidade de cada
-> imagem**. Há duas alternativas:
-
-| Estratégia | Como funciona |
+| Opção | Como funciona |
 |---|---|
-| **Nenhum (usar Identidade Base)** *(padrão)* | A identidade de cada imagem é o **nome da pasta-pai imediata**. Pasta `John_Doe/img_001.png` → `identity="John_Doe"`. Suficiente para os datasets clássicos (CASIA-WebFace, LFW, etc.). |
-| **Template salvo** | Um arquivo JSON descrevendo regras de extração para `identity`, `gender`, `ethnicity` e `origin` tanto a partir de **níveis de pasta** quanto a partir de **partes do nome do arquivo**. Veja a próxima seção. |
+| ⦿ **Do subdiretório (uma identidade por subpasta)** *(padrão)* | A identidade de cada imagem é o **nome da pasta-pai**. `John_Doe/img_001.png` → `identity="John_Doe"`. Cobre os datasets clássicos (CASIA-WebFace, LFW, etc.). |
+| ⦿ **Identidade única (digitar)** | Todas as imagens são **da mesma pessoa**. Revela os campos **Identidade:** (obrigatório), **Gênero:** (`""`/`Male`/`Female`) e **Etnia:**. Ideal para um caso pericial de um só investigado. |
 
-O botão **Criar Template** abre o diálogo de criação descrito a
-seguir.
+**Com template** — marque **Usar template de colunas** para revelar o
+combo **Template:** (lista *"Nenhum (usar identidade base)"* + cada
+template salvo, prefixado com 📄) e o botão **Criar template…**. O
+template extrai `identity` **e** outras colunas (gênero, etnia, origem,
+colunas custom) da estrutura de pastas/arquivos. Veja a seção seguinte.
 
 ## O Criador de Template
 
@@ -168,94 +171,85 @@ No topo: nome do template + ativação do separador + checkbox
 
 Templates são salvos automaticamente em `data/templates/{name}.json`.
 
-## Metadados gerais
+## Grupo 3 — Configurações ForensicFace
+
+Uma linha com os parâmetros do motor de detecção/embedding. **GPU** e
+**batch size** herdam o default das *Configurações do Sistema*; alterá-los
+aqui vale **só para esta extração** (não grava no global).
+
+| Controle | Faixa | Padrão | Significado |
+|---|---|---|---|
+| ☑️ **Usar GPU** | — | do Sistema | Roda a inferência na GPU. Muito mais rápido acima de algumas centenas de imagens. |
+| **Batch size:** | 1 – 512 | do Sistema | Faces por chamada do modelo. Maior = mais paralelismo/GPU, mas mais memória. |
+| **Det size:** | 160 – 1280 (passo 32) | 320 | Resolução do detector. Maior detecta faces menores/de baixa resolução (**~2× o custo** ao dobrar). **Só afeta fotos originais** — some em *Faces já alinhadas* (vira a dica *"Det size não se aplica a faces já alinhadas"*). |
+
+## Grupo 4 — Conteúdo do dataset
+
+O conteúdo é agrupado **por tipo de coluna**. Marque só o que precisa —
+**desmarcar remove a coluna** do parquet.
+
+| Categoria | Itens | Padrão |
+|---|---|---|
+| **Embeddings:** | Um checkbox **por modelo instalado** (`Sepael V2`, `V3`, `V4`, `V5`, `V6 (KPRPE)`). Marcar dois gera `embedding_v2` **e** `embedding_v4` no mesmo parquet. | `Sepael V2` marcado |
+| **Qualidade:** | **FIQA** (CR-FIQA — disponível também em faces já alinhadas) · **OFIQ (qualidade ISO)** ⏱ lento (exige a foto **original**; some no modo alinhado) | FIQA marcado; OFIQ desmarcado |
+| **Pose:** | **Yaw**, **Pitch**, **Roll** (some no modo *Faces já alinhadas*) | todos marcados |
+| **Outros:** | **Det Conf**, **IPD**, **Gênero**, **Idade** (some no modo *Faces já alinhadas*) | todos marcados |
+
+Abaixo de uma divisória:
 
 | Campo | Padrão | Observação |
 |---|---|---|
-| **Origem:** | `Local` | Rótulo livre — útil pra distinguir várias fontes (`Local`, `CCTV_Aeroporto`, `Documento_ID`, `Webcam_Forense`). Vira a coluna `origin`. |
-| **Descrição:** | (vazio) | Texto livre, salvo como metadado do dataset. Visível no painel de detalhes e no diálogo *Metadados*. Sem limite rígido, mas mantenha curto (≤ 500 caracteres). |
+| **Origem:** | `Local` | Proveniência de **cada face** — vira a coluna `origin`. Rótulo livre útil pra distinguir fontes (`Local`, `CCTV_Aeroporto`, `Documento_ID`). Constante nesta ingestão. |
+| ☑️ **Usar template de colunas** | desmarcado | Alterna entre a estratégia de **identidade** (subdiretório/única) e o **template** de colunas — veja a [seção Identidade](#identidade). |
 
-## O bloco *Processamento*
+> 💡 A antiga opção **SER-FIQ** foi **removida da interface** (o backend
+> ainda a suporta, mas o diálogo não a expõe). Use **FIQA** ou **OFIQ**
+> para qualidade de imagem.
 
-Aqui você decide **quais extractors** vão rodar sobre cada imagem.
-Os três são opcionais e podem ser ativados de forma independente:
-
-| Checkbox | Padrão | O que produz |
-|---|---|---|
-| ☑️ **Forensic Face** | Marcado | `embedding_v2` e/ou `embedding_v4`, FIQA, pose (yaw/pitch/roll), gênero/idade estimados, IPD (interpupillary distance), bbox e keypoints faciais |
-| ☑️ **OFIQ** | Marcado | ~40 indicadores ISO/IEC 29794-5 (sharpness, exposição, oclusões, pose, single-face, etc.) + score unificado |
-| ☑️ **SER-FIQ** | Marcado | Score de robustez por Monte-Carlo dropout (mais alto = embedding estável a perturbações) |
-
-> 💡 **Desmarque** algum se você não precisa dele — economiza tempo
-> significativo. Por exemplo, em datasets *puramente para auditoria
-> visual* (sem cálculo de LR), pode desativar Forensic Face e manter
-> só OFIQ + SER-FIQ.
-
-Cada extractor tem um **botão de avançadas retrátil** logo abaixo.
-
-## Opções avançadas do *Forensic Face*
-
-Clique em *▶ Opções avançadas* sob o checkbox **Forensic Face** para
-expandir:
-
-| Controle | Faixa | Padrão | Significado |
-|---|---|---|---|
-| ☑️ **`sepaelv2`** / ☑️ **`sepaelv4`** | — | só V2 | Quais backbones rodar. Marcar os dois gera as colunas `embedding_v2` *e* `embedding_v4` no parquet — dobra a memória de GPU em uso simultâneo, mas o custo por imagem permanece igual (uma engine independente por modelo). |
-| **det_size** | 160 – 1280 (passo 32) | 320 | Tamanho da imagem de entrada do detector facial. Maior = melhor detecção em fotos de baixa resolução, mas **~2× mais custo** de inferência ao dobrar. Use 640 quando a face na imagem original mede menos de 80 px. |
-| ☑️ **extended** | — | Marcado | Quando ligado, calcula FIQA, gênero, idade e pose junto com o embedding. Desligar economiza tempo mas remove essas colunas. |
-
-> 💡 Recomendação geral: **sepaelv2 + det_size=320 + extended=True**.
-> Use sepaelv4 adicional quando estiver fazendo experimentos
-> comparativos de pipeline (veja [capítulo 05](05_enriquecimento.md)
-> para adicionar embeddings adicionais a um dataset já criado).
-
-## Opções avançadas do *SER-FIQ*
-
-| Controle | Faixa | Padrão | Significado |
-|---|---|---|---|
-| **T (iterações)** | 1 – 100 | 10 | Número de passes estocásticos (com dropout ativo) usados para estimar a estabilidade do embedding. Mais iterações = score mais estável, mas tempo linear. |
-| **alpha** | 0.1 – 10.0 (passo 0.1) | 1.5 | Fator de escala do score final (parâmetro da fórmula original de Terhörst et al.). Mantenha em 1.5 a menos que esteja comparando com a literatura sob outra escala. |
+> 💡 Recomendação geral: **`Sepael V2` + FIQA + pose/demografia**, GPU
+> ligada. Marque um segundo modelo (ex.: `Sepael V4`) quando for fazer
+> experimentos comparativos de pipeline — ou adicione depois pelo
+> [capítulo 05](05_enriquecimento.md).
 
 ## Alinhamento facial
 
-O FaceAudit suporta **três cenários** de alinhamento, mutuamente
-exclusivos:
+O comportamento de alinhamento é decidido pelo **tipo de entrada**
+(grupo 1) combinado com o **tipo de imagem** (grupo 2, só no modo
+Autocontido):
 
-| Cenário | Configuração | Quando usar |
+| Cenário | Configuração | Resultado |
 |---|---|---|
-| **A — Imagens originais, alinhar na hora da ingestão** | Ambos checkboxes desmarcados (padrão) | Suas imagens estão "como saíram da câmera" — fotos casuais, frames de vídeo, scans. O ForensicFace detecta e alinha durante a extração de embedding. **O resultado é só usado em RAM** — as imagens no disco continuam as originais. |
-| **B — Imagens originais, alinhar e materializar** | ☑️ *Alinhar faces durante a criação* + **Destino:** preenchido | Igual ao A, mas **salva** as faces alinhadas como PNGs 112×112 num diretório à sua escolha; o parquet aponta para esses novos arquivos. Idêntico ao resultado de rodar o cenário A seguido de exportação manual. |
-| **C — Imagens já alinhadas (112×112)** | ☑️ *Estas imagens são faces já alinhadas* | Seu input já está em crops 112×112 pós-ForensicFace (por exemplo, recebeu o dataset de outra pessoa). Pula a etapa de detect+align — **~50 % mais rápido**. |
+| **A — Originais, alinhar em RAM** | *Fotos originais* + *Caminho absoluto* (ou Autocontido/*Face original*) | O ForensicFace detecta e alinha só para extrair o embedding. **As imagens no disco continuam as originais.** |
+| **B — Originais, materializar alinhadas** | *Fotos originais* + *Autocontido* + *Imagem = Face alinhada* | Salva as faces **112×112 alinhadas** na pasta do dataset; o parquet aponta para elas. |
+| **C — Já alinhadas** | *Faces já alinhadas 112×112* | Pula detect+align (**~50% mais rápido**). Some tudo que só existe na foto original (pose, demografia, OFIQ, *det size*). |
 
-> ⚠️ Os dois checkboxes são **mutuamente exclusivos** — marcar um
-> desabilita automaticamente o outro. Se marcar *alinhar durante a
-> criação* sem informar a pasta destino, ou sem que o **Forensic
-> Face** esteja ligado, o sistema bloqueia a criação com erro.
+> ⚠️ Sem ao menos um modelo de **embedding** marcado, não há detecção nem
+> alinhamento — os cenários A/B exigem o ForensicFace. Se nenhum modelo
+> estiver instalado, os checkboxes de conteúdo ficam desabilitados.
 
-## O que acontece quando você clica **OK**
+## O que acontece
 
-O fluxo é assíncrono — um *worker* em thread separada conduz toda a
-extração, enquanto a UI mostra um diálogo de progresso. Em alto
-nível, o pipeline executa:
+Ao clicar em **Criar dataset**, o fluxo é assíncrono — um *worker* em
+thread separada conduz toda a extração, enquanto a UI mostra um diálogo
+de progresso. Em alto nível, o pipeline executa:
 
 ```
 0 % — Inicializando
  ↓
 EXTRACT (≈10 %)
- ├── Varre a pasta (recursivo ou flat)
+ ├── Varre a pasta (por subpasta, identidade única ou template)
  ├── Aplica o template (ou identifica pela pasta-pai)
  └── Calcula SHA-256 de cada imagem
  ↓
 TRANSFORM
  ├── Aplica gênero/etnia/origem padrão se informados
- ├── (15 → 50 %) Forensic Face — embeddings + FIQA + pose
- │    [se alinhar+materializar: salva PNGs no destino]
- ├── (50 → 75 %) OFIQ — métricas ISO
- └── (75 → 95 %) SER-FIQ — robustez
+ ├── (15 → 60 %) ForensicFace — embeddings + FIQA + pose/demografia
+ │    [modo Autocontido/Face alinhada: salva PNGs 112×112 no destino]
+ └── (60 → 95 %) OFIQ — métricas ISO (se marcado)
  ↓
 LOAD (≈100 %)
  ├── Marca faces que falharam (coluna `error`, `error_stage`, `error_message`)
- └── Salva `{paths.library}/{nome}.parquet`
+ └── Salva `{Destino}/{nome}.parquet`
  ↓
 Dataset carregado na UI
 ```
@@ -268,13 +262,12 @@ parcial** antes de abortar.
 
 | Sintoma | Causa | Solução |
 |---|---|---|
-| Botão **OK** travado em cinza | Faltou preencher *Pasta Imagens*, *Nome*, ou (em modo flat) *Identidade* | Preencha o campo destacado em vermelho |
-| Diálogo erro `align_during_ingestion=True mas FF desligado` | Você marcou *alinhar* sem marcar Forensic Face | Marque o checkbox **Forensic Face** ou desmarque *alinhar* |
-| `Diretório destino não informado` | `align_during_ingestion=True` mas o campo *Destino PNGs alinhados* ficou vazio | Informe uma pasta existente onde os PNGs serão escritos |
-| Dataset criado mas **vazio** | A pasta não continha imagens de formato suportado | Confira se há `.jpg`/`.png`/`.bmp`/`.tif`. O log do worker lista exatamente o que foi varrido |
-| Muitas linhas com `error=True` | ForensicFace não detectou face nas imagens (faces muito pequenas, pose extrema, fora de foco) | Aumente `det_size` para 640 ou 1024; verifique se as imagens **não estão já alinhadas** sendo tratadas como originais |
+| Botão **Criar dataset** travado em cinza | O aviso vermelho no rodapé aponta o que falta (pasta, nome, destino, template ou identidade única) | Preencha o campo indicado no aviso |
+| Nenhum checkbox de conteúdo habilitado | ForensicFace indisponível (nenhum modelo em `~/.forensicface/models/`) | Instale/configure os modelos SEPAEL — veja [Antes de começar](#antes-de-começar) |
+| Dataset criado mas **vazio** | A pasta não continha imagens de formato suportado | Confira se há `.jpg`/`.png`/`.bmp`/`.tif`. O log do worker lista o que foi varrido |
+| Muitas linhas com `error=True` | ForensicFace não detectou face (faces muito pequenas, pose extrema, fora de foco) | Aumente **Det size** para 640/960; confira se as imagens **não estão já alinhadas** sendo tratadas como originais |
 | Erro `ForensicFace não encontrado` na inicialização | A lib `forensicface` ou os modelos SEPAEL não estão instalados/configurados | Veja a seção [Antes de começar](#antes-de-começar) |
-| GPU OOM (Out of Memory) | Imagens grandes + `det_size` alto + `sepaelv2 + sepaelv4` simultâneos | Reduza para apenas um modelo, baixe `det_size`, ou diminua `batch_size` em `config.json → ff` |
+| GPU OOM (Out of Memory) | Imagens grandes + **Det size** alto + dois modelos de embedding simultâneos | Marque só um modelo, baixe **Det size** ou o **Batch size** |
 
 ## Workflows recomendados
 
@@ -282,51 +275,47 @@ parcial** antes de abortar.
 
 > 📷 *"Tenho 200 fotos do investigado em pasta única, formato JPG variado."*
 
-1. ➕ **Novo** → selecionar pasta
-2. Desmarcar **Buscar em subpastas**
-3. *Identidade:* nome ou código do investigado (`SUSPEITO_001`)
-4. *Gênero* e *Etnia*: opcional
-5. *Origem:* `Caso_2024_001`
-6. Manter Forensic Face + OFIQ + SER-FIQ marcados
-7. **OK**
+1. ➕ **Novo** → **Caminho:** selecionar a pasta
+2. Entrada **Fotos originais (detectar e alinhar)**
+3. Grupo 4 → **Identidade única (digitar)** → *Identidade:* `SUSPEITO_001` (Gênero/Etnia opcionais)
+4. **Origem:** `Caso_2024_001`
+5. Conteúdo: `Sepael V2` + FIQA + pose/demografia; marque **OFIQ** se precisar de qualidade ISO
+6. **Criar dataset**
 
 ### Workflow 2 — Dataset de pesquisa (várias identidades)
 
 > 🎓 *"CASIA-WebFace baixado, estrutura `casia/n000001/0001.jpg`."*
 
-1. ➕ **Novo** → selecionar pasta `casia/`
-2. **Buscar em subpastas** marcado
-3. Estratégia: **Nenhum (usar Identidade Base)** — o nome da subpasta vira a identidade
-4. *Origem:* `CASIA-WebFace`
-5. Forensic Face com `sepaelv2 + sepaelv4` (se quiser comparar pipelines depois)
-6. **OK**
+1. ➕ **Novo** → **Caminho:** `casia/`
+2. Grupo 4 → **Do subdiretório (uma identidade por subpasta)** — o nome da subpasta vira a identidade
+3. **Origem:** `CASIA-WebFace`
+4. Conteúdo: marque `Sepael V2` **e** `Sepael V4` se quiser comparar pipelines depois
+5. **Criar dataset**
 
 ### Workflow 3 — Dataset complexo (template customizado)
 
 > 🧪 *"Tenho `bfw/asian_male/identity_42/photo_03.jpg` e quero
 > `identity`, `gender`, `ethnicity` separados."*
 
-1. ➕ **Novo** → selecionar pasta `bfw/`
-2. **Buscar em subpastas** marcado
-3. Clicar **Criar Template**
-4. Na aba *Estrutura de Pastas*:
+1. ➕ **Novo** → **Caminho:** `bfw/`
+2. Grupo 4 → marcar **Usar template de colunas** → **Criar template…**
+3. Na aba *Estrutura de Pastas*:
    - Nível 0 → `ethnicity` *(separator=`_` ativo: `asian_male` vira `["asian","male"]`)*
    - Nível 0 → `gender` *(captura o segundo item)*
    - Nível 1 → `identity`
-5. Sem split de filename (ou Nível 0 → `Ignorar`)
-6. Salvar template como `BFW`
-7. Voltar ao diálogo *Novo Dataset*, selecionar `BFW` no dropdown
-8. **OK**
+4. Sem split de filename (ou Nível 0 → `Ignorar`)
+5. Salvar template como `BFW` e selecioná-lo no combo **Template:**
+6. **Criar dataset**
 
 ### Workflow 4 — Já alinhado, máxima velocidade
 
 > ⚡ *"500 PNGs 112×112 prontos, só preciso dos embeddings."*
 
-1. ➕ **Novo** → selecionar pasta
-2. Modo *flat* (uma identidade) ou *recursivo* (uma pasta por identidade)
-3. ☑️ **Estas imagens são faces já alinhadas**
-4. Desmarcar **OFIQ** *(opcional — OFIQ exige imagens não cropadas para a maioria das métricas funcionarem direito)*
-5. **OK**
+1. ➕ **Novo** → **Caminho:** selecionar a pasta
+2. Entrada **Faces já alinhadas 112×112 (pular detecção)**
+3. Identidade por subdiretório ou única, conforme a organização
+4. Conteúdo: só os embeddings + FIQA (Pose/Outros/OFIQ somem por serem inaplicáveis a faces alinhadas)
+5. **Criar dataset**
 
 ---
 
