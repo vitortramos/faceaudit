@@ -33,6 +33,11 @@ _FF_KEPT_ATTR_TO_FIELD = {
     "roll": "roll",
 }
 
+# Atributos que vêm de `detect_and_align` (detector + landmark_3d_68 + genderage),
+# SEM o embedding. `fiqa` NÃO está aqui — é calculado pelo runner de reconhecimento
+# (acoplado ao embedding). Base do caminho de enriquecimento "atributos-só".
+_FF_DETECT_ATTRS = frozenset({"yaw", "pitch", "roll", "gender", "age", "det_score", "ipd"})
+
 
 class FeatureExtractionPipeline:
     """
@@ -479,9 +484,22 @@ class FeatureExtractionPipeline:
                         scaled_pct = base_pct + int((internal_pct / 100) * (next_pct - base_pct))
                         progress_callback(msg, scaled_pct)
 
+                # Idempotência por ATRIBUTO (não só por embedding): faces sem
+                # embedding (ou sem o fiqa pedido) vão pro caminho completo;
+                # faces que já têm embedding mas faltam atributos de detecção
+                # (pose/gênero/idade/det/ipd) vão pro caminho "atributos-só"
+                # (detect_and_align, sem recomputar o embedding).
+                wanted_attrs = self._resolve_wanted_ff_attrs(config)
+                aligned = bool(getattr(dataset, "is_aligned", False))
+                wanted_da = set() if aligned else {
+                    a for a in wanted_attrs if a in _FF_DETECT_ATTRS}
+                wants_fiqa = "fiqa" in wanted_attrs
+                faces_full, faces_attrs_only = self._route_ff_faces(
+                    dataset, wanted_models, wanted_da, wants_fiqa, config.force_reprocess)
+
                 target = self._select_target_for_stage(
                     dataset, active_stages[current_stage_idx],
-                    self._faces_needing_ff(dataset, wanted_models),
+                    faces_full,
                     base_pct, progress_callback,
                     force=config.force_reprocess,
                 )
@@ -531,6 +549,20 @@ class FeatureExtractionPipeline:
                                 (f, "ff", "nenhum embedding gerado "
                                  "(face não detectada ou imagem ilegível)"),
                             )
+
+                # Caminho "atributos-só": adiciona pose/gênero/idade/det/ipd a
+                # faces que JÁ têm embedding, rodando só o detector na original —
+                # sem recomputar o embedding (pula o modelo de reconhecimento).
+                if faces_attrs_only and wanted_da:
+                    for f in faces_attrs_only:
+                        touched_face_ids.add(id(f))
+                    ff_svc_da = self._resolve_ff_service(config)
+                    n_ok = self._enrich_attributes_only(
+                        faces_attrs_only, dataset, ff_svc_da, wanted_da, ff_callback)
+                    print(
+                        f"🧭 [Pipeline] Atributos-só: {n_ok}/{len(faces_attrs_only)} "
+                        "face(s) atualizada(s) sem recomputar embedding."
+                    )
                 current_stage_idx += 1
 
             if config.compute_ofiq:
@@ -960,6 +992,113 @@ class FeatureExtractionPipeline:
                     out.append(face)
                     break
         return out
+
+    @staticmethod
+    def _resolve_wanted_ff_attrs(config: DatasetIngestionConfig) -> set:
+        """Atributos FF pedidos. `ff_kept_attributes` (granular, novo) tem
+        prioridade; senão deriva de `ff_extended` (compat: extended=todos os 8,
+        senão nenhum)."""
+        if getattr(config, "ff_kept_attributes", None) is not None:
+            return set(config.ff_kept_attributes)
+        if config.ff_extended:
+            return {"fiqa", "yaw", "pitch", "roll", "gender", "age", "det_score", "ipd"}
+        return set()
+
+    @staticmethod
+    def _route_ff_faces(dataset, wanted_models, wanted_da, wants_fiqa, force):
+        """Enrich: divide as faces em (full, attrs_only).
+          - full = falta embedding OU falta o fiqa pedido (fiqa é acoplado ao
+            reconhecimento) → caminho completo (detect+align+extract).
+          - attrs_only = tem todos os embeddings e o fiqa pedido, mas falta um
+            atributo de detect_and_align (pose/gênero/idade/det/ipd) → roda só o
+            detector na imagem original, preservando o embedding.
+        `force` joga tudo no full. `wanted_da` deve vir vazio para datasets
+        alinhados (esses atributos não existem em crops 112×112)."""
+        if force:
+            return list(dataset.faces), []
+        full, attrs_only = [], []
+        for face in dataset.faces:
+            ff = getattr(face, "ff_info", None)
+            missing_emb = ff is None or any(
+                getattr(ff, f"embedding_{m}", None) is None for m in wanted_models)
+            if missing_emb:
+                full.append(face)
+                continue
+            if wants_fiqa and getattr(ff, "fiqa_score", None) is None:
+                full.append(face)          # fiqa exige o caminho de reconhecimento
+                continue
+            if any(getattr(ff, _FF_KEPT_ATTR_TO_FIELD[a], None) is None for a in wanted_da):
+                attrs_only.append(face)
+        return full, attrs_only
+
+    @staticmethod
+    def _merge_detect_attrs(ff, det_result: dict, wanted_da: set) -> None:
+        """Mescla SÓ os atributos de detecção pedidos no FFInfo, sem tocar no
+        embedding. `pose` vem como vetor cru [pitch, yaw, roll] do
+        `detect_and_align` (mesma convenção do fluxo de vídeo)."""
+        import numpy as np
+        pose = det_result.get("pose")
+        pmap = {}
+        if pose is not None and len(pose) >= 3:
+            pmap = {"pitch": float(pose[0]), "yaw": float(pose[1]), "roll": float(pose[2])}
+        for attr in wanted_da:
+            if attr in ("yaw", "pitch", "roll"):
+                if attr in pmap:
+                    setattr(ff, attr, pmap[attr])
+            elif attr == "det_score":
+                v = det_result.get("det_score")
+                if v is not None:
+                    ff.det_score = float(v)
+            elif attr == "gender":
+                v = det_result.get("gender")
+                if v is not None:
+                    ff.gender = v
+            elif attr == "age":
+                v = det_result.get("age")
+                if v is not None:
+                    ff.age = float(v)
+            elif attr == "ipd":
+                kps = det_result.get("keypoints")
+                if kps is not None and len(kps) >= 2:
+                    ff.ipd = float(np.linalg.norm(
+                        np.asarray(kps[0], dtype=float) - np.asarray(kps[1], dtype=float)))
+
+    @staticmethod
+    def _enrich_attributes_only(faces, dataset, ff_svc, wanted_da,
+                                progress_callback=None) -> int:
+        """Adiciona atributos de detect_and_align a faces que JÁ têm embedding —
+        roda só o detector na imagem original, sem recomputar o embedding (pula o
+        modelo de reconhecimento, o mais pesado). Só os atributos PEDIDOS são
+        mesclados. Retorna quantas faces foram atualizadas."""
+        from faceaudit.services.image_io import imread_unicode_safe
+        from faceaudit.models.ff_info import FFInfo
+        engine = getattr(ff_svc, "app", None)
+        if engine is None or not wanted_da:
+            return 0
+        n_ok = 0
+        total = len(faces)
+        for i, face in enumerate(faces):
+            try:
+                src = dataset.resolve_image_path(face)
+            except Exception:
+                src = getattr(face, "image_path", None)
+            img = imread_unicode_safe(str(src)) if src else None
+            if img is None:
+                continue
+            try:
+                res = engine.detect_and_align(img, single_face=True)
+            except Exception:
+                res = None
+            if not res:
+                continue
+            ff = face.ff_info or FFInfo()
+            FeatureExtractionPipeline._merge_detect_attrs(ff, res, wanted_da)
+            face.ff_info = ff
+            n_ok += 1
+            if progress_callback and (i % 25 == 0 or i == total - 1):
+                progress_callback(f"Atributos-só: {i + 1}/{total}",
+                                  int((i + 1) / max(1, total) * 100))
+        return n_ok
 
     @staticmethod
     def _faces_needing_ofiq(dataset: FaceDataset) -> list:
