@@ -2090,11 +2090,14 @@ class DatasetManagerController(QtCore.QObject):
         try:
             self.sync_changes_from_table()
             
+            ff_cfg = getattr(self.config, "ff", None)
             enrich_ctrl = EnrichDatasetController(
                 self.dataset,
                 parent=self.view,
                 ff_available=self.ff_available,
                 ofiq_available=self.ofiq_available,
+                default_use_gpu=bool(getattr(ff_cfg, "use_gpu", False)),
+                default_batch_size=int(getattr(ff_cfg, "batch_size", 32)),
             )
             
             QApplication.restoreOverrideCursor()
