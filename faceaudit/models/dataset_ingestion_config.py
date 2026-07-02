@@ -53,8 +53,23 @@ class DatasetIngestionConfig:
     ff_det_size: int = 320
     # Quando True (default), computa FIQA, gender, age, yaw/pitch/roll
     # além do embedding. False = só embedding + bbox + keypoints (mais
-    # rápido, dataset mais leve).
+    # rápido, dataset mais leve). O engine calcula esses atributos em
+    # BLOCO (tudo-ou-nada); a seleção fina de QUAIS colunas manter vai em
+    # `ff_kept_attributes` (filtragem na escrita).
     ff_extended: bool = True
+
+    # Colunas de atributo do ForensicFace a MANTER no dataset. None = manter
+    # todas (compat). Chaves: "fiqa", "yaw", "pitch", "roll", "gender",
+    # "age", "det_score", "ipd". A UI de Novo Dataset popula isto a partir
+    # dos toggles granulares (Pose/Outros/Qualidade); a filtragem efetiva
+    # das colunas acontece no pipeline (não gera a coluna desmarcada).
+    ff_kept_attributes: Optional[List[str]] = None
+
+    # Override POR extração de capability da máquina (None = usa o default
+    # do FFService singleton / Configurações do Sistema; a UI pré-preenche
+    # com o valor do sistema e não grava de volta no global).
+    use_gpu: Optional[bool] = None
+    batch_size: Optional[int] = None
 
     # 6. Parâmetros operacionais do SER-FIQ
     serfiq_t: int = 10        # iterações estocásticas (mais = mais robusto)

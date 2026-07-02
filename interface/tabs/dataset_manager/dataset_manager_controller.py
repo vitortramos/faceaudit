@@ -1261,12 +1261,15 @@ class DatasetManagerController(QtCore.QObject):
     def fluxo_novo_dataset(self):
         templates_path = Path(self.config.paths.dir_templates)
         default_dataset_dir = str(getattr(self.config.paths, "datasets", "") or "")
+        ff_cfg = getattr(self.config, "ff", None)
         dialog = NewDatasetController(
             self.view,
             templates_path=templates_path,
             ff_available=self.ff_available,
             ofiq_available=self.ofiq_available,
             default_dataset_dir=default_dataset_dir,
+            default_use_gpu=bool(getattr(ff_cfg, "use_gpu", False)),
+            default_batch_size=int(getattr(ff_cfg, "batch_size", 32)),
         )
         
         if dialog.exec():

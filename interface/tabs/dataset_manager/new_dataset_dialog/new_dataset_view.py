@@ -20,7 +20,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QCheckBox, QRadioButton, QButtonGroup, QPushButton, QDialogButtonBox,
-    QPlainTextEdit, QComboBox, QGroupBox, QWidget, QSpinBox, QDoubleSpinBox,
+    QPlainTextEdit, QComboBox, QGroupBox, QWidget, QSpinBox,
     QFrame,
 )
 
@@ -34,11 +34,6 @@ def _supported_ff_models() -> tuple:
     return (SepaelModel.default().ff_name,)
 
 
-_ADV_STYLE = (
-    "QWidget#advPanel { background: #f7f7f7; border-left: 3px solid #b0bec5; }"
-)
-
-
 class NewDatasetView(QDialog):
     """Disposição + visibilidade condicional do diálogo de novo dataset."""
 
@@ -46,11 +41,14 @@ class NewDatasetView(QDialog):
     # _revalidate() para validação reativa (OK + rodapé).
     changed = QtCore.pyqtSignal()
 
-    def __init__(self, parent=None, default_dataset_dir: str = ""):
+    def __init__(self, parent=None, default_dataset_dir: str = "",
+                 default_use_gpu: bool = False, default_batch_size: int = 32):
         super().__init__(parent)
         self.setWindowTitle("Novo dataset")
         self._default_dataset_dir = default_dataset_dir or ""
-        self.resize(600, 640)
+        self._default_use_gpu = bool(default_use_gpu)
+        self._default_batch_size = int(default_batch_size)
+        self.resize(600, 660)
         self._init_ui()
         self._wire_conditionals()
         self._update_conditional()
@@ -64,6 +62,7 @@ class NewDatasetView(QDialog):
 
         outer.addWidget(self._build_group_source())
         outer.addWidget(self._build_group_dataset())
+        outer.addWidget(self._build_group_ff_settings())
         outer.addWidget(self._build_group_content())
 
         # Rodapé: resumo + bloqueio + botões
@@ -156,85 +155,120 @@ class NewDatasetView(QDialog):
         g.addWidget(self.row_imgtype, 3, 1)
         v.addLayout(g)
 
-        # Metadados gerais (origem/descrição) — colapsado.
-        self._meta_btn = QPushButton("▸ Metadados gerais (origem, descrição)", grp)
+        # Descrição do dataset (metadado do dataset como um todo, NÃO é coluna —
+        # a Origem, que é coluna por-face, foi para "Conteúdo do dataset") — colapsado.
+        self._meta_btn = QPushButton("▸ Descrição (opcional)", grp)
         self._meta_btn.setCheckable(True)
         self._meta_btn.setStyleSheet("text-align: left; border: none; color: #555;")
         v.addWidget(self._meta_btn)
         self._meta_panel = QWidget(grp)
         mg = QGridLayout(self._meta_panel); mg.setContentsMargins(14, 2, 2, 2)
-        mg.addWidget(QLabel("Origem:", self._meta_panel), 0, 0)
-        self.txt_origin = QLineEdit("Local", self._meta_panel)
-        mg.addWidget(self.txt_origin, 0, 1)
-        mg.addWidget(QLabel("Descrição:", self._meta_panel), 1, 0)
+        mg.addWidget(QLabel("Descrição:", self._meta_panel), 0, 0)
         self.txt_desc = QPlainTextEdit(self._meta_panel); self.txt_desc.setMaximumHeight(48)
-        mg.addWidget(self.txt_desc, 1, 1)
+        mg.addWidget(self.txt_desc, 0, 1)
         self._meta_panel.setVisible(False)
         v.addWidget(self._meta_panel)
         self._meta_btn.toggled.connect(lambda c: (
             self._meta_panel.setVisible(c),
-            self._meta_btn.setText(("▾" if c else "▸") + " Metadados gerais (origem, descrição)"),
+            self._meta_btn.setText(("▾" if c else "▸") + " Descrição (opcional)"),
         ))
         return grp
 
     # ── Grupo 3: Conteúdo do dataset ──
     def _build_group_content(self) -> QGroupBox:
-        grp = QGroupBox("3 · Conteúdo do dataset", self)
+        grp = QGroupBox("4 · Conteúdo do dataset", self)
         v = QVBoxLayout(grp)
         v.setSpacing(7)
 
-        # Embeddings (modelos inline) + Avançado.
-        emb_row = QHBoxLayout()
-        emb_row.addWidget(QLabel("Embeddings:", grp))
+        # Conteúdo numa grade de 2 colunas: rótulo da categoria na coluna 0,
+        # checkboxes na coluna 1. A grade alinha os checkboxes de TODAS as linhas
+        # na mesma coluna (largura da coluna 0 = a do maior rótulo).
+        cg = QGridLayout()
+        cg.setHorizontalSpacing(8)
+        cg.setVerticalSpacing(7)
+        cg.setColumnStretch(1, 1)
+
+        # Embeddings (modelos inline).
+        cg.addWidget(QLabel("Embeddings:", grp), 0, 0)
+        emb_w = QWidget(grp)
+        emb_h = QHBoxLayout(emb_w); emb_h.setContentsMargins(0, 0, 0, 0)
         self._ff_model_checks = {}
         for name in _supported_ff_models():
             member = SepaelModel.from_ff_name(name)
-            chk = QCheckBox(member.label_pt if member is not None else name, grp)
+            chk = QCheckBox(member.label_pt if member is not None else name, emb_w)
             self._ff_model_checks[name] = chk
-            emb_row.addWidget(chk)
+            emb_h.addWidget(chk)
         default_name = SepaelModel.default().ff_name
         (self._ff_model_checks.get(default_name)
          or next(iter(self._ff_model_checks.values()), None)).setChecked(True)
-        emb_row.addStretch()
-        self._ff_adv_btn = QPushButton("▸ Avançado", grp)
-        self._ff_adv_btn.setCheckable(True)
-        self._ff_adv_btn.setStyleSheet("font-size: 10px; padding: 2px 8px;")
-        emb_row.addWidget(self._ff_adv_btn)
-        v.addLayout(emb_row)
-        self._ff_adv_panel = self._build_ff_advanced_panel()
-        self._ff_adv_panel.setVisible(False)
-        v.addWidget(self._ff_adv_panel)
-        self._ff_adv_btn.toggled.connect(lambda c: (
-            self._ff_adv_panel.setVisible(c),
-            self._ff_adv_btn.setText("▾ Avançado" if c else "▸ Avançado"),
-        ))
+        emb_h.addStretch()
+        cg.addWidget(emb_w, 0, 1)
 
-        # Qualidade.
-        qual_row = QHBoxLayout()
-        qual_row.addWidget(QLabel("Qualidade:", grp))
-        # Desmarcados por padrão — são os estágios lentos (opt-in).
-        self.chk_ofiq = QCheckBox("OFIQ (qualidade ISO)", grp); self.chk_ofiq.setChecked(False)
-        self.chk_serfiq = QCheckBox("SER-FIQ (robustez)", grp); self.chk_serfiq.setChecked(False)
-        qual_row.addWidget(self.chk_ofiq)
-        qual_row.addWidget(self._slow_badge())
-        qual_row.addSpacing(8)
-        qual_row.addWidget(self.chk_serfiq)
-        self._serfiq_adv_btn = QPushButton("▸ Avançado", grp)
-        self._serfiq_adv_btn.setCheckable(True)
-        self._serfiq_adv_btn.setStyleSheet("font-size: 10px; padding: 2px 8px;")
-        qual_row.addWidget(self._serfiq_adv_btn)
-        qual_row.addWidget(self._slow_badge())
-        qual_row.addStretch()
-        v.addLayout(qual_row)
-        self._serfiq_adv_panel = self._build_serfiq_advanced_panel()
-        self._serfiq_adv_panel.setVisible(False)
-        v.addWidget(self._serfiq_adv_panel)
-        self._serfiq_adv_btn.toggled.connect(lambda c: (
-            self._serfiq_adv_panel.setVisible(c),
-            self._serfiq_adv_btn.setText("▾ Avançado" if c else "▸ Avançado"),
-        ))
+        # Qualidade: FIQA (roda no crop; sobrevive a faces alinhadas) + OFIQ
+        # (ISO, exige a foto ORIGINAL → some em entrada alinhada).
+        cg.addWidget(QLabel("Qualidade:", grp), 1, 0)
+        qual_w = QWidget(grp)
+        qual_h = QHBoxLayout(qual_w); qual_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_fiqa = QCheckBox("FIQA", qual_w); self.chk_fiqa.setChecked(True)
+        self.chk_fiqa.setToolTip(
+            "Qualidade da face (CR-FIQA) — computada junto do embedding, "
+            "disponível também para faces já alinhadas.")
+        qual_h.addWidget(self.chk_fiqa)
+        qual_h.addSpacing(12)
+        self._ofiq_w = QWidget(qual_w)
+        ofiq_h = QHBoxLayout(self._ofiq_w); ofiq_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_ofiq = QCheckBox("OFIQ (qualidade ISO)", self._ofiq_w); self.chk_ofiq.setChecked(False)
+        self.chk_ofiq.setToolTip(
+            "Qualidade ISO/IEC 29794-5 — exige a foto ORIGINAL (faz a própria "
+            "detecção). Indisponível para faces já alinhadas.")
+        ofiq_h.addWidget(self.chk_ofiq); ofiq_h.addWidget(self._slow_badge())
+        qual_h.addWidget(self._ofiq_w)
+        qual_h.addStretch()
+        cg.addWidget(qual_w, 1, 1)
+
+        # Pose (yaw/pitch/roll) — estimada na imagem ORIGINAL durante o
+        # alinhamento; NÃO existe para faces já alinhadas.
+        self._pose_lbl = QLabel("Pose:", grp)
+        cg.addWidget(self._pose_lbl, 2, 0)
+        self._pose_row_w = QWidget(grp)
+        pose_h = QHBoxLayout(self._pose_row_w); pose_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_yaw = QCheckBox("Yaw", self._pose_row_w); self.chk_yaw.setChecked(True)
+        self.chk_pitch = QCheckBox("Pitch", self._pose_row_w); self.chk_pitch.setChecked(True)
+        self.chk_roll = QCheckBox("Roll", self._pose_row_w); self.chk_roll.setChecked(True)
+        for c in (self.chk_yaw, self.chk_pitch, self.chk_roll):
+            pose_h.addWidget(c)
+        pose_h.addStretch()
+        cg.addWidget(self._pose_row_w, 2, 1)
+
+        # Outros atributos — dependem da detecção na imagem ORIGINAL; somem
+        # para faces já alinhadas.
+        self._outros_lbl = QLabel("Outros:", grp)
+        cg.addWidget(self._outros_lbl, 3, 0)
+        self._outros_row_w = QWidget(grp)
+        outros_h = QHBoxLayout(self._outros_row_w); outros_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_det_conf = QCheckBox("Det Conf", self._outros_row_w); self.chk_det_conf.setChecked(True)
+        self.chk_ipd = QCheckBox("IPD", self._outros_row_w); self.chk_ipd.setChecked(True)
+        self.chk_gender = QCheckBox("Gênero", self._outros_row_w); self.chk_gender.setChecked(True)
+        self.chk_age = QCheckBox("Idade", self._outros_row_w); self.chk_age.setChecked(True)
+        for c in (self.chk_det_conf, self.chk_ipd, self.chk_gender, self.chk_age):
+            outros_h.addWidget(c)
+        outros_h.addStretch()
+        cg.addWidget(self._outros_row_w, 3, 1)
+
+        v.addLayout(cg)
 
         v.addWidget(self._hline())
+
+        # Origem — coluna de PROVENIÊNCIA por face (constante nesta ingestão);
+        # é dado do dataset (coluna 'origin'), não metadado geral.
+        origin_row = QHBoxLayout()
+        origin_row.addWidget(QLabel("Origem:", grp))
+        self.txt_origin = QLineEdit("Local", grp)
+        self.txt_origin.setToolTip(
+            "Proveniência de cada face (vira a coluna 'origin' do dataset) — "
+            "ex.: nome do caso, base ou câmera. Constante nesta ingestão.")
+        origin_row.addWidget(self.txt_origin, 1)
+        v.addLayout(origin_row)
 
         # Identidade / colunas.
         self.chk_use_template = QCheckBox("Usar template de colunas", grp)
@@ -287,33 +321,46 @@ class NewDatasetView(QDialog):
         v.addWidget(self.row_identity)
         return grp
 
-    def _build_ff_advanced_panel(self) -> QWidget:
-        panel = QWidget(self); panel.setObjectName("advPanel"); panel.setStyleSheet(_ADV_STYLE)
-        v = QVBoxLayout(panel); v.setContentsMargins(20, 4, 4, 4); v.setSpacing(6)
-        det_row = QHBoxLayout()
-        det_row.addWidget(QLabel("Det size:", panel))
-        self._ff_det_size_spin = QSpinBox(panel)
+    def _build_group_ff_settings(self) -> QGroupBox:
+        """Grupo 3 — knobs do engine ForensicFace. GPU e Batch size vêm das
+        Configurações do Sistema (default) e são editáveis como override DESTA
+        extração (não gravam no global). Det size é por-extração e só afeta
+        fotos originais (no-op em faces já alinhadas)."""
+        grp = QGroupBox("3 · Configurações ForensicFace", self)
+        v = QVBoxLayout(grp); v.setSpacing(6)
+        row = QHBoxLayout()
+        self.chk_use_gpu = QCheckBox("Usar GPU", grp)
+        self.chk_use_gpu.setChecked(self._default_use_gpu)
+        self.chk_use_gpu.setToolTip(
+            "Default das Configurações do Sistema; alterar aqui vale só para "
+            "esta extração (não grava no global).")
+        row.addWidget(self.chk_use_gpu)
+        row.addSpacing(16)
+        row.addWidget(QLabel("Batch size:", grp))
+        self.spn_batch_size = QSpinBox(grp)
+        self.spn_batch_size.setRange(1, 512); self.spn_batch_size.setValue(self._default_batch_size)
+        self.spn_batch_size.setToolTip(
+            "Faces por chamada do modelo. Maior = mais paralelismo/GPU, mais "
+            "memória. Default do Sistema; override por extração.")
+        row.addWidget(self.spn_batch_size)
+        row.addSpacing(16)
+        self._lbl_det_size = QLabel("Det size:", grp)
+        row.addWidget(self._lbl_det_size)
+        self._ff_det_size_spin = QSpinBox(grp)
         self._ff_det_size_spin.setRange(160, 1280); self._ff_det_size_spin.setSingleStep(32)
         self._ff_det_size_spin.setValue(320)
-        det_row.addWidget(self._ff_det_size_spin); det_row.addStretch()
-        v.addLayout(det_row)
-        self._ff_extended_chk = QCheckBox("Modo completo: FIQA + gender + age + yaw/pitch/roll", panel)
-        self._ff_extended_chk.setChecked(True)
-        v.addWidget(self._ff_extended_chk)
-        return panel
-
-    def _build_serfiq_advanced_panel(self) -> QWidget:
-        panel = QWidget(self); panel.setObjectName("advPanel"); panel.setStyleSheet(_ADV_STYLE)
-        v = QVBoxLayout(panel); v.setContentsMargins(20, 4, 4, 4); v.setSpacing(6)
-        t_row = QHBoxLayout(); t_row.addWidget(QLabel("T (iterações):", panel))
-        self._serfiq_t_spin = QSpinBox(panel); self._serfiq_t_spin.setRange(1, 100); self._serfiq_t_spin.setValue(10)
-        t_row.addWidget(self._serfiq_t_spin); t_row.addStretch(); v.addLayout(t_row)
-        a_row = QHBoxLayout(); a_row.addWidget(QLabel("Alpha:", panel))
-        self._serfiq_alpha_spin = QDoubleSpinBox(panel)
-        self._serfiq_alpha_spin.setRange(0.1, 10.0); self._serfiq_alpha_spin.setSingleStep(0.1)
-        self._serfiq_alpha_spin.setValue(1.5)
-        a_row.addWidget(self._serfiq_alpha_spin); a_row.addStretch(); v.addLayout(a_row)
-        return panel
+        self._ff_det_size_spin.setToolTip(
+            "Resolução do detector de faces. Só afeta fotos ORIGINAIS — "
+            "ignorado em faces já alinhadas.")
+        row.addWidget(self._ff_det_size_spin)
+        row.addStretch()
+        v.addLayout(row)
+        self._det_size_hint = QLabel(
+            "Det size não se aplica a faces já alinhadas (detecção é pulada).", grp)
+        self._det_size_hint.setStyleSheet("color: #888; font-size: 11px;")
+        self._det_size_hint.setVisible(False)
+        v.addWidget(self._det_size_hint)
+        return grp
 
     def _slow_badge(self) -> QLabel:
         lbl = QLabel("⏱ lento", self)
@@ -340,7 +387,9 @@ class NewDatasetView(QDialog):
             sig.connect(self._on_any_change)
         for grp in (self.grp_input, self.grp_storage, self.grp_imgtype, self.grp_identity):
             grp.buttonToggled.connect(self._on_any_change)
-        for chk in (self.chk_use_template, self.chk_ofiq, self.chk_serfiq,
+        for chk in (self.chk_use_template, self.chk_fiqa, self.chk_ofiq,
+                    self.chk_yaw, self.chk_pitch, self.chk_roll,
+                    self.chk_det_conf, self.chk_ipd, self.chk_gender, self.chk_age,
                     *self._ff_model_checks.values()):
             chk.toggled.connect(self._on_any_change)
 
@@ -360,6 +409,19 @@ class NewDatasetView(QDialog):
         if input_aligned and self.rb_img_original.isChecked():
             self.rb_img_aligned.setChecked(True)
 
+        # "Some se alinhada": atributos que só existem na foto ORIGINAL
+        # desaparecem quando a entrada já é de faces alinhadas 112×112 (rótulo
+        # da categoria + os checkboxes da coluna 1 escondidos juntos).
+        self._pose_lbl.setVisible(not input_aligned)
+        self._pose_row_w.setVisible(not input_aligned)
+        self._outros_lbl.setVisible(not input_aligned)
+        self._outros_row_w.setVisible(not input_aligned)
+        self._ofiq_w.setVisible(not input_aligned)     # OFIQ exige a original
+        # Det size é no-op em alinhada — esconde o campo, mostra a dica.
+        self._lbl_det_size.setVisible(not input_aligned)
+        self._ff_det_size_spin.setVisible(not input_aligned)
+        self._det_size_hint.setVisible(input_aligned)
+
         # Template marcado → bloco template; desmarcado → identidade.
         use_tpl = self.chk_use_template.isChecked()
         self.row_template.setVisible(use_tpl)
@@ -377,8 +439,10 @@ class NewDatasetView(QDialog):
         if not ff_available:
             for chk in self._ff_model_checks.values():
                 chk.setChecked(False); chk.setEnabled(False); chk.setToolTip(ff_tip)
-            self.chk_serfiq.setChecked(False); self.chk_serfiq.setEnabled(False)
-            self.chk_serfiq.setToolTip("SER-FIQ depende do ForensicFace. " + ff_tip)
+            # Todos os atributos FF dependem do ForensicFace.
+            for chk in (self.chk_fiqa, self.chk_yaw, self.chk_pitch, self.chk_roll,
+                        self.chk_det_conf, self.chk_ipd, self.chk_gender, self.chk_age):
+                chk.setChecked(False); chk.setEnabled(False); chk.setToolTip(ff_tip)
             # Sem FF não há como detectar+alinhar originais.
             self.rb_img_aligned.setEnabled(False)
             self.rb_input_original.setToolTip(ff_tip)
@@ -399,14 +463,25 @@ class NewDatasetView(QDialog):
     def get_ff_det_size(self) -> int:
         return int(self._ff_det_size_spin.value())
 
-    def get_ff_extended(self) -> bool:
-        return bool(self._ff_extended_chk.isChecked())
+    def get_use_gpu(self) -> bool:
+        return bool(self.chk_use_gpu.isChecked())
 
-    def get_serfiq_t(self) -> int:
-        return int(self._serfiq_t_spin.value())
+    def get_batch_size(self) -> int:
+        return int(self.spn_batch_size.value())
 
-    def get_serfiq_alpha(self) -> float:
-        return float(self._serfiq_alpha_spin.value())
+    def get_content_flags(self) -> dict:
+        """Toggles granulares de atributo → coluna. Chaves batem com
+        `DatasetIngestionConfig.ff_kept_attributes`."""
+        return {
+            "fiqa": self.chk_fiqa.isChecked(),
+            "yaw": self.chk_yaw.isChecked(),
+            "pitch": self.chk_pitch.isChecked(),
+            "roll": self.chk_roll.isChecked(),
+            "gender": self.chk_gender.isChecked(),
+            "age": self.chk_age.isChecked(),
+            "det_score": self.chk_det_conf.isChecked(),
+            "ipd": self.chk_ipd.isChecked(),
+        }
 
     def get_dataset_dir(self) -> str:
         return self.txt_dest.text().strip()

@@ -121,6 +121,60 @@ def test_is_canonical_face_column_covers_all_sepael_versions():
         )
 
 
+def test_to_flat_dict_skips_none_ff_attributes():
+    """Atributo FF None não vira coluna (antes asdict emitia None → coluna vazia)."""
+    ff = FFInfo(embedding_sepaelv2=np.array([1.0], dtype=np.float32),
+                fiqa_score=0.9, yaw=None, gender=None, age=None)
+    face = FaceInfo(image_path="x.jpg", identity="1", ff_info=ff)
+    flat = face.to_flat_dict()
+    assert flat["fiqa_score"] == 0.9        # presente → coluna
+    assert "yaw" not in flat                # None → sem coluna
+    assert "gender_est" not in flat         # None → sem coluna (nem renomeia)
+    assert "age_est" not in flat
+    assert "pitch" not in flat
+
+
+def test_to_flat_dict_keeps_present_ff_attributes():
+    ff = FFInfo(embedding_sepaelv2=np.array([1.0], dtype=np.float32),
+                gender="M", age=30.0, yaw=12.5, det_score=0.99, ipd=64.0)
+    face = FaceInfo(image_path="x.jpg", identity="1", ff_info=ff)
+    flat = face.to_flat_dict()
+    assert flat["gender_est"] == "M"        # rename gender→gender_est preservado
+    assert flat["age_est"] == 30.0
+    assert flat["yaw"] == 12.5
+    assert flat["det_score"] == 0.99
+    assert flat["ipd"] == 64.0
+
+
+def test_apply_ff_column_selection_drops_unkept_columns():
+    """Seleção de colunas (create): zerar atributos não pedidos remove a coluna
+    do parquet, mantendo os pedidos e os embeddings."""
+    from types import SimpleNamespace
+    from faceaudit.pipelines.feature_extraction_pipeline import FeatureExtractionPipeline
+    ff = FFInfo(embedding_sepaelv2=np.array([1.0], dtype=np.float32),
+                fiqa_score=0.9, gender="M", age=30.0, yaw=1.0, pitch=2.0, roll=3.0,
+                det_score=0.99, ipd=64.0)
+    face = FaceInfo(image_path="x.jpg", identity="1", ff_info=ff)
+    ds = SimpleNamespace(faces=[face])
+    FeatureExtractionPipeline._apply_ff_column_selection(ds, ["fiqa", "yaw"])
+    flat = face.to_flat_dict()
+    assert flat["fiqa_score"] == 0.9 and flat["yaw"] == 1.0
+    for absent in ("gender_est", "age_est", "pitch", "roll", "det_score", "ipd"):
+        assert absent not in flat
+    assert flat["embedding_v2"] == [1.0]    # embedding não é atributo — preservado
+
+
+def test_apply_ff_column_selection_none_keeps_all():
+    from types import SimpleNamespace
+    from faceaudit.pipelines.feature_extraction_pipeline import FeatureExtractionPipeline
+    ff = FFInfo(gender="M", yaw=1.0)
+    face = FaceInfo(image_path="x.jpg", identity="1", ff_info=ff)
+    ds = SimpleNamespace(faces=[face])
+    FeatureExtractionPipeline._apply_ff_column_selection(ds, None)   # None = tudo
+    flat = face.to_flat_dict()
+    assert flat["gender_est"] == "M" and flat["yaw"] == 1.0
+
+
 if __name__ == "__main__":
     test_to_flat_dict_serializes_all_present_embeddings()
     test_to_flat_dict_skips_absent_embeddings()

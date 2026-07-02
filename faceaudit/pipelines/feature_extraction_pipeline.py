@@ -19,6 +19,21 @@ from faceaudit.services import (
 )
 from faceaudit.services.image_io import imwrite_unicode_safe
 
+# Mapeia a chave de `DatasetIngestionConfig.ff_kept_attributes` (UI) para o
+# campo correspondente no `FFInfo`. Usado só no fluxo de criação para zerar os
+# atributos não pedidos (a coluna some via skip-None em to_flat_dict).
+_FF_KEPT_ATTR_TO_FIELD = {
+    "ipd": "ipd",
+    "fiqa": "fiqa_score",
+    "det_score": "det_score",
+    "gender": "gender",
+    "age": "age",
+    "yaw": "yaw",
+    "pitch": "pitch",
+    "roll": "roll",
+}
+
+
 class FeatureExtractionPipeline:
     """
     Orquestrador ETL (Extract, Transform, Load) para Datasets Faciais.
@@ -254,6 +269,14 @@ class FeatureExtractionPipeline:
             dataset, touched_face_ids, per_face_failures,
         )
 
+        # Seleção de colunas de atributo FF (só na CRIAÇÃO): descarta os
+        # atributos NÃO pedidos. O engine calcula gênero/idade/pose em BLOCO
+        # (`extended`), então isto joga fora o que o usuário não marcou — a
+        # coluna some do parquet (via skip-None em to_flat_dict) e não reaparece
+        # com dado real num re-save. O enrich é aditivo/não-destrutivo e NÃO
+        # passa por aqui.
+        self._apply_ff_column_selection(dataset, config.ff_kept_attributes)
+
         # 5. Load: Persistência (Sobrescreve se existir).
         # O parquet sempre vai pra `storage_path` da biblioteca global de
         # datasets, independente de `align_during_ingestion` — o
@@ -299,20 +322,24 @@ class FeatureExtractionPipeline:
         det_size = int(config.ff_det_size)
         extended = bool(config.ff_extended)
 
-        if self.ff_service.matches_config(
-            models=wanted_models, det_size=det_size, extended=extended
-        ):
+        # use_gpu/batch_size: override POR execução (config) com fallback no
+        # default da máquina (singleton). None no config = usar o do singleton.
+        # O match do singleton também compara gpu/batch — senão um override que
+        # difere do singleton seria ignorado pelo early-return.
+        singleton_gpu = getattr(self.ff_service, "_use_gpu", False)
+        singleton_batch = getattr(self.ff_service, "_batch_size", 32)
+        use_gpu = config.use_gpu if config.use_gpu is not None else singleton_gpu
+        batch_size = config.batch_size if config.batch_size is not None else singleton_batch
+
+        if (self.ff_service.matches_config(
+                models=wanted_models, det_size=det_size, extended=extended)
+                and use_gpu == singleton_gpu and batch_size == singleton_batch):
             return self.ff_service
 
-        # Singleton não cobre — constrói FFService temporário. `use_gpu`
-        # e `batch_size` vêm do Singleton (capability/config da máquina,
-        # não da execução).
-        use_gpu = getattr(self.ff_service, "_use_gpu", False)
-        batch_size = getattr(self.ff_service, "_batch_size", 32)
         print(
             f"⚙️ [Pipeline] FFService Singleton não cobre os params pedidos "
-            f"(models={wanted_models}, det_size={det_size}, extended={extended}). "
-            f"Instanciando temporário…"
+            f"(models={wanted_models}, det_size={det_size}, extended={extended}, "
+            f"use_gpu={use_gpu}, batch_size={batch_size}). Instanciando temporário…"
         )
         return FFService(
             models=wanted_models,
@@ -330,10 +357,13 @@ class FeatureExtractionPipeline:
         senão constrói um temporário que o caller libera após usar."""
         det_size = int(config.ff_det_size)
         extended = bool(config.ff_extended)
-        if self.ff_service.matches_config(models=[model], det_size=det_size, extended=extended):
+        singleton_gpu = getattr(self.ff_service, "_use_gpu", False)
+        singleton_batch = getattr(self.ff_service, "_batch_size", 32)
+        use_gpu = config.use_gpu if config.use_gpu is not None else singleton_gpu
+        batch_size = config.batch_size if config.batch_size is not None else singleton_batch
+        if (self.ff_service.matches_config(models=[model], det_size=det_size, extended=extended)
+                and use_gpu == singleton_gpu and batch_size == singleton_batch):
             return self.ff_service
-        use_gpu = getattr(self.ff_service, "_use_gpu", False)
-        batch_size = getattr(self.ff_service, "_batch_size", 32)
         return FFService(
             models=[model], det_size=det_size, use_gpu=use_gpu,
             extended=extended, batch_size=batch_size,
@@ -809,6 +839,29 @@ class FeatureExtractionPipeline:
             f"📐 [Pipeline] {n_materialized}/{n} face(s) materializada(s). "
             f"Dataset marcado: is_aligned=True, path_mode=ABSOLUTE."
         )
+
+    @staticmethod
+    def _apply_ff_column_selection(dataset: FaceDataset, kept_attributes) -> None:
+        """Descarta (None) os atributos FF cujas colunas o usuário NÃO pediu
+        (`DatasetIngestionConfig.ff_kept_attributes`). None = manter todos
+        (compat). Combinado com o skip-None de `FaceInfo.to_flat_dict`, a coluna
+        some do parquet e não reaparece com dado real num re-save. Chamado SÓ no
+        fluxo de criação — o enrich é aditivo/não-destrutivo e não passa aqui."""
+        if kept_attributes is None:
+            return
+        keep = set(kept_attributes)
+        drop_fields = [
+            field for user_key, field in _FF_KEPT_ATTR_TO_FIELD.items()
+            if user_key not in keep
+        ]
+        if not drop_fields:
+            return
+        for face in getattr(dataset, "faces", []) or []:
+            ff = getattr(face, "ff_info", None)
+            if ff is None:
+                continue
+            for f in drop_fields:
+                setattr(ff, f, None)
 
     @staticmethod
     def _apply_error_marks_to_dataset(

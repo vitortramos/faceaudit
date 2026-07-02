@@ -24,9 +24,13 @@ class NewDatasetController(QtCore.QObject):
         ff_available: bool = True,
         ofiq_available: bool = True,
         default_dataset_dir: str = "",
+        default_use_gpu: bool = False,
+        default_batch_size: int = 32,
     ):
         super().__init__()
-        self.view = NewDatasetView(parent_widget, default_dataset_dir=default_dataset_dir)
+        self.view = NewDatasetView(
+            parent_widget, default_dataset_dir=default_dataset_dir,
+            default_use_gpu=default_use_gpu, default_batch_size=default_batch_size)
 
         self.templates_path = templates_path if templates_path else Path("data/templates")
         if not self.templates_path.exists():
@@ -106,8 +110,6 @@ class NewDatasetController(QtCore.QObject):
             return "Selecione um template (ou desmarque “Usar template de colunas”)."
         if v.is_single_identity() and not v.txt_identity_flat.text().strip():
             return "Informe a identidade (modo identidade única)."
-        if v.chk_serfiq.isChecked() and not v.any_model_checked():
-            return "SER-FIQ precisa de ao menos um modelo de embedding."
         return ""
 
     def _summary(self) -> str:
@@ -128,12 +130,10 @@ class NewDatasetController(QtCore.QObject):
                   for n in v.get_ff_models()]
         if models:
             servs.append("FF (" + ", ".join(models) + ")")
-        if v.chk_ofiq.isChecked():
+        if v.chk_ofiq.isChecked() and not v.is_input_aligned():
             servs.append("OFIQ")
-        if v.chk_serfiq.isChecked():
-            servs.append("SER-FIQ")
         servs_txt = " + ".join(servs) if servs else "sem embeddings/qualidade"
-        custo = "⏱ custo alto" if (v.chk_ofiq.isChecked() or v.chk_serfiq.isChecked()) else "rápido"
+        custo = "⏱ custo alto" if (v.chk_ofiq.isChecked() and not v.is_input_aligned()) else "rápido"
         return f"{entrada} · {armaz} · {ident} · {servs_txt} · {custo}"
 
     def _revalidate(self):
@@ -169,6 +169,16 @@ class NewDatasetController(QtCore.QObject):
         input_aligned = v.is_input_aligned()
         align_now = (not input_aligned) and v.get_self_contained() and v.get_image_type() == "aligned"
 
+        # Toggles granulares de atributo → coluna. O engine computa gênero/idade/
+        # pose EM BLOCO (`ff_extended`), então extended liga se QUALQUER atributo
+        # do bundle (fiqa/pose/gênero/idade) é pedido; `ff_kept_attributes` guarda
+        # a seleção fina para a filtragem de colunas (pipeline). det_score/ipd
+        # saem da detecção (não gatilham extended), mas contam como colunas.
+        flags = v.get_content_flags()
+        ff_extended = bool(flags["fiqa"] or flags["yaw"] or flags["pitch"]
+                           or flags["roll"] or flags["gender"] or flags["age"])
+        kept = [k for k, on in flags.items() if on]
+
         return DatasetIngestionConfig(
             input_path=v.txt_path.text().strip(),
             dataset_name=v.txt_name.text().strip(),
@@ -180,13 +190,15 @@ class NewDatasetController(QtCore.QObject):
             default_gender=(g_text or None),
             default_ethnicity=(e_text or None),
             compute_ff=v.any_model_checked(),
-            compute_ofiq=v.chk_ofiq.isChecked(),
-            compute_serfiq=v.chk_serfiq.isChecked(),
+            # OFIQ exige a foto original — desabilitado para entrada alinhada.
+            compute_ofiq=(v.chk_ofiq.isChecked() and not input_aligned),
+            compute_serfiq=False,     # SER-FIQ removido da UI (backend mantido)
             ff_models=(v.get_ff_models() or [SepaelModel.default().ff_name]),
             ff_det_size=v.get_ff_det_size(),
-            ff_extended=v.get_ff_extended(),
-            serfiq_t=v.get_serfiq_t(),
-            serfiq_alpha=v.get_serfiq_alpha(),
+            ff_extended=ff_extended,
+            ff_kept_attributes=kept,
+            use_gpu=v.get_use_gpu(),
+            batch_size=v.get_batch_size(),
             is_aligned=input_aligned,
             align_during_ingestion=align_now,
             aligned_target_dir=(Path(v.get_dataset_dir()) if align_now and v.get_dataset_dir() else None),

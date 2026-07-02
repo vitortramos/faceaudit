@@ -12,6 +12,16 @@ from .ofiq_info import OFIQInfo
 from .serfiq_info import SERFIQInfo
 from .embedding_info import EmbeddingInfo
 
+# Colunas de atributo do FFInfo (nomes ANTES do rename gender→gender_est /
+# age→age_est em to_flat_dict). Quando None, não são emitidas como coluna —
+# datasets enxutos (sem pose/demografia) e a seleção de colunas do fluxo de
+# criação (DatasetIngestionConfig.ff_kept_attributes) não carregam colunas
+# todas-nulas. Consumidores já toleram colunas ausentes (o schema varia entre
+# datasets legados e novos).
+_FF_ATTR_COLUMNS = (
+    "ipd", "fiqa_score", "det_score", "gender", "age", "yaw", "pitch", "roll",
+)
+
 
 @dataclass
 class FaceInfo:
@@ -189,7 +199,16 @@ class FaceInfo:
         if self.ff_info:
             # exclude_heavy=True removeu imagens e embeddings
             ff_data = self.ff_info.to_dict(exclude_heavy=True)
-            
+
+            # Não emite colunas de atributo FF vazias (None). Sem isso, todo
+            # dataset com ff_info carregaria as 8 colunas mesmo todas-nulas
+            # (asdict emite todos os campos), e a seleção de colunas do fluxo
+            # de criação (que zera os atributos não pedidos) não removeria a
+            # coluna do parquet.
+            for _attr in _FF_ATTR_COLUMNS:
+                if ff_data.get(_attr) is None:
+                    ff_data.pop(_attr, None)
+
             # --- REINJEÇÃO DE EMBEDDINGS ---
             # Itera o SepaelModel enum em vez de hard-codear nomes — assim
             # v3/v5/v6 (e qualquer modelo futuro) entram automaticamente
