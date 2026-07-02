@@ -223,7 +223,7 @@ def test_reference_image_adds_photo_anchor(app, monkeypatch, tmp_path):
     monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(p), "")))
     row = dlg._active_row
-    dlg._on_add_reference_image()
+    dlg._load_ref_image(str(p))
     assert dlg._anchor_source_is_image is True
     dlg._on_view_clicked(5, 5)                  # clica na face da foto
     assert row.has_anchor()
@@ -256,7 +256,7 @@ def test_video_anchor_then_photo_anchor_mix(app, monkeypatch, tmp_path):
     imwrite_unicode_safe(p, np.full((30, 30, 3), 80, np.uint8))
     monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(p), "")))
-    dlg._on_add_reference_image()
+    dlg._load_ref_image(str(p))
     dlg._on_view_clicked(5, 5)                  # 2ª âncora: foto
     assert row.video_target.anchor_source_counts() == (1, 1)
     assert "1 vídeo" in row.lbl_status.text() and "1 foto" in row.lbl_status.text()
@@ -273,11 +273,143 @@ def test_reference_image_without_loading_video(app, monkeypatch, tmp_path):
     monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(p), "")))
     row = dlg._active_row
-    dlg._on_add_reference_image()               # constrói serviço sob demanda
+    dlg._load_ref_image(str(p))               # constrói serviço sob demanda
     assert dlg._service is fake
     dlg._on_view_clicked(5, 5)
     assert row.has_anchor() and row.video_target.anchor_source_counts() == (0, 1)
     assert dlg.btn_extract.isEnabled()
+
+
+# ─────────────── grupo Imagens de Referência + navegação + swap de controles ───────────────
+def test_add_ref_images_multiselect_dedup(app, monkeypatch, tmp_path):
+    dlg = _setup_dialog_plain()
+    p1, p2 = tmp_path / "a.png", tmp_path / "b.png"
+    for p in (p1, p2):
+        imwrite_unicode_safe(p, np.full((20, 20, 3), 100, np.uint8))
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileNames",
+                        staticmethod(lambda *a, **k: ([str(p1), str(p2), str(p1)], "")))
+    dlg._on_add_ref_images()
+    assert dlg._ref_image_paths() == [str(p1), str(p2)]     # duplicata ignorada
+
+
+def test_preview_mode_swap_hides_scrubber_for_image(app):
+    # Bug corrigido: no modo imagem o scrubber some e fica desabilitado (mexer
+    # nele não traz o vídeo de volta); a navegação de imagem aparece.
+    dlg = _setup_dialog_plain()
+    dlg._set_preview_mode("video")
+    assert dlg.scrubber.isVisibleTo(dlg) and dlg.scrubber.isEnabled()
+    assert not dlg._image_nav.isVisibleTo(dlg)
+    dlg._set_preview_mode("image")
+    assert not dlg.scrubber.isVisibleTo(dlg) and not dlg.scrubber.isEnabled()
+    assert dlg._image_nav.isVisibleTo(dlg)
+    dlg._set_preview_mode("none")
+    assert not dlg.scrubber.isVisibleTo(dlg) and not dlg._image_nav.isVisibleTo(dlg)
+
+
+def test_load_ref_image_enters_image_mode(app, tmp_path):
+    dlg = _dlg_with_fake()
+    dlg._set_preview_mode("video")
+    p = tmp_path / "ref.png"
+    imwrite_unicode_safe(p, np.full((20, 20, 3), 90, np.uint8))
+    it = QtWidgets.QListWidgetItem("ref.png", dlg.lst_ref_images)
+    it.setData(QtCore.Qt.ItemDataRole.UserRole, str(p))
+    dlg.lst_ref_images.setCurrentRow(0)
+    dlg._on_load_ref_selected()
+    assert dlg._anchor_source_is_image is True and dlg._anchor_image_path == str(p)
+    assert dlg._image_nav.isVisibleTo(dlg) and not dlg.scrubber.isVisibleTo(dlg)
+    assert "1 / 1" in dlg.lbl_image_pos.text()
+
+
+def test_ref_image_nav_cycles(app, tmp_path):
+    dlg = _dlg_with_fake()
+    p1, p2 = tmp_path / "a.png", tmp_path / "b.png"
+    for p in (p1, p2):
+        imwrite_unicode_safe(p, np.full((20, 20, 3), 100, np.uint8))
+        it = QtWidgets.QListWidgetItem(p.name, dlg.lst_ref_images)
+        it.setData(QtCore.Qt.ItemDataRole.UserRole, str(p))
+    dlg._load_ref_image(str(p1))
+    dlg._step_ref_image(1);  assert dlg._anchor_image_path == str(p2)   # próxima
+    dlg._step_ref_image(1);  assert dlg._anchor_image_path == str(p1)   # cíclico
+    dlg._step_ref_image(-1); assert dlg._anchor_image_path == str(p2)   # anterior
+
+
+def test_remove_loaded_ref_image_clears_preview(app, tmp_path):
+    dlg = _dlg_with_fake()
+    p = tmp_path / "ref.png"
+    imwrite_unicode_safe(p, np.full((20, 20, 3), 90, np.uint8))
+    it = QtWidgets.QListWidgetItem("ref.png", dlg.lst_ref_images)
+    it.setData(QtCore.Qt.ItemDataRole.UserRole, str(p))
+    dlg._load_ref_image(str(p))
+    dlg.lst_ref_images.setCurrentRow(0)
+    dlg._on_remove_ref_image()
+    assert dlg._anchor_image_path is None and dlg._anchor_source_is_image is False
+    assert dlg.lst_ref_images.count() == 0
+    assert not dlg._image_nav.isVisibleTo(dlg)   # volta ao vazio
+
+
+# ─────────────── regressões da revisão adversária (findings confirmados) ───────────────
+def test_no_face_feedback_visible_in_image_mode(app, tmp_path):
+    # Finding 1: "sem face" precisa cair no rótulo VISÍVEL no modo imagem
+    # (lbl_image_pos), não no lbl_frame que fica oculto dentro de _video_info_w.
+    dlg = _dlg_with_fake()
+    dlg._service.detect_in_frame = lambda frame: []      # detector não acha face
+    p = tmp_path / "ref.png"
+    imwrite_unicode_safe(p, np.full((20, 20, 3), 90, np.uint8))
+    it = QtWidgets.QListWidgetItem("ref.png", dlg.lst_ref_images)
+    it.setData(QtCore.Qt.ItemDataRole.UserRole, str(p))
+    dlg.lst_ref_images.setCurrentRow(0)
+    dlg._on_load_ref_selected()
+    assert "sem face" in dlg.lbl_image_pos.text()
+    assert dlg._image_nav.isVisibleTo(dlg) and not dlg._video_info_w.isVisibleTo(dlg)
+
+
+def test_redetect_enabled_after_loading_ref_image(app, tmp_path):
+    # Finding 5: fluxo só-imagem (sem vídeo) precisa poder re-detectar.
+    dlg = _dlg_with_fake()
+    dlg.btn_detect.setEnabled(False)                     # estado inicial sem vídeo
+    p = tmp_path / "ref.png"
+    imwrite_unicode_safe(p, np.full((20, 20, 3), 90, np.uint8))
+    dlg._load_ref_image(str(p))
+    assert dlg.btn_detect.isEnabled()
+
+
+def test_entering_image_mode_cancels_pending_scrub(app):
+    # Finding 4: um _on_scrub_timeout na fila não pode sobrescrever a imagem.
+    dlg = _setup_dialog_plain()
+    dlg._pending_scrub_idx = 42
+    dlg._scrub_timer.start()
+    assert dlg._scrub_timer.isActive()
+    dlg._set_preview_mode("image")
+    assert not dlg._scrub_timer.isActive() and dlg._pending_scrub_idx is None
+
+
+def test_remove_non_loaded_ref_image_refreshes_nav(app, tmp_path):
+    # Finding 3: remover OUTRA imagem enquanto uma segue carregada atualiza "i / N".
+    dlg = _dlg_with_fake()
+    p1, p2 = tmp_path / "a.png", tmp_path / "b.png"
+    for p in (p1, p2):
+        imwrite_unicode_safe(p, np.full((20, 20, 3), 100, np.uint8))
+        it = QtWidgets.QListWidgetItem(p.name, dlg.lst_ref_images)
+        it.setData(QtCore.Qt.ItemDataRole.UserRole, str(p))
+    dlg._load_ref_image(str(p1))
+    assert "1 / 2" in dlg.lbl_image_pos.text()
+    dlg.lst_ref_images.setCurrentRow(1)                  # seleciona p2 (não carregada)
+    dlg._on_remove_ref_image()
+    assert dlg._anchor_image_path == str(p1)             # p1 continua carregada
+    assert "1 / 1" in dlg.lbl_image_pos.text()           # contagem atualizada
+    assert not dlg.btn_ref_prev.isEnabled() and not dlg.btn_ref_next.isEnabled()
+
+
+def test_model_change_clears_image_provenance(app, tmp_path):
+    # Finding 6: trocar modelo com imagem carregada não pode deixar flags stale.
+    dlg = _dlg_with_fake()
+    p = tmp_path / "ref.png"
+    imwrite_unicode_safe(p, np.full((20, 20, 3), 90, np.uint8))
+    dlg._load_ref_image(str(p))
+    assert dlg._anchor_source_is_image is True
+    dlg._on_model_changed()
+    assert dlg._anchor_source_is_image is False
+    assert dlg._anchor_image_path is None and dlg._current_frame is None
 
 
 def test_get_config_whole_video_when_not_loaded(app):

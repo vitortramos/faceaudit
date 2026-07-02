@@ -58,6 +58,23 @@ def test_setup_keeps_detection_bar_and_load(app):
         assert hasattr(dlg, kept), f"esperado preservado na janela A: {kept}"
 
 
+def test_redetect_applies_params_then_detects(app, monkeypatch):
+    # "Re-detectar": reconstrói o detector com os params atuais ANTES de detectar
+    # o quadro exibido (sem recarregar o vídeo).
+    dlg = _setup_dialog()
+    assert dlg.btn_detect.text() == "Re-detectar"
+    # sem quadro carregado → no-op seguro
+    dlg._current_frame = None
+    seen = []
+    monkeypatch.setattr(dlg, "_ensure_service_current", lambda: seen.append("ensure"))
+    monkeypatch.setattr(dlg, "_detect_current", lambda: seen.append("detect"))
+    dlg._on_redetect_clicked()
+    assert seen == []                       # sem quadro, não faz nada
+    dlg._current_frame = np.zeros((8, 8, 3), np.uint8)
+    dlg._on_redetect_clicked()
+    assert seen == ["ensure", "detect"]     # aplica params, depois detecta
+
+
 def test_setup_columns_non_collapsible(app):
     # A coluna de controles (direita) não pode sumir quando a prévia cresce.
     dlg = _setup_dialog()

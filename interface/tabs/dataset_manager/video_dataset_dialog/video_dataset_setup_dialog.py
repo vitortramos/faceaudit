@@ -722,6 +722,39 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._refresh_video_button_emphasis()
         right.addWidget(g_src)   # altura natural (lista contida acima)
 
+        # ── Grupo Imagens de Referência (direita): fila de fotos, espelha Vídeos ──
+        g_ref = QtWidgets.QGroupBox("Imagens de Referência", self)
+        grf = QtWidgets.QVBoxLayout(g_ref)
+        self.lst_ref_images = QtWidgets.QListWidget(self)
+        self.lst_ref_images.setMinimumHeight(72)
+        self.lst_ref_images.setMaximumHeight(130)
+        self.lst_ref_images.setToolTip(
+            "Fotos da(s) pessoa(s) para ancorar por imagem ('tenho a foto, ache "
+            "nos vídeos'). Carregue uma na prévia e clique na face para ancorar no "
+            "alvo ativo; navegue entre elas pelas setas sob a prévia.")
+        self.lst_ref_images.itemDoubleClicked.connect(lambda _it: self._on_load_ref_selected())
+        grf.addWidget(self.lst_ref_images, 1)
+        rbtn = QtWidgets.QHBoxLayout()
+        btn_add_refs = QtWidgets.QPushButton("➕ Adicionar imagens…", self)
+        btn_add_refs.setToolTip(
+            "Escolhe uma ou mais imagens de referência (multi-seleção). Entram na "
+            "lista; carregue na prévia com 'Carregar selecionada'.")
+        btn_add_refs.clicked.connect(self._on_add_ref_images)
+        self.btn_load_ref = QtWidgets.QPushButton("Carregar selecionada", self)
+        self.btn_load_ref.setToolTip(
+            "Abre a imagem selecionada na prévia (modo foto) para clicar na face e "
+            "ancorar no alvo ativo.")
+        self.btn_load_ref.clicked.connect(self._on_load_ref_selected)
+        self.btn_rm_ref = QtWidgets.QPushButton("Remover selecionada", self)
+        self.btn_rm_ref.setToolTip("Remove a imagem selecionada da lista.")
+        self.btn_rm_ref.clicked.connect(self._on_remove_ref_image)
+        rbtn.addWidget(btn_add_refs)
+        rbtn.addWidget(self.btn_load_ref)
+        rbtn.addStretch()
+        rbtn.addWidget(self.btn_rm_ref)
+        grf.addLayout(rbtn)
+        right.addWidget(g_ref)
+
         # Widgets de detecção — montados na barra "Detecção" (esquerda, sob a prévia).
         self.cmb_model = QtWidgets.QComboBox(self)
         # Largura contida: o combo não precisa varrer a linha inteira (nomes de
@@ -783,30 +816,44 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.scrubber.windowChanged.connect(self._on_window_changed)
         left.addWidget(self.scrubber)
 
-        info_row = QtWidgets.QHBoxLayout()
+        # Barra de vídeo (legenda + quadro + janela) — encapsulada num widget para
+        # esconder no modo imagem.
+        self._video_info_w = QtWidgets.QWidget(self)
+        info_row = QtWidgets.QHBoxLayout(self._video_info_w)
+        info_row.setContentsMargins(0, 0, 0, 0)
         legend = QtWidgets.QLabel(
             "<span style='color:#00c853'>●</span> início&nbsp;&nbsp;"
             "<span style='color:#ff6d00'>▮</span> quadro atual&nbsp;&nbsp;"
-            "<span style='color:#d32f2f'>●</span> fim", self)
+            "<span style='color:#d32f2f'>●</span> fim", self._video_info_w)
         legend.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self.lbl_frame = QtWidgets.QLabel("—", self)
-        self.lbl_window = QtWidgets.QLabel("", self)
-        self.btn_detect = QtWidgets.QPushButton("Detectar neste quadro", self)
-        self.btn_detect.setToolTip(
-            "Roda o detector de faces no quadro atual e desenha as caixas (sem "
-            "extrair embedding). Em seguida, clique numa caixa para escolher a "
-            "âncora. Usa a <b>Resolução</b> e a <b>Confiança mínima</b> definidas "
-            "no carregamento.")
-        self.btn_detect.setEnabled(False)
-        self.btn_detect.clicked.connect(self._detect_current)
+        self.lbl_frame = QtWidgets.QLabel("—", self._video_info_w)
+        self.lbl_window = QtWidgets.QLabel("", self._video_info_w)
         info_row.addWidget(legend)
         info_row.addStretch()
         info_row.addWidget(self.lbl_frame)
-        info_row.addWidget(QtWidgets.QLabel("  ·  ", self))
+        info_row.addWidget(QtWidgets.QLabel("  ·  ", self._video_info_w))
         info_row.addWidget(self.lbl_window)
         info_row.addStretch()
-        info_row.addWidget(self.btn_detect)
-        left.addLayout(info_row)
+        left.addWidget(self._video_info_w)
+
+        # Navegação de imagem de referência — ocupa o lugar do scrubber no modo
+        # imagem: ◀ Anterior · "Imagem i / N — nome" · Próxima ▶. Oculta por padrão.
+        self._image_nav = QtWidgets.QWidget(self)
+        inav = QtWidgets.QHBoxLayout(self._image_nav)
+        inav.setContentsMargins(0, 0, 0, 0)
+        self.btn_ref_prev = QtWidgets.QPushButton("◀ Anterior", self._image_nav)
+        self.btn_ref_prev.setToolTip("Carrega a imagem de referência anterior da lista.")
+        self.btn_ref_prev.clicked.connect(lambda: self._step_ref_image(-1))
+        self.lbl_image_pos = QtWidgets.QLabel("", self._image_nav)
+        self.lbl_image_pos.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.btn_ref_next = QtWidgets.QPushButton("Próxima ▶", self._image_nav)
+        self.btn_ref_next.setToolTip("Carrega a próxima imagem de referência da lista.")
+        self.btn_ref_next.clicked.connect(lambda: self._step_ref_image(1))
+        inav.addWidget(self.btn_ref_prev)
+        inav.addWidget(self.lbl_image_pos, 1)
+        inav.addWidget(self.btn_ref_next)
+        self._image_nav.setVisible(False)
+        left.addWidget(self._image_nav)
 
         # ── Barra de detecção (esquerda, sob a prévia) ──
         g_det = QtWidgets.QGroupBox("Detecção", self)
@@ -819,6 +866,19 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         det_row.addSpacing(16)
         det_row.addWidget(QtWidgets.QLabel("Confiança:", self))
         det_row.addWidget(self.spn_det_thresh)
+        det_row.addSpacing(16)
+        # "Re-detectar": aplica a Resolução/Confiança atuais ao quadro exibido
+        # (reconstrói o detector se mudaram) sem recarregar o vídeo. Fica coladinho
+        # nos controles que ele aplica (relação causa-efeito).
+        self.btn_detect = QtWidgets.QPushButton("Re-detectar", self)
+        self.btn_detect.setToolTip(
+            "Aplica a <b>Resolução</b> e a <b>Confiança</b> atuais e re-detecta "
+            "as faces do quadro exibido — <b>sem recarregar o vídeo</b>. "
+            "Reconstrói o detector só quando esses valores mudaram (leva alguns "
+            "segundos); instantâneo caso contrário.")
+        self.btn_detect.setEnabled(False)
+        self.btn_detect.clicked.connect(self._on_redetect_clicked)
+        det_row.addWidget(self.btn_detect)
         det_row.addStretch(1)     # cluster à esquerda; excesso vira margem à direita
         left.addWidget(g_det)
 
@@ -833,16 +893,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "Adiciona um novo alvo. Depois, clique na face dele no quadro para "
             "ancorá-lo. Cada alvo vira uma identidade no dataset.")
         btn_add.clicked.connect(lambda: self._add_target(activate=True))
-        self.btn_ref_image = QtWidgets.QPushButton("🖼 Imagem de referência", self)
-        self.btn_ref_image.setToolTip(
-            "Acrescenta uma âncora ao alvo <b>ativo</b> a partir de uma <b>foto</b> "
-            "(busca por imagem): escolha o arquivo, a foto aparece na prévia e você "
-            "clica na face. Serve para 'tenho a foto da pessoa, ache nos vídeos' e "
-            "para reforçar a âncora com várias aparências do alvo.")
-        self.btn_ref_image.clicked.connect(self._on_add_reference_image)
+        # A âncora por foto agora vem do grupo "Imagens de Referência" (à direita),
+        # não mais de um botão aqui.
         hdr.addWidget(self.lbl_targets_count)
         hdr.addStretch()
-        hdr.addWidget(self.btn_ref_image)
         hdr.addWidget(btn_add)
         gt.addLayout(hdr)
         self._targets_container = QtWidgets.QWidget(self)
@@ -1190,7 +1244,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         if path == self._video_path:
             self._video_path = None
             self._info = None
-            self._current_frame = None
+            self._clear_anchor_image_provenance()
             self._current_dets = []
             self.scrubber.setEnabled(False)
             self.btn_detect.setEnabled(False)
@@ -1200,6 +1254,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             self.view.set_empty_message(_EMPTY_PREVIEW_MSG)
             self.lbl_frame.setText("—")
             self._set_loaded_label(None)
+            self._set_preview_mode("none")
         # O default de nome pode ter mudado (removeu o 1º vídeo); re-sugere e
         # revalida a colisão de pasta.
         self._suggest_extraction_name()
@@ -1257,6 +1312,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._service_sig = None
         self._info = None
         self._current_dets = []
+        self._clear_anchor_image_provenance()
         self.scrubber.setEnabled(False)
         self.btn_detect.setEnabled(False)
         self.btn_preview.setEnabled(False)
@@ -1270,6 +1326,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._refresh_targets_count()
         self.lbl_frame.setText("Modelo alterado — clique em “Carregar selecionado” novamente.")
         self._set_loaded_label(None)   # serviço/quadro invalidados → nada carregado
+        self._set_preview_mode("none")
 
     def _apply_initial_size(self):
         """Abre num tamanho confortável para as DUAS colunas: largura suficiente
@@ -1439,6 +1496,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self.scrubber.setEnabled(True)
         self.scrubber.set_range(0, total - 1)
         self._apply_window_to_scrubber(path)   # restaura a janela salva do vídeo
+        self._set_preview_mode("video")        # scrubber visível; nav de imagem oculta
         self.btn_detect.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._on_window_changed()
@@ -1534,6 +1592,31 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         est = max(1, window // every_n)
         self.lbl_fps_hint.setText(f"≈ 1 a cada {every_n} quadros · ~{est} no total")
 
+    def _on_redetect_clicked(self):
+        """Botão 'Re-detectar': aplica os parâmetros ATUAIS de Resolução/Confiança
+        (reconstrói o detector só se mudaram) e re-detecta o quadro exibido — sem
+        recarregar o vídeo. A detecção automática (load/scrub) segue usando o
+        serviço vigente; o rebuild só acontece por este clique."""
+        if self._current_frame is None:
+            return
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        try:
+            self._ensure_service_current()
+        except Exception as e:
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.critical(
+                self, "Detecção", f"Falha ao aplicar os parâmetros do detector:\n{e}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self._detect_current()
+
+    def _active_status_label(self) -> QtWidgets.QLabel:
+        """Rótulo de status visível no modo atual: `lbl_frame` no modo vídeo (dentro
+        de `_video_info_w`) e `lbl_image_pos` no modo imagem (dentro de `_image_nav`).
+        Feedback de detecção/ancoragem precisa aparecer nos dois — escrever sempre em
+        `lbl_frame` some no modo imagem (o container está oculto)."""
+        return self.lbl_image_pos if self._anchor_source_is_image else self.lbl_frame
+
     def _detect_current(self):
         if self._current_frame is None or not self._service:
             return
@@ -1544,7 +1627,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             QtWidgets.QApplication.restoreOverrideCursor()
         self._redraw_boxes()
         if not self._current_dets:
-            self.lbl_frame.setText(self.lbl_frame.text() + "  — sem face (tente outro quadro ou det. 960)")
+            lbl = self._active_status_label()
+            lbl.setText(lbl.text() + "  — sem face (tente outro quadro ou det. 960)")
 
     def _redraw_boxes(self):
         # Caixas em cinza-azul por padrão; coloridas (cor do alvo) em TODA face já
@@ -1635,7 +1719,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             if res is None:
                 return
             if row.video_target.anchor_embedding_count == before:
-                self.lbl_frame.setText("Essa face já está ancorada — âncora não duplicada.")
+                self._active_status_label().setText(
+                    "Essa face já está ancorada — âncora não duplicada.")
             row.refresh_anchor_status()
         else:
             built = self._service.build_target_from_click(
@@ -1665,24 +1750,48 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
                 "filename": Path(self._video_path).name if self._video_path else None,
                 "frame_index": self.scrubber.current() if self.scrubber.isEnabled() else None}
 
-    def _on_add_reference_image(self):
-        row = self._active_row
-        if row is None:
-            QtWidgets.QMessageBox.information(
-                self, "Imagem de referência", "Selecione um alvo antes.")
-            return
+    # ──────────────────────────── imagens de referência ────────────────────────────
+    def _ref_image_paths(self) -> List[str]:
+        return [self.lst_ref_images.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
+                for i in range(self.lst_ref_images.count())]
+
+    def _on_add_ref_images(self):
         start = self._datasets_dir or ""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Escolher imagem de referência", start,
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Escolher imagens de referência", start,
             "Imagens (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;Todos (*.*)")
-        if not path:
+        if not paths:
             return
+        existing = set(self._ref_image_paths())
+        for p in paths:
+            if p in existing:
+                continue
+            it = QtWidgets.QListWidgetItem(Path(p).name, self.lst_ref_images)
+            it.setData(QtCore.Qt.ItemDataRole.UserRole, p)
+            it.setToolTip(p)
+            existing.add(p)
+        if self.lst_ref_images.currentRow() < 0 and self.lst_ref_images.count() > 0:
+            self.lst_ref_images.setCurrentRow(self.lst_ref_images.count() - 1)
+
+    def _on_load_ref_selected(self):
+        it = self.lst_ref_images.currentItem()
+        if it is None and self.lst_ref_images.count() == 1:
+            it = self.lst_ref_images.item(0)
+        if it is None:
+            QtWidgets.QMessageBox.information(
+                self, "Imagem de referência", "Selecione uma imagem na lista.")
+            return
+        self._load_ref_image(it.data(QtCore.Qt.ItemDataRole.UserRole))
+
+    def _load_ref_image(self, path: str):
+        """Exibe a foto na prévia em MODO IMAGEM, detecta, e troca os controles sob
+        a prévia (scrubber → navegação de imagem). A próxima âncora clicada é do
+        tipo foto (frame_index None). NÃO exige um vídeo carregado — o detector é
+        construído sob demanda (pode levar alguns segundos na 1ª vez)."""
         img = imread_unicode_safe(path)
         if img is None:
             QtWidgets.QMessageBox.warning(self, "Imagem", "Não foi possível ler a imagem.")
             return
-        # NÃO exige carregar o vídeo — o detector/embedding é construído sob
-        # demanda aqui (pode levar alguns segundos na 1ª vez).
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
         try:
             self._ensure_service_current()
@@ -1691,16 +1800,90 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.critical(self, "Erro", f"Falha ao iniciar o detector:\n{e}")
             return
         QtWidgets.QApplication.restoreOverrideCursor()
-        # Exibe a foto na MESMA prévia e entra no modo "imagem": a próxima âncora
-        # é do tipo foto (frame_index None). Mover o scrubber volta ao vídeo.
         self._anchor_source_is_image = True
         self._anchor_image_path = path
-        self._set_loaded_label(Path(path).name, is_image=True)
         self._current_frame = img
+        self._set_loaded_label(Path(path).name, is_image=True)
         self.view.set_frame(_bgr_to_pixmap(img))
-        self.lbl_frame.setText(
-            f"Imagem de referência: {Path(path).name} — clique na face do alvo ativo")
+        self._set_preview_mode("image")
+        # "Re-detectar" também vale para a foto: fluxo só-imagem (sem vídeo) é um
+        # ponto de entrada de 1ª classe; o serviço já foi construído acima.
+        self.btn_detect.setEnabled(True)
+        self._sync_ref_selection(path)
+        self._update_image_nav_label(path)
         self._detect_current()
+
+    def _step_ref_image(self, delta: int):
+        """◀/▶: carrega a imagem vizinha na lista (cíclico)."""
+        paths = self._ref_image_paths()
+        if not paths:
+            return
+        cur = self._anchor_image_path
+        idx = paths.index(cur) if cur in paths else 0
+        self._load_ref_image(paths[(idx + delta) % len(paths)])
+
+    def _sync_ref_selection(self, path: str):
+        for i in range(self.lst_ref_images.count()):
+            if self.lst_ref_images.item(i).data(QtCore.Qt.ItemDataRole.UserRole) == path:
+                self.lst_ref_images.setCurrentRow(i)
+                return
+
+    def _update_image_nav_label(self, path: str):
+        paths = self._ref_image_paths()
+        idx = paths.index(path) if path in paths else -1
+        n = len(paths)
+        pos = f"{idx + 1} / {n}" if idx >= 0 else "—"
+        self.lbl_image_pos.setText(f"Imagem {pos} — {Path(path).name}")
+        self.btn_ref_prev.setEnabled(n > 1)
+        self.btn_ref_next.setEnabled(n > 1)
+
+    def _on_remove_ref_image(self):
+        it = self.lst_ref_images.currentItem()
+        if it is None:
+            return
+        path = it.data(QtCore.Qt.ItemDataRole.UserRole)
+        self.lst_ref_images.takeItem(self.lst_ref_images.row(it))
+        # Se a imagem removida estava carregada, limpa a prévia e volta ao vazio.
+        if self._anchor_source_is_image and self._anchor_image_path == path:
+            self._clear_anchor_image_provenance()
+            self._current_dets = []
+            self.view.set_boxes([])
+            self.view.clear_frame()
+            self.view.set_empty_message(_EMPTY_PREVIEW_MSG)
+            self._set_loaded_label(None)
+            self._set_preview_mode("none")
+        elif self._anchor_source_is_image and self._anchor_image_path:
+            # Removeu OUTRA imagem enquanto uma seguia carregada: a lista encolheu,
+            # então atualiza "Imagem i / N" e o estado dos botões ◀/▶.
+            self._update_image_nav_label(self._anchor_image_path)
+
+    def _set_preview_mode(self, mode: str):
+        """Alterna os controles sob a prévia: 'video' → scrubber + barra de vídeo;
+        'image' → navegação de imagem; 'none' → nenhum. Conserta o bug de o
+        scrubber do vídeo continuar ativo (e trazer o vídeo de volta) com uma
+        imagem carregada."""
+        is_video = mode == "video"
+        is_image = mode == "image"
+        if not is_video:
+            # Cancela qualquer leitura de quadro de vídeo ainda estrangulada na fila
+            # — senão um _on_scrub_timeout pendente sobrescreveria a imagem exibida
+            # (e o flag _anchor_source_is_image) ao entrarmos em modo imagem/none.
+            self._scrub_timer.stop()
+            self._pending_scrub_idx = None
+        self.scrubber.setVisible(is_video)
+        self.scrubber.setEnabled(is_video)
+        self._video_info_w.setVisible(is_video)
+        self._image_nav.setVisible(is_image)
+
+    def _clear_anchor_image_provenance(self):
+        """Zera o quadro exibido e os flags de proveniência da foto de referência.
+        Chamado por todo teardown que volta ao modo 'none' (remover vídeo, trocar
+        modelo, remover a imagem carregada) para que _anchor_source_is_image /
+        _anchor_image_path / _current_frame não fiquem dessincronizados do que
+        está de fato visível na prévia."""
+        self._current_frame = None
+        self._anchor_source_is_image = False
+        self._anchor_image_path = None
 
     def _on_preview(self):
         row = self._active_row
