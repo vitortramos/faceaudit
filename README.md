@@ -11,8 +11,8 @@ aplicativo:
 1. **Gerenciador de Datasets** — onde imagens viram datasets auditáveis,
    enriquecidos com métricas de qualidade, transformados e preparados para uso
    forense.
-2. **Gerenciador de Estratégias de Comparação** — onde o perito monta a
-   estratégia de cálculo de LR como uma sequência de instruções declarativas,
+2. **Gerenciador de Estratégias** (rótulo da aba na UI) — onde o perito monta
+   a estratégia de cálculo de LR como uma sequência de instruções declarativas,
    treina os modelos, valida com métricas forenses e aplica em casos reais.
 
 Não há nada hard-coded sobre como o LR é calculado. A estratégia é descrita
@@ -63,14 +63,14 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 | Ferramenta | Função |
 |---|---|
-| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada via git URL (PyPI tem apenas 0.4.1; precisamos ≥ 0.6.0 do upstream `rafribeiro/forensicface@v0.6.0`) |
+| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada via git URL (PyPI tem apenas 0.4.1; precisamos ≥ 0.7.1 do upstream `rafribeiro/forensicface@v0.7.1`) |
 | **Sepael V2** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v2` no parquet, `FFInfo.embedding_sepaelv2`) |
 | **Sepael V3** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v3`, `FFInfo.embedding_sepaelv3`) |
 | **Sepael V4** | Encoder AdaFace ViT WebFace4M — embeddings 512-D (`embedding_v4`, `FFInfo.embedding_sepaelv4`) |
 | **Sepael V5** | Encoder TopoFR R200 Glint360K — embeddings 512-D (`embedding_v5`, `FFInfo.embedding_sepaelv5`) |
 | **Sepael V6** | Encoder KPRPE — embeddings 512-D, requer `aligned_keypoints` como segundo input ONNX (`embedding_v6`, `FFInfo.embedding_sepaelv6`) |
 | **OFIQ** | Avaliação de qualidade NIST/BSI (binário externo) |
-| **SERFIQ** | Score de qualidade alternativo |
+| **SER-FIQ** | Score de qualidade alternativo — serviço de backend legado; **não mais exposto na interface de dataset** (o enriquecimento de qualidade user-facing é OFIQ + norma do embedding) |
 | **SpeechBrain** | Implementação do PLDA SIMPLE |
 
 ### Passos
@@ -184,8 +184,8 @@ Um dataset é um arquivo **parquet** (`.parquet`) com:
 | Botão | Função |
 |---|---|
 | **Auditar** | Auditoria forense completa — 14+ verificações automáticas (ver abaixo) |
-| **Filtrar / Limpar Filtro** | Filtros multi-coluna com data types tipados (numeric, categorical, text) |
-| **Localizar** | Converte paths absolutos em relativos, opcionalmente copiando imagens para pasta autocontida (`COPY_ORIGINALS` ou `COPY_ALIGNED`) ou aplicando `REBASE_PREFIX` cross-machine |
+| **Filtrar / Limpar Filtro** | Filtros multi-coluna com critérios tipados (numérico, string/categórico, booleano) |
+| **Localizar** | Reescreve paths in-place como relativos (`REWRITE_RELATIVE`), copia imagens para pasta autocontida (`COPY_ORIGINALS`) ou substitui um prefixo de path cross-machine (`REBASE_PREFIX`). Para alinhar faces use o Editor de Pipeline de Imagens (`Origem = Face alinhada (112×112)`, zero steps) |
 | **Enriquecer** | Adiciona embeddings de outros modelos Sepael, FIQA, OFIQ (qualidade ISO), pose e demografia — cada item com selo de cobertura (presente/parcial/ausente); só processa o que falta, salvo *Reprocessar* |
 | **Coluna** | Adiciona coluna custom (anotação livre) |
 | **Metadados** | Edita nome, descrição, rótulos, roles e vocabulários de colunas |
@@ -210,6 +210,12 @@ sugestão acionável:
 | **Qualidade** | Histogramas de FIQA/OFIQ/SER-FIQ/norma, low-quality outliers, correlação FIQA × norma do embedding, boxplot por quartil de qualidade |
 | **Topologia (hubness)** | Faces que atraem vizinhos errados em alta dimensionalidade — diagnóstico de viés do modelo |
 
+As verificações biométricas (identidades duplicadas/misturadas) e a topologia
+(hubness) são **passes pesados e opt-in** — cada uma é disparada em execução
+separada, com confirmação, e não faz parte da bateria rápida O(N) do botão
+"Auditar" (que roda apenas as checagens de integridade física, estrutura de
+identidades e qualidade).
+
 Cada finding pode ser explorado num preview que mostra as faces afetadas
 lado a lado. O perito decide o que fazer (deletar linhas, renomear identidade,
 mesclar, etc.).
@@ -230,15 +236,16 @@ compartilhar evidência).
 
 Cada coluna do parquet tem um **role** declarado no `column_specs`:
 
-- `IDENTITY`, `FILE_NAME`, `IMAGE_PATH`, `FACE_HASH`, `EMBEDDING`, `QUALITY`,
-  `POSE`, `DEMOGRAPHY`, `CUSTOM`, etc.
+- `IDENTITY`, `IMAGE_PATH`, `FILE_HASH`, `EMBEDDING`, `QUALITY`, `POSE`,
+  `GEOMETRY`, `DEMOGRAPHIC`, `DISPLAY`, `METADATA`, `CUSTOM`.
 - Vocabulários fechados para colunas categóricas (renderizados como
   QComboBox na edição).
 - Aliases para resolver nomes de coluna legados na leitura.
-- Tipo de dado tipado (`numeric`, `categorical`, `text`, `binary_blob`).
+- Tipo de dado tipado (`str`, `int`, `float`, `bool`, `vector` (embeddings), `list`).
 
 O role determina como a UI renderiza, valida e usa a coluna em operações
-downstream (ex.: o filtro mostra slider em `QUALITY`, combo em `CATEGORICAL`).
+downstream (ex.: o filtro mostra slider em `QUALITY`, combo em colunas com
+vocabulário fechado como `DEMOGRAPHIC`).
 
 ### Pendrive paradigm
 
@@ -271,7 +278,7 @@ Cada fase contém uma sequência ordenada de **instruções**. Cada instrução
 consome recursos do contexto (datasets, configs, modelos treinados) e produz
 novos recursos.
 
-### Tipos de instrução (18)
+### Tipos de instrução (20)
 
 #### Preparação de dados
 
@@ -291,6 +298,7 @@ novos recursos.
 | `PIPELINE_APPLICATION` | Aplica pipeline treinado a um ou mais datasets |
 
 **Transformators disponíveis:** `CENTERING`, `WHITENING_TRANSFORMATION` (PCA),
+`WCCN_TRANSFORMATION` (within-class covariance normalization — Hatch et al. 2006),
 `LDA_TRANSFORMATION`, `L2_NORMALIZATION`, `CORAL_TRANSFORMATION` (domain
 alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 `IDENTITY_AGGREGATION` (template por identidade).
@@ -299,7 +307,7 @@ alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 
 | Tipo | Função |
 |---|---|
-| `SIMILARITY_MODEL_TRAINING` | Prepara/treina modelo de similaridade. Cosseno (stateless) ou PLDA (SIMPLE via SpeechBrain ou TWO_COVARIANCE em forma fechada Brümmer-de Villiers 2010) |
+| `SIMILARITY_MODEL_TRAINING` | Prepara/treina modelo de similaridade. Cosseno (stateless) ou PLDA em três variantes (SIMPLE via SpeechBrain, TWO_COVARIANCE em forma fechada Brümmer-de Villiers 2010, ou SHRINKAGE_TWO_COVARIANCE — two-covariance com shrinkage de W via Ledoit-Wolf) |
 | `SIMILARITY_SCORING` | Aplica modelo treinado a um dataset (self-comparison) ou par (cross-comparison); produz `SimilarityScoreDataset` |
 | `SCORE_VECTORIZATION` | **Score-level combination** (Brümmer & du Preez 2006): combina dois ou mais `SimilarityScoreDataset` (mesmos pares) em features multivariadas para calibrador 2D+ |
 
@@ -324,12 +332,19 @@ alignment), `RADIAL_GAUSSIANIZATION` (Lyu & Simoncelli 2009),
 | `HUBNESS_ANALYSIS` | Diagnóstico de viés topológico em alta dimensionalidade — Nk score, similaridade impostora, correlações com pose/norma. 5 estudos compósitos |
 | `HUBNESS_ABLATION` | Estudo de ablação progressiva (por quantidade de fotos ou pose) — custoso, refaz O(N²) em N subsets |
 
-#### Tipicidade forense (não-paramétrica)
+#### Tipicidade forense
 
 | Tipo | Função |
 |---|---|
-| `KNN_TYPICALITY_MODEL_TRAINING` | Treina um modelo de tipicidade **não-paramétrico** (k-NN esférico) a partir de um dataset de referência da subpopulação relevante (já estratificada). Três métricas por face: `mean_knn_similarity` (T_k), `typicality_percentile` (rank empírico LOO), `log_density_knn` (Loftsgaarden-Quesenberry esférico). Defensível em corte como estatística não-paramétrica de ranking — hubness deixa de violar a premissa do modelo e vira o sinal medido. |
+| `TYPICALITY_MODEL_TRAINING` | Treina um modelo de tipicidade a partir de um dataset de referência da subpopulação relevante (já estratificada). Backend escolhido via `typicality_model_type`: **k-NN esférico** (não-paramétrico, default) ou **MoVMF** (mistura von Mises-Fisher paramétrica, EXPERIMENTAL). No backend k-NN, três métricas por face: `mean_knn_similarity` (T_k), `typicality_percentile` (rank empírico LOO), `log_density_knn` (Loftsgaarden-Quesenberry esférico). Defensível em corte como estatística não-paramétrica de ranking — hubness deixa de violar a premissa do modelo e vira o sinal medido. |
 | `TYPICALITY_PAIR_SCORING` | Aplica modelo(s) treinado(s) a cada face de cada par, combina simetricamente (MEAN/MIN/MAX/PRODUCT/ABS_DIFF) num score por par. **Suporta cross-população** (ex.: cross-pose forense — modelo lateral aplicado em probe lateral, modelo frontal aplicado em reference frontal). Produz `SimilarityScoreDataset` pareável diretamente pelo `SCORE_VECTORIZATION` com scores de similaridade pra treinar calibrador 2D+ que conhece raridade local. Reduz Cllr quando há heterogeneidade de tipicidade na população — validado num cenário de hubness sintético com ganho de 6–9%. |
+
+#### Calibração LR forense (raridade)
+
+| Tipo | Função |
+|---|---|
+| `SCORE_INTERACTION_FEATURE` | Constrói feature forense de **interação cosseno × raridade** `(base − s0)·rarity` a partir de dois `SimilarityScoreDataset` alinháveis por par (base cosseno/PLDA + modifier de tipicidade). Materializa a tese de que raridade **não é evidência independente** — só modula a *força* de uma similaridade observada. Modos `ONE_SIDED_POSITIVE`/`LINEAR`/`HINGE_BASE` (+ espelhos `_NEGATIVE`); `s0` (evidência neutra, logLR=0) resolvido via `AUTO_LOGREG`/`MANUAL`/`INHERIT` (INHERIT obrigatório em validação/casework). Output `raw_score` 1D consumível por `SCORE_VECTORIZATION`. |
+| `LR_ARCHITECTURE_VECTORIZATION` | **Substituto declarativo** do encadeamento manual `SCORE_INTERACTION_FEATURE × N + SCORE_VECTORIZATION`: materializa em UMA instrução uma das arquiteturas de calibração LR (de `COSINE_ONLY` a `BILATERAL_FULL_CENTERED`), cuidando internamente de hinges, raridades centradas e vetorização. Quatro modos de parâmetro (`FIT_FULL_CALIBRATION_LEGACY`/`FIT_PER_FOLD`/`MANUAL`/`INHERIT` — INHERIT obrigatório em VALIDATION/CASEWORK). Persiste `architecture_state` + fingerprints para binding com o calibrador. |
 
 ### Recursos (StrategyResource)
 
@@ -341,14 +356,15 @@ Unidade de troca entre instruções. Cada instrução declara `input_resource_id
 `SIMILARITY_MODEL_CONFIG`, `CALIBRATION_MODEL_CONFIG`, `TRAINED_PIPELINE`,
 `TRAINED_SIMILARITY_MODEL`, `TRAINED_CALIBRATION_MODEL`,
 `TRAINED_TYPICALITY_MODEL`, `SIMILARITY_SCORES`,
-`CALIBRATED_SCORES`, `VALIDATION_RESULT`, `CASEWORK_VISUALIZATION`,
-`HUBNESS_REPORT`, `TRAJECTORY_DATA`, ...
+`CALIBRATED_SCORES`, `LR_ARCHITECTURE_RAW_INPUT`, `VALIDATION_RESULT`,
+`CASEWORK_VISUALIZATION`, `HUBNESS_REPORT`, `HUBNESS_ABLATION_RESULT`,
+`TRAJECTORY_DATA`, ...
 
 A UI usa esse type checking para filtrar dropdowns: o campo "Modelo
 treinado" de uma instrução `SCORE_CALIBRATION` só lista recursos
 `TRAINED_CALIBRATION_MODEL` no projeto corrente.
 
-### Sistema de validação (19 regras)
+### Sistema de validação (22 regras)
 
 Antes de executar, cada instrução passa por validação em 4 estágios:
 
@@ -385,8 +401,6 @@ Caso** o par (probe questionado, reference padrão) e roda `SIMILARITY_SCORING`
 - **Plot da distribuição de referência** (gen/imp da validação) com os
   escores do caso sobrepostos — KDE se ≥30 pares, linhas verticais
   anotadas se menos.
-- **Visualização gráfica** opcional do LR via curvas relativas de
-  probabilidade (Morrison 2024 §5) — facilita explicação a triers of fact.
 
 ### Integridade e cadeia de custódia
 
@@ -408,10 +422,11 @@ PDFs gerados sob demanda em `docs/`:
 | `dataset_manager_roadmap.pdf` | Roadmap de features do Dataset Manager |
 | `biGauss_KDE_smoothed.pdf` | Variante KDE_SMOOTHED do calibrador Bi-Gaussianized — motivação, matemática, ajuste de hyperparams, A/B real |
 
-Regenerar:
+Regenerar (o stem do script nem sempre coincide com o do PDF):
 
 ```bash
-python docs/_build_<nome>_pdf.py
+python docs/_build_roadmap_pdf.py            # → dataset_manager_roadmap.pdf
+python docs/_build_bigauss_kde_smoothed_pdf.py  # → biGauss_KDE_smoothed.pdf
 ```
 
 ---
@@ -454,11 +469,12 @@ forense estabelecida:
 ## Status
 
 Versão **0.1.0** — em desenvolvimento ativo. Os componentes core (engine
-declarativa, calibração tripla LogReg/KDE/biGauss, PLDA dual-variante, score
-vectorization multivariado, hubness diagnostics, tipicidade não-paramétrica
-kNN integrada ao calibrador via score vectorization, dataset management com
-schema-by-role e auditoria forense) estão maduros. A documentação técnica
-está em construção.
+declarativa, calibração tripla LogReg/KDE/biGauss, PLDA tri-variante
+(SIMPLE/TWO_COVARIANCE/SHRINKAGE_TWO_COVARIANCE), score vectorization
+multivariado, hubness diagnostics, tipicidade kNN não-paramétrica — e MoVMF
+paramétrica (experimental) — integrada ao calibrador via score vectorization,
+dataset management com schema-by-role e auditoria forense) estão maduros. A
+documentação técnica está em construção.
 
 ---
 
