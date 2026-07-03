@@ -1,0 +1,62 @@
+# .gitattributes — tratamento de tipos de arquivo pelo Git.
+#
+# Motivo: com core.autocrlf=true (padrão no Windows), o Git converte fins de
+# linha (CRLF <-> LF) nos arquivos que julga serem TEXTO. Ele adivinha "texto"
+# procurando bytes NUL nos primeiros ~8 KB; alguns binários (PDFs com cabeçalho
+# ASCII, por ex.) passam nessa heurística e são CORROMPIDOS pela conversão.
+#
+# As regras abaixo marcam explicitamente os binários do projeto como `binary`
+# (atalho para `-text -diff`): sem conversão de fim de linha, sem diff textual.
+
+# Imagens
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.bmp   binary
+*.ico   binary
+*.tif   binary
+*.tiff  binary
+*.webp  binary
+
+# Documentos
+*.pdf   binary
+
+# Dados / modelos
+*.parquet binary
+*.pkl     binary
+*.pickle  binary
+*.npy     binary
+*.npz     binary
+*.onnx    binary
+*.pt      binary
+*.pth     binary
+*.h5      binary
+*.joblib  binary
+
+# Mídia
+*.mp4  binary
+*.avi  binary
+*.mov  binary
+*.mkv  binary
+*.wmv  binary
+*.m4v  binary
+*.wav  binary
+*.mp3  binary
+
+# Arquivos compactados
+*.zip  binary
+*.gz   binary
+*.tar  binary
+*.7z   binary
+
+# Office
+*.xlsx binary
+*.docx binary
+*.pptx binary
+
+# Fontes
+*.ttf   binary
+*.otf   binary
+*.woff  binary
+*.woff2 binary
