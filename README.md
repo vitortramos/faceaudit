@@ -142,8 +142,9 @@ rápidas.
 ## Gerenciador de Datasets
 
 A primeira aba do aplicativo. Aqui o perito transforma um conjunto de imagens
-faciais num **dataset auditável** com schema tipado, metadados de qualidade,
-identidades verificadas e cadeia de custódia.
+faciais — **ou faces extraídas de arquivos de vídeo** (busca por âncora em
+material de vigilância) — num **dataset auditável** com schema tipado,
+metadados de qualidade, identidades verificadas e cadeia de custódia.
 
 ### O que é um dataset no FaceAudit
 
@@ -170,6 +171,8 @@ Um dataset é um arquivo **parquet** (`.parquet`) com:
 | Botão | Função |
 |---|---|
 | **Novo Dataset** | Cria dataset a partir de pasta de imagens com identidades como subpastas; opção de alinhar durante a criação |
+| **Dataset de Vídeo** | Extrai faces de um ou mais vídeos por âncora (procura um investigado no material), com revisão humana e manifesto de reprodutibilidade → gera um dataset |
+| **Importar extração de vídeo** | Reaproveita uma pasta de extração de vídeo já produzida (revisar + gerar dataset) |
 | **Abrir** | Carrega `.parquet` existente |
 | **Salvar / Salvar Como** | Persiste com SHA-256 do conteúdo |
 | **Biblioteca** | Adiciona dataset à biblioteca global (reusável entre projetos) |
@@ -183,7 +186,7 @@ Um dataset é um arquivo **parquet** (`.parquet`) com:
 | **Auditar** | Auditoria forense completa — 14+ verificações automáticas (ver abaixo) |
 | **Filtrar / Limpar Filtro** | Filtros multi-coluna com data types tipados (numeric, categorical, text) |
 | **Localizar** | Converte paths absolutos em relativos, opcionalmente copiando imagens para pasta autocontida (`COPY_ORIGINALS` ou `COPY_ALIGNED`) ou aplicando `REBASE_PREFIX` cross-machine |
-| **Enriquecer** | Adiciona métricas de qualidade (OFIQ, SER-FIQ), embeddings adicionais (sepaelv4), pose, demografia |
+| **Enriquecer** | Adiciona embeddings de outros modelos Sepael, FIQA, OFIQ (qualidade ISO), pose e demografia — cada item com selo de cobertura (presente/parcial/ausente); só processa o que falta, salvo *Reprocessar* |
 | **Coluna** | Adiciona coluna custom (anotação livre) |
 | **Metadados** | Edita nome, descrição, rótulos, roles e vocabulários de colunas |
 | **Juntar** | Mescla dois datasets — modos `CONCAT`, `CONCAT_PRESERVE_ORDER`, `REPLACE_BY_INDEX_LIST`, `UPDATE_BY_INDEX_LIST` |

@@ -3,13 +3,27 @@
 Este capítulo fecha o guia descrevendo **como o dataset preparado
 chega no Gerenciador de Estratégias** (e como ele pode voltar
 para edição). Os dois módulos do FaceAudit não vivem isolados —
-o Gerenciador de Datasets é o **produtor** dos artefatos, e o
-Gerenciador de Estratégias é o **consumidor**.
+o Gerenciador de Datasets é o **produtor** dos artefatos (seja o
+dataset criado de uma pasta de imagens ou extraído de vídeo, ver
+[capítulo 02b](02b_criando_dataset_de_video.md)), e o Gerenciador
+de Estratégias é o **consumidor**.
+
+> ⚠️ **Datasets extraídos de vídeo carregam viés de seleção.**
+> Um dataset criado por **🎬 Dataset de Vídeo** ou **📥 Importar
+> extração de vídeo** recebe metadados de proveniência
+> (`dataset_origin_type=VIDEO_TARGET_EXTRACTION` +
+> `selection_warning`) porque suas faces foram selecionadas
+> *condicionadas à similaridade com uma âncora* — **não** é uma
+> amostra populacional neutra. O Gerenciador de Estratégias **não
+> exibe esse aviso** ao importar. Portanto: **não** use um dataset
+> de origem vídeo como população de referência/*background* de
+> calibração de LR ou de modelos de tipicidade sem tratar o viés.
+> Detalhes em [capítulo 02b — Ressalva forense](02b_criando_dataset_de_video.md).
 
 ## Sumário do capítulo
 
 1. [Os dois caminhos de saída](#os-dois-caminhos-de-saída)
-2. [→ Estratégia (enviar para o projeto atual)](#--estratégia)
+2. [🎯 → Estratégia (enviar para o projeto atual)](#--estratégia)
 3. [Biblioteca (salvar para uso futuro)](#biblioteca)
 4. [Voltando do Gerenciador de Estratégias](#voltando-do-gerenciador-de-estratégias)
 5. [Boas práticas de organização](#boas-práticas-de-organização)
@@ -24,7 +38,7 @@ caminhos:
 
 | Botão | Destino | Quando usar |
 |---|---|---|
-| ➡ **→ Estratégia** (ribbon Arquivo) | Diretamente para o **projeto FaceAudit atualmente aberto** no Gerenciador de Estratégias | Você sabe o projeto e quer importar agora |
+| 🎯 **→ Estratégia** (ribbon Arquivo) | Diretamente para o **projeto FaceAudit atualmente aberto** no Gerenciador de Estratégias | Você sabe o projeto e quer importar agora |
 | 📚 **Biblioteca** (ribbon Arquivo) | **Biblioteca global** (compartilhada entre projetos) | Você quer usar o dataset em **vários projetos** futuros, ou ainda não criou o projeto |
 
 Os dois NÃO são exclusivos — em geral o fluxo recomendado é:
@@ -35,17 +49,21 @@ Os dois NÃO são exclusivos — em geral o fluxo recomendado é:
 
 ## → Estratégia
 
-O botão ➡ **→ Estratégia** envia o **dataset atualmente aberto**
+O botão 🎯 **→ Estratégia** envia o **dataset atualmente aberto**
 para o projeto aberto no Gerenciador de Estratégias:
 
 | Ação | O que acontece |
 |---|---|
-| 1. Validação | Se nenhum projeto está aberto no Gerenciador de Estratégias, mostra erro |
-| 2. Confirmação | Diálogo perguntando se quer importar (mostrando nome + tamanho) |
-| 3. Cópia | O parquet é **copiado** para `<projeto>/datasets/<nome>.parquet` (estrutura do *Pendrive Paradigm*) |
-| 4. Registro | O dataset vira um `StrategyResource` do tipo `DATASET` no projeto |
-| 5. Cadeia | A operação é registrada no Audit Log do dataset original |
+| 1. Salvar antes | A pré-condição no lado do Dataset Manager é o dataset estar **salvo em disco**. Se houver edições pendentes, aparece um prompt **Salvar antes** — cancelar aborta o envio |
+| 2. Projeto aberto | Se **nenhum projeto** está aberto no Gerenciador de Estratégias, um diálogo oferece **Abrir existente…** / **Criar novo…** / Cancelar (não é um erro) |
+| 3. ID do recurso | Um diálogo pede para **confirmar ou editar o ID do recurso** (default = nome do arquivo, sem extensão; deve ser único no projeto) |
+| 4. Cópia | O parquet é **copiado** para `<projeto>/datasets/<id_do_recurso>.parquet` (estrutura do *Pendrive Paradigm*). Datasets com paths de imagem relativos têm essas referências **absolutizadas** na cópia, para não quebrar ao mudar de pasta |
+| 5. Registro | O dataset vira um `StrategyResource` do tipo `DATASET` no projeto, e um diálogo de sucesso mostra o path final no projeto |
 | 6. Switch | A aba muda automaticamente para Gerenciador de Estratégias |
+
+> 💡 O envio em si **não** gera entrada no Audit Log. Uma entrada
+> `SAVE` só aparece se o dataset estava com edições pendentes e
+> você optou por salvá-lo antes do envio (passo 1).
 
 O dataset chega no painel esquerdo do Gerenciador de Estratégias
 (árvore de Recursos → DATASETS), pronto pra ser referenciado em
@@ -70,10 +88,14 @@ global** — a pasta configurada na máquina (default
 
 | Ação | O que acontece |
 |---|---|
-| 1. Validação | Verifica que a pasta da biblioteca é gravável |
-| 2. Confirmação | Diálogo perguntando se quer copiar |
-| 3. Cópia | Parquet copiado para `<global_library>/datasets/<nome>.parquet` |
-| 4. Audit | Registrado no log |
+| 1. Salvar antes | O dataset precisa estar **salvo em disco** — se houver edições pendentes, aparece o prompt **Salvar antes** |
+| 2. Configuração | Verifica que `paths.library` está **configurado** no `config.json` (não testa gravabilidade) |
+| 3. Identificador | Um diálogo pede o **Identificador (sem extensão)** — será o nome do arquivo na biblioteca (default = nome atual do dataset) |
+| 4. Overwrite | Se já existir um `.parquet` com esse identificador na biblioteca, pede confirmação para sobrescrever |
+| 5. Cópia | Parquet copiado para `<global_library>/datasets/<identificador>.parquet`, e um diálogo exibe o **hash SHA-256** do arquivo |
+
+> 💡 O salvamento na biblioteca **não** grava entrada no Audit Log
+> do dataset (só o `SAVE` do passo 1, se houve edições pendentes).
 
 Depois disso, o dataset aparece no diálogo *Adicionar Recurso da
 Biblioteca* (toolbar do Gerenciador de Estratégias), de onde
@@ -91,24 +113,30 @@ pode ser puxado para qualquer projeto.
 ## Voltando do Gerenciador de Estratégias
 
 O caminho inverso também existe. No Gerenciador de Estratégias,
-ao clicar com botão direito num recurso `DATASET` na árvore (ou
-seu equivalente no resource info widget), aparece **"Editar no
-Gerenciador de Datasets"**.
+ao selecionar um recurso `DATASET` **primário** do projeto (com
+arquivo presente), o painel de propriedades (*resource info
+widget*) exibe o botão **📂 Abrir no Gerenciador de Datasets**.
 
 | Ação | O que acontece |
 |---|---|
 | 1. Resolução | O `artifact_ref.path` do recurso é resolvido para caminho absoluto |
 | 2. Switch | Aba muda para Gerenciador de Datasets |
 | 3. Open | `open_dataset_from_path()` é chamado direto (sem FileDialog) |
-| 4. Audit | Operação `OPEN` registrada com origem `cross-tab` |
+| 4. Audit | Uma entrada `OPEN` padrão é registrada no Audit Log do dataset (idêntica à de qualquer abertura) |
 
 O dataset vai pra UI do Dataset Manager pra você editar livremente.
 
 > ⚠️ **Cuidado**: o dataset aberto **é o arquivo no projeto**
-> (`<projeto>/datasets/X.parquet`) — não uma cópia. Salvar (`Ctrl+S`)
+> (`<projeto>/datasets/X.parquet`) — não uma cópia. Salvar
 > sobrescreve direto o que o Gerenciador de Estratégias está
 > usando. Se você fizer mudanças destrutivas (filter, delete),
 > elas afetam o projeto.
+>
+> Além disso, **salvar dispara reprocessamento automático**: o
+> Gerenciador de Estratégias detecta que o parquet primário mudou,
+> atualiza o hash e **invalida em cascata** as instruções das
+> estratégias que dependem desse dataset (elas precisarão ser
+> re-executadas).
 >
 > Para edição segura: faça **Salvar Como** num caminho temporário,
 > edite, depois importe de volta como recurso novo se aprovar.
@@ -122,17 +150,22 @@ gerenciáveis em projetos forenses reais:
 
 ```
 ~/faceaudit_library/
-├── datasets/
+├── datasets/                             ← datasets .parquet reutilizáveis
 │   ├── celeb_train.parquet               ← dataset de treino (LFW, CASIA-WebFace)
 │   ├── celeb_train_aligned.parquet
 │   ├── ofiq_baseline_2024.parquet
 │   └── caso_002_ref_2024.parquet         ← referência de um caso ativo
-├── templates/
+├── strategy_templates/                   ← templates de estratégia (LRStrategyDefinition)
 │   ├── BFW.json
 │   └── LFW.json
-└── image_pipelines/
-    ├── whatsapp_simulation.json
-    └── id_card_simulation.json
+├── image_pipelines/                      ← pipelines de processamento de imagens
+│   ├── whatsapp_simulation.json
+│   └── id_card_simulation.json
+├── split_configs/                        ← configurações de split
+├── mining_configs/                       ← configurações de mineração de pares
+├── pipeline_configs/                     ← pipelines de transformação de embeddings
+├── filter_configs/                       ← filtros salvos (reusáveis entre projetos)
+└── validation_rules/                     ← templates de regra de validação
 ```
 
 Cada projeto importa o que precisa via biblioteca — evita
@@ -169,7 +202,7 @@ Stems consistentes facilitam identificar o conteúdo sem abrir.
 Cada `Salvar` registra uma entrada no log. Em datasets ativos
 isso pode ficar grande. Periódico:
 
-- Verifique a integridade (botão 🔒 do diálogo Custódia)
+- Verifique a integridade da cadeia (botão **🔒 Verificar integridade** no diálogo de Auditoria)
 - Exporte o log pra arquivo morto se for entregar como evidência
 - O log **não** é truncado automaticamente — design forense
 
@@ -179,8 +212,13 @@ Quando um caso fecha:
 
 1. Exporte o projeto FaceAudit completo (zip do `.fa`)
 2. Exporte o Audit Log do dataset
-3. Exporte a Schema Report como CSV
+3. Exporte o dataset como CSV/Excel pelo botão **📤 Exportar para CSV/Excel…** do painel de **Colunas**
 4. Inclua um README com a sequência de operações executadas
+5. **Para datasets extraídos de vídeo**: preserve também a
+   **pasta do run** (com o `manifesto_extracao.json` + subpasta
+   `_meta/`) — ela contém os SHA-256 dos vídeos, âncoras e o
+   commit do código, essenciais para reproduzir a extração. Ver
+   [capítulo 02b](02b_criando_dataset_de_video.md).
 
 Isso garante reprodutibilidade forense — outro perito consegue
 abrir e refazer.

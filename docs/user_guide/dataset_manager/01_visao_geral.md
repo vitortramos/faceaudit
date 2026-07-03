@@ -4,17 +4,24 @@
 
 O **Gerenciador de Datasets** é o primeiro dos dois módulos principais
 do FaceAudit (o outro é o **Gerenciador de Estratégias**). Sua função
-é transformar uma pasta de imagens faciais em um **dataset
-estruturado** — um arquivo `.parquet` contendo, para cada imagem,
-todas as informações necessárias aos cálculos forenses:
+é transformar **uma pasta de imagens faciais — ou um ou mais arquivos
+de vídeo** — em um **dataset estruturado**: um arquivo `.parquet`
+contendo, para cada face, todas as informações necessárias aos
+cálculos forenses:
 
 - **Embeddings biométricos** (vetores numéricos) extraídos por modelos
-  SEPAEL V2 e/ou SEPAEL V4 via biblioteca *ForensicFace*.
-- **Métricas de qualidade** — FIQA (do próprio ForensicFace), OFIQ
-  (ISO/IEC 29794-5) e SER-FIQ (Stochastic Embedding Robustness).
+  **SEPAEL (V2 a V6)** via biblioteca *ForensicFace* — você escolhe
+  quais rodar, entre os instalados na máquina.
+- **Métricas de qualidade** — FIQA (do próprio ForensicFace) e OFIQ
+  (ISO/IEC 29794-5).
 - **Pose facial** estimada (yaw, pitch, roll).
 - **Metadados administrativos** — identidade, gênero, etnia, origem,
-  hash SHA-256 de cada imagem, caminho relativo no disco, dimensões.
+  hash SHA-256 de cada imagem, caminho no disco.
+
+Há **duas origens** possíveis para um dataset: uma **pasta de imagens**
+(fluxo clássico — [capítulo 02](02_criando_dataset.md)) ou a **extração
+de faces de vídeo(s)** por âncora, típica de material de vigilância
+([capítulo 02b](02b_criando_dataset_de_video.md)).
 
 Quando o dataset está pronto, ele é **enviado** ao Gerenciador de
 Estratégias, onde participa de uma ou mais estratégias de cálculo de
@@ -25,14 +32,16 @@ razão de verossimilhança (LR).
 > tenho em mãos?”*, este é o módulo certo. Se for *“como comparar
 > imagens A e B e obter um LR?”*, vá para o Gerenciador de Estratégias.
 
-## Quando aparece a aba
+## Disponibilidade da aba
 
-A aba é exibida automaticamente na inicialização do FaceAudit, desde
-que a biblioteca `forensicface` esteja instalada e os modelos SEPAEL
-estejam acessíveis. Em ambientes onde estas dependências não estejam
-disponíveis (apenas leitura de datasets já prontos, por exemplo), a
-aba é silenciosamente desativada — o app sobe direto no Gerenciador
-de Estratégias.
+A aba do Gerenciador de Datasets **sempre aparece** na inicialização do
+FaceAudit. Se a biblioteca `forensicface` ou os modelos SEPAEL não
+estiverem disponíveis, a aba continua funcionando — apenas as
+funcionalidades que **dependem** deles (criar/enriquecer com embeddings
+e calcular qualidade) ficam **desabilitadas dentro dos diálogos**. Tudo
+o que **não** depende do ForensicFace — **abrir**, **filtrar**,
+**comparar**, **balancear**, **localizar**, **exportar** — continua
+plenamente utilizável, inclusive só para leitura de datasets já prontos.
 
 ## Leiaute geral
 
@@ -69,18 +78,19 @@ agrupados em **4 abas**:
 
 ### Aba *Arquivo*
 
-![Ribbon Arquivo: Novo, Abrir, Salvar, Salvar Como, Biblioteca, → Estratégia, Fechar](assets/20_ribbon_0_arquivo.png)
+![Ribbon Arquivo: Novo Dataset, Dataset de Vídeo, Importar extração de vídeo, Abrir, Salvar, Salvar Como, Biblioteca, → Estratégia, Fechar](assets/20_ribbon_0_arquivo.png)
 
 Operações de **ciclo de vida** do dataset:
 
 | Botão | Função |
 |---|---|
-| ➕ **Novo** | Cria um dataset a partir de uma pasta de imagens (ver [capítulo 02](02_criando_dataset.md)) |
+| ➕ **Novo Dataset** | Cria um dataset a partir de uma pasta de imagens (ver [capítulo 02](02_criando_dataset.md)) |
+| 🎬 **Dataset de Vídeo** | Extrai faces de um ou mais vídeos por âncora, gerando um dataset (ver [capítulo 02b](02b_criando_dataset_de_video.md)) |
+| 📥 **Importar extração de vídeo** | Reaproveita uma pasta de extração de vídeo já produzida (revisar + gerar dataset) |
 | 📂 **Abrir** | Lê um `.parquet` existente do disco |
-| 💾 **Salvar** | Sobrescreve o arquivo carregado |
-| 💾 **Salvar Como…** | Salva em um caminho à escolha |
-| 📚 **Biblioteca** | Copia o dataset para a biblioteca global (acessível a todos os projetos) |
-| ➡ **→ Estratégia** | Envia o dataset ao Gerenciador de Estratégias |
+| 💾 **Salvar** / **Salvar Como…** | Sobrescreve o arquivo carregado / salva em outro caminho |
+| 📚 **Biblioteca** | Copia o dataset para a biblioteca global (reusável entre projetos) |
+| 🎯 **→ Estratégia** | Envia o dataset ao Gerenciador de Estratégias |
 | ❌ **Fechar** | Descarta o dataset atual |
 
 ### Aba *Dataset*
@@ -94,7 +104,7 @@ Operações que **agem sobre o conteúdo**:
 | **Auditoria** | 🔎 *Auditar* | Análise de integridade biométrica + visualizações forenses |
 | **Filtragem** | 🔍 *Filtrar* / 🗑️ *Limpar Filtro* | Subconjuntos por expressão; o filtro vira a visão ativa da tabela |
 | **Localização** | 🗂 *Localizar* | Corrige `image_path` quebrado e/ou empacota o dataset em pasta portátil ([capítulo 03](03_carregando_e_localizando.md)) |
-| **Enriquecimento** | 💎 *Enriquecer* / ➕📋 *Coluna* / 🏷️ *Metadados* | Adicionar/recalcular FIQA/OFIQ/SER-FIQ; coluna custom; editar rótulos e vocabulários |
+| **Enriquecimento** | 💎 *Enriquecer* / ➕📋 *Coluna* / 🏷️ *Metadados* | Adicionar/recalcular embeddings, FIQA e OFIQ, pose e demografia; coluna custom; editar rótulos e vocabulários |
 | **Estrutural** | 🔗 *Juntar* / ✂️ *Dividir* / ⚖ *Balancear* | Concatenar; particionar por identidade ou índice; balancear amostras |
 | **Análise** | ⚖️ *Comparar* / 📊 *Estatísticas* | Comparação par-a-par com outro dataset; estatísticas agregadas |
 | **Custódia** | 📜 *Custódia* | Cadeia de custódia forense — log de operações com integridade SHA-256 |
@@ -121,7 +131,7 @@ do dataset:
 | Botão | Função |
 |---|---|
 | 🎨 **Editor** | Monta o pipeline interativamente com pré-visualização |
-| ▶ **Processar** | Aplica o pipeline a todas as imagens, gerando novos arquivos e atualizando os caminhos |
+| 🌀 **Processar** | Aplica o pipeline a todas as imagens, gerando novos arquivos e atualizando os caminhos |
 
 ## A barra de status
 
@@ -149,25 +159,28 @@ metadado ou derivada), **vocabulário** (para colunas tipo enum) e
 - A ordenação por clique em cabeçalho funciona para colunas
   numéricas e ordenáveis; embeddings e estruturas complexas são
   ocultados por padrão.
-- Clique-direito numa célula abre o menu de contexto, que inclui
-  *Substituir valor* (todas as linhas ou por regex).
-- Clique-direito no cabeçalho abre as **Propriedades da Coluna**
-  (rótulo, role, vocabulário).
+- Clique-direito numa **célula** abre um menu de contexto (selecionar a
+  coluna inteira, definir/substituir valores em lote, comparar um par);
+  clique-direito no **cabeçalho** oferece **Propriedades da Coluna**,
+  **Remover Coluna** e **Mostrar/Ocultar Colunas**. Na **galeria** de
+  miniaturas o clique-direito tem seu próprio menu de triagem. Todos
+  detalhados no [capítulo 04](04_navegando_dataset.md).
 
 ## O painel de detalhes
 
 Quando uma linha é selecionada, o painel direito mostra:
 
 - **Topo:** miniatura grande da imagem (somente leitura).
-- **Aba *Geral / Bio*:** identidade, gênero, etnia, origem, hash,
-  dimensões, status de erro:
+- **Aba *Geral / Bio*:** arquivo, identidade, hash SHA-256, idade e
+  gênero estimados, pose (Y/P/R), **FIQA Score** e **Score de detecção**:
 
 ![Aba Geral/Bio do painel de detalhes](assets/12_detail_geral_bio.png)
 
-- **Aba *Qualidade ISO*:** barras visuais com todos os indicadores
-  OFIQ (sharpness, exposição, oclusão, pose, etc.), SER-FIQ e FIQA:
+- **Aba *Qualidade ISO*:** barras visuais com os indicadores **OFIQ**
+  (sharpness, exposição, oclusão, pose, etc.). Se o dataset não tem
+  colunas OFIQ, a aba mostra *"Dados OFIQ não calculados."*:
 
-![Aba Qualidade ISO do painel de detalhes, com todas as métricas OFIQ](assets/12_detail_quality_iso.png)
+![Aba Qualidade ISO do painel de detalhes, com as métricas OFIQ](assets/12_detail_quality_iso.png)
 
 > ⚠️ Se a miniatura aparece em branco (placeholder) mesmo com o
 > dataset carregado, é provável que o caminho `image_path` esteja
@@ -179,6 +192,8 @@ Quando uma linha é selecionada, o painel direito mostra:
 
 - **Quer criar um dataset do zero?** Vá para [capítulo 02 — Criando
   um dataset](02_criando_dataset.md).
+- **Tem vídeos e quer achar um investigado neles?** Veja [capítulo 02b
+  — Criando a partir de vídeo](02b_criando_dataset_de_video.md).
 - **Já tem um parquet pronto?** Pule para [capítulo 03 — Carregando
   e localizando](03_carregando_e_localizando.md).
 - **Quer adicionar métricas em um dataset existente?** Veja

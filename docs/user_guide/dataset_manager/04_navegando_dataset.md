@@ -1,9 +1,11 @@
 # 04 — Navegando no dataset
 
 Este capítulo cobre o **uso cotidiano** do Gerenciador de Datasets
-com um dataset já carregado: como ler a tabela, editar células,
-inspecionar uma imagem, alternar para a galeria e usar os menus
-de contexto.
+com um dataset já carregado — seja ele criado a partir de uma pasta
+de imagens (capítulo 02) ou extraído de um **vídeo**
+([capítulo 02b](02b_criando_dataset_de_video.md)). Aqui você aprende
+a ler a tabela, editar células, inspecionar uma imagem, alternar para
+a galeria e usar os menus de contexto.
 
 ## Sumário do capítulo
 
@@ -13,8 +15,9 @@ de contexto.
 4. [O painel de detalhes](#o-painel-de-detalhes)
 5. [A galeria de thumbnails](#a-galeria-de-thumbnails)
 6. [Menu de contexto da tabela](#menu-de-contexto-da-tabela)
-7. [Propriedades da coluna (cabeçalho)](#propriedades-da-coluna)
-8. [Atalhos úteis](#atalhos-úteis)
+7. [Menu de contexto da galeria](#menu-de-contexto-da-galeria)
+8. [Propriedades da coluna (cabeçalho)](#propriedades-da-coluna)
+9. [Navegação e edição por teclado](#navegação-e-edição-por-teclado)
 
 ---
 
@@ -26,15 +29,20 @@ Com um dataset carregado, a tela divide-se em três áreas:
 
 1. **Ribbon** (topo): controles agrupados em 4 abas — `Arquivo`,
    `Dataset`, `Exibir`, `Imagens` (veja [capítulo 01](01_visao_geral.md)).
+   A aba `Arquivo` é também a porta de entrada para as **duas fontes de
+   dataset**: 🎬 **Dataset de Vídeo** e 📥 **Importar extração de vídeo**
+   ficam ao lado de ➕ **Novo Dataset** e 📂 **Abrir**
+   (veja [capítulo 02b](02b_criando_dataset_de_video.md)).
 2. **Tabela** (esquerda, ~70% da largura): uma linha por imagem,
    com colunas configuráveis.
 3. **Painel de detalhes** (direita, ~30%): preview da imagem
    selecionada + abas tabuladas com seus metadados.
 
 O divisor entre tabela e detalhes é **arrastável** — clique e
-arraste para redistribuir a largura. Esconder o painel direito
-não é suportado diretamente, mas você pode arrastá-lo até
-encostar na borda.
+arraste para redistribuir a largura. O painel de detalhes tem uma
+**largura mínima** e **não pode ser colapsado**: o divisor apenas
+redistribui o espaço entre a tabela e os detalhes, sem nunca fazer
+o painel direito desaparecer.
 
 ## A tabela
 
@@ -51,31 +59,40 @@ do dataset:
 | **Label** | Texto exibido no cabeçalho (pode diferir do nome técnico — ex: `Identidade` para a coluna `identity`) |
 | **Role** | Papel da coluna: `IDENTITY`, `QUALITY`, `DEMOGRAPHIC`, `POSE`, `EMBEDDING`, `CUSTOM`, etc. — afeta como o app trata a coluna |
 | **Editable** | Se a célula pode ser editada na UI (algumas colunas como `embedding_v2` são read-only) |
-| **Visible default** | Se a coluna aparece por padrão (você pode ligar/desligar via *Schema Report*) |
-| **Vocabulary** | Lista fechada de valores válidos (ex: `["Male", "Female"]` para `gender`) — a edição vira um combo box |
+| **Visible default** | Se a coluna aparece por padrão (você pode ligar/desligar via diálogo **Colunas** ou pelo submenu *Mostrar/Ocultar Colunas* do cabeçalho) |
+| **Vocabulary** | Lista fechada de valores válidos (ex: `("M", "F", "Outro", "Desconhecido")` para `gender`) — a edição vira um combo box |
 | **Aliases** | Nomes alternativos pra a coluna — usados pra carregar parquets antigos com esquemas diferentes |
 
 ### Colunas visíveis por padrão
 
 Em um dataset criado pelo fluxo padrão (capítulo 02), as colunas
-visíveis costumam ser:
+visíveis costumam ser (o rótulo à direita é o texto exibido no
+cabeçalho):
 
-| Coluna | Conteúdo |
-|---|---|
-| `file_name` | Nome do arquivo |
-| `identity` | Identidade |
-| `gender` | Gênero (combo: Male / Female / vazio) |
-| `ethnicity` | Etnia |
-| `origin` | Origem |
-| `yaw`, `pitch`, `roll` | Pose facial em graus |
-| `fiqa_score` | Score FIQA do ForensicFace |
-| `ofiq_score` | Score OFIQ unificado |
-| `det_score` | Confiança da detecção |
-| `error` | Booleano — `True` indica falha em algum extractor |
+| Coluna | Rótulo | Conteúdo |
+|---|---|---|
+| `file_name` | Nome do Arquivo | Nome do arquivo |
+| `identity` | Identidade | Identidade (editável) |
+| `gender` | Gênero | Gênero — combo `M / F / Outro / Desconhecido` |
+| `ethnicity` | Etnia | Etnia — combo `Branca / Preta / Parda / Amarela / Indígena / Outra / Desconhecida` |
+| `origin` | Origem | Procedência do arquivo (texto livre) |
+| `yaw`, `pitch` | Yaw (FF), Pitch (FF) | Pose facial em graus (ForensicFace) |
+| `fiqa_score` | FIQA | Score FIQA do ForensicFace |
+| `ofiq_score` | OFIQ Score | Score OFIQ unificado |
+| `serfiq_score` | SER-FIQ Score | Score SER-FIQ de robustez |
+| `error`, `error_stage`, `error_message` | Erro, Estágio do Erro, Mensagem do Erro | Rastreamento de falhas — `error=True` marca a face; as outras duas detalham onde e por quê |
 
-Colunas como `embedding_v2`, `embedding_v4`, `ofiq_*_raw`, `bbox`,
-`keypoints` ficam **ocultas por padrão** — você pode ligá-las pelo
-diálogo *Schema Report* (ver [capítulo 06](06_filtros_e_estatisticas.md)).
+> 💡 As três colunas de erro (`error` / `error_stage` / `error_message`)
+> aparecem sempre, mas só têm conteúdo útil quando alguma face falhou na
+> última criação/enriquecimento. Filtre por `error=True` na tabela para
+> ver só as falhas.
+
+Colunas como `embedding_v2`…`embedding_v6`, `serfiq_score`... e demais
+embeddings, `roll` (FF), `det_score` (Det. Confidence), `ofiq_*_raw`,
+`ipd`, `bbox` e `keypoints` ficam **ocultas por padrão** — você pode
+ligá-las pelo diálogo **Colunas** (botão 📋 **Colunas** na ribbon
+`Exibir`; ver [capítulo 06](06_filtros_e_estatisticas.md)) ou pelo
+submenu **Mostrar/Ocultar Colunas** do menu de contexto do cabeçalho.
 
 ### Tooltips de miniatura
 
@@ -92,16 +109,30 @@ inverter. Funciona para colunas numéricas e ordenáveis (text,
 booleans, números). Colunas com estruturas complexas (embeddings,
 listas) não são ordenáveis e são silenciosamente ignoradas.
 
+### Reordenar colunas
+
+O cabeçalho aceita **arrastar-e-soltar**: clique num título de coluna
+e arraste-o para a esquerda ou direita para reposicioná-lo. A nova
+ordem é **persistida** no esquema do dataset (`column_specs`) e sobrevive
+a salvar/reabrir.
+
 ### Edição inline
 
 Clique-duplo numa célula para editar:
 
-- Colunas **com vocabulário** (`gender`, etc.) abrem um *combo box*
-- Colunas **numéricas** mostram um spinner
-- Colunas **booleanas** aceitam toggle direto
-- Colunas **texto livre** abrem editor inline
+- Colunas **com vocabulário** (`gender`, `ethnicity`) abrem um *combo box*
+  com os valores permitidos.
+- As **demais** colunas editáveis abrem o **editor de texto** padrão do Qt.
+
+Nem toda coluna é editável — colunas derivadas de ForensicFace/OFIQ/SER-FIQ
+e embeddings são somente-leitura. Ao clicar-direito numa coluna não editável,
+o menu de contexto mostra o item desabilitado `🔒 Coluna '…' não é editável`.
 
 Pressione `Enter` para confirmar ou `Esc` para cancelar.
+
+> 💡 Células com um valor **fora do vocabulário** definido para a coluna
+> ganham um **fundo amarelo claro** — sinal visual de que o valor não
+> pertence à lista fechada e provavelmente precisa de correção.
 
 > ⚠️ As edições ficam **em memória** até você clicar 💾 **Salvar**.
 > A janela mostra um indicador *(modificado)* no título quando há
@@ -110,23 +141,34 @@ Pressione `Enter` para confirmar ou `Esc` para cancelar.
 ## A barra de status
 
 A barra fina logo abaixo do ribbon é a referência rápida do que
-está carregado:
+está carregado. Ela é uma linha compacta de **selos** (emoji + valor)
+separados por `|`:
 
 ```
-✅  Dataset 'Dataset_teste' carregado  •  4 faces (4 visíveis)  •  hash: a3f7e2c9…
+📂 Dataset_teste | 🖼️ 4 Imagens | 👤 4 IDs | 🧬 4 FF · 📐 4 OFIQ · 🎲 3 SER-FIQ | ⚖ ✅ Balanceado
 ```
 
-Ao passar o mouse, um tooltip rich-text mostra:
+Regras da linha:
 
-- Caminho completo do parquet
-- Descrição do dataset
-- Cobertura por métrica (`Forensic Face: 100%`, `OFIQ: 100%`,
-  `SER-FIQ: 75%`)
-- Métricas de balanceamento (`Balanceamento: ✅ Balanceado`,
-  `Amostras/ID: 1–2 (média 1.3, mediana 1.0)`)
+- Um `*` logo após o nome (ex.: `📂 Dataset_teste*`) indica que há
+  **alterações não salvas** (dataset "sujo").
+- O selo 🎯 **alinhado** aparece apenas em datasets de faces alinhadas
+  112×112 (a maioria mostra fotos originais e não exibe esse selo).
+- Os selos de enriquecimento (🧬 FF, 📐 OFIQ, 🎲 SER-FIQ) e o selo de
+  erro (⚠️ N erro(s)) só aparecem quando aplicáveis (contagem > 0).
+- Quando um filtro está ativo, a linha ganha o sufixo **(Filtrado)** no
+  final e o **botão Filtrar fica em amarelo** (status visual).
 
-Quando um filtro está ativo, o número de "faces visíveis" diverge
-do total e o **botão Filtrar fica em amarelo** (status visual).
+Ao passar o mouse, um tooltip rich-text detalha:
+
+- **Path** do parquet e **Descrição** do dataset
+- **Modo de path** e **Conteúdo** (faces alinhadas 112×112 vs. fotos originais)
+- **Enriquecimento** com contagem e percentual por estágio:
+  `FF n/N (x%), OFIQ n/N (x%), SER-FIQ n/N (x%)`
+- **Balanceamento** (CV, ratio, min/max/média/mediana de amostras por ID)
+
+> 💡 O **hash** do parquet e o caminho completo aparecem apenas no
+> tooltip, nunca na linha principal.
 
 ## O painel de detalhes
 
@@ -136,49 +178,58 @@ Selecione uma linha na tabela e o painel direito popula-se:
 
 A miniatura da face selecionada, dimensionada pra caber no painel.
 Quando a imagem não existe no disco (caminho quebrado), aparece um
-placeholder cinza com ícone de "imagem indisponível" — use
+placeholder cinza com o texto **Imagem não encontrada** — use
 *Localizar* ([capítulo 03](03_carregando_e_localizando.md)) pra
-corrigir.
+corrigir. Sem nenhuma linha selecionada, o placeholder mostra
+**Selecione uma face**.
 
 ### Aba *Geral / Bio*
 
-![Aba Geral/Bio com identidade, gênero, etnia, origem, hash, dimensões](assets/12_detail_geral_bio.png)
+![Aba Geral/Bio com arquivo, identidade, hash, idade, gênero, pose e scores](assets/12_detail_geral_bio.png)
 
 | Campo | Origem |
 |---|---|
-| **Caminho** | `image_path` resolvido |
-| **Hash** | `hash` (SHA-256 da imagem) |
+| **Arquivo** | `file_name` |
 | **Identidade** | `identity` |
-| **Gênero** | `gender` |
-| **Etnia** | `ethnicity` |
-| **Origem** | `origin` |
-| **Dimensões** | Calculadas em tempo real (largura × altura px) |
-| **Status** | `error` + `error_stage` + `error_message` se houver |
+| **Hash** | `hash` (SHA-256 da imagem), quando presente |
+| **Idade** | `age_est` — estimativa do ForensicFace |
+| **Gênero** | `gender_est` — estimativa do ForensicFace |
+| **Pose (Y/P/R)** | `yaw` / `pitch` / `roll` em graus, quando há pose |
+| **FIQA Score** | `fiqa_score`, quando calculado |
+| **Detecção Score** | `det_score` — confiança da detecção, quando presente |
+
+> ⚠️ O **Gênero** e a **Idade** mostrados nesta aba são **estimativas
+> do ForensicFace** (`gender_est` / `age_est`), não os rótulos manuais
+> `gender` / `ethnicity` da tabela. Para editar os rótulos manuais, use
+> a tabela (edição inline) ou o menu de contexto.
 
 ### Aba *Qualidade ISO*
 
-![Aba Qualidade ISO com barras OFIQ, SER-FIQ e FIQA](assets/12_detail_quality_iso.png)
+![Aba Qualidade ISO com barras OFIQ](assets/12_detail_quality_iso.png)
 
-Mostra todos os indicadores de qualidade como **barras visuais**:
+Mostra **exclusivamente** os indicadores **OFIQ** (colunas
+`ofiq_*_scalar`) como **barras visuais** — FIQA aparece na aba
+*Geral / Bio* e SER-FIQ não é renderizado neste painel.
 
-| Grupo | Indicadores |
+| Grupo | Indicadores OFIQ |
 |---|---|
-| **FIQA** | Score único do ForensicFace |
-| **SER-FIQ** | Score único de robustez |
-| **OFIQ — geral** | Unified Quality Score, Sharpness, Background Uniformity, Illumination Uniformity, Natural Colour, Compression Artifacts |
-| **OFIQ — exposição** | Luminance Mean, Luminance Variance, Under/Over Exposure, Dynamic Range |
-| **OFIQ — pose** | Head Pose Yaw / Pitch / Roll |
-| **OFIQ — face** | Single Face Present, Eyes Open / Visible, Mouth Closed / Occlusion, Face Occlusion, Expression Neutrality, No Head Coverings |
-| **OFIQ — enquadramento** | Inter Eye Distance, Head Size, Margins (Above / Below / Left / Right) |
+| **Geral** | Unified Quality Score, Sharpness, Background Uniformity, Illumination Uniformity, Natural Colour, Compression Artifacts |
+| **Exposição** | Luminance Mean, Luminance Variance, Under/Over Exposure, Dynamic Range |
+| **Pose** | Head Pose Yaw / Pitch / Roll |
+| **Face** | Single Face Present, Eyes Open / Visible, Mouth Closed / Occlusion, Face Occlusion, Expression Neutrality, No Head Coverings |
+| **Enquadramento** | Inter Eye Distance, Head Size, Margins (Above / Below / Left / Right) |
 
-Cada barra tem:
-- Valor **scalar** OFIQ (0–100, comparável entre métricas)
-- Valor **raw** OFIQ (escala nativa de cada métrica)
-- Cor proporcional ao valor: ✅ verde alto → ⚠️ amarelo médio → ❌ vermelho baixo
+Cada barra mostra **um único valor** — o score OFIQ *scalar* (0–100,
+comparável entre métricas), formatado com duas casas decimais, com a
+cor proporcional ao valor: ✅ verde alto → ⚠️ amarelo médio →
+❌ vermelho baixo.
+
+Quando o dataset ainda não tem métricas OFIQ, a aba exibe apenas o
+texto **Dados OFIQ não calculados.**
 
 > 💡 Use a aba *Qualidade ISO* para **investigar manualmente** por
 > que uma imagem específica está com `error=True` ou foi rejeitada
-> por um filtro de qualidade — os indicadores mostram exatamente
+> por um filtro de qualidade — os indicadores OFIQ mostram exatamente
 > qual atributo está fraco.
 
 ## A galeria de thumbnails
@@ -194,24 +245,46 @@ Limitações:
 - Sem filtros nem ordenação — a ordem é a do parquet
 - Performance cai com datasets grandes (> 10 mil imagens) — use
   a tabela com filtro nesses casos
-- Edição inline não funciona na galeria
+- Edição inline (clique-duplo) não funciona na galeria — mas há um
+  **menu de contexto** com ações de seleção em massa (veja abaixo)
 
 Para voltar à tabela, clique no mesmo botão (o ícone alterna).
 
+### Menu de contexto da galeria
+
+**Clique-direito** sobre uma miniatura (com uma ou mais selecionadas)
+abre um menu de ações sobre a seleção. `N` é o número de miniaturas
+selecionadas:
+
+| Item | Quando fica ativo | Função |
+|---|---|---|
+| **⚖️ Comparar este par lado a lado…** | Apenas com **exatamente 2** selecionadas | Abre a janela de comparação lado a lado das duas faces. Com outra contagem, o item aparece esmaecido como `⚖️ Comparar par (selecione 2 — N)` |
+| **✏️ Definir valor de coluna… (N)** | `N ≥ 1` | Edita em lote o valor de uma coluna para todas as faces selecionadas |
+| **🧩 Criar dataset a partir da seleção… (N)** | `N ≥ 1` | Cria um novo dataset (subconjunto) apenas com as faces selecionadas |
+| **🗑️ Remover do dataset (N)** | `N ≥ 1` | Remove as faces selecionadas do dataset — **não apaga os arquivos de imagem** |
+
+> ⚠️ **Remover do dataset** é uma operação **não destrutiva** no disco:
+> ela retira as faces da tabela do dataset, mas os arquivos de imagem
+> originais permanecem. A remoção só é persistida quando você clica
+> 💾 **Salvar**.
+
 ## Menu de contexto da tabela
 
-**Clique-direito numa célula** abre o menu de contexto:
+**Clique-direito numa célula** abre o menu de contexto. `N` é o número
+de células selecionadas:
 
-| Item | Função |
-|---|---|
-| **Substituir valor…** | Abre o diálogo *Replace*: substitui o valor da célula (apenas esta linha, todas as linhas, ou regex global) |
-| **Copiar valor** | Copia o conteúdo da célula para a área de transferência |
-| **Abrir imagem externamente** | Abre o arquivo no visualizador padrão do SO |
-| **Comparar par** *(em desenvolvimento)* | Marca a linha para comparação com outra |
+| Item | Quando aparece | Função |
+|---|---|---|
+| **Selecionar Toda Coluna '…'** | Sempre | Seleciona verticalmente todas as células da coluna clicada |
+| **✏️ Definir Valor (N células)…** | Só em colunas **editáveis** | Aplica um mesmo valor a todas as células selecionadas |
+| **🔄 Substituir (N células)…** | Só em colunas **editáveis** | Substitui um valor por outro nas células selecionadas |
+| **🔒 Coluna '…' não é editável** | Em colunas **não editáveis** | Item desabilitado — só informa que a coluna é somente-leitura |
+| **⚖️ Comparar este par lado a lado…** | Só com **exatamente 2 linhas** selecionadas | Abre a comparação lado a lado das duas faces. Com outra contagem, aparece esmaecido como `⚖️ Comparar par (selecione 2 linhas — N)` |
 
-O menu **adapta-se ao tipo da coluna**. Em colunas booleanas
-você verá *Marcar todas* / *Desmarcar todas*; em colunas
-numéricas, *Definir como NaN*.
+> 💡 **Comparar este par lado a lado** é totalmente funcional (não está
+> em desenvolvimento): selecione exatamente **duas linhas** — clicando
+> em qualquer célula de cada linha, com `Ctrl`/`Shift` — e a opção fica
+> ativa. A mesma ação existe no menu de contexto da galeria.
 
 ## Propriedades da coluna
 
@@ -219,38 +292,58 @@ numéricas, *Definir como NaN*.
 
 | Item | Função |
 |---|---|
-| **Propriedades da coluna…** | Diálogo de edição (label, role, vocabulary, aliases) |
-| **Esconder coluna** | Tira a coluna da visão (sem afetar dados) |
-| **Restaurar visibilidade padrão** | Volta a usar `visible_default` do spec |
+| **⚙️ Propriedades…** | Abre o diálogo de propriedades da coluna clicada |
+| **🗑️ Remover Coluna** | Apaga a coluna do dataset (com confirmação; reforçada para colunas canônicas — FF/OFIQ/SER-FIQ/embedding). Colunas essenciais como Identidade e Caminho da Imagem ficam desabilitadas — sem elas o parquet não carrega) |
+| **📋 Mostrar/Ocultar Colunas** | Submenu agrupado **por categoria** (Identificação Manual, ForensicFace, OFIQ, etc.), com um checkbox por coluna para ligar/desligar a visibilidade |
 
-O diálogo *Propriedades da Coluna* aceita:
+> ⚠️ **Remover Coluna** só é persistido ao **salvar** o dataset. Remover
+> uma coluna canônica (vinda de ForensicFace/OFIQ/SER-FIQ ou um embedding)
+> pode quebrar estratégias que dependam dela até serem reconfiguradas ou o
+> dataset ser re-enriquecido.
 
-- **Label**: rótulo exibido no cabeçalho
-- **Role**: papel da coluna *(só editável em colunas custom)*
-- **Vocabulary**: lista de valores válidos *(transforma a edição em combo)*
-- **Aliases**: nomes alternativos pra leitura cruzada com outros parquets
-- **Default value**: valor a usar quando uma linha não tem o campo
+O diálogo **Propriedades — <coluna>** mostra, no topo, informações
+**somente-leitura** da coluna (**Nome**, **Role**, **Source**, **Tipo**,
+**Categoria**) e, abaixo, os campos **editáveis**:
+
+- **Rótulo**: texto exibido no cabeçalho *(sempre editável)*
+- **Valor padrão**: valor usado quando uma linha não tem o campo
+  *(editável apenas em colunas custom; canônicas exibem aviso)*
+- **Vocabulário fechado**: lista de valores válidos, um por linha
+  *(disponível em colunas custom ou nas demográficas que já têm
+  vocabulário — transforma a edição em combo)*
+- **Aliases (nomes legados)**: nomes alternativos aceitos ao ler
+  parquets antigos com esquemas diferentes *(sempre editável)*
+
+> ⚠️ O **Role**, o **Source** e o **Tipo** de uma coluna **não são
+> editáveis** — são apenas exibidos para referência. Alterá-los quebraria
+> contratos internos (ex.: trocar o role de `identity` derrubaria todos os
+> splits por identidade).
 
 Veja também o diálogo *Metadados* (botão 🏷️ **Metadados** na
 ribbon *Dataset*) — edita o mesmo `column_specs` mas em escala
 de dataset, com vista de todas as colunas lado a lado
 ([capítulo 07](07_operacoes_estruturais.md)).
 
-## Atalhos úteis
+## Navegação e edição por teclado
 
-| Ação | Atalho |
+O Gerenciador de Datasets **não define atalhos de arquivo** (abrir,
+salvar, fechar) — essas ações são acionadas pelos botões da ribbon
+`Arquivo` (veja [capítulo 01](01_visao_geral.md) e
+[capítulo 03](03_carregando_e_localizando.md)). O que funciona na tabela
+é o **comportamento nativo do Qt**:
+
+| Ação | Tecla |
 |---|---|
-| Abrir dataset | `Ctrl+O` (macOS: `⌘O`) |
-| Salvar | `Ctrl+S` (`⌘S`) |
-| Salvar Como | `Ctrl+Shift+S` (`⌘⇧S`) |
-| Fechar dataset | `Ctrl+W` (`⌘W`) |
-| Selecionar tudo na tabela | `Ctrl+A` (`⌘A`) |
-| Copiar célula | `Ctrl+C` (`⌘C`) |
-| Editar célula | `F2` ou clique-duplo |
-| Cancelar edição | `Esc` |
-| Confirmar edição | `Enter` ou `Tab` |
-| Próxima linha | `↓` |
-| Linha anterior | `↑` |
+| Editar a célula focada | `F2` ou clique-duplo |
+| Confirmar a edição | `Enter` ou `Tab` |
+| Cancelar a edição | `Esc` |
+| Navegar entre linhas | `↑` / `↓` |
+| Navegar entre colunas | `←` / `→` |
+| Estender a seleção | `Shift` + setas, ou `Shift`/`Ctrl` + clique |
+
+> 💡 O único atalho **próprio** do módulo é `Ctrl+Z` (**Desfazer**), e ele
+> vale apenas dentro da janela de **Auditoria** (ver
+> [capítulo 09](09_auditoria_forense.md)), não na tabela principal.
 
 ---
 

@@ -48,13 +48,13 @@ A auditoria é **dividida em duas passagens**:
 
 - **Quick audit** (O(N)) — rodada automaticamente ao abrir o
   diálogo, segundos
-- **Heavy audit** (O(N²)) — chama explícita via botão **🔍
-  Mineração Pesada** ou **🔬 Auditar identidades**, minutos em
-  datasets grandes
+- **Heavy audit** (O(N²)) — chamada explícita via botões **🔍
+  Comparar Embeddings**, **🔬 Comparar Centroids** ou **🌐
+  Hubness**, minutos em datasets grandes
 
 ## Leiaute do diálogo Auditar
 
-![Diálogo Auditar com tree de findings, detalhes, e abas de visualização](assets/40_auditar.png)
+![Diálogo Auditar com toolbar superior, árvore de achados, detalhes e painel de visualização](assets/40_auditar.png)
 
 Três áreas principais:
 
@@ -78,26 +78,33 @@ Faces deletadas (ações já executadas) aparecem com fundo
 
 ### Painel direito — Visualizações
 
-Aba `QTabWidget` que muda conforme o tipo de issue selecionado:
+A visualização **não** é uma aba clicável: é um painel que **troca
+automaticamente** conforme a auditoria que você seleciona na árvore à
+esquerda (internamente um `QStackedWidget`, não um `QTabWidget`). Você
+não alterna abas manualmente — a página muda com o achado.
 
-| Aba | Quando aparece |
+| Página | Quando aparece |
 |---|---|
-| **Histograma** | Issues envolvendo distribuições de qualidade (FIQA, OFIQ, embedding norm) |
-| **Scatter** | Issues de correlação entre métricas |
+| **Detalhes** | Padrão — tabela de locators + preview |
+| **Histograma** | Achados envolvendo distribuições de qualidade (FIQA, OFIQ, embedding norm) |
+| **Scatter** | Achados de correlação entre métricas |
 | **Boxplot** | Estratificação por pose ou identidade |
-| **UMAP** | Issues de duplicate/mixed identities |
-| **Hubness Tables** | Issues de hubness |
-| **Balance Metrics** | Issues de distribuição por identidade |
+| **Balance Metrics** | Achados de distribuição por identidade |
+| **Hubness Tables** | Achado de hubness (top hubs / anti-hubs) |
+| **UMAP** | Após rodar 🌌 UMAP (Embeddings) |
 
-### Rodapé — Botões de ação
+### Toolbar superior — Botões de ação
+
+Os botões ficam numa **toolbar no topo** do diálogo (não num rodapé):
 
 | Botão | Função |
 |---|---|
-| **🔍 Mineração Pesada** | Roda audits O(N²) (hash duplicates, hard mining) |
-| **🔬 Auditar identidades** | Detecta duplicate/mixed identities por similaridade de embedding |
-| **🔌 Hubness (KNN)** | Calcula k-NN e Nk de cada face |
-| **🌌 UMAP** | Projeção 2D do espaço de embeddings |
-| **🔄 Reanalisar** | Re-roda os audits O(N) (úteis após edições) |
+| **⚙ Configurações** | Ajusta os thresholds das auditorias (FIQA, mín. amostras/ID, duplicatas, mixed) |
+| **🔄 Reanalisar** | Reexecuta as auditorias rápidas O(N) (útil após edição manual no dataset) |
+| **🔬 Comparar Centroids** | Detecta duplicate/mixed identities via centróides de embedding |
+| **🔍 Comparar Embeddings** | Roda hard mining O(N²) — pares de mesma ID com baixa similaridade + pares de IDs distintas com alta |
+| **🌐 Hubness** | KNN exaustivo O(N²·D) que computa o `Nk` de cada face |
+| **🌌 UMAP (Embeddings)** | Projeção 2D/3D do espaço de embeddings |
 
 ## Categorias de issues
 
@@ -128,31 +135,63 @@ Aba `QTabWidget` que muda conforme o tipo de issue selecionado:
 Severidade `🟠 AVISO` ou `⚪ INFO` conforme o threshold. Não
 são bloqueadores — servem como sinal pra revisão manual.
 
+> ⚠️ **SER-FIQ só aparece em datasets legados.** A coleta de
+> SER-FIQ foi removida da interface de criação/enriquecimento, então
+> datasets novos não têm a coluna `serfiq_score` e a auditoria
+> **Low SER-FIQ** não surge para eles. As métricas de qualidade
+> auditáveis são descobertas pelas colunas presentes no dataset —
+> tipicamente FIQA, OFIQ e norma de embedding.
+
 ### 4. Biométrica (heavy, O(N²))
 
 | Issue | O que detecta | Por que importa | Severidade |
 |---|---|---|---|
-| **Duplicate Identities** | Pares de **identidades diferentes** com similaridade de embedding > threshold (default cos > 0.90) | Sugere que duas labels são a mesma pessoa (data entry, alias) | 🟠 AVISO |
-| **Mixed Identities** | Uma identidade com fotos que se agrupam em **subclusters distantes** | Indica fotos mislabel ou efeitos de subpopulação (idades, condições) | 🟠 AVISO |
+| **Duplicate Identities** | Pares de **identidades diferentes** cujo centróide de embedding tem similaridade ≥ threshold (default cos ≥ 0.35, ajustável em ⚙ Configurações → duplicatas) | Sugere que duas labels são a mesma pessoa (data entry, alias) | 🟠 AVISO |
+| **Mixed Identities** | **Faces** cujo cosseno contra o centróide *leave-one-out* das demais faces do mesmo ID cai abaixo do threshold (default cos < 0.20) | Cada face fora do padrão indica provável rótulo errado — face de outra pessoa marcada com esta identidade | 🟠 AVISO |
 
-### 5. Hubness (heavy, O(N²))
+> 💡 **Mixed Identities é por face, não por identidade.** Para cada
+> face X de um ID com ≥ N amostras (default 3), o auditor calcula o
+> centróide das *outras* faces do mesmo ID (excluindo X) e mede o
+> cosseno X vs esse centróide. Se X entrasse no cálculo, ela puxaria a
+> média na própria direção e mascararia o outlier — por isso o
+> *leave-one-out*. Cada face abaixo do threshold vira uma issue própria
+> (uma linha na tabela), ordenada das mais discrepantes para as menos.
 
-| Issue | O que detecta |
+### 5. Hubness (informativa, O(N²·D))
+
+A análise de **Hubness** **não** gera issues acionáveis — a categoria
+é puramente **informativa** (a coluna "Total" da árvore fica em
+branco para ela). Ela produz dois achados sem locators:
+
+| Achado | O que mostra |
 |---|---|
-| **Top Hubs** | Faces com `Nk` (count em k-NN de outras faces) anormalmente alto |
-| **Anti-hubs** | Faces com `Nk = 0` ou baixíssimo — isoladas no espaço |
+| **Histograma de `Nk`** | Distribuição do `Nk` (quantas vezes cada face aparece na vizinhança k-NN de outras) |
+| **Tabela de hubs/anti-hubs** | Top 50 faces com `Nk` **alto** (hubs) e top 50 com `Nk` **baixo** (anti-hubs, isoladas) |
 
 Veja [seção dedicada abaixo](#hubness--análise-topológica).
 
 ### 6. Visualizações
 
 Não geram issues por si só — apenas renderizam os gráficos para
-inspeção manual quando você clica nas abas correspondentes.
+inspeção manual. O painel direito troca automaticamente para a
+visualização correspondente quando você seleciona o achado na árvore.
 
 ## Ações sobre issues selecionados
 
-O painel central tem botões na base que **aplicam mutações** ao
-dataset:
+Abaixo do preview há uma **barra de ações em lote**. À esquerda ficam
+os controles de seleção; à direita, as ações que **aplicam mutações**
+ao dataset:
+
+| Botão | Função |
+|---|---|
+| **☑ Sel. tudo** | Seleciona tudo (todas as imagens do preview em auditorias par-a-par, ou todas as linhas da tabela) |
+| **☐ Limpar** | Limpa a seleção corrente |
+| **✏️ Renomear ID** | Renomeia em lote todas as faces com a identidade selecionada (habilitado quando a seleção tem uma única identidade) |
+| **🔗 Mesclar IDs** | Funde duas ou mais identidades numa só (habilitado quando há 2+ identidades distintas na seleção) |
+| **🗑 Excluir face(s)** | Remove as faces selecionadas do dataset |
+
+A barra some quando o painel direito troca para uma visualização sem
+ações aplicáveis (histograma, scatter, etc.).
 
 ### Deletar faces
 
@@ -238,7 +277,7 @@ face.
 |---|---|
 | **Eixos** | `umap_x` / `umap_y` |
 | **Cor** | Selecionável via dropdown: identidade (top 20 + "others" em cinza), gênero, source, pose (yaw), FIQA, norm |
-| **Interação** | Clique num ponto → painel lookalike abre à direita mostrando k-NN por cosine |
+| **Interação** | No modo **por identidade (centroides)**, clique num ponto → painel lookalike abre à direita mostrando k-NN por cosine (o modo por face não habilita o clique) |
 
 Insight: geometria dos embeddings — clusters por identidade,
 espalhamento, outliers topologicamente isolados.
@@ -272,8 +311,9 @@ uma face que é "vizinho próximo" de muitas outras.
 
 ### O que fazer
 
-A análise gera issues `Top Hubs` e `Top Anti-hubs`. Caminhos
-recomendados:
+A análise é **informativa** (não gera issues acionáveis na árvore) —
+produz o histograma de `Nk` e a tabela top-50 de hubs/anti-hubs.
+Caminhos recomendados:
 
 - **Hubs**: investigar manualmente; possivelmente excluir os mais
   extremos do conjunto de **calibração** (para não distorcer o
@@ -284,30 +324,36 @@ recomendados:
 
 ## Auditoria de identidades
 
-Botão **🔬 Auditar identidades** roda uma análise específica:
+Botão **🔬 Comparar Centroids** roda uma análise específica:
 
 | Tipo | O que faz |
 |---|---|
-| **Duplicate Identities** | Para cada par (identity_A, identity_B), calcula a similaridade de embeddings (média ou max). Pares com cos > 0.90 viram issues |
-| **Mixed Identities** | Para cada identidade com ≥ N amostras, calcula a dispersão dos embeddings (silhouette ou desvio). Identidades com bimodalidade clara viram issues |
+| **Duplicate Identities** | Para cada par (identity_A, identity_B), compara os centróides de embedding. Pares com cosseno ≥ threshold (default 0.35) viram issues |
+| **Mixed Identities** | Para cada face de um ID com ≥ N amostras (default 3), calcula o cosseno da face contra o centróide *leave-one-out* das demais faces do mesmo ID; faces com cosseno abaixo do threshold (default 0.20) viram issues — candidatas a rótulo errado |
 
-Estes audits são O(N²) e podem demorar minutos em datasets
-grandes. O cancelamento é suportado.
+Os thresholds ficam em **⚙ Configurações**. Estes audits são O(N²)
+e podem demorar minutos em datasets grandes. O cancelamento é
+suportado.
 
 ## UMAP — projeção 2D
 
-Botão **🌌 UMAP** calcula a projeção UMAP do espaço de
-embeddings. Parâmetros configuráveis:
+Botão **🌌 UMAP (Embeddings)** abre um diálogo de configuração e
+calcula a projeção UMAP do espaço de embeddings. Parâmetros
+configuráveis:
 
 | Parâmetro | Default | Notas |
 |---|---|---|
+| Granularidade | Por face | **Por face** (um ponto por foto) vs **Por identidade (centroides)** — um ponto por pessoa; só este modo habilita o clique-para-lookalikes |
+| n_components | 2 | Dimensão da projeção: 2 (scatter) ou 3 (rotação 3D) |
 | n_neighbors | 15 | Vizinhos locais — maior = preserva estrutura global |
 | min_dist | 0.1 | Distância mínima entre pontos no plot |
-| metric | cosine | Métrica de similaridade |
-| random_state | 42 | Reprodutibilidade |
+| metric | cosine | Métrica: cosine / euclidean / manhattan / correlation |
+| max_samples | — | Limite de amostras; datasets maiores são subsampled reproduzivelmente (seed 42) |
+| random_state | 42 | Fixo — reprodutibilidade |
 
-O resultado popula a aba UMAP (descrita acima). Pode demorar
-~30s em 10k faces.
+O resultado popula a página UMAP (descrita acima). No modo **por
+identidade (centroides)**, clicar num ponto abre o painel lateral de
+lookalikes (k-NN por cosseno). Pode demorar ~30s em 10k faces.
 
 ## Undo/redo
 
@@ -349,6 +395,7 @@ operações que mutaram o dataset.
 | 🏷️ EDIT_SCHEMA | Esquema de coluna modificado |
 | ➕ ADD_COLUMN / ➖ REMOVE_COLUMN / ✏️ RENAME_COLUMN | Operações de esquema |
 | 🔬 ENRICH | Forense Face, OFIQ ou SER-FIQ executados |
+| 🎬 VIDEO_EXTRACT | Dataset criado a partir de vídeo (seleção condicionada à âncora — ver [cap. 02b](02b_criando_dataset_de_video.md)) |
 | 🔗 MERGE / ✂️ SPLIT | Operações estruturais |
 | 📤 EXPORT | Exportação CSV/Excel |
 | 🗂 COPY_IMAGES | Localização (REBASE/REWRITE/COPY) |
@@ -356,8 +403,10 @@ operações que mutaram o dataset.
 
 ### Estrutura do log
 
-Arquivo JSON-Lines sidecar: `<dataset_stem>.audit.json` (mesma
-pasta do parquet).
+Sidecar JSON: `<dataset_stem>.audit.json` (mesma pasta do parquet).
+Não é JSON-Lines — é um **array JSON único, indentado** (uma lista
+de entradas, `indent=2`). Se o dataset for renomeado ou copiado com
+**Salvar Como**, o sidecar segue junto automaticamente.
 
 Cada entrada tem:
 
@@ -368,7 +417,45 @@ Cada entrada tem:
 | `operation` | Um dos valores acima |
 | `description` | Texto livre |
 | `dataset_hash` | SHA-256 do dataset no momento da operação |
+| `metadata` | Detalhes estruturados específicos da operação (contagens, thresholds, proveniência) |
 | `entry_hash` | SHA-256 da própria entrada — depende do `entry_hash` do registro anterior |
+
+> 💡 **Duplo-clique numa entrada** abre um diálogo com o JSON
+> completo do registro — `metadata`, hashes e todos os campos. Útil
+> para inspecionar a proveniência sem abrir o sidecar no disco.
+
+### Proveniência de extração de vídeo (VIDEO_EXTRACT)
+
+Quando um dataset é criado a partir de vídeo (ver
+[cap. 02b](02b_criando_dataset_de_video.md)), o evento 🎬
+**VIDEO_EXTRACT** é gravado com uma `metadata` de cadeia de custódia
+que o perito precisa auditar:
+
+| Campo | Conteúdo |
+|---|---|
+| `run_id` | Identificador da pasta de execução (run) que produziu o dataset |
+| `video_sha256` | SHA-256 do primeiro vídeo-fonte |
+| `video_sha256_all` | Lista de SHA-256 de **todos** os vídeos-fonte (multivídeo) |
+| `n_videos` / `n_frames_sampled` | Quantos vídeos e quantos frames foram amostrados |
+| `n_accepted_auto` | Faces aceitas automaticamente (acima do threshold da âncora) |
+| `n_accepted_after_review` / `n_rejected_human` | Contagens da revisão humana (aceitas / rejeitadas) |
+| `review_skipped` | Se a etapa de revisão humana foi pulada |
+
+Além do evento no log, o próprio dataset ganha **flags de
+proveniência** persistidas no parquet:
+
+- `dataset_origin_type = VIDEO_TARGET_EXTRACTION` — marca a origem.
+- `selection_warning` — o aviso *"Dataset criado por seleção
+  condicionada a similaridade biométrica com uma âncora. Não
+  representa amostra populacional neutra."*
+- `selection_anchor_model`, `selection_threshold`, `source_run_id` —
+  qual modelo/limiar de âncora e qual run geraram a seleção.
+
+> ⚠️ **Viés de seleção.** Um dataset de origem `VIDEO_TARGET_EXTRACTION`
+> foi montado escolhendo faces por similaridade com uma âncora — ele
+> **não** é uma amostra populacional neutra. Não o use como população
+> de referência/calibração de LR sem tratar esse viés. Veja a
+> ressalva forense no [cap. 02b](02b_criando_dataset_de_video.md).
 
 ### Encadeamento (chain-of-custody)
 
@@ -384,14 +471,20 @@ Botão **🔒 Verificar integridade** no diálogo:
 1. Lê todo o log
 2. Recomputa cada `entry_hash` na sequência
 3. Compara com o gravado
-4. Linhas que não batem ficam destacadas em vermelho
+4. Linhas íntegras ficam verdes; linhas que não batem ficam
+   destacadas em vermelho
+
+A própria verificação é **registrada no log** (autoreferente): um
+evento ✅ `INTEGRITY_VERIFIED` quando a cadeia está íntegra, ou ❌
+`INTEGRITY_FAILED` quando há problemas — com a contagem de entradas
+verificadas e os códigos de problema na `metadata`.
 
 Em datasets críticos pra perícia, rode a verificação **sempre que
 abrir** o parquet — detecta tampering ou corrupção.
 
 ### Exportação
 
-Botão **📤 Exportar log** salva uma cópia do JSON-Lines em local
+Botão **📤 Exportar log** salva uma cópia do sidecar JSON em local
 à escolha. Use pra **preservação de evidência** — entregue ao
 laudo, juntamente com o parquet, como prova de procedência.
 

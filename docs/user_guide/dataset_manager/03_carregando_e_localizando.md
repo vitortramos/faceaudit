@@ -30,11 +30,12 @@ Este capítulo cobre dois fluxos complementares:
 ## Abrindo um `.parquet`
 
 A operação básica para trabalhar com um dataset existente é o botão
-📂 **Abrir** da aba *Arquivo*. Atalho: `Ctrl+O` (ou `⌘O` no macOS).
+📂 **Abrir** da aba *Arquivo*.
 
-O diálogo nativo do SO abre na pasta configurada em `paths.library`
-do `config.json`. Você pode navegar livremente; só são listados
-arquivos `.parquet`.
+O diálogo nativo do SO abre no último diretório do pipeline/dataset
+(quando definido) ou no diretório padrão do SO caso nenhum esteja
+definido. Você pode navegar livremente; só são listados arquivos
+`.parquet` (filtro `Parquet (*.parquet)`).
 
 Selecionado o arquivo:
 
@@ -43,13 +44,16 @@ Selecionado o arquivo:
 2. Ao concluir:
    - A tabela é populada com as linhas
    - O painel de detalhes mostra a primeira face (se houver)
-   - A barra de status mostra `N° faces • hash do parquet`
+   - A barra de status mostra uma linha compacta de badges
+     (📂 nome | 🖼️ N Imagens | 👤 N IDs | 🧬 N FF · 📐 N OFIQ ·
+     🎲 N SER-FIQ | …); o `path` e o hash do parquet aparecem no
+     *tooltip*, não na linha principal
    - O *Audit Log* registra a operação `OPEN` com timestamp e SHA-256
 3. Em caso de erro (parquet corrompido, formato inválido, falta de
    colunas obrigatórias), um diálogo `QMessageBox` mostra a mensagem.
 
 > 💡 Você também pode abrir um dataset **a partir do Gerenciador de
-> Estratégias** — o botão *"Editar no Gerenciador de Datasets"* num
+> Estratégias** — o botão *"📂 Abrir no Gerenciador de Datasets"* num
 > recurso do tipo `DATASET` chama `open_dataset_from_path()`
 > diretamente, sem passar pelo seletor de arquivo.
 
@@ -88,21 +92,61 @@ cenários mais comuns:
 
 ## O diálogo *Localizar*
 
-Ao clicar em 🗂 **Localizar** abre-se o diálogo (640×580):
+Ao clicar em 🗂 **Localizar** abre-se o diálogo (640×580), com título
+*Localizar Dataset — <nome>*:
 
 ![Diálogo Localizar com modo, estratégia de nomeação, pasta destino](assets/31_localizar.png)
 
 | Seção | O que controla |
 |---|---|
 | **Texto explicativo** (topo) | Resumo do propósito da operação |
-| **Modo** | Combobox com REWRITE_RELATIVE / COPY_ORIGINALS / REBASE_PREFIX |
-| **Estratégia de Nomeação** | Visível apenas em COPY_ORIGINALS |
-| **Prefixo Antigo** | Visível apenas em REBASE_PREFIX; auto-preenchido com `detect_path_prefix()` |
-| **Pasta destino** | Sugere `<parquet_dir>/<nome>__localized/` em COPY/REWRITE; em REBASE muda o rótulo para *Prefixo novo* |
-| **Skip Existing** | Habilitado apenas em COPY; idempotência |
+| **Modo** (*Operação*) | Combobox com **Copiar imagens originais** (padrão) / **Reescrever caminhos (sem cópia)** / **Atualizar prefixo de caminho (sem cópia)** |
+| **Estratégia de nome** | *Habilitado* apenas em **Copiar imagens originais** (nos demais modos fica visível, mas em cinza) |
+| **Prefixo antigo** | Visível apenas em **Atualizar prefixo de caminho**; auto-preenchido com `detect_path_prefix()` |
+| **Pasta destino** | Sugere `<parquet_dir>/<nome>__localized/`; em **Atualizar prefixo** o rótulo muda para *Prefixo novo (pasta nesta máquina)* |
+| **Pular arquivos que já existem** | *Habilitado* apenas em **Copiar imagens originais**; idempotência |
 
-A escolha do modo **dinâmicamente reconfigura** quais campos ficam
-visíveis ou ativos, e atualiza o texto de ajuda do diálogo.
+O combo **Modo** abre por padrão em **Copiar imagens originais** (o
+primeiro item). A escolha do modo **dinamicamente reconfigura** quais
+campos ficam visíveis ou ativos, e atualiza o texto de ajuda do
+diálogo. O botão de confirmação exibe **🗂 Localizar** (não *OK*).
+
+> ⚠️ Apenas o grupo **Prefixo antigo** é escondido/mostrado conforme
+> o modo. **Estratégia de nome** e **Pular arquivos existentes**
+> nunca somem — só são *habilitados/desabilitados* (aparecem em
+> cinza fora do modo de cópia).
+
+### Progresso e cancelamento
+
+Ao confirmar em **🗂 Localizar**, a operação roda em um *worker*
+assíncrono (`LocalizeDatasetWorker`) com um diálogo de progresso —
+a UI continua responsiva. O progresso é reportado a cada 50 faces
+(*throttle*) para não saturar o event loop em datasets grandes. O
+diálogo permite **cancelar**: o cancelamento é cooperativo (o
+serviço termina a face atual e a chamada em curso, mas o resultado
+é descartado). Ao final, um resumo é exibido com as contagens de
+copiadas/puladas/falhas.
+
+### O que acontece depois (persistência)
+
+Concluída a localização, o dataset **em memória** é substituído
+pelo localizado — o arquivo em disco ainda **não** foi gravado. O
+comportamento de salvamento depende do modo:
+
+| Modo | `current_path` | Efeito no salvamento |
+|---|---|---|
+| **Atualizar prefixo** (REBASE_PREFIX) | 🔒 Preservado | *Salvar* sobrescreve o parquet original (só os paths mudaram); *Salvar Como* grava uma cópia |
+| **Reescrever caminhos** / **Copiar imagens** | ✏️ Zerado | Força *Salvar Como* — as imagens foram relativizadas/copiadas e o original perde significado |
+
+Em todos os casos o dataset fica marcado como *não salvo* (`*` após
+o nome na barra de status) até você gravar.
+
+> ⚠️ *Localizar* lida **exclusivamente** com gerenciamento de
+> caminhos (path management). O antigo modo *COPY_ALIGNED* (que
+> gerava faces alinhadas 112×112) foi **removido** deste diálogo —
+> alinhar faces é transformação de **conteúdo**, não de caminho.
+> Para alinhar, use o **Editor de Pipeline de Imagens** com
+> *Origem = Face alinhada (112×112)* e zero steps.
 
 ## Modo 1 — REBASE_PREFIX
 
@@ -174,9 +218,10 @@ ancestral comum.
 
 ## Modo 3 — COPY_ORIGINALS
 
-**O que faz:** **Copia** os arquivos de imagem para
-`<pasta_destino>/images/` e gera um novo parquet com caminhos
-relativos. Cria uma cópia autocontida do dataset.
+**O que faz:** **Copia** os arquivos de imagem para uma subpasta
+por dataset — `<pasta_destino>/<nome_do_dataset>_images/` — e gera um
+novo parquet com caminhos relativos. Cria uma cópia autocontida do
+dataset.
 
 **Quando usar:** Empacotar o dataset para arquivamento em mídia
 externa, transferência por USB/cloud, ou snapshot perícia
@@ -188,15 +233,19 @@ externa, transferência por USB/cloud, ou snapshot perícia
 |---|---|
 | `image_path` | ✏️ Caminho relativo na nova estrutura |
 | `path_mode` | ✏️ Vira `RELATIVE` |
-| `path_root` | ✏️ `"images"` |
-| Arquivos no disco | ✏️ **Copiados** para `<destino>/images/` |
+| `path_root` | ✏️ `<nome_do_dataset>_images` |
+| Arquivos no disco | ✏️ **Copiados** para `<destino>/<nome_do_dataset>_images/` |
 | `file_name` | 🔒 Preservado (a menos que colisão force sufixo) |
 | Hashes | 🔒 Inalterados (cópia byte-a-byte preserva conteúdo) |
 | Tudo mais | 🔒 Inalterado |
 
-> 💡 Após COPY_ORIGINALS, comprima `<pasta_destino>/` num zip e você
-> tem um dataset **100 % portátil** — funciona em qualquer máquina
-> com FaceAudit instalado.
+> 💡 A subpasta leva o nome do dataset (`<nome>_images`) de propósito:
+> assim você pode localizar **vários datasets na mesma pasta destino**
+> sem misturar as imagens de um com as do outro.
+
+> 💡 Após **Copiar imagens originais**, comprima `<pasta_destino>/`
+> num zip e você tem um dataset **100 % portátil** — funciona em
+> qualquer máquina com FaceAudit instalado.
 
 ## Estratégia de nomeação
 
@@ -243,10 +292,10 @@ path_mode  = ABSOLUTE
 **Ação:**
 
 1. 🗂 **Localizar**
-2. Modo: **REBASE_PREFIX**
-3. Prefixo Antigo: `/Users/alice/data/celeb` *(auto-detectado)*
-4. Pasta destino: `/Users/bob/projects/celeb` *(onde as imagens estão na sua máquina)*
-5. **OK**
+2. Modo: **Atualizar prefixo de caminho (sem cópia)** (REBASE_PREFIX)
+3. Prefixo antigo: `/Users/alice/data/celeb` *(auto-detectado)*
+4. Prefixo novo (pasta destino): `/Users/bob/projects/celeb` *(onde as imagens estão na sua máquina)*
+5. **🗂 Localizar**
 
 **Depois:**
 
@@ -270,10 +319,10 @@ image_path = C:\Users\colega\datasets\faces\foto_02.jpg
 **Ação:**
 
 1. 🗂 **Localizar**
-2. Modo: **REBASE_PREFIX**
-3. Prefixo Antigo: `C:/Users/colega/datasets/faces` *(separadores normalizados)*
-4. Pasta destino: `/Users/voce/imagens_perito/2024/faces`
-5. **OK**
+2. Modo: **Atualizar prefixo de caminho (sem cópia)** (REBASE_PREFIX)
+3. Prefixo antigo: `C:/Users/colega/datasets/faces` *(separadores normalizados)*
+4. Prefixo novo (pasta destino): `/Users/voce/imagens_perito/2024/faces`
+5. **🗂 Localizar**
 
 ### Cenário C — Empacotar dataset para arquivamento
 
@@ -288,13 +337,13 @@ image_path: /Users/me/projects/old_case/imgs/<filename>  (ABSOLUTE)
 **Ação:**
 
 1. 🗂 **Localizar**
-2. Modo: **COPY_ORIGINALS**
-3. Estratégia: **PRESERVE**
+2. Modo: **Copiar imagens originais**
+3. Estratégia de nome: **Preservar nomes**
 4. Pasta destino: `/Volumes/HD_Externo/arquivo_2024/case_2024/`
-5. Skip Existing: ☑️
-6. **OK**
+5. Pular arquivos existentes: ☑️
+6. **🗂 Localizar**
 
-**Depois:**
+**Depois** (supondo o dataset chamado `case_2024`):
 
 ```
 parquet  : /Users/me/projects/old_case/case_2024.parquet  ← original intacto
@@ -302,12 +351,12 @@ novo parquet:
   Salvar Como → /Volumes/HD_Externo/arquivo_2024/case_2024/case_2024.parquet
 
 imagens copiadas:
-  /Volumes/HD_Externo/arquivo_2024/case_2024/images/foto_01.jpg
-  /Volumes/HD_Externo/arquivo_2024/case_2024/images/foto_02.jpg
+  /Volumes/HD_Externo/arquivo_2024/case_2024/case_2024_images/foto_01.jpg
+  /Volumes/HD_Externo/arquivo_2024/case_2024/case_2024_images/foto_02.jpg
   ...
 
 image_path: foto_01.jpg, foto_02.jpg, ...  (RELATIVE)
-path_root : "images"
+path_root : "case_2024_images"
 ```
 
 Agora `/Volumes/HD_Externo/arquivo_2024/case_2024/` é uma pasta
@@ -327,9 +376,9 @@ image_path: /home/user/projects/active/imgs/<file>  (ABSOLUTE)
 **Ação:**
 
 1. 🗂 **Localizar**
-2. Modo: **REWRITE_RELATIVE**
+2. Modo: **Reescrever caminhos (sem cópia)** (REWRITE_RELATIVE)
 3. Pasta destino: `~/projects/active/`
-4. **OK**
+4. **🗂 Localizar**
 
 **Depois:**
 
@@ -348,7 +397,7 @@ e o dataset continua funcionando — sem cópia, sem renomear nada.
 |---|---|---|
 | `REBASE_PREFIX: pasta destino X não existe` | Você digitou um caminho inválido como prefixo novo | Confirme com Finder/Explorer que a pasta realmente existe |
 | Muitas linhas em `failures` no resumo final | Imagens não foram encontradas no destino | Verifique se o prefixo novo + estrutura interna bate com o local real das imagens. Tire algumas amostras do parquet e tente abrir manualmente |
-| `Image outside target_dir` (REWRITE_RELATIVE) | Alguma imagem está em pasta-pai do destino | Mude o destino para um ancestral comum, ou use COPY_ORIGINALS |
+| `fora de target_dir (…); use COPY_ORIGINALS pra mover…` (REWRITE_RELATIVE) | Alguma imagem está em pasta-pai do destino | Mude o destino para um ancestral comum, ou use **Copiar imagens originais** |
 | `n_skipped` enorme em COPY com skip OFF | Você tinha deixado skip ON antes — re-execução copiou tudo | Não é um problema; significa que a operação anterior foi parcial |
 | Hashes diferem após COPY | **Não acontece** se a cópia foi byte-a-byte | Se acontecer, indica corrupção de disco; reporte como bug |
 
@@ -367,9 +416,11 @@ não-destrutivo** em relação ao conteúdo biométrico:
 | `name`, `description`, `is_aligned` | Imutáveis |
 | Arquivos de imagem originais | Intactos em REBASE_PREFIX e REWRITE_RELATIVE; copiados (não movidos nem deletados) em COPY_ORIGINALS |
 
-Toda operação *Localizar* é **registrada no Audit Log** com
-operação `LOCALIZE`, modo usado, e contagem de faces afetadas —
-preservando a cadeia de custódia.
+Toda operação *Localizar* é **registrada no Audit Log** com a
+operação `COPY_IMAGES` (rotulada *"Localização (cópia/reescrita de
+imagens)"* no log, emoji 🗂), o modo usado e as contagens
+(`n_processed`, `n_copied`, `n_skipped`, `n_failed`) — preservando a
+cadeia de custódia.
 
 ---
 

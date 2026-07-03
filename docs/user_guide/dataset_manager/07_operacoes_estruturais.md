@@ -53,18 +53,37 @@ fiqa_score > 0.8 and ofiq_score > 70
 ```
 
 A expressão tem acesso aos valores de **outras colunas** do
-dataset. Suporta operadores aritméticos, comparações, lógicos,
-e funções matemáticas básicas (`abs`, `min`, `max`, `round`).
+dataset (use os **nomes técnicos** das colunas como variáveis).
+Suporta operadores aritméticos, comparações, lógicos, o ternário
+`a if b else c`, e um conjunto de funções seguras:
 
-> ⚠️ **Validação**: a expressão é compilada e testada em uma face
-> de exemplo no momento do OK. Erros de sintaxe ou referência a
-> coluna inexistente bloqueiam a criação.
+```
+abs, min, max, round, len, str, int, float, bool,
+sqrt, log, exp, floor, ceil
+```
+
+> ⚠️ **Validação no OK**: a fórmula é **analisada sintaticamente**
+> (parse do AST) e só se verifica que os nós e as funções usados
+> estão na lista permitida. A expressão **não** é testada numa face
+> de exemplo, e **referência a coluna inexistente NÃO bloqueia a
+> criação** — ela só falha em *runtime*, linha a linha, exibindo um
+> valor de erro na célula daquela linha.
+
+> ⚠️ **Pré-condição de esquema**: se o dataset foi carregado de um
+> parquet **legado sem `column_specs`** na metadata, o botão é
+> bloqueado com o aviso *"Schema legado"* pedindo para **Salvar**
+> primeiro (isso reescreve o parquet no formato novo). Só depois de
+> salvar você consegue adicionar colunas customizadas.
 
 ### Resultado
 
 A nova coluna aparece imediatamente na tabela, **editável** (a
 menos que `computed`, que é read-only). Não esqueça de **Salvar**
 o dataset para persistir.
+
+> 💡 A criação de coluna é registrada no **Audit Log** forense
+> (operação `ADD_COLUMN`), alimentando a cadeia de custódia — veja o
+> [capítulo 09](09_auditoria_forense.md).
 
 ## Editor de Metadados
 
@@ -83,6 +102,16 @@ Edição dos atributos globais:
 | **Descrição** | ✏️ Sim | Texto livre, salvo no metadado |
 | ☑️ **is_aligned** | ✏️ Sim | Override manual *(também acessível via Enriquecer)* |
 | **path_mode** / **path_root** | 🔒 Read-only | Pra mudar, use *Localizar* ([capítulo 03](03_carregando_e_localizando.md)) |
+
+> ⚠️ **Proveniência de datasets de vídeo não é editável aqui.**
+> Datasets criados por extração de vídeo (veja o
+> [capítulo 02b](02b_criando_dataset_de_video.md)) carregam metadados
+> de proveniência estruturada — `dataset_origin_type`,
+> `selection_warning` (aviso de viés de seleção), `source_run_id`,
+> `selection_anchor_model` e `selection_threshold`. O Editor de
+> Metadados **não exibe nem edita** esses campos: ele só cobre nome,
+> descrição, `is_aligned`, `path_mode`/`path_root` e as colunas. A
+> proveniência viaja com o parquet, mas é somente-leitura por aqui.
 
 ### Aba *Colunas*
 
@@ -113,7 +142,7 @@ seus atributos. Edições propagam imediatamente para um
 | Role | Campos extras |
 |---|---|
 | **QUALITY** | `direction` (`HIGHER_IS_BETTER` / `LOWER_IS_BETTER`), `subtype`, `scale`, `metric` |
-| **POSE** | `axis` (`YAW`/`PITCH`/`ROLL`), `unit` (`DEGREES`/`RADIANS`) |
+| **POSE** | `axis` — combo `Yaw`/`Pitch`/`Roll` (rótulo *Eixo (Pose)*); `unit` — campo de **texto livre** (*Unidade (Pose)*, placeholder `deg`), não um combo |
 | **EMBEDDING** | `dim` (dimensão do vetor), `model_name` |
 | **DEMOGRAPHIC** | `is_estimate` (toggle entre valor anotado pelo humano vs estimado pelo modelo) |
 | **STR** *(qualquer role)* | **Vocabulary** — lista de valores válidos (combo box na edição). Política tolerante: valores fora do vocabulary são aceitos mas flageados visualmente |
@@ -128,13 +157,16 @@ seus atributos. Edições propagam imediatamente para um
   permitem** trocar a role nem ter `dtype` editado — papéis
   fundamentais do esquema.
 
-### Botão *Coherence check*
+### Botão 🔍 *Verificar coerência*
 
-Faz uma varredura buscando inconsistências entre o esquema e os
-dados reais (vocabulários com valores não declarados, etc.). Útil
-após importar/mesclar datasets de origens diferentes.
+Lista quantos valores estão **fora do vocabulário** em cada coluna.
+A verificação cobre **apenas colunas do tipo `str` com vocabulário
+definido** — para cada uma, conta os valores que não constam do
+vocabulário declarado. A política é **tolerante**: valores
+fora-de-vocab continuam aceitos, só ficam flagados visualmente na
+tabela. Útil após importar/mesclar datasets de origens diferentes.
 
-> ⚠️ Em datasets grandes (> 10 mil faces), a coherence check pode
+> ⚠️ Em datasets grandes (> 10 mil faces), a verificação pode
 > demorar alguns segundos. O cursor vira *waiting*.
 
 ## Juntar
@@ -150,16 +182,21 @@ diálogo próprio** — ela:
 
 ### Como a concatenação trata diferenças de esquema
 
+A junção é uma **concatenação simples de listas de faces** (o
+resultado é `faces de A + faces de B`). **Não** há reconciliação de
+esquema tipada — nada de *upcast* `int→float`/`bool→int` nem
+verificação de compatibilidade no momento da junção.
+
 | Situação | Resultado |
 |---|---|
 | Mesmas colunas em A e B | Concatena normalmente |
-| A tem coluna que B não tem | Coluna preservada; linhas de B viram NaN nessa coluna |
-| B tem coluna que A não tem | Coluna adicionada; linhas de A viram NaN |
-| Mesma coluna mas tipos diferentes | Tenta upcast (int→float, bool→int); falha se incompatível |
+| A tem coluna que B não tem | Ao montar a tabela, as linhas de B ficam **vazias/NaN** nessa coluna |
+| B tem coluna que A não tem | Idem — as linhas de A ficam **vazias/NaN** |
+| Mesma coluna com tipos diferentes | Sem tratamento explícito na junção; as diferenças aparecem só quando a tabela/parquet é montado |
 
-> 💡 Após Juntar, use o **Editor de Metadados → Coherence check**
-> pra detectar valores fora de vocabulary, e o **Editor de
-> Metadados** pra alinhar labels/roles se necessário.
+> 💡 Após Juntar, use o **Editor de Metadados → 🔍 Verificar
+> coerência** pra detectar valores fora de vocabulário, e o **Editor
+> de Metadados** pra alinhar labels/roles se necessário.
 
 ### O que NÃO acontece
 
@@ -167,7 +204,12 @@ diálogo próprio** — ela:
   e B têm a mesma face (mesmo `hash`), ela aparece duas vezes no
   resultado. Use a **Auditoria** ([capítulo 09](09_auditoria_forense.md))
   pra detectar e remover duplicatas exatas se necessário.
-- **`column_specs`** do dataset A é preservado; o de B é descartado.
+- **`column_specs`** de **ambos** A e B são **descartados** — o
+  dataset resultante nasce sem esquema explícito e é reconstruído a
+  partir do catálogo de colunas ao **Salvar**.
+- **Proveniência não é propagada.** `path_mode`, `is_aligned` e a
+  proveniência de origem (inclusive de datasets de vídeo) do
+  original **não** viajam para o resultado da junção.
 - Arquivos originais **não** são tocados; nenhum dos dois parquets
   de origem é alterado.
 
@@ -179,41 +221,38 @@ Particiona o dataset atual em **dois novos parquets**.
 
 ### Modos
 
-| Modo | Como divide |
-|---|---|
-| **Por porcentagem (ratio)** | Divisão aleatória estratificada por identidade. Você escolhe `ratio` ∈ [5%, 95%] para o lado A; B recebe o complemento |
-| **Manual (lista de identidades)** | Você seleciona quais identidades vão pra B (drag-select entre duas listas); restante vai pra A |
+Os dois modos aparecem no combo **Método** do diálogo:
 
-A divisão **manual** garante separação por identidade — útil para
-criar datasets de treino/calibração sem vazamento.
+| Modo (rótulo na tela) | Como divide |
+|---|---|
+| **Divisão Aleatória por Porcentagem** | Divisão aleatória **por identidade** (*identity-disjoint*): cada identidade vai **inteira** para A **ou** para B — nunca é fatiada entre os dois. A fração escolhida controla a proporção de **identidades** que vão para A |
+| **Seleção Manual de Identidades** | Você seleciona quais identidades vão pra B (duas listas + botões); restante vai pra A |
+
+> ⚠️ **Ambos os modos são identity-disjoint** — não só o manual. Em
+> nenhum deles uma mesma pessoa aparece nos dois lados, o que
+> **evita vazamento de identidade** (*data leakage*) entre treino e
+> calibração/teste.
 
 ### Campos
 
 | Campo | Notas |
 |---|---|
-| **Nome A** | Stem do parquet do lado A (sem `.parquet`) |
-| **Nome B** | Stem do parquet do lado B |
-| **Ratio** *(modo porcentagem)* | Spinner 5–95 (em %). Default 50 |
-| **Listas A / B** *(modo manual)* | Drag-select ou botões `←` / `→` para mover identidades |
-| **Após dividir:** | `Manter dataset atual aberto` / `Abrir lado A` / `Abrir lado B` |
+| **Nome do Dataset A** (*Treino/Base*) | Stem do parquet do lado A (sem `.parquet`) |
+| **Nome do Dataset B** (*Teste/Alvo*) | Stem do parquet do lado B |
+| **Proporção (A / Total)** *(modo porcentagem)* | `QDoubleSpinBox` de **fração** de 0,05 a 0,95 (passo 0,05), **default 0,80**, com sufixo *(Fração para o Dataset A)*. É fração, não porcentagem |
+| **Listas A / B** *(modo manual)* | Selecione uma ou mais identidades e use os botões **`>>`** (mover para B) / **`<<`** (mover para A), ou **duplo-clique** num item para movê-lo. Não há *drag-and-drop* |
+| **Após concluir** | `Manter Dataset Original Aberto` / `Carregar Dataset A no visualizador` / `Carregar Dataset B no visualizador` |
+
+O botão de confirmação é rotulado **Dividir e Salvar**.
 
 ### Saída
 
-Os dois parquets são salvos em `paths.library`. O dataset **atual
-não é modificado** — só lido. Toda a divisão acontece em memória
-+ salva os dois resultados.
-
-### Estratificação automática
-
-No modo *por porcentagem*, a divisão é estratificada **por
-identidade**: cada identidade individual é dividida na mesma
-proporção entre A e B, garantindo que ambos os lados tenham
-representação balanceada de cada pessoa.
-
-> ⚠️ Quando uma identidade tem apenas **1 amostra**, ela vai
-> integralmente pra A ou B — você não pode dividir "a metade"
-> de uma única foto. Identidades singleton tendem a ir mais pra A
-> (que recebe a "porção maior" em ratios > 50%).
+Os dois parquets são gravados **em disco** (na pasta de trabalho do
+dataset, `pipeline.storage_path`), com os nomes informados. O
+dataset **atual não é modificado** — só lido. Conforme a opção
+*Após concluir*, o lado A ou B pode ser aberto no visualizador; em
+*Manter Dataset Original Aberto*, nada é recarregado na tela (os
+parquets ficam salvos, mas a visualização continua no original).
 
 ## Balancear
 
@@ -225,40 +264,56 @@ classes balanceadas — desbalanceamento severo distorce o LR.
 
 ### Modo de balanceamento
 
-| Modo | O que faz |
+| Modo (rótulo na tela) | O que faz |
 |---|---|
-| **CAP_ONLY** | Para cada identidade, mantém no máximo `target_n` amostras. Identidades com **menos** que `target_n` ficam intactas |
-| **FLOOR_AND_CAP** | Descarta identidades com **menos** que `target_n` amostras (floor); aplica cap nas demais |
-| **AUTO_MIN_BALANCE** | Encontra a identidade com **menos** amostras e usa esse valor como `target_n` automaticamente. Garante perfeito balanceamento ao custo de descartar muitos dados se houver identidade muito subrepresentada |
+| **Cap apenas** (`CAP_ONLY`) | Para cada identidade, mantém no máximo `target_n` amostras. Identidades com **menos** que `target_n` ficam intactas (o resultado ainda pode ficar desbalanceado, mas preserva todas as identidades) |
+| **Floor + Cap** (`FLOOR_AND_CAP`) | Descarta identidades com **menos** que `target_n` amostras (floor); aplica cap nas demais |
+| **Auto-min (todas iguais ao mínimo)** (`AUTO_MIN_BALANCE`) | Ignora `target_n`; usa `N` = a menor contagem observada entre as identidades. Garante balanceamento perfeito ao custo de descartar muitos dados se houver identidade muito subrepresentada |
 
 ### Critério de seleção
 
 Quando precisa **descartar** amostras de uma identidade (porque tem
 mais que `target_n`), o critério decide quais ficam:
 
-| Critério | Como escolhe |
+| Critério (rótulo na tela) | Como escolhe |
 |---|---|
-| **RANDOM** | Sorteio uniforme (com `seed` reproduzível) |
-| **BY_QUALITY** | Mantém as `target_n` amostras com **maior** score na métrica escolhida (FIQA / OFIQ / SER-FIQ / embedding norm) |
+| **Aleatório (reprodutível)** (`RANDOM`) | Sorteio uniforme (com `seed` reproduzível). Não usa métrica de qualidade |
+| **Por qualidade (top-N)** (`BY_QUALITY`) | Ordena por `quality_metric` (maior = melhor) e mantém as `target_n` melhores por identidade. Empates desfeitos por hash determinístico |
 
-> 💡 `BY_QUALITY` é o padrão recomendado pra forense — descartar
+> 💡 `Por qualidade` é o padrão recomendado pra forense — descartar
 > aleatoriamente pode tirar fotos boas e manter fotos ruins.
 
 ### Campos
 
 | Campo | Notas |
 |---|---|
-| **Mode** | Os 3 modos acima |
-| **target_n** | Spinner 1–100k. Visível em `CAP_ONLY` e `FLOOR_AND_CAP`; oculto em `AUTO_MIN_BALANCE` |
-| **Selection** | `Random` ou `By Quality` |
-| **Seed** *(Random)* | Spinner inteiro. Default 42 |
-| **Quality metric** *(By Quality)* | Combo: FIQA / OFIQ / SERFIQ / embedding_norm |
-| **Após balancear:** | `Manter original aberto + criar novo` ou `Substituir o atual` |
+| **Modo** | Os 3 modos acima |
+| **N alvo por identidade** (`target_n`) | Spinner 1–100 000, **default 10**. Visível em *Cap apenas* e *Floor + Cap*; oculto em *Auto-min* |
+| **Critério de seleção** | *Aleatório (reprodutível)* ou *Por qualidade (top-N)* |
+| **Seed** *(Aleatório)* | Spinner inteiro. Default 42 |
+| **Métrica** *(Por qualidade)* | Combo: `FIQA (ForensicFace)` / `OFIQ (ISO unified)` / `SER-FIQ (robustez)` / `Norma do embedding (AdaFace)` |
+| **Após balancear** | Rádio: `Manter dataset atual aberto` (default) ou `Substituir o dataset corrente pelo balanceado` |
+
+O botão de confirmação é rotulado **⚖ Balancear**.
 
 ### Saída
 
-Como o split, o balancear cria um **novo dataset** — o atual fica
-intacto (a menos que você escolha "Substituir o atual").
+> ⚠️ **O balanceamento NUNCA grava um parquet automaticamente** — em
+> qualquer modo é preciso usar **Salvar / Salvar Como** depois.
+
+O comportamento depende da opção *Após balancear*:
+
+- **Manter dataset atual aberto** — apenas **simula** o
+  balanceamento e mostra um resumo do impacto num aviso
+  (*"Pré-visualização de balanceamento"* / *"Balanceamento simulado
+  (não aplicado ao dataset corrente)"*). O resultado é **descartado**:
+  nada é criado, nada é aberto, o dataset na tela não muda. Serve
+  para inspecionar o efeito antes de decidir.
+- **Substituir o dataset corrente pelo balanceado** — troca o
+  dataset **em memória** pelo resultado e marca a tela como
+  **modificada** (dirty). Nesse ponto, use **Salvar Como** para
+  gravar como um novo parquet (o original em disco continua
+  intacto).
 
 ## Comparar
 
@@ -266,19 +321,33 @@ A operação **Comparar** abre um diálogo lado-a-lado mostrando
 diferenças entre o **dataset atual** e outro `.parquet` que você
 selecione.
 
+O título da janela vira **Comparação: {A} vs {B}**.
+
 ### Estrutura do diálogo
+
+Há uma aba fixa mais **abas dinâmicas por coluna categórica**:
 
 | Aba | Conteúdo |
 |---|---|
-| **Resumo** | Caixa "Dataset A" + "Interseção" + "Dataset B" com contagens de imagens, identidades, etc. |
-| **Gênero** | Tabela: cada valor de gênero + contagem em A + contagem em B + diferença |
-| **Etnia** | Idem |
-| **Origem** | Idem |
-| **Identidades** | Conjunto-A, intersecção, conjunto-B |
-| **Colunas** | Comum (presente nos dois) / Apenas em A / Apenas em B |
+| **📋 Resumo Geral** *(fixa)* | Três caixas — o dataset A, **Interseção (Comum)** e o dataset B — cada uma com contagem de imagens (🖼️) e identidades (👤); mais uma seção **Detalhes Técnicos (Estrutura)** listando *Colunas em comum* e *Ausentes em {B}* |
+| **Gênero / Etnia / Origem** *(dinâmicas)* | Uma aba por coluna categórica: tabela com `Categoria` + contagem em A + contagem em B + `Diferença` |
+| *(colunas custom)* | Qualquer coluna categórica customizada de baixa cardinalidade vira **automaticamente** uma aba de comparação, com a mesma tabela |
 
-As células de **diferença** ficam coloridas: 🟢 verde (A > B), 🔴
-vermelho (A < B), ⚪ cinza (igual).
+> ℹ️ Não existem abas separadas de "Identidades" nem de "Colunas" —
+> a interseção de identidades já aparece nas caixas do **Resumo
+> Geral**, e a comparação de colunas fica nos *Detalhes Técnicos*
+> (colunas em comum e colunas ausentes em B).
+
+A coluna **Diferença** mostra o delta **B − A** com sinal (ex.:
+`+5`, `-3`, `0`) e é colorida conforme esse sinal:
+
+- 🟢 **verde** — valor **maior em B** (B > A)
+- 🔴 **vermelho** — valor **menor em B** (B < A)
+- ⚪ **cinza** — igual nos dois
+
+> ⚠️ Atenção à convenção: a cor reflete a variação **em relação a
+> B**, não "A maior que B". Verde significa que B tem mais itens
+> naquela categoria do que A.
 
 ### Casos de uso
 

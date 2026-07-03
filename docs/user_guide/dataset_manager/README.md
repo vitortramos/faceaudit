@@ -1,9 +1,10 @@
 # Manual do Usuário — Gerenciador de Datasets
 
 Este guia documenta o **Gerenciador de Datasets** do FaceAudit, módulo
-responsável por extrair, organizar e auditar conjuntos de imagens
-faciais antes que eles sejam consumidos pelo Gerenciador de Estratégias
-nos cálculos forenses de razão de verossimilhança (LR).
+responsável por **extrair** (de pastas de imagens **ou de vídeos** de
+vigilância), **organizar** e **auditar** conjuntos de imagens faciais
+antes que eles sejam consumidos pelo Gerenciador de Estratégias nos
+cálculos forenses de razão de verossimilhança (LR).
 
 A documentação é **híbrida**: começa com um tutorial guiado em torno de
 um caso concreto e, em seguida, descreve cada tela em detalhe.
@@ -16,8 +17,8 @@ um caso concreto e, em seguida, descreve cada tela em detalhe.
 | [02 — Criando um dataset](02_criando_dataset.md) | Diálogo *Novo dataset* (quatro grupos), *Criador de Template*, modelos SEPAEL, opções de alinhamento |
 | [02b — Criando a partir de vídeo](02b_criando_dataset_de_video.md) | Extrair faces de vídeo(s) por âncora: janela de extração, revisão humana, importação e manifesto de reprodutibilidade |
 | [03 — Carregando e localizando](03_carregando_e_localizando.md) | Abrir um `.parquet`, corrigir caminhos quebrados (modos `REWRITE_RELATIVE`, `COPY_ORIGINALS`, `REBASE_PREFIX`) |
-| [04 — Navegando no dataset](04_navegando_dataset.md) | Tabela, painel de detalhes (Geral/Bio e Qualidade ISO), galeria, ribbons |
-| [05 — Enriquecimento](05_enriquecimento.md) | Adicionar/recalcular embeddings, FIQA, OFIQ e SER-FIQ em um dataset existente |
+| [04 — Navegando no dataset](04_navegando_dataset.md) | Tabela, painel de detalhes (Geral/Bio e Qualidade ISO), galeria e seu menu de contexto, ribbons |
+| [05 — Enriquecimento](05_enriquecimento.md) | Adicionar/recalcular embeddings, FIQA, OFIQ (qualidade ISO), pose e demografia em um dataset existente |
 | [06 — Filtros e estatísticas](06_filtros_e_estatisticas.md) | Diálogo *Filtrar*, *Estatísticas*, *Relatório de Esquema* |
 | [07 — Operações estruturais](07_operacoes_estruturais.md) | Adicionar coluna, editar metadados, dividir, balancear, mesclar e comparar datasets |
 | [08 — Pipeline de imagens](08_pipeline_de_imagens.md) | *Editor* e *Aplicação* de pipelines de transformação por imagem (recorte, alinhamento, etc.) |
