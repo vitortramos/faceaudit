@@ -1062,7 +1062,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         start = self._datasets_dir or ""
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self, "Escolher vídeo(s)", start,
-            "Vídeos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v);;Todos (*.*)")
+            "Vídeos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v *.dav);;Todos (*.*)")
         if not paths:
             return
         existing = set(self._video_paths())
