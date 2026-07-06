@@ -99,7 +99,7 @@ alvo** vazio chamado `alvo`.
 | Elemento | Função |
 |---|---|
 | **Lista de vídeos** | Um vídeo por linha. Cada linha tem os campos **Início** e **Fim** (HH:mm:ss) — você pode definir o **trecho** a percorrer *direto na linha, sem carregar o vídeo*. Padrão = vídeo inteiro (`0` → duração). |
-| ➕ **Adicionar vídeos…** | Escolhe um ou mais arquivos (`.mp4 .avi .mov .mkv .wmv .m4v .dav`). O alvo é procurado em **todos** eles, gerando **um único dataset** (cada face marcada com seu vídeo de origem). |
+| ➕ **Adicionar vídeos…** | Escolhe um ou mais arquivos. Aceita os contêineres comuns (`.mp4`, `.mov`, `.avi`, `.mkv`, `.wmv`), os de CFTV/vigilância (`.ts`/`.m2ts`/`.mts`, `.asf`, `.dav` da Dahua) e outros suportados pelo OpenCV/FFmpeg. O alvo é procurado em **todos** eles, gerando **um único dataset** (cada face marcada com seu vídeo de origem). |
 | **Carregar selecionado** | Abre o vídeo selecionado na prévia (inicializa o detector com a Resolução/Confiança atuais). Duplo-clique na linha faz o mesmo. |
 | **Remover selecionado** | Tira o vídeo da lista. |
 

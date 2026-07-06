@@ -1060,9 +1060,16 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     # ───────────────────────────── slots ─────────────────────────────
     def _on_add_videos(self):
         start = self._datasets_dir or ""
+        # Contêineres decodificáveis pelo OpenCV/FFmpeg. Inclui os típicos de
+        # CFTV/vigilância: transport streams (.ts/.m2ts/.mts), AVCHD, .asf e .dav
+        # (Dahua). "Todos (*.*)" fica no fim para quem tiver um contêiner incomum.
+        _video_filter = (
+            "Vídeos (*.mp4 *.m4v *.mov *.avi *.mkv *.wmv *.asf *.flv *.f4v "
+            "*.webm *.mpg *.mpeg *.m2v *.ts *.m2ts *.mts *.vob *.3gp *.3g2 "
+            "*.ogv *.mxf *.divx *.dav);;Todos (*.*)"
+        )
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Escolher vídeo(s)", start,
-            "Vídeos (*.mp4 *.avi *.mov *.mkv *.wmv *.m4v *.dav);;Todos (*.*)")
+            self, "Escolher vídeo(s)", start, _video_filter)
         if not paths:
             return
         existing = set(self._video_paths())
