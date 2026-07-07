@@ -128,6 +128,21 @@ class ConfigDialog(QDialog):
         form_ofiq.addRow("Pasta de dados:", self.input_ofiq_data)
         layout.addWidget(gb_ofiq)
 
+        # ─── Aparência (tema claro/escuro) ──────────────────────────────
+        gb_theme = QGroupBox("🎨 Aparência")
+        form_theme = QFormLayout(gb_theme)
+        self.combo_theme = QComboBox()
+        self.combo_theme.addItem("Claro", userData="light")
+        self.combo_theme.addItem("Escuro", userData="dark")
+        current_mode = getattr(self.config.theme, "mode", "light")
+        idx = self.combo_theme.findData(current_mode)
+        self.combo_theme.setCurrentIndex(idx if idx >= 0 else 0)
+        self.combo_theme.setToolTip(
+            "Tema da interface. A troca é aplicada imediatamente ao salvar."
+        )
+        form_theme.addRow("Tema:", self.combo_theme)
+        layout.addWidget(gb_theme)
+
         # ─── Botões ─────────────────────────────────────────────────────
         self.button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save |
@@ -172,6 +187,8 @@ class ConfigDialog(QDialog):
 
         self.config.ofiq.ofiq_exe_path = self.input_ofiq_exe.text() or ""
         self.config.ofiq.ofiq_data_path = self.input_ofiq_data.text() or ""
+
+        self.config.theme.mode = self.combo_theme.currentData() or "light"
 
         self.config.save_to_file()
         self.accept()

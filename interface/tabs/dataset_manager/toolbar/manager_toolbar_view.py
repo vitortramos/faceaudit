@@ -20,6 +20,7 @@ e demais call sites continuam inalterados.
 
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QTabWidget
 
+from interface.theme import apply_themed_stylesheet
 from .toolbar_widgets import StatusLabel
 from .ribbons.arquivo_ribbon import ArquivoRibbon
 from .ribbons.dataset_ribbon import DatasetRibbon
@@ -46,9 +47,12 @@ class ManagerToolbarView(QFrame):
         # Mais alto que a toolbar single-row (90) pra acomodar QTabBar
         # + ribbon row + status bar.
         self.setMaximumHeight(130)
-        self.setStyleSheet(
-            "QFrame { background-color: #f5f5f5; "
-            "border-radius: 5px; border: 1px solid #e0e0e0; }"
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "QFrame { background-color: " + t("SURFACE_RAISED") + "; "
+                "border-radius: 5px; border: 1px solid " + t("BORDER") + "; }"
+            ),
         )
 
     def _init_ui(self):
@@ -63,43 +67,41 @@ class ManagerToolbarView(QFrame):
         # com `border-top transparent` da mesma espessura pra evitar
         # jump visual quando a seleção muda. Hover escurece o fundo
         # da inativa pra dar feedback de mouse-over.
-        self.tabs.setStyleSheet(
-            # Pane (área dos botões)
-            "QTabWidget::pane { "
-            "    border: 1px solid #d0d0d0; "
-            "    background: white; "
-            "    border-radius: 4px; "
-            "    top: -1px; "  # encaixa na aba sem gap
-            "} "
-            # Aba inativa (default)
-            "QTabBar::tab { "
-            "    background: #e8e8e8; "
-            "    color: #555; "
-            "    padding: 7px 20px; "
-            "    font-size: 11px; "
-            "    border: 1px solid #d0d0d0; "
-            "    border-top: 3px solid transparent; "  # placeholder pra evitar jump
-            "    border-right: none; "
-            "    border-top-left-radius: 4px; "
-            "    border-top-right-radius: 4px; "
-            "    margin-right: 1px; "
-            "} "
-            # Hover na inativa
-            "QTabBar::tab:hover:!selected { "
-            "    background: #dcdcdc; "
-            "    color: #333; "
-            "} "
-            # Aba selecionada — accent bar azul + fundo branco contínuo
-            "QTabBar::tab:selected { "
-            "    background: white; "
-            "    color: #1976d2; "
-            "    font-weight: bold; "
-            "    border-top: 3px solid #1976d2; "
-            "    border-bottom: 1px solid white; "  # cobre a borda da pane → continuidade visual
-            "} "
-            # Última aba não tem margin-right
-            "QTabBar::tab:last { margin-right: 0; }"
-        )
+        def _ribbon_tabs_qss(t):
+            # Estilo "Office accent bar" derivado de tokens (claro/escuro).
+            return (
+                "QTabWidget::pane { "
+                "    border: 1px solid " + t("BORDER") + "; "
+                "    background: " + t("SURFACE") + "; "
+                "    border-radius: 4px; "
+                "    top: -1px; "
+                "} "
+                "QTabBar::tab { "
+                "    background: " + t("SURFACE_ALT") + "; "
+                "    color: " + t("TEXT_MUTED") + "; "
+                "    padding: 7px 20px; "
+                "    font-size: 11px; "
+                "    border: 1px solid " + t("BORDER") + "; "
+                "    border-top: 3px solid transparent; "
+                "    border-right: none; "
+                "    border-top-left-radius: 4px; "
+                "    border-top-right-radius: 4px; "
+                "    margin-right: 1px; "
+                "} "
+                "QTabBar::tab:hover:!selected { "
+                "    background: " + t("BORDER") + "; "
+                "    color: " + t("TEXT") + "; "
+                "} "
+                "QTabBar::tab:selected { "
+                "    background: " + t("SURFACE") + "; "
+                "    color: " + t("PRIMARY") + "; "
+                "    font-weight: bold; "
+                "    border-top: 3px solid " + t("PRIMARY") + "; "
+                "    border-bottom: 1px solid " + t("SURFACE") + "; "
+                "} "
+                "QTabBar::tab:last { margin-right: 0; }"
+            )
+        apply_themed_stylesheet(self.tabs, _ribbon_tabs_qss)
 
         self.arquivo_ribbon = ArquivoRibbon()
         self.dataset_ribbon = DatasetRibbon()

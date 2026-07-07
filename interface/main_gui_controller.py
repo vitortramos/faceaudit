@@ -251,6 +251,14 @@ class MainGuiController:
             self._sync_container_config()
             self._propagate_config_change()
 
+            # Aplica o tema escolhido em runtime (claro/escuro). Frontend puro:
+            # o ThemeManager reaplica paleta + QSS global e emite theme_changed,
+            # que os widgets migrados escutam para se re-estilizar.
+            from interface.theme import ThemeManager
+            theme_mgr = ThemeManager.instance()
+            if theme_mgr is not None:
+                theme_mgr.set_mode(getattr(current_config.theme, "mode", "light"))
+
     def _propagate_config_change(self):
         """Notifica sub-controladores sobre alterações."""
         if getattr(self, 'manager_controller', None) is not None:

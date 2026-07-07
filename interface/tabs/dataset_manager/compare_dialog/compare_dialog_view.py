@@ -1,11 +1,13 @@
 # interface/tabs/dataset_manager/compare_dialog/compare_dialog_view.py
 from PyQt6 import QtWidgets, QtGui
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox, 
-    QFrame, QPushButton, QTabWidget, QWidget, QTableWidget, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QGroupBox,
+    QFrame, QPushButton, QTabWidget, QWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QTextEdit
 )
 from PyQt6.QtCore import Qt
+
+from interface.theme import apply_themed_stylesheet, current_token_fn
 
 class CompareDialogView(QDialog):
     """
@@ -31,11 +33,15 @@ class CompareDialogView(QDialog):
         
         # TAB WIDGET
         self.tabs = QTabWidget()
-        self.tabs.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #ccc; top: -1px; } 
-            QTabBar::tab { padding: 8px 12px; font-weight: bold; }
-            QTabBar::tab:selected { background: #fff; border-bottom: 2px solid #1976d2; }
-        """)
+        apply_themed_stylesheet(
+            self.tabs,
+            lambda t: (
+                "QTabWidget::pane { border: 1px solid " + t("BORDER") + "; top: -1px; } "
+                "QTabBar::tab { padding: 8px 12px; font-weight: bold; } "
+                "QTabBar::tab:selected { background: " + t("SURFACE")
+                + "; border-bottom: 2px solid " + t("PRIMARY") + "; }"
+            ),
+        )
         
         # ABA 1: RESUMO (Placeholder, será preenchida via código)
         self.tab_summary = QWidget()
@@ -74,29 +80,35 @@ class CompareDialogView(QDialog):
 
         # Header
         header = QLabel("Análise de Interseção (Identidades e Volumes)")
-        header.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px 0; color: #333;")
+        apply_themed_stylesheet(
+            header,
+            lambda t: "font-size: 14px; font-weight: bold; margin: 10px 0; color: "
+                      + t("TEXT") + ";",
+        )
         header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(header)
 
         # Grid de Caixas (A | Interseção | B)
         grid_layout = QHBoxLayout()
         grid_layout.setSpacing(20)
-        
+
+        t = current_token_fn()
+
         # Box A
         box_a = self._create_dataset_box(
-            self.name_a, "#e3f2fd", # Azul claro
+            self.name_a, t("PRIMARY_BG"), # Azul claro
             total_a, ids_a,
             unique_imgs_a, unique_ids_a, "Exclusivos aqui"
         )
-        
+
         # Box Interseção
         box_common = self._create_intersection_box(
             common_imgs, common_ids
         )
-        
+
         # Box B
         box_b = self._create_dataset_box(
-            self.name_b, "#fbe9e7", # Vermelho claro
+            self.name_b, t("DANGER_BG"), # Vermelho claro
             total_b, ids_b,
             unique_imgs_b, unique_ids_b, "Exclusivos lá"
         )
@@ -115,17 +127,23 @@ class CompareDialogView(QDialog):
             layout.addWidget(lbl_tech)
             
             tech_frame = QFrame()
-            tech_frame.setStyleSheet("background-color: #f5f5f5; border-radius: 4px; padding: 10px;")
+            apply_themed_stylesheet(
+                tech_frame,
+                lambda t: "background-color: " + t("SURFACE_RAISED")
+                          + "; border-radius: 4px; padding: 10px;",
+            )
             tech_layout = QVBoxLayout(tech_frame)
-            
+
             if common_cols:
                 info_cols = ", ".join(common_cols)
                 tech_layout.addWidget(QLabel(f"<b>Colunas em comum:</b> {info_cols}"))
-            
+
             if missing_cols:
                 missing_str = ", ".join(missing_cols)
                 lbl_missing = QLabel(f"<b>⚠️ Ausentes em {self.name_b}:</b> {missing_str}")
-                lbl_missing.setStyleSheet("color: #d32f2f;")
+                apply_themed_stylesheet(
+                    lbl_missing, lambda t: "color: " + t("DANGER") + ";"
+                )
                 tech_layout.addWidget(lbl_missing)
             else:
                  tech_layout.addWidget(QLabel(f"✅ {self.name_b} possui todas as colunas de vetor de {self.name_a}."))
@@ -167,6 +185,8 @@ class CompareDialogView(QDialog):
         table.setRowCount(len(rows))
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
 
+        t = current_token_fn()
+
         # Preenchimento
         for row_idx, diff_obj in enumerate(rows):
             # diff_obj é uma instância de CategoryDiff
@@ -193,13 +213,13 @@ class CompareDialogView(QDialog):
             
             val_diff = diff_obj.diff
             if val_diff > 0:
-                item_diff.setForeground(QtGui.QColor("#2e7d32")) # Verde (Aumentou em B)
-                item_diff.setBackground(QtGui.QColor("#e8f5e9"))
+                item_diff.setForeground(QtGui.QColor(t("SUCCESS"))) # Verde (Aumentou em B)
+                item_diff.setBackground(QtGui.QColor(t("SUCCESS_BG")))
             elif val_diff < 0:
-                item_diff.setForeground(QtGui.QColor("#c62828")) # Vermelho (Diminuiu em B)
-                item_diff.setBackground(QtGui.QColor("#ffebee"))
+                item_diff.setForeground(QtGui.QColor(t("DANGER"))) # Vermelho (Diminuiu em B)
+                item_diff.setBackground(QtGui.QColor(t("DANGER_BG")))
             else:
-                item_diff.setForeground(QtGui.QColor("#757575")) # Cinza (Igual)
+                item_diff.setForeground(QtGui.QColor(t("TEXT_MUTED"))) # Cinza (Igual)
             
             table.setItem(row_idx, 3, item_diff)
 
@@ -214,36 +234,37 @@ class CompareDialogView(QDialog):
     # --- Helpers Visuais (Privados) ---
 
     def _create_dataset_box(self, name, color, total_imgs, total_ids, unique_imgs, unique_ids, unique_label):
+        t = current_token_fn()
         group = QGroupBox(name)
         group.setStyleSheet(f"""
-            QGroupBox {{ 
-                font-weight: bold; 
-                border: 1px solid #ccc; 
-                border-radius: 8px; 
-                background-color: {color}; 
+            QGroupBox {{
+                font-weight: bold;
+                border: 1px solid {t("BORDER")};
+                border-radius: 8px;
+                background-color: {color};
                 margin-top: 10px;
             }}
             QGroupBox::title {{ subcontrol-origin: margin; left: 10px; padding: 0 5px; }}
         """)
-        
+
         l = QVBoxLayout()
         l.setSpacing(10)
-        
+
         # Seção Total
         lbl_total = QLabel("Total")
-        lbl_total.setStyleSheet("font-size: 10pt; color: #555;")
+        lbl_total.setStyleSheet("font-size: 10pt; color: " + t("TEXT_MUTED") + ";")
         lbl_total.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         info_total = QLabel(f"<span style='font-size: 12pt;'>🖼️ {total_imgs}</span> &nbsp;|&nbsp; <span style='font-size: 12pt;'>👤 {total_ids}</span>")
         info_total.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         line = QFrame()
         line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet("background-color: #bbb; height: 1px;")
-        
+        line.setStyleSheet("background-color: " + t("BORDER") + "; height: 1px;")
+
         # Seção Exclusivos
         lbl_unique = QLabel(unique_label)
-        lbl_unique.setStyleSheet("font-weight: bold; color: #333;")
+        lbl_unique.setStyleSheet("font-weight: bold; color: " + t("TEXT") + ";")
         lbl_unique.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         info_unique = QLabel(f"🖼️ {unique_imgs} <br> 👤 {unique_ids}")
@@ -261,36 +282,40 @@ class CompareDialogView(QDialog):
         return group
 
     def _create_intersection_box(self, n_common_imgs, n_common_ids):
+        t = current_token_fn()
         group = QGroupBox("Interseção (Comum)")
-        group.setStyleSheet("""
-            QGroupBox { 
-                font-weight: bold; 
-                border: 1px solid #fbc02d; 
-                border-radius: 8px; 
-                background-color: #fff9c4; 
-                margin-top: 10px;
-            }
-        """)
-        
+        apply_themed_stylesheet(
+            group,
+            lambda t: (
+                "QGroupBox { "
+                "    font-weight: bold; "
+                "    border: 1px solid " + t("ACCENT") + "; "
+                "    border-radius: 8px; "
+                "    background-color: " + t("ACCENT_BG") + "; "
+                "    margin-top: 10px;"
+                "}"
+            ),
+        )
+
         l = QVBoxLayout()
-        
+
         lbl_icon = QLabel("🔗")
         lbl_icon.setStyleSheet("font-size: 32px; margin-bottom: 5px;")
         lbl_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         # Destaque para IDs
-        txt_ids = f"<span style='font-size: 18pt; font-weight: bold; color: #1565c0;'>{n_common_ids}</span>"
-        lbl_ids = QLabel(f"{txt_ids}<br><span style='font-size: 10pt; color: #555;'>Identidades Iguais</span>")
+        txt_ids = f"<span style='font-size: 18pt; font-weight: bold; color: {t('PRIMARY')};'>{n_common_ids}</span>"
+        lbl_ids = QLabel(f"{txt_ids}<br><span style='font-size: 10pt; color: {t('TEXT_MUTED')};'>Identidades Iguais</span>")
         lbl_ids.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
+
         l.addStretch()
         l.addWidget(lbl_icon)
         l.addWidget(lbl_ids)
-        
+
         # Se houver imagens idênticas (hash), mostra. Se for 0, mostra menor.
         if n_common_imgs > 0:
             l.addSpacing(10)
-            txt_imgs = f"<span style='font-size: 12pt; font-weight: bold; color: #d32f2f;'>{n_common_imgs}</span>"
+            txt_imgs = f"<span style='font-size: 12pt; font-weight: bold; color: {t('DANGER')};'>{n_common_imgs}</span>"
             lbl_imgs = QLabel(f"{txt_imgs} imagens duplicadas (Hash)")
             lbl_imgs.setAlignment(Qt.AlignmentFlag.AlignCenter)
             l.addWidget(lbl_imgs)

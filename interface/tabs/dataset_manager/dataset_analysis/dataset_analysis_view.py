@@ -27,6 +27,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.models.audit import AuditFinding, AuditIssue, AuditSeverity
 
 from .balance_metrics_widget import BalanceMetricsWidget
@@ -150,7 +151,10 @@ class AuditSettingsDialog(QtWidgets.QDialog):
             quality_label = QtWidgets.QLabel(
                 "<b>Qualidade das amostras</b> — limites por métrica disponível:"
             )
-            quality_label.setStyleSheet("color: #1a3d6e; padding-top: 2px;")
+            apply_themed_stylesheet(
+                quality_label,
+                lambda t: "color: " + t("PRIMARY_STRONG") + "; padding-top: 2px;",
+            )
             form.addRow(quality_label)
             for metric_name in metrics:
                 hints = _ui_hints_for(metric_name)
@@ -226,7 +230,10 @@ class AuditSettingsDialog(QtWidgets.QDialog):
             "depois.</i>"
         )
         note.setWordWrap(True)
-        note.setStyleSheet("color: #555; font-size: 11px; padding-top: 4px;")
+        apply_themed_stylesheet(
+            note,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px; padding-top: 4px;",
+        )
         layout.addWidget(note)
 
         btns = QtWidgets.QDialogButtonBox(
@@ -464,8 +471,9 @@ class DatasetAnalysisView(QtWidgets.QDialog):
 
         # Header geral
         self.lbl_header = QtWidgets.QLabel("Carregando auditoria…")
-        self.lbl_header.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #1a3d6e;"
+        apply_themed_stylesheet(
+            self.lbl_header,
+            lambda t: "font-size: 14px; font-weight: bold; color: " + t("PRIMARY_STRONG") + ";",
         )
         outer.addWidget(self.lbl_header)
 
@@ -614,8 +622,12 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         history_layout.setSpacing(2)
 
         lbl_history = QtWidgets.QLabel("📜 Histórico de mudanças")
-        lbl_history.setStyleSheet(
-            "font-size: 12px; font-weight: bold; color: #1a3d6e; padding-top: 4px;"
+        apply_themed_stylesheet(
+            lbl_history,
+            lambda t: (
+                "font-size: 12px; font-weight: bold; color: "
+                + t("PRIMARY_STRONG") + "; padding-top: 4px;"
+            ),
         )
         history_layout.addWidget(lbl_history)
 
@@ -647,14 +659,18 @@ class DatasetAnalysisView(QtWidgets.QDialog):
 
         # Header do finding selecionado
         self.lbl_finding_title = QtWidgets.QLabel("Selecione uma auditoria à esquerda.")
-        self.lbl_finding_title.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #333;"
+        apply_themed_stylesheet(
+            self.lbl_finding_title,
+            lambda t: "font-size: 13px; font-weight: bold; color: " + t("TEXT") + ";",
         )
         right_layout.addWidget(self.lbl_finding_title)
 
         self.lbl_finding_summary = QtWidgets.QLabel("")
         self.lbl_finding_summary.setWordWrap(True)
-        self.lbl_finding_summary.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.lbl_finding_summary,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         right_layout.addWidget(self.lbl_finding_summary)
 
         # Caixa de explicação contextual (visível só pra auditorias que
@@ -662,10 +678,13 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         # baseado no audit_id.
         self.lbl_audit_help = QtWidgets.QLabel("")
         self.lbl_audit_help.setWordWrap(True)
-        self.lbl_audit_help.setStyleSheet(
-            "color: #1a3d6e; background: #e3f2fd; "
-            "border-left: 3px solid #1976d2; "
-            "padding: 8px 10px; font-size: 11px;"
+        apply_themed_stylesheet(
+            self.lbl_audit_help,
+            lambda t: (
+                "color: " + t("PRIMARY") + "; background: " + t("PRIMARY_BG") + "; "
+                "border-left: 3px solid " + t("PRIMARY") + "; "
+                "padding: 8px 10px; font-size: 11px;"
+            ),
         )
         self.lbl_audit_help.hide()
         right_layout.addWidget(self.lbl_audit_help)
@@ -778,8 +797,12 @@ class DatasetAnalysisView(QtWidgets.QDialog):
         self.btn_merge.setEnabled(False)
 
         self.btn_delete = QtWidgets.QPushButton("🗑 Excluir face(s)")
-        self.btn_delete.setStyleSheet(
-            "background-color: #c62828; color: white; font-weight: bold; padding: 4px 10px;"
+        apply_themed_stylesheet(
+            self.btn_delete,
+            lambda t: (
+                "background-color: " + t("DANGER") + "; color: " + t("HIGHLIGHT_TEXT")
+                + "; font-weight: bold; padding: 4px 10px;"
+            ),
         )
         self.btn_delete.clicked.connect(self._on_delete_clicked)
         self.btn_delete.setEnabled(False)

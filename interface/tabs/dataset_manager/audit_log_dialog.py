@@ -30,10 +30,7 @@ from faceaudit.services.audit_log_service import (
     AuditChainProblem,
     AuditLogService,
 )
-
-
-_BG_OK = QColor("#d4edda")
-_BG_PROBLEM = QColor("#f8d7da")
+from interface.theme import current_token_fn
 
 
 class AuditLogDialog(QtWidgets.QDialog):
@@ -73,11 +70,12 @@ class AuditLogDialog(QtWidgets.QDialog):
         layout.setSpacing(8)
 
         sidecar = AuditLogService.sidecar_path_for(self._dataset_path)
+        _t = current_token_fn()
         header = QtWidgets.QLabel(
             "<b>Cadeia de custódia forense</b> — todas as operações que tocam "
             "o dataset, em ordem cronológica. Cada entrada referencia o hash "
             "da anterior, formando uma cadeia detectável de adulterações."
-            f"<br><span style='color:#666;font-size:11px;'>Sidecar: "
+            f"<br><span style='color:{_t('TEXT_MUTED')};font-size:11px;'>Sidecar: "
             f"{sidecar.name}</span>"
         )
         header.setWordWrap(True)
@@ -168,13 +166,14 @@ class AuditLogDialog(QtWidgets.QDialog):
         self.table.item(row, 5).setToolTip(f"SHA-256: {entry.entry_hash}")
 
     def _update_status_initial(self):
+        t = current_token_fn()
         n = len(self._entries)
         if n == 0:
             self.status_label.setText(
                 "📜 Nenhuma entrada registrada ainda. "
                 "O log é criado quando você abre, salva ou modifica o dataset."
             )
-            self.status_label.setStyleSheet("color: #666; padding: 4px 0;")
+            self.status_label.setStyleSheet("color: " + t("TEXT_MUTED") + "; padding: 4px 0;")
             self.btn_verify.setEnabled(False)
             self.btn_export.setEnabled(False)
         else:
@@ -182,7 +181,7 @@ class AuditLogDialog(QtWidgets.QDialog):
                 f"📜 {n} entrada(s). Clique em 'Verificar integridade' para "
                 "validar a cadeia."
             )
-            self.status_label.setStyleSheet("color: #444; padding: 4px 0;")
+            self.status_label.setStyleSheet("color: " + t("TEXT") + "; padding: 4px 0;")
             self.btn_verify.setEnabled(True)
             self.btn_export.setEnabled(True)
 
@@ -192,9 +191,13 @@ class AuditLogDialog(QtWidgets.QDialog):
         ok, problems = AuditLogService.verify_chain(self._entries)
         self._problem_indices = {p.entry_index for p in problems}
 
+        t = current_token_fn()
+        bg_ok = QColor(t("SUCCESS_BG"))
+        bg_problem = QColor(t("DANGER_BG"))
+
         # Repinta linhas com cor de status
         for row in range(self.table.rowCount()):
-            color = _BG_PROBLEM if row in self._problem_indices else _BG_OK
+            color = bg_problem if row in self._problem_indices else bg_ok
             for col in range(self.table.columnCount()):
                 item = self.table.item(row, col)
                 if item:
@@ -205,7 +208,7 @@ class AuditLogDialog(QtWidgets.QDialog):
                 f"✅ Cadeia íntegra — {len(self._entries)} entrada(s) verificada(s) com sucesso."
             )
             self.status_label.setStyleSheet(
-                "color: #155724; background:#d4edda; padding: 6px; "
+                "color: " + t("SUCCESS") + "; background:" + t("SUCCESS_BG") + "; padding: 6px; "
                 "border-radius: 3px; font-weight: 600;"
             )
             QtWidgets.QMessageBox.information(
@@ -221,7 +224,7 @@ class AuditLogDialog(QtWidgets.QDialog):
                 f"❌ Cadeia comprometida — {len(problems)} problema(s) detectado(s)."
             )
             self.status_label.setStyleSheet(
-                "color: #721c24; background:#f8d7da; padding: 6px; "
+                "color: " + t("DANGER") + "; background:" + t("DANGER_BG") + "; padding: 6px; "
                 "border-radius: 3px; font-weight: 600;"
             )
             QtWidgets.QMessageBox.critical(

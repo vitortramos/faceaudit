@@ -31,6 +31,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 def _with_wait_cursor():
     """
@@ -152,23 +154,32 @@ class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
     def _build_header(self):
         from PyQt6 import QtCore as _QtCore
         frame = QtWidgets.QFrame(parent=self)
-        frame.setStyleSheet(
-            "QFrame { background: #FFF8E8; "
-            "border-left: 3px solid #E8A020; border-radius: 2px; }"
+        apply_themed_stylesheet(
+            frame,
+            lambda t: (
+                "QFrame { background: " + t("ACCENT_BG") + "; "
+                "border-left: 3px solid " + t("ACCENT") + "; border-radius: 2px; }"
+            ),
         )
         v = QtWidgets.QVBoxLayout(frame)
         v.setContentsMargins(10, 6, 10, 6)
         v.setSpacing(2)
         l1 = QtWidgets.QLabel("(aguardando resultado)", parent=frame)
-        l1.setStyleSheet(
-            "background: transparent; color: #5a4500; font-size: 11px;"
+        apply_themed_stylesheet(
+            l1,
+            lambda t: (
+                "background: transparent; color: " + t("ACCENT_TEXT") + "; font-size: 11px;"
+            ),
         )
         l1.setWordWrap(True)
         l1.setTextFormat(_QtCore.Qt.TextFormat.RichText)
         v.addWidget(l1)
         l2 = QtWidgets.QLabel("", parent=frame)
-        l2.setStyleSheet(
-            "background: transparent; color: #6b5800; font-size: 10.5px;"
+        apply_themed_stylesheet(
+            l2,
+            lambda t: (
+                "background: transparent; color: " + t("ACCENT_TEXT") + "; font-size: 10.5px;"
+            ),
         )
         l2.setWordWrap(True)
         l2.setTextFormat(_QtCore.Qt.TextFormat.RichText)
@@ -233,11 +244,15 @@ class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
         table.setSizeAdjustPolicy(
             QtWidgets.QAbstractScrollArea.SizeAdjustPolicy.AdjustIgnored
         )
-        table.setStyleSheet(
-            "QTableWidget { font-size: 11px; background: white; gridline-color: #e0e0e0; }"
-            "QTableWidget::item { padding: 2px 6px; }"
-            "QHeaderView::section { background: #f0f4f8; padding: 4px 6px; "
-            "border: 0; border-bottom: 1px solid #c0c8d0; font-weight: bold; }"
+        apply_themed_stylesheet(
+            table,
+            lambda t: (
+                "QTableWidget { font-size: 11px; background: " + t("SURFACE")
+                + "; gridline-color: " + t("BORDER") + "; }"
+                "QTableWidget::item { padding: 2px 6px; }"
+                "QHeaderView::section { background: " + t("SURFACE_ALT") + "; padding: 4px 6px; "
+                "border: 0; border-bottom: 1px solid " + t("BORDER") + "; font-weight: bold; }"
+            ),
         )
         table.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -248,10 +263,13 @@ class _TabbedPngSnapshotWidget(QtWidgets.QWidget):
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch(1)
         btn_copy = QtWidgets.QPushButton("📋 Copiar tabela", parent=page)
-        btn_copy.setStyleSheet(
-            "QPushButton { border: 1px solid #ccc; border-radius: 3px; "
-            "background: white; padding: 3px 8px; font-size: 10.5px; }"
-            "QPushButton:hover { background: #e8f0fe; }"
+        apply_themed_stylesheet(
+            btn_copy,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px; "
+                "background: " + t("SURFACE") + "; padding: 3px 8px; font-size: 10.5px; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+            ),
         )
         btn_copy.clicked.connect(lambda: self._copy_metrics_table())
         btn_row.addWidget(btn_copy)
@@ -585,8 +603,11 @@ class _ResultsCard(QtWidgets.QWidget):
             placeholder = QtWidgets.QLabel(
                 "(esta instrução não declara recursos de saída)"
             )
-            placeholder.setStyleSheet(
-                "color: #888; font-style: italic; font-size: 11px; padding: 4px;"
+            apply_themed_stylesheet(
+                placeholder,
+                lambda t: (
+                    "color: " + t("TEXT_MUTED") + "; font-style: italic; font-size: 11px; padding: 4px;"
+                ),
             )
             self._outputs_layout.addWidget(placeholder)
 
@@ -607,13 +628,17 @@ class _ResultsCard(QtWidgets.QWidget):
             self._btn_trajectory = QtWidgets.QPushButton(
                 "📊 Visualizar Trajetória 3D"
             )
-            self._btn_trajectory.setStyleSheet(
-                "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
-                " background: #FFF8E8; color: #8B5E00;"
-                " padding: 6px 14px; font-weight: bold; }"
-                "QPushButton:hover { background: #FFEFC4; }"
-                "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
-                " border: 1px solid #ccc; }"
+            apply_themed_stylesheet(
+                self._btn_trajectory,
+                lambda t: (
+                    "QPushButton { border: 1px solid " + t("ACCENT") + "; border-radius: 4px;"
+                    " background: " + t("ACCENT_BG") + "; color: " + t("ACCENT_TEXT") + ";"
+                    " padding: 6px 14px; font-weight: bold; }"
+                    "QPushButton:hover { background: " + t("ACCENT_BG") + "; }"
+                    "QPushButton:disabled { color: " + t("TEXT_MUTED")
+                    + "; background: " + t("SURFACE_RAISED") + ";"
+                    " border: 1px solid " + t("BORDER") + "; }"
+                ),
             )
             self._btn_trajectory.clicked.connect(
                 lambda: self.view_trajectory_requested.emit(self._instruction)
@@ -622,8 +647,9 @@ class _ResultsCard(QtWidgets.QWidget):
                 "Trajetória 3D abre em janela própria por exigir espaço para "
                 "rotação/zoom."
             )
-            note.setStyleSheet(
-                "font-size: 10px; color: #666; font-style: italic;"
+            apply_themed_stylesheet(
+                note,
+                lambda t: "font-size: 10px; color: " + t("TEXT_MUTED") + "; font-style: italic;",
             )
             note.setWordWrap(True)
             row.addWidget(self._btn_trajectory)
@@ -636,9 +662,12 @@ class _ResultsCard(QtWidgets.QWidget):
             # ("ainda não executou" vs "save_trajectory_data está OFF").
             self._trajectory_disabled_msg = QtWidgets.QLabel()
             self._trajectory_disabled_msg.setWordWrap(True)
-            self._trajectory_disabled_msg.setStyleSheet(
-                "font-size: 11px; color: #888; font-style: italic;"
-                " padding: 8px 12px;"
+            apply_themed_stylesheet(
+                self._trajectory_disabled_msg,
+                lambda t: (
+                    "font-size: 11px; color: " + t("TEXT_MUTED") + "; font-style: italic;"
+                    " padding: 8px 12px;"
+                ),
             )
             self._trajectory_disabled_msg.setVisible(False)
 
@@ -661,19 +690,23 @@ class _ResultsCard(QtWidgets.QWidget):
 
         self._placeholder_label = QtWidgets.QLabel("Execute para ver os resultados")
         self._placeholder_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self._placeholder_label.setStyleSheet(
-            "color: #666; font-style: italic; font-size: 12px;"
+        apply_themed_stylesheet(
+            self._placeholder_label,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-style: italic; font-size: 12px;",
         )
         ph_layout.addWidget(self._placeholder_label)
 
         self._hydrate_button_row = QtWidgets.QHBoxLayout()
         self._hydrate_button_row.addStretch(1)
         self._btn_hydrate = QtWidgets.QPushButton("📊 Carregar e visualizar")
-        self._btn_hydrate.setStyleSheet(
-            "QPushButton { border: 1px solid #1565c0; border-radius: 4px;"
-            " background: #e3f2fd; color: #1565c0;"
-            " padding: 6px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #bbdefb; }"
+        apply_themed_stylesheet(
+            self._btn_hydrate,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("PRIMARY") + "; border-radius: 4px;"
+                " background: " + t("PRIMARY_BG") + "; color: " + t("PRIMARY") + ";"
+                " padding: 6px 14px; font-weight: bold; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+            ),
         )
         self._btn_hydrate.setVisible(False)
         self._btn_hydrate.clicked.connect(self._on_hydrate_clicked)
@@ -695,11 +728,14 @@ class _ResultsCard(QtWidgets.QWidget):
         expand_row.setContentsMargins(8, 2, 8, 0)
         expand_row.addStretch(1)
         self._btn_expand = QtWidgets.QPushButton("🔍 Expandir")
-        self._btn_expand.setStyleSheet(
-            "QPushButton { border: 1px solid #888; border-radius: 3px;"
-            " background: #f5f5f5; color: #333;"
-            " padding: 3px 10px; font-size: 11px; }"
-            "QPushButton:hover { background: #eaeaea; }"
+        apply_themed_stylesheet(
+            self._btn_expand,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+                " background: " + t("SURFACE_RAISED") + "; color: " + t("TEXT") + ";"
+                " padding: 3px 10px; font-size: 11px; }"
+                "QPushButton:hover { background: " + t("SURFACE_ALT") + "; }"
+            ),
         )
         self._btn_expand.clicked.connect(self._on_expand_clicked)
         expand_row.addWidget(self._btn_expand)
@@ -1582,7 +1618,10 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         empty_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         empty_lbl = QtWidgets.QLabel("Selecione uma instrução para ver os resultados.")
         empty_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        empty_lbl.setStyleSheet("color: #888; font-style: italic; font-size: 13px;")
+        apply_themed_stylesheet(
+            empty_lbl,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-style: italic; font-size: 13px;",
+        )
         empty_lbl.setWordWrap(True)
         empty_layout.addWidget(empty_lbl)
         self._stack.addWidget(empty_page)  # index 0

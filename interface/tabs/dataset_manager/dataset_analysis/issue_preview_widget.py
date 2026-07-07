@@ -25,31 +25,45 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 _THUMB_SIZE = 200            # lado da imagem em pixels
 _CAPTION_HEIGHT = 36         # altura reservada pro caption multi-linha
 _CELL_PADDING = 8            # padding interno do frame
 _MAX_VISIBLE = 8             # thumbs visíveis antes de truncar com +N
 
+
 # Estilos por estado da cell — combinação de selected/deleted/renamed.
 # Cada combinação aplica fundo + borda. Um banner colorido extra (label
-# sobre o thumb) reforça os estados deleted/renamed.
-_THUMB_CELL_STYLE_DEFAULT = (
-    "QFrame { background: #fafafa; border: 1px solid #ddd; "
-    "border-radius: 4px; }"
-)
-_THUMB_CELL_STYLE_SELECTED = (
-    "QFrame { background: #e8f0fe; border: 3px solid #1976d2; "
-    "border-radius: 4px; }"
-)
-_THUMB_CELL_STYLE_DELETED = (
-    "QFrame { background: #ffebee; border: 2px solid #c62828; "
-    "border-radius: 4px; }"
-)
-_THUMB_CELL_STYLE_RENAMED = (
-    "QFrame { background: #fff8e1; border: 2px solid #f9a825; "
-    "border-radius: 4px; }"
-)
+# sobre o thumb) reforça os estados deleted/renamed. Derivados de tokens
+# do tema atual (lidos a cada `_restyle`), pra seguir claro/escuro.
+def _thumb_cell_style_default(t) -> str:
+    return (
+        "QFrame { background: " + t("SURFACE_RAISED") + "; border: 1px solid "
+        + t("BORDER") + "; border-radius: 4px; }"
+    )
+
+
+def _thumb_cell_style_selected(t) -> str:
+    return (
+        "QFrame { background: " + t("PRIMARY_BG") + "; border: 3px solid "
+        + t("PRIMARY") + "; border-radius: 4px; }"
+    )
+
+
+def _thumb_cell_style_deleted(t) -> str:
+    return (
+        "QFrame { background: " + t("DANGER_BG") + "; border: 2px solid "
+        + t("DANGER") + "; border-radius: 4px; }"
+    )
+
+
+def _thumb_cell_style_renamed(t) -> str:
+    return (
+        "QFrame { background: " + t("WARNING_BG") + "; border: 2px solid "
+        + t("WARNING") + "; border-radius: 4px; }"
+    )
 
 
 class _ThumbCell(QtWidgets.QFrame):
@@ -76,7 +90,7 @@ class _ThumbCell(QtWidgets.QFrame):
         self._deleted = False
         self._renamed: Optional[tuple] = None  # (old_id, new_id) quando aplicável
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.setStyleSheet(_THUMB_CELL_STYLE_DEFAULT)
+        self.setStyleSheet(_thumb_cell_style_default(current_token_fn()))
         self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
 
     @property
@@ -124,14 +138,15 @@ class _ThumbCell(QtWidgets.QFrame):
         terminal — selected/renamed não fazem sentido sobre algo que já
         foi excluído.)
         """
+        t = current_token_fn()
         if self._deleted:
-            self.setStyleSheet(_THUMB_CELL_STYLE_DELETED)
+            self.setStyleSheet(_thumb_cell_style_deleted(t))
         elif self._selected:
-            self.setStyleSheet(_THUMB_CELL_STYLE_SELECTED)
+            self.setStyleSheet(_thumb_cell_style_selected(t))
         elif self._renamed is not None:
-            self.setStyleSheet(_THUMB_CELL_STYLE_RENAMED)
+            self.setStyleSheet(_thumb_cell_style_renamed(t))
         else:
-            self.setStyleSheet(_THUMB_CELL_STYLE_DEFAULT)
+            self.setStyleSheet(_thumb_cell_style_default(t))
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         super().mousePressEvent(event)
@@ -231,7 +246,10 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         outer.setSpacing(2)
 
         self.lbl_header = QtWidgets.QLabel()
-        self.lbl_header.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.lbl_header,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         outer.addWidget(self.lbl_header)
 
         self.scroll = QtWidgets.QScrollArea()
@@ -348,8 +366,9 @@ class IssuePreviewWidget(QtWidgets.QWidget):
             group_header = QtWidgets.QLabel(
                 f"<b>{label}</b>  —  {len(paths)} foto(s)"
             )
+            _gt = current_token_fn()
             group_header.setStyleSheet(
-                "color: #1a3d6e; font-size: 12px; "
+                "color: " + _gt("PRIMARY_STRONG") + "; font-size: 12px; "
                 "padding: 4px 0 2px 0; background: transparent;"
             )
             self.outer_layout.addWidget(group_header)
@@ -482,11 +501,13 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         v.setContentsMargins(_CELL_PADDING, _CELL_PADDING, _CELL_PADDING, _CELL_PADDING)
         v.setSpacing(4)
 
+        t = current_token_fn()
         lbl_img = QtWidgets.QLabel()
         lbl_img.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         lbl_img.setFixedSize(_THUMB_SIZE, _THUMB_SIZE)
         lbl_img.setStyleSheet(
-            "background: #f0f0f0; border: 1px solid #e0e0e0; border-radius: 2px;"
+            "background: " + t("SURFACE_ALT") + "; border: 1px solid "
+            + t("BORDER") + "; border-radius: 2px;"
         )
 
         pix = self._load_pixmap(path)
@@ -501,8 +522,9 @@ class IssuePreviewWidget(QtWidgets.QWidget):
             # Path quebrado ou sem decode — placeholder visual claro
             lbl_img.setText("⚠️ arquivo\nnão encontrado")
             lbl_img.setStyleSheet(
-                "background: #fff3e0; border: 1px solid #ffb74d; "
-                "color: #c62828; font-size: 11px; border-radius: 2px;"
+                "background: " + t("WARNING_BG") + "; border: 1px solid "
+                + t("WARNING") + "; color: " + t("DANGER") + "; "
+                "font-size: 11px; border-radius: 2px;"
             )
         v.addWidget(lbl_img)
 
@@ -514,7 +536,8 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         lbl_cap = QtWidgets.QLabel(text)
         lbl_cap.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         lbl_cap.setStyleSheet(
-            "color: #333; font-size: 10px; background: transparent; border: none;"
+            "color: " + t("TEXT") + "; font-size: 10px; "
+            "background: transparent; border: none;"
         )
         lbl_cap.setWordWrap(True)
         lbl_cap.setFixedHeight(_CAPTION_HEIGHT)
@@ -527,7 +550,7 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         state_banner.setObjectName("_state_banner")
         state_banner.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         state_banner.setStyleSheet(
-            "color: white; background: #c62828; "
+            "color: " + t("HIGHLIGHT_TEXT") + "; background: " + t("DANGER") + "; "
             "border-radius: 2px; font-size: 10px; font-weight: bold; "
             "padding: 2px;"
         )
@@ -546,8 +569,8 @@ class IssuePreviewWidget(QtWidgets.QWidget):
         # Banner colorido conforme estado
         if path in self._renamed_paths and path not in self._deleted_paths:
             state_banner.setStyleSheet(
-                "color: #5d4037; background: #fff8e1; "
-                "border: 1px solid #f9a825; "
+                "color: " + t("ACCENT_TEXT") + "; background: " + t("WARNING_BG") + "; "
+                "border: 1px solid " + t("WARNING") + "; "
                 "border-radius: 2px; font-size: 10px; font-weight: bold; "
                 "padding: 2px;"
             )

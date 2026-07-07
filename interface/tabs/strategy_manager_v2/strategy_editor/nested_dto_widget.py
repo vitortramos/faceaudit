@@ -8,14 +8,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import current_token_fn
 from .widget_helpers import make_combo_shrinkable, make_lineedit_shrinkable
 
 
-_BTN_STYLE = (
-    "QPushButton { border: 1px solid #ccc; border-radius: 3px;"
-    " background: white; padding: 3px 8px; font-size: 11px; }"
-    "QPushButton:hover { background: #e8f0fe; }"
-)
+def _btn_style() -> str:
+    """QSS do botão de edição, resolvido no tema atual no momento da chamada."""
+    t = current_token_fn()
+    return (
+        "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+        " background: " + t("SURFACE") + "; padding: 3px 8px; font-size: 11px; }"
+        "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+    )
 
 
 class NestedDTOInlineWidget(QtWidgets.QWidget):
@@ -69,16 +73,17 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
         layout.setSpacing(0)
 
         # Header clicável
+        t = current_token_fn()
         self._header_btn = QtWidgets.QToolButton()
         self._header_btn.setText(f"▼  {title}")
         self._header_btn.setStyleSheet(
             "QToolButton {"
             "  text-align: left; padding: 4px 6px;"
-            "  border: 1px solid #ccc; border-radius: 3px;"
-            "  background: #f0f4fa; color: #1a2942;"
+            "  border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+            "  background: " + t("SURFACE_RAISED") + "; color: " + t("PRIMARY_STRONG") + ";"
             "  font-size: 11px; font-weight: bold;"
             "}"
-            "QToolButton:hover { background: #e3ecf7; }"
+            "QToolButton:hover { background: " + t("PRIMARY_BG") + "; }"
         )
         self._header_btn.setCheckable(True)
         self._header_btn.setChecked(True)
@@ -103,9 +108,9 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             intro_lbl.setWordWrap(True)
             intro_lbl.setStyleSheet(
                 "QLabel {"
-                "  background: #FFF8E8; border-left: 3px solid #E8A020;"
+                "  background: " + t("ACCENT_BG") + "; border-left: 3px solid " + t("ACCENT") + ";"
                 "  border-radius: 2px; padding: 6px 8px;"
-                "  color: #5a4500; font-size: 11px; margin-bottom: 4px;"
+                "  color: " + t("ACCENT_TEXT") + "; font-size: 11px; margin-bottom: 4px;"
                 "}"
             )
             self._fields_layout.addRow(intro_lbl)
@@ -115,7 +120,10 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
     def _populate_fields(self) -> None:
         if self._dto is None or not is_dataclass(self._dto):
             empty = QtWidgets.QLabel("(sem configuração)")
-            empty.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+            empty.setStyleSheet(
+                "color: " + current_token_fn()("TEXT_MUTED")
+                + "; font-size: 11px; font-style: italic;"
+            )
             self._fields_layout.addRow(empty)
             return
 
@@ -184,11 +192,12 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                         member_desc.get(value.name, "")
                     )
                     desc_label.setWordWrap(True)
+                    _t = current_token_fn()
                     desc_label.setStyleSheet(
                         "QLabel {"
-                        "  background: #FFFBE6; border-left: 2px solid #E8A020;"
+                        "  background: " + _t("ACCENT_BG") + "; border-left: 2px solid " + _t("ACCENT") + ";"
                         "  border-radius: 2px; padding: 4px 6px;"
-                        "  color: #5a4500; font-size: 10px;"
+                        "  color: " + _t("ACCENT_TEXT") + "; font-size: 10px;"
                         "}"
                     )
                     self._enum_desc_labels[f.name] = desc_label
@@ -350,11 +359,12 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
         if self._intro_text:
             intro_lbl = QtWidgets.QLabel(self._intro_text)
             intro_lbl.setWordWrap(True)
+            _t = current_token_fn()
             intro_lbl.setStyleSheet(
                 "QLabel {"
-                "  background: #FFF8E8; border-left: 3px solid #E8A020;"
+                "  background: " + _t("ACCENT_BG") + "; border-left: 3px solid " + _t("ACCENT") + ";"
                 "  border-radius: 2px; padding: 6px 8px;"
-                "  color: #5a4500; font-size: 11px; margin-bottom: 4px;"
+                "  color: " + _t("ACCENT_TEXT") + "; font-size: 11px; margin-bottom: 4px;"
                 "}"
             )
             self._fields_layout.addRow(intro_lbl)
@@ -409,20 +419,23 @@ class NestedDTODialogTrigger(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
 
+        t = current_token_fn()
         title_lbl = QtWidgets.QLabel(title)
-        title_lbl.setStyleSheet("font-size: 11px; color: #1a2942; font-weight: bold;")
+        title_lbl.setStyleSheet(
+            "font-size: 11px; color: " + t("PRIMARY_STRONG") + "; font-weight: bold;"
+        )
         layout.addWidget(title_lbl)
 
         self._summary_lbl = QtWidgets.QLabel("(sem configuração)")
         self._summary_lbl.setStyleSheet(
-            "font-size: 10px; color: #555; padding-left: 4px;"
+            "font-size: 10px; color: " + t("TEXT_MUTED") + "; padding-left: 4px;"
         )
         self._summary_lbl.setWordWrap(True)
         layout.addWidget(self._summary_lbl)
 
         self._btn_edit = QtWidgets.QPushButton("⚙ Editar…")
         self._btn_edit.setMaximumWidth(180)
-        self._btn_edit.setStyleSheet(_BTN_STYLE)
+        self._btn_edit.setStyleSheet(_btn_style())
         self._btn_edit.clicked.connect(self._on_edit_clicked)
         layout.addWidget(self._btn_edit)
 

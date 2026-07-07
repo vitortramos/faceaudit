@@ -2,6 +2,9 @@ import os
 from PyQt6 import QtWidgets, uic, QtCore, QtGui
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
+from interface.theme import ThemeManager
+from interface.theme.tokens import color as _theme_color
+
 class MainGuiView(QtWidgets.QMainWindow):
     """
     View da Janela Principal.
@@ -19,6 +22,13 @@ class MainGuiView(QtWidgets.QMainWindow):
         self.main_tabs = self.findChild(QtWidgets.QTabWidget)
         self._apply_main_tabs_style()
         self._setup_corner_config_button()
+
+        # Reaplica o chrome (tabs + botão de config) quando o usuário troca
+        # de tema em runtime. O ThemeManager já foi inicializado no bootstrap
+        # (interface/run.py) antes desta view existir.
+        _theme_mgr = ThemeManager.instance()
+        if _theme_mgr is not None:
+            _theme_mgr.theme_changed.connect(self._on_theme_changed)
         # CRÍTICO em telas pequenas: o QTabWidget propaga o MAX dos
         # minimumSizeHint de TODAS as tabs (não só a ativa). A tab
         # Dataset Manager (com ribbon de muitos botões) tem min ~1630,
@@ -91,27 +101,43 @@ class MainGuiView(QtWidgets.QMainWindow):
     # abordagem: cortar o minimumSize NA ORIGEM em vez de tentar
     # corrigir a janela depois.
 
+    def _tok(self, name: str) -> str:
+        """Hex de um token de tema no modo atual. Fallback para o modo claro
+        quando o ThemeManager ainda não foi inicializado (ex: testes)."""
+        mgr = ThemeManager.instance()
+        if mgr is not None:
+            return mgr.color(name)
+        return _theme_color(name, "light")
+
+    def _on_theme_changed(self, _mode: str) -> None:
+        """Reaplica o chrome que usa QSS próprio quando o tema troca."""
+        if self.main_tabs is not None:
+            self._apply_main_tabs_style()
+        if getattr(self, "btn_config", None) is not None:
+            self._restyle_config_button()
+
     def _apply_main_tabs_style(self):
         """Estilo Office accent bar nas tabs principais — mesma família
         visual das tabs do ribbon (manager_toolbar_view), mas com
-        accent navy escuro (`#1a3d6e`) + barra mais grossa (4px) +
-        padding maior pra reforçar a hierarquia: tabs principais (nível 1
-        — navegação no app) > tabs do ribbon (nível 2 — grupos de
-        ferramentas)."""
+        accent navy (`PRIMARY_STRONG`) + barra mais grossa (4px) + padding
+        maior pra reforçar a hierarquia: tabs principais (nível 1 —
+        navegação no app) > tabs do ribbon (nível 2 — grupos de
+        ferramentas). Cores derivadas de tokens de tema (claro/escuro)."""
+        t = self._tok
         self.main_tabs.setStyleSheet(
             # Pane (área do conteúdo da aba)
             "QTabWidget::pane { "
-            "    border: 1px solid #c8c8c8; "
-            "    background: white; "
+            f"    border: 1px solid {t('BORDER')}; "
+            f"    background: {t('SURFACE')}; "
             "    top: -1px; "
             "} "
             # Aba inativa
             "QTabBar::tab { "
-            "    background: #e0e0e0; "
-            "    color: #555; "
+            f"    background: {t('SURFACE_ALT')}; "
+            f"    color: {t('TEXT_MUTED')}; "
             "    padding: 10px 24px; "
             "    font-size: 12px; "
-            "    border: 1px solid #c8c8c8; "
+            f"    border: 1px solid {t('BORDER')}; "
             "    border-top: 4px solid transparent; "
             "    border-right: none; "
             "    border-top-left-radius: 5px; "
@@ -120,18 +146,28 @@ class MainGuiView(QtWidgets.QMainWindow):
             "} "
             # Hover
             "QTabBar::tab:hover:!selected { "
-            "    background: #d2d2d2; "
-            "    color: #1a3d6e; "
+            f"    background: {t('BORDER')}; "
+            f"    color: {t('PRIMARY_STRONG')}; "
             "} "
             # Aba selecionada — accent bar navy + texto navy + bold
             "QTabBar::tab:selected { "
-            "    background: white; "
-            "    color: #1a3d6e; "
+            f"    background: {t('SURFACE')}; "
+            f"    color: {t('PRIMARY_STRONG')}; "
             "    font-weight: bold; "
-            "    border-top: 4px solid #1a3d6e; "
-            "    border-bottom: 1px solid white; "
+            f"    border-top: 4px solid {t('PRIMARY_STRONG')}; "
+            f"    border-bottom: 1px solid {t('SURFACE')}; "
             "} "
             "QTabBar::tab:last { margin-right: 0; }"
+        )
+
+    def _restyle_config_button(self):
+        """Aplica o estilo do botão ⚙️ a partir de tokens de tema."""
+        t = self._tok
+        self.btn_config.setStyleSheet(
+            "QPushButton { border: none; background: transparent; "
+            "font-size: 18px; color: " + t("TEXT") + "; } "
+            "QPushButton:hover { background-color: " + t("SURFACE_ALT")
+            + "; border-radius: 5px; }"
         )
 
     def add_tab(self, index: int, widget: QWidget, label: str):
@@ -145,10 +181,7 @@ class MainGuiView(QtWidgets.QMainWindow):
         self.btn_config = QPushButton("⚙️")
         self.btn_config.setToolTip("Configurações do Sistema")
         self.btn_config.setFixedSize(35, 30)
-        self.btn_config.setStyleSheet("""
-            QPushButton { border: none; background: transparent; font-size: 18px; color: #333; }
-            QPushButton:hover { background-color: #e0e0e0; border-radius: 5px; }
-        """)
+        self._restyle_config_button()
         self.btn_config.clicked.connect(self.config_requested.emit)
 
         # Container para auxiliar o alinhamento vertical na barra de abas

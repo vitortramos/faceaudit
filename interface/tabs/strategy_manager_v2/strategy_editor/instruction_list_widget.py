@@ -6,6 +6,8 @@ from typing import List, Optional, Set
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
 
@@ -114,8 +116,12 @@ class _InstructionItemWidget(QtWidgets.QWidget):
         layout.addWidget(self._lbl_main)
 
         self._lbl_outputs = QtWidgets.QLabel()
-        self._lbl_outputs.setStyleSheet(
-            "font-size: 9px; color: #777; font-style: italic; padding-left: 18px;"
+        apply_themed_stylesheet(
+            self._lbl_outputs,
+            lambda t: (
+                "font-size: 9px; color: " + t("TEXT_MUTED")
+                + "; font-style: italic; padding-left: 18px;"
+            ),
         )
         self._lbl_outputs.setVisible(False)
         layout.addWidget(self._lbl_outputs)
@@ -202,17 +208,20 @@ class InstructionListWidget(QtWidgets.QWidget):
         # Qt deixa o texto verde ilegível; trocamos por um azul bem suave
         # com borda lateral marcadora para indicar seleção sem reduzir
         # contraste com qualquer cor de texto.
-        self.list_widget.setStyleSheet(
-            "QListWidget::item:selected {"
-            " background: #cfe7fa; color: inherit;"
-            " border-left: 3px solid #1565c0;"
-            "}"
-            "QListWidget::item:selected:!active {"
-            " background: #cfe7fa; color: inherit;"
-            "}"
-            "QListWidget::item:hover:!selected {"
-            " background: #f0f4f8;"
-            "}"
+        apply_themed_stylesheet(
+            self.list_widget,
+            lambda t: (
+                "QListWidget::item:selected {"
+                " background: " + t("PRIMARY_BG") + "; color: inherit;"
+                " border-left: 3px solid " + t("PRIMARY") + ";"
+                "}"
+                "QListWidget::item:selected:!active {"
+                " background: " + t("PRIMARY_BG") + "; color: inherit;"
+                "}"
+                "QListWidget::item:hover:!selected {"
+                " background: " + t("SURFACE_ALT") + ";"
+                "}"
+            ),
         )
         layout.addWidget(self.list_widget, 1)
 
@@ -233,13 +242,15 @@ class InstructionListWidget(QtWidgets.QWidget):
         self.btn_run.setEnabled(False)
         self.btn_run.clicked.connect(self._on_run)
 
+        def _list_btn_style(t):
+            return (
+                "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+                " background: " + t("SURFACE") + "; padding: 3px 8px; font-size: 11px; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+                "QPushButton:disabled { color: " + t("TEXT_MUTED") + "; }"
+            )
         for btn in (self.btn_add, self.btn_remove, self.btn_run):
-            btn.setStyleSheet("""
-                QPushButton { border: 1px solid #ccc; border-radius: 3px;
-                              background: white; padding: 3px 8px; font-size: 11px; }
-                QPushButton:hover { background: #e8f0fe; }
-                QPushButton:disabled { color: #aaa; }
-            """)
+            apply_themed_stylesheet(btn, _list_btn_style)
             btn_row.addWidget(btn)
 
         layout.addLayout(btn_row)
@@ -286,17 +297,18 @@ class InstructionListWidget(QtWidgets.QWidget):
             if widget is None:
                 continue
 
+            t = current_token_fn()
             iid = instr.instruction_id
             icon = _INSTRUCTION_ICONS.get(instr.instruction_type, "▪")
             if iid in executed_ids:
                 prefix = "✅"
-                color = QtGui.QColor("#2e7d32")
+                color = QtGui.QColor(t("SUCCESS"))
             elif iid in runnable_ids:
                 prefix = icon
-                color = QtGui.QColor("#1a1a1a")
+                color = QtGui.QColor(t("TEXT"))
             else:
                 prefix = "🔒"
-                color = QtGui.QColor("#999")
+                color = QtGui.QColor(t("TEXT_MUTED"))
 
             text = f"{prefix}  {instr.name}  [{instr.instruction_type.label_pt}]"
             widget.set_main(text, color)
@@ -328,7 +340,7 @@ class InstructionListWidget(QtWidgets.QWidget):
         # exibi-lo brevemente como janela flutuante (bug "janelinha
         # piscando" ao selecionar instrução/estratégia).
         widget = _InstructionItemWidget(parent=self.list_widget)
-        widget.set_main(text, QtGui.QColor("#1a1a1a"))
+        widget.set_main(text, QtGui.QColor(current_token_fn()("TEXT")))
         total, named = self._count_outputs(instr)
         widget.set_outputs_indicator(total, named)
 

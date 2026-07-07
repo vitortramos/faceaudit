@@ -76,6 +76,7 @@ if str(ROOT_DIR) not in sys.path:
 # 2. AGORA OS IMPORTS LOCAIS PRECISAM DO PREFIXO 'interface.'
 from interface.main_gui_view import MainGuiView
 from interface.main_gui_controller import MainGuiController
+from interface.theme import ThemeManager
 from faceaudit.containers import ApplicationContainer
 from faceaudit.models.system_config import AppConfig
 
@@ -176,6 +177,14 @@ if __name__ == "__main__":
 
     # 1) Garante que o JSON existe
     bootstrap_configuration(APP_CONFIG_JSON)
+
+    # 1b) Aplica o tema (claro/escuro) conforme a preferência salva em
+    # config.json. Feito após bootstrap_configuration (JSON garantido) e
+    # ANTES de criar a MainGuiView, para os widgets já nascerem com o tema
+    # correto (sem flash). O _apply_light_palette acima é só o default
+    # seguro até aqui; o ThemeManager reaplica (idêntico no modo claro).
+    _theme_cfg = AppConfig.load_from_file(APP_CONFIG_JSON)
+    ThemeManager.initialize(app, _theme_cfg.theme.mode)
 
     # 2) Cria o container
     container = ApplicationContainer()

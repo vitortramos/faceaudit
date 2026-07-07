@@ -7,6 +7,8 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
+from interface.theme import apply_themed_stylesheet
+
 from faceaudit.enums.strategy_instruction_type import StrategyInstructionType
 from faceaudit.models.instructions.strategy_instruction_definition import StrategyInstructionDefinition
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
@@ -97,7 +99,10 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         empty_page = QtWidgets.QWidget()
         lbl = QtWidgets.QLabel("Selecione ou crie uma estratégia para começar a editar.")
         lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet("color: #888; font-size: 14px;")
+        apply_themed_stylesheet(
+            lbl,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 14px;",
+        )
         QtWidgets.QVBoxLayout(empty_page).addWidget(lbl)
         self.stack.addWidget(empty_page)   # index 0
 
@@ -112,13 +117,23 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         header_row.setSpacing(12)
 
         self.lbl_strategy_name = QtWidgets.QLabel()
-        self.lbl_strategy_name.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #2c3e50; padding: 6px 8px;"
+        apply_themed_stylesheet(
+            self.lbl_strategy_name,
+            lambda t: (
+                "font-size: 14px; font-weight: bold; color: " + t("TEXT")
+                + "; padding: 6px 8px;"
+            ),
         )
         header_row.addWidget(self.lbl_strategy_name, 1)
 
         lbl_emb = QtWidgets.QLabel("Embedding:")
-        lbl_emb.setStyleSheet("font-size: 11px; color: #555; padding-right: 2px;")
+        apply_themed_stylesheet(
+            lbl_emb,
+            lambda t: (
+                "font-size: 11px; color: " + t("TEXT_MUTED")
+                + "; padding-right: 2px;"
+            ),
+        )
         header_row.addWidget(lbl_emb)
 
         # Combo dinâmico — populado via `set_available_embedding_columns()`
@@ -148,7 +163,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
 
         sep = QtWidgets.QFrame()
         sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #ddd;")
+        apply_themed_stylesheet(sep, lambda t: "color: " + t("BORDER") + ";")
         editor_layout.addWidget(sep)
 
         # QTabWidget com 3 abas

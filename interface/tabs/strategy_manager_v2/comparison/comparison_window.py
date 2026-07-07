@@ -27,6 +27,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 
+from interface.theme import current_token_fn
 from .availability_resolver import ComparisonItem, list_available_items
 from .comparison_kind import ComparisonKind
 from .comparison_left_panel import ComparisonLeftPanel
@@ -87,6 +88,8 @@ class ComparisonWindow(QtWidgets.QDialog):
     # ── UI build ──────────────────────────────────────────────────────────────
 
     def _init_ui(self) -> None:
+        t = current_token_fn()
+
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -94,7 +97,7 @@ class ComparisonWindow(QtWidgets.QDialog):
         # ── Toolbar topo ────────────────────────────────────────────────────
         toolbar = QtWidgets.QFrame()
         toolbar.setStyleSheet(
-            "QFrame { background: #f5f7fa; border-bottom: 1px solid #c0c8d0; }"
+            "QFrame { background: " + t("SURFACE_RAISED") + "; border-bottom: 1px solid " + t("BORDER") + "; }"
         )
         tb_layout = QtWidgets.QHBoxLayout(toolbar)
         tb_layout.setContentsMargins(8, 4, 8, 4)
@@ -107,9 +110,9 @@ class ComparisonWindow(QtWidgets.QDialog):
             "principal e quer ver o resultado novo aqui."
         )
         self.btn_refresh.setStyleSheet(
-            "QPushButton { border: 1px solid #bbb; border-radius: 3px;"
-            " background: white; padding: 4px 12px; font-size: 11px; }"
-            "QPushButton:hover { background: #e8f0fe; }"
+            "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+            " background: " + t("SURFACE") + "; padding: 4px 12px; font-size: 11px; }"
+            "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
         )
         self.btn_refresh.clicked.connect(self._on_refresh_clicked)
         tb_layout.addWidget(self.btn_refresh)
@@ -122,8 +125,8 @@ class ComparisonWindow(QtWidgets.QDialog):
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(4)
         splitter.setStyleSheet(
-            "QSplitter::handle { background: #dcdde1; }"
-            "QSplitter::handle:hover { background: #a0a0a0; }"
+            "QSplitter::handle { background: " + t("BORDER") + "; }"
+            "QSplitter::handle:hover { background: " + t("TEXT_MUTED") + "; }"
         )
 
         self._left_panel = ComparisonLeftPanel()
@@ -134,7 +137,7 @@ class ComparisonWindow(QtWidgets.QDialog):
 
         self._content_area = QtWidgets.QStackedWidget()
         self._content_area.setStyleSheet(
-            "QStackedWidget { background: #fafdf6; }"
+            "QStackedWidget { background: " + t("SURFACE") + "; }"
         )
         # Página 0: estado vazio (nenhum kind selecionado).
         empty = QtWidgets.QWidget()
@@ -145,7 +148,7 @@ class ComparisonWindow(QtWidgets.QDialog):
         )
         empty_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         empty_lbl.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 14px;"
+            "color: " + t("TEXT_MUTED") + "; font-style: italic; font-size: 14px;"
         )
         empty_lbl.setWordWrap(True)
         empty_layout.addWidget(empty_lbl)

@@ -1,6 +1,53 @@
 from PyQt6.QtWidgets import QPushButton, QFrame, QLabel
 from PyQt6.QtCore import Qt
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
+
+def _button_qss(style: str, t) -> str:
+    """QSS de um ToolbarButton por estilo, derivado de tokens de tema.
+
+    `t` é a função `t(token) -> hex` do modo atual. Preserva 100% a
+    estrutura CSS original (padding/radius/font) — só as cores viram
+    tokens.
+    """
+    if style == "primary":
+        return (
+            "QPushButton { background-color: " + t("PRIMARY") + "; color: "
+            + t("HIGHLIGHT_TEXT") + "; font-weight: bold; border-radius: 4px; "
+            "padding: 5px 12px; } QPushButton:hover { background-color: "
+            + t("PRIMARY_STRONG") + "; }"
+        )
+    if style == "success":
+        return (
+            "QPushButton { background-color: " + t("SUCCESS") + "; color: "
+            + t("HIGHLIGHT_TEXT") + "; font-weight: bold; border-radius: 4px; "
+            "padding: 5px 12px; } QPushButton:hover { background-color: "
+            + t("SUCCESS") + "; }"
+        )
+    if style == "danger":
+        return (
+            "QPushButton { background-color: " + t("DANGER_BG") + "; border: 1px solid "
+            + t("DANGER") + "; padding: 5px 12px; border-radius: 4px; color: "
+            + t("DANGER") + "; } QPushButton:hover { background-color: "
+            + t("DANGER_BG") + "; }"
+        )
+    if style == "warning":
+        return (
+            "QPushButton { background-color: " + t("WARNING") + "; color: "
+            + t("TEXT") + "; font-weight: bold; border-radius: 4px; "
+            "padding: 5px 12px; } QPushButton:hover { background-color: "
+            + t("WARNING") + "; }"
+        )
+    # default
+    return (
+        "QPushButton { background-color: " + t("SURFACE") + "; border: 1px solid "
+        + t("BORDER") + "; padding: 5px 12px; border-radius: 4px; color: "
+        + t("TEXT") + "; } QPushButton:hover { background-color: "
+        + t("SURFACE_ALT") + "; }"
+    )
+
+
 class ToolbarButton(QPushButton):
     """
     Botão padronizado para a Toolbar.
@@ -10,14 +57,6 @@ class ToolbarButton(QPushButton):
     largura disponível não comporta o texto. Tooltip preservado nos
     dois modos — em compact, hover ainda mostra o rótulo completo.
     """
-    # Estilos CSS centralizados
-    STYLES = {
-        "default": "QPushButton { background-color: #ffffff; border: 1px solid #ccc; padding: 5px 12px; border-radius: 4px; color: #333; } QPushButton:hover { background-color: #e6e6e6; }",
-        "primary": "QPushButton { background-color: #0078d7; color: white; font-weight: bold; border-radius: 4px; padding: 5px 12px; } QPushButton:hover { background-color: #005a9e; }",
-        "success": "QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 4px; padding: 5px 12px; } QPushButton:hover { background-color: #218838; }",
-        "danger":  "QPushButton { background-color: #f8d7da; border: 1px solid #f5c6cb; padding: 5px 12px; border-radius: 4px; color: #721c24; } QPushButton:hover { background-color: #f1b0b7; }",
-        "warning": "QPushButton { background-color: #ffc107; color: black; font-weight: bold; border-radius: 4px; padding: 5px 12px; } QPushButton:hover { background-color: #e0a800; }"
-    }
 
     # Largura mínima padronizada — uniformiza a aparência dos botões da
     # toolbar pra rótulos curtos (Abrir, Salvar, Auditar, etc.) sem
@@ -38,9 +77,14 @@ class ToolbarButton(QPushButton):
         # não passou tooltip explícito, usa o texto como fallback pra que
         # o usuário sempre consiga descobrir a função do botão por hover.
         self.setToolTip(tooltip if tooltip else text)
-        self.setStyleSheet(self.STYLES.get(style, self.STYLES["default"]))
-        self.setMinimumWidth(self.MIN_BUTTON_WIDTH)
         self.style_type = style
+        # QSS temável: recalculado ao trocar de tema. O estilo corrente
+        # (`self.style_type`) é lido a cada rebuild — set_style muta o
+        # atributo e re-aplica.
+        apply_themed_stylesheet(
+            self, lambda t: _button_qss(self.style_type, t),
+        )
+        self.setMinimumWidth(self.MIN_BUTTON_WIDTH)
 
         self._refresh_display_text()
 
@@ -78,7 +122,10 @@ class ToolbarButton(QPushButton):
         self._refresh_display_text()
 
     def set_style(self, style_name):
-        self.setStyleSheet(self.STYLES.get(style_name, self.STYLES["default"]))
+        # Muta o estilo corrente e re-aplica o QSS temável com a cor certa
+        # do tema atual (o builder registrado lê self.style_type).
+        self.style_type = style_name
+        self.setStyleSheet(_button_qss(self.style_type, current_token_fn()))
 
 class ToolbarSeparator(QFrame):
     """Linha vertical separadora."""
@@ -86,10 +133,18 @@ class ToolbarSeparator(QFrame):
         super().__init__()
         self.setFrameShape(QFrame.Shape.VLine)
         self.setFrameShadow(QFrame.Shadow.Sunken)
-        self.setStyleSheet("color: #ccc;")
+        apply_themed_stylesheet(
+            self, lambda t: "color: " + t("BORDER") + ";",
+        )
 
 class StatusLabel(QLabel):
     """Label de status com fundo branco e borda."""
     def __init__(self, text="Nenhum dataset carregado."):
         super().__init__(text)
-        self.setStyleSheet("background-color: white; padding: 2px 10px; border-radius: 3px; border: 1px solid #ddd;")
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "background-color: " + t("SURFACE") + "; padding: 2px 10px; "
+                "border-radius: 3px; border: 1px solid " + t("BORDER") + ";"
+            ),
+        )

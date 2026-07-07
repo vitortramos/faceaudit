@@ -8,11 +8,25 @@ from typing import List, Optional
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.transformation_pipeline_config import TransformationPipelineConfig
 from faceaudit.services.hash_service import HashService
+
+
+# ── Builders de estilo temável reutilizados nas labels de valor/rótulo ──
+# Cada builder recebe `t(token) -> hex` e devolve o QSS. Aplicados via
+# `apply_themed_stylesheet` para que a cor acompanhe a troca de tema.
+def _value_lbl_qss(t) -> str:
+    # Labels de valor (texto principal do form).
+    return "font-size: 11px; color: " + t("TEXT") + ";"
+
+
+def _field_lbl_qss(t) -> str:
+    # Rótulos dos campos do form (secundário, bold).
+    return "font-size: 11px; color: " + t("TEXT_MUTED") + "; font-weight: bold;"
 
 
 class ResourceInfoWidget(QtWidgets.QWidget):
@@ -82,11 +96,14 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             return
         sep = QtWidgets.QFrame(parent=self)
         sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #ddd;")
+        apply_themed_stylesheet(
+            sep, lambda t: "color: " + t("BORDER") + ";"
+        )
         layout.addWidget(sep)
         header = QtWidgets.QLabel(text)
-        header.setStyleSheet(
-            "font-weight: bold; font-size: 11px; color: #444;"
+        apply_themed_stylesheet(
+            header,
+            lambda t: "font-weight: bold; font-size: 11px; color: " + t("TEXT") + ";",
         )
         layout.addWidget(header)
 
@@ -104,31 +121,34 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         if not self._compact:
             self.tabs = QtWidgets.QTabWidget(parent=self)
             self.tabs.setDocumentMode(True)
-            self.tabs.setStyleSheet("""
-                QTabWidget::pane {
-                    border: none;
-                    border-top: 1px solid #d0d8e0;
-                    background: white;
-                }
-                QTabBar::tab {
-                    padding: 4px 10px;
-                    font-size: 11px;
-                    background: transparent;
-                    border: none;
-                    border-bottom: 2px solid transparent;
-                    margin-right: 2px;
-                    color: #666;
-                }
-                QTabBar::tab:selected {
-                    color: #2c3e50;
-                    font-weight: bold;
-                    border-bottom: 2px solid #4a90d9;
-                }
-                QTabBar::tab:hover:!selected {
-                    color: #333;
-                    border-bottom: 2px solid #ccc;
-                }
-            """)
+            apply_themed_stylesheet(
+                self.tabs,
+                lambda t: (
+                    "QTabWidget::pane {"
+                    "  border: none;"
+                    "  border-top: 1px solid " + t("BORDER") + ";"
+                    "  background: " + t("SURFACE") + ";"
+                    "}"
+                    "QTabBar::tab {"
+                    "  padding: 4px 10px;"
+                    "  font-size: 11px;"
+                    "  background: transparent;"
+                    "  border: none;"
+                    "  border-bottom: 2px solid transparent;"
+                    "  margin-right: 2px;"
+                    "  color: " + t("TEXT_MUTED") + ";"
+                    "}"
+                    "QTabBar::tab:selected {"
+                    "  color: " + t("PRIMARY_STRONG") + ";"
+                    "  font-weight: bold;"
+                    "  border-bottom: 2px solid " + t("PRIMARY") + ";"
+                    "}"
+                    "QTabBar::tab:hover:!selected {"
+                    "  color: " + t("TEXT") + ";"
+                    "  border-bottom: 2px solid " + t("BORDER") + ";"
+                    "}"
+                ),
+            )
 
         # ── Container das Propriedades (sempre criado) ───────────────
         props_container = QtWidgets.QWidget(parent=self)
@@ -144,8 +164,12 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         )
         self._empty_placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self._empty_placeholder.setWordWrap(True)
-        self._empty_placeholder.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 12px; padding: 16px;"
+        apply_themed_stylesheet(
+            self._empty_placeholder,
+            lambda t: (
+                "color: " + t("TEXT_MUTED") + "; font-style: italic; "
+                "font-size: 12px; padding: 16px;"
+            ),
         )
         props_layout.addWidget(self._empty_placeholder)
 
@@ -163,9 +187,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_size = QtWidgets.QLabel("—")
 
         for lbl in (self.lbl_id, self.lbl_type, self.lbl_path, self.lbl_hash, self.lbl_size):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
-        _lbl_style = "font-size: 11px; color: #666; font-weight: bold;"
         # Em modo compact a linha do ID é omitida — o ID já aparece como
         # nome do recurso no header do OutputRowWidget que embarca este widget.
         rows = [
@@ -178,7 +201,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             rows.insert(0, ("ID:", self.lbl_id))
         for text, value_lbl in rows:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             form.addRow(lbl, value_lbl)
 
         self._basic_info_section = QtWidgets.QWidget(parent=self)
@@ -193,13 +216,16 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.btn_open_in_dataset_manager = QtWidgets.QPushButton(
             "📂 Abrir no Gerenciador de Datasets"
         )
-        self.btn_open_in_dataset_manager.setStyleSheet(
-            "QPushButton {"
-            "  border: 1px solid #1565c0; border-radius: 4px;"
-            "  background: #e3f2fd; color: #1565c0;"
-            "  padding: 4px 10px; font-size: 11px;"
-            "}"
-            "QPushButton:hover { background: #bbdefb; }"
+        apply_themed_stylesheet(
+            self.btn_open_in_dataset_manager,
+            lambda t: (
+                "QPushButton {"
+                "  border: 1px solid " + t("PRIMARY") + "; border-radius: 4px;"
+                "  background: " + t("PRIMARY_BG") + "; color: " + t("PRIMARY") + ";"
+                "  padding: 4px 10px; font-size: 11px;"
+                "}"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+            ),
         )
         self.btn_open_in_dataset_manager.setToolTip(
             "Abre o dataset no Gerenciador de Datasets. Modificações "
@@ -241,7 +267,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self.lbl_balance, self.lbl_samples_per_id,
             self.lbl_quality_coverage,
         ):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         self.lbl_emb_cols.setWordWrap(True)
         self.lbl_balance.setWordWrap(True)
@@ -257,7 +283,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Qualidade:", self.lbl_quality_coverage),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             stats_form.addRow(lbl, value_lbl)
 
         stats_layout.addLayout(stats_form)
@@ -281,7 +307,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_pipe_flags = QtWidgets.QLabel("—")
 
         for lbl in (self.lbl_pipe_steps, self.lbl_pipe_output_dim, self.lbl_pipe_flags):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         for text, value_lbl in [
             ("Etapas:", self.lbl_pipe_steps),
@@ -289,7 +315,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Flags:", self.lbl_pipe_flags),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             pipe_form.addRow(lbl, value_lbl)
 
         pipe_layout.addLayout(pipe_form)
@@ -316,7 +342,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         for lbl in (self.lbl_sim_type, self.lbl_sim_input_dim,
                     self.lbl_sim_latent_dim, self.lbl_sim_extra):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         for text, value_lbl in [
             ("Tipo:", self.lbl_sim_type),
@@ -325,7 +351,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Extra:", self.lbl_sim_extra),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             sim_form.addRow(lbl, value_lbl)
 
         sim_layout.addLayout(sim_form)
@@ -353,7 +379,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
 
         for lbl in (self.lbl_calib_type, self.lbl_calib_hyperparams,
                     self.lbl_calib_clipping, self.lbl_calib_extra):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         for text, value_lbl in [
             ("Tipo:", self.lbl_calib_type),
@@ -362,7 +388,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Extra:", self.lbl_calib_extra),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             calib_form.addRow(lbl, value_lbl)
 
         calib_layout.addLayout(calib_form)
@@ -390,7 +416,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         for lbl in (self.lbl_scores_total, self.lbl_scores_genuine,
                     self.lbl_scores_impostor, self.lbl_scores_identities,
                     self.lbl_scores_calibrated):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         for text, value_lbl in [
             ("Total de pares:", self.lbl_scores_total),
@@ -400,7 +426,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Calibrados (log-LR):", self.lbl_scores_calibrated),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             scores_form.addRow(lbl, value_lbl)
 
         scores_layout.addLayout(scores_form)
@@ -439,7 +465,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             self.lbl_pt_mode, self.lbl_pt_n_steps, self.lbl_pt_steps,
             self.lbl_pt_output_dim, self.lbl_pt_fitted,
         ):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
         self.lbl_pt_steps.setWordWrap(True)
         # Habilita HTML pra exibir "Source: ... <br> Target: ..." em DUAL.
         self.lbl_pt_steps.setTextFormat(QtCore.Qt.TextFormat.RichText)
@@ -452,7 +478,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Estado:", self.lbl_pt_fitted),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             pt_form.addRow(lbl, value_lbl)
 
         pt_layout.addLayout(pt_form)
@@ -475,7 +501,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_hr_k = QtWidgets.QLabel("—")
         self.lbl_hr_extras = QtWidgets.QLabel("—")
         for lbl in (self.lbl_hr_dataset, self.lbl_hr_n_samples, self.lbl_hr_k, self.lbl_hr_extras):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
         self.lbl_hr_extras.setWordWrap(True)
 
         for text, value_lbl in [
@@ -485,7 +511,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Estudos auxiliares:", self.lbl_hr_extras),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             hr_form.addRow(lbl, value_lbl)
 
         hr_layout.addLayout(hr_form)
@@ -507,7 +533,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         self.lbl_ha_k = QtWidgets.QLabel("—")
         self.lbl_ha_scenarios = QtWidgets.QLabel("—")
         for lbl in (self.lbl_ha_n_scenarios, self.lbl_ha_k, self.lbl_ha_scenarios):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
         self.lbl_ha_scenarios.setWordWrap(True)
 
         for text, value_lbl in [
@@ -516,7 +542,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("Cenários:", self.lbl_ha_scenarios),
         ]:
             lbl = QtWidgets.QLabel(text)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             ha_form.addRow(lbl, value_lbl)
 
         ha_layout.addLayout(ha_form)
@@ -556,7 +582,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                     self.lbl_ty_n, self.lbl_ty_input_faces, self.lbl_ty_singletons,
                     self.lbl_ty_dim, self.lbl_ty_ood,
                     self.lbl_ty_loo_median, self.lbl_ty_loo_range):
-            lbl.setStyleSheet("font-size: 11px; color: #333;")
+            apply_themed_stylesheet(lbl, _value_lbl_qss)
 
         for text, value_lbl in [
             ("Modo de Referência:", self.lbl_ty_mode),
@@ -570,7 +596,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             ("T_k min / max:", self.lbl_ty_loo_range),
         ]:
             lbl = QtWidgets.QLabel(text, parent=self._typicality_section)
-            lbl.setStyleSheet(_lbl_style)
+            apply_themed_stylesheet(lbl, _field_lbl_qss)
             ty_form.addRow(lbl, value_lbl)
 
         ty_layout.addLayout(ty_form)
@@ -589,7 +615,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # QLabel rich text + word wrap dá esse comportamento sem precisar
         # de FlowLayout custom — Qt wraps em separadores de espaço.
         self.lbl_vr_summary = QtWidgets.QLabel("—", parent=self)
-        self.lbl_vr_summary.setStyleSheet("font-size: 11px; color: #333;")
+        apply_themed_stylesheet(self.lbl_vr_summary, _value_lbl_qss)
         self.lbl_vr_summary.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.lbl_vr_summary.setWordWrap(True)
         self.lbl_vr_summary.setTextInteractionFlags(
@@ -631,8 +657,9 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             usage_layout.setSpacing(4)
 
             self.usage_list = QtWidgets.QListWidget(parent=self)
-            self.usage_list.setStyleSheet(
-                "font-size: 11px; border: none; background: white;"
+            apply_themed_stylesheet(
+                self.usage_list,
+                lambda t: "font-size: 11px; border: none; background: " + t("SURFACE") + ";",
             )
             self.usage_list.setAlternatingRowColors(True)
             usage_layout.addWidget(self.usage_list)
@@ -1879,20 +1906,27 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         title = QtWidgets.QLabel(
             f"<b>Em {title_text}</b>", parent=container,
         )
-        title.setStyleSheet("font-size: 10px; color: #555;")
+        apply_themed_stylesheet(
+            title, lambda t: "font-size: 10px; color: " + t("TEXT_MUTED") + ";"
+        )
         v.addWidget(title)
 
         grid = QtWidgets.QGridLayout()
         grid.setSpacing(3)
         grid.setContentsMargins(8, 0, 0, 0)
 
-        header_style = "font-size: 10px; color: #666; font-weight: bold;"
-        cell_style = "font-size: 10px; color: #333;"
-        name_style = "font-size: 10px; color: #555;"
+        def _header_qss(t):
+            return "font-size: 10px; color: " + t("TEXT_MUTED") + "; font-weight: bold;"
+
+        def _cell_qss(t):
+            return "font-size: 10px; color: " + t("TEXT") + ";"
+
+        def _name_qss(t):
+            return "font-size: 10px; color: " + t("TEXT_MUTED") + ";"
 
         for col, name in enumerate(["", "Gen (Hp)", "Imp (Hd)", "Caso"]):
             lbl = QtWidgets.QLabel(name, parent=container)
-            lbl.setStyleSheet(header_style)
+            apply_themed_stylesheet(lbl, _header_qss)
             if col > 0:
                 lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
             grid.addWidget(lbl, 0, col)
@@ -1909,7 +1943,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         ]
         for r, (label, key, fmt) in enumerate(rows, start=1):
             nm = QtWidgets.QLabel(label, parent=container)
-            nm.setStyleSheet(name_style)
+            apply_themed_stylesheet(nm, _name_qss)
             grid.addWidget(nm, r, 0)
             for c, cls in enumerate(("gen", "imp", "case"), start=1):
                 cls_data = data.get(cls, {}) or {}
@@ -1921,7 +1955,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
                 else:
                     txt = fmt.format(float(cls_data[key]))
                 val = QtWidgets.QLabel(txt, parent=container)
-                val.setStyleSheet(cell_style)
+                apply_themed_stylesheet(val, _cell_qss)
                 val.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
                 grid.addWidget(val, r, c)
 

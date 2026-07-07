@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-
+from interface.theme import apply_themed_stylesheet
 from .quality_metric_widget import QualityMetricWidget
 
 
@@ -27,7 +27,11 @@ class DetailPanelView(QWidget):
         self.lbl_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_image.setMinimumHeight(150)
         self.lbl_image.setMaximumHeight(280)
-        self.lbl_image.setStyleSheet("background-color: #e6e6e6; border-bottom: 1px solid #ccc;")
+        apply_themed_stylesheet(
+            self.lbl_image,
+            lambda t: "background-color: " + t("SURFACE_ALT")
+            + "; border-bottom: 1px solid " + t("BORDER") + ";",
+        )
         layout.addWidget(self.lbl_image)
 
         # Abas

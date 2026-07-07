@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
 
@@ -86,19 +87,22 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self.resource_info = ResourceInfoWidget()
 
         # Estilo comum para os frames do painel esquerdo
-        _frame_style = """
-            QFrame#%(name)s {
-                border: 1px solid #c0c8d0;
-                border-radius: 5px;
-                background: white;
-            }
-        """
+        def _frame_qss(name):
+            def _builder(t):
+                return (
+                    "QFrame#" + name + " {"
+                    "  border: 1px solid " + t("BORDER") + ";"
+                    "  border-radius: 5px;"
+                    "  background: " + t("SURFACE") + ";"
+                    "}"
+                )
+            return _builder
 
         # Frame de estratégias
         strategy_frame = QtWidgets.QFrame(parent=self)
         strategy_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         strategy_frame.setObjectName("strategyFrame")
-        strategy_frame.setStyleSheet(_frame_style % {"name": "strategyFrame"})
+        apply_themed_stylesheet(strategy_frame, _frame_qss("strategyFrame"))
 
         strategy_frame_layout = QtWidgets.QVBoxLayout(strategy_frame)
         strategy_frame_layout.setContentsMargins(0, 0, 0, 0)
@@ -109,7 +113,7 @@ class LeftPanelWidget(QtWidgets.QWidget):
         resource_frame = QtWidgets.QFrame(parent=self)
         resource_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
         resource_frame.setObjectName("resourceFrame")
-        resource_frame.setStyleSheet(_frame_style % {"name": "resourceFrame"})
+        apply_themed_stylesheet(resource_frame, _frame_qss("resourceFrame"))
 
         resource_layout = QtWidgets.QVBoxLayout(resource_frame)
         resource_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,8 +122,9 @@ class LeftPanelWidget(QtWidgets.QWidget):
         resource_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         resource_splitter.setChildrenCollapsible(False)
         resource_splitter.setHandleWidth(1)
-        resource_splitter.setStyleSheet(
-            "QSplitter::handle { background: #d0d8e0; }"
+        apply_themed_stylesheet(
+            resource_splitter,
+            lambda t: "QSplitter::handle { background: " + t("BORDER") + "; }",
         )
         resource_splitter.addWidget(self.resource_tree)
         resource_splitter.addWidget(self.resource_info)
@@ -164,17 +169,20 @@ class LeftPanelWidget(QtWidgets.QWidget):
         self._toggle_strip.setCursor(
             QtCore.Qt.CursorShape.PointingHandCursor,
         )
-        self._toggle_strip.setStyleSheet(
-            "QPushButton { "
-            "    background: #ecf0f3; "
-            "    border: none; "
-            "    border-left: 1px solid #d0d6dc; "
-            "    color: #66707a; "
-            "    font-size: 9px; "
-            "    padding: 0; "
-            "} "
-            "QPushButton:hover { background: #d8e4f0; color: #1976d2; } "
-            "QPushButton:pressed { background: #c5d4e3; }"
+        apply_themed_stylesheet(
+            self._toggle_strip,
+            lambda t: (
+                "QPushButton { "
+                "    background: " + t("SURFACE_ALT") + "; "
+                "    border: none; "
+                "    border-left: 1px solid " + t("BORDER") + "; "
+                "    color: " + t("TEXT_MUTED") + "; "
+                "    font-size: 9px; "
+                "    padding: 0; "
+                "} "
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; color: " + t("PRIMARY") + "; } "
+                "QPushButton:pressed { background: " + t("BORDER") + "; }"
+            ),
         )
         self._toggle_strip.clicked.connect(self.toggle_collapse_requested)
         outer.addWidget(self._toggle_strip, 0)

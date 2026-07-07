@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 
 
@@ -43,13 +44,16 @@ class StrategyListWidget(QtWidgets.QWidget):
 
         # Header com fundo azul (mesmo padrão do header de Recursos do Projeto)
         header = QtWidgets.QLabel("Estratégias")
-        header.setStyleSheet("""
-            font-weight: bold; font-size: 12px; color: #2c3e50;
-            background: #eef2f7;
-            border: none;
-            border-bottom: 1px solid #c0c8d0;
-            padding: 5px 8px;
-        """)
+        apply_themed_stylesheet(
+            header,
+            lambda t: (
+                "font-weight: bold; font-size: 12px; color: " + t("PRIMARY_STRONG") + ";"
+                "background: " + t("SURFACE_ALT") + ";"
+                "border: none;"
+                "border-bottom: 1px solid " + t("BORDER") + ";"
+                "padding: 5px 8px;"
+            ),
+        )
         layout.addWidget(header)
 
         # Lista
@@ -62,19 +66,22 @@ class StrategyListWidget(QtWidgets.QWidget):
         # Seleção: fundo azul claro + barra lateral azul vibrante. Mantém
         # o highlight visível mesmo quando a janela perde foco (:!active),
         # crítico pra deixar claro qual estratégia está aberta no editor.
-        self.list_widget.setStyleSheet("""
-            QListWidget { font-size: 11px; border: none; background: white; }
-            QListWidget::item:selected {
-                background: #cfe7fa; color: inherit;
-                border-left: 3px solid #1565c0;
-            }
-            QListWidget::item:selected:!active {
-                background: #cfe7fa; color: inherit;
-            }
-            QListWidget::item:hover:!selected {
-                background: #f0f4f8;
-            }
-        """)
+        apply_themed_stylesheet(
+            self.list_widget,
+            lambda t: (
+                "QListWidget { font-size: 11px; border: none; background: " + t("SURFACE") + "; }"
+                "QListWidget::item:selected {"
+                "  background: " + t("PRIMARY_BG") + "; color: inherit;"
+                "  border-left: 3px solid " + t("PRIMARY") + ";"
+                "}"
+                "QListWidget::item:selected:!active {"
+                "  background: " + t("PRIMARY_BG") + "; color: inherit;"
+                "}"
+                "QListWidget::item:hover:!selected {"
+                "  background: " + t("PRIMARY_BG") + ";"
+                "}"
+            ),
+        )
         self.list_widget.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
@@ -101,12 +108,15 @@ class StrategyListWidget(QtWidgets.QWidget):
         self.btn_del.clicked.connect(self._on_remove)
 
         for btn in (self.btn_new, self.btn_dup, self.btn_del):
-            btn.setStyleSheet("""
-                QPushButton { border: 1px solid #ccc; border-radius: 3px;
-                              background: white; padding: 2px 6px; font-size: 11px; }
-                QPushButton:hover { background: #e8f0fe; }
-                QPushButton:disabled { color: #aaa; }
-            """)
+            apply_themed_stylesheet(
+                btn,
+                lambda t: (
+                    "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+                    "              background: " + t("SURFACE") + "; padding: 2px 6px; font-size: 11px; }"
+                    "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+                    "QPushButton:disabled { color: " + t("TEXT_MUTED") + "; }"
+                ),
+            )
             btn_row.addWidget(btn)
 
         layout.addLayout(btn_row)
@@ -119,28 +129,34 @@ class StrategyListWidget(QtWidgets.QWidget):
         self.btn_run = QtWidgets.QPushButton("Executar")
         self.btn_run.setToolTip("Executar a estratégia selecionada (todas as fases)")
         self.btn_run.setEnabled(False)
-        self.btn_run.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #2e7d32; border-radius: 3px;
-                background: #e8f5e9; color: #2e7d32;
-                padding: 2px 6px; font-size: 11px; font-weight: bold;
-            }
-            QPushButton:hover { background: #c8e6c9; }
-            QPushButton:pressed { background: #a5d6a7; }
-            QPushButton:disabled { background: #f0f0f0; color: #aaa; border-color: #ddd; }
-        """)
+        apply_themed_stylesheet(
+            self.btn_run,
+            lambda t: (
+                "QPushButton {"
+                "  border: 1px solid " + t("SUCCESS") + "; border-radius: 3px;"
+                "  background: " + t("SUCCESS_BG") + "; color: " + t("SUCCESS") + ";"
+                "  padding: 2px 6px; font-size: 11px; font-weight: bold;"
+                "}"
+                "QPushButton:hover { background: " + t("SUCCESS_BG") + "; }"
+                "QPushButton:pressed { background: " + t("SUCCESS_BG") + "; }"
+                "QPushButton:disabled { background: " + t("SURFACE_ALT") + "; color: " + t("TEXT_MUTED") + "; border-color: " + t("BORDER") + "; }"
+            ),
+        )
         self.btn_run.clicked.connect(self.run_strategy_requested)
         action_row.addWidget(self.btn_run)
 
         self.btn_template = QtWidgets.QPushButton("Salvar como Template")
         self.btn_template.setToolTip("Salvar estratégia como template na biblioteca global")
         self.btn_template.setEnabled(False)
-        self.btn_template.setStyleSheet("""
-            QPushButton { border: 1px solid #ccc; border-radius: 3px;
-                          background: white; padding: 2px 6px; font-size: 11px; }
-            QPushButton:hover { background: #e8f0fe; }
-            QPushButton:disabled { color: #aaa; }
-        """)
+        apply_themed_stylesheet(
+            self.btn_template,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+                "              background: " + t("SURFACE") + "; padding: 2px 6px; font-size: 11px; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+                "QPushButton:disabled { color: " + t("TEXT_MUTED") + "; }"
+            ),
+        )
         self.btn_template.clicked.connect(self.save_as_template_requested)
         action_row.addWidget(self.btn_template)
 
@@ -152,12 +168,15 @@ class StrategyListWidget(QtWidgets.QWidget):
             "Abrir janela de comparação entre estratégias treinadas"
         )
         self.btn_compare.setEnabled(False)
-        self.btn_compare.setStyleSheet("""
-            QPushButton { border: 1px solid #ccc; border-radius: 3px;
-                          background: white; padding: 2px 6px; font-size: 11px; }
-            QPushButton:hover { background: #e8f0fe; }
-            QPushButton:disabled { color: #aaa; }
-        """)
+        apply_themed_stylesheet(
+            self.btn_compare,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("BORDER") + "; border-radius: 3px;"
+                "              background: " + t("SURFACE") + "; padding: 2px 6px; font-size: 11px; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+                "QPushButton:disabled { color: " + t("TEXT_MUTED") + "; }"
+            ),
+        )
         self.btn_compare.clicked.connect(self.comparison_requested)
         action_row.addWidget(self.btn_compare)
 

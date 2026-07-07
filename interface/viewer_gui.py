@@ -11,6 +11,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 # --- IMPORTAÇÕES DO SEU PROJETO ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 try:
@@ -104,9 +106,10 @@ class MetricWidget(QWidget):
         if value is not None:
             display_val = value if value > 1.0 else value * 100
             pbar.setValue(int(display_val))
-            if display_val < 40: pbar.setStyleSheet("QProgressBar::chunk { background-color: #d9534f; }")
-            elif display_val < 70: pbar.setStyleSheet("QProgressBar::chunk { background-color: #f0ad4e; }")
-            else: pbar.setStyleSheet("QProgressBar::chunk { background-color: #5cb85c; }")
+            t = current_token_fn()
+            if display_val < 40: pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("DANGER") + "; }")
+            elif display_val < 70: pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("WARNING") + "; }")
+            else: pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("SUCCESS") + "; }")
         else:
             pbar.setValue(0)
 
@@ -127,7 +130,13 @@ class FaceDetailPanel(QWidget):
         self.lbl_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_image.setMinimumHeight(150)
         self.lbl_image.setMaximumHeight(280)
-        self.lbl_image.setStyleSheet("background-color: #e6e6e6; border-bottom: 1px solid #ccc;")
+        apply_themed_stylesheet(
+            self.lbl_image,
+            lambda t: (
+                "background-color: " + t("SURFACE_ALT") + "; border-bottom: 1px solid "
+                + t("BORDER") + ";"
+            ),
+        )
         layout.addWidget(self.lbl_image)
 
         self.tabs = QTabWidget()
@@ -232,19 +241,35 @@ class DatasetViewerWidget(QWidget):
         self.top_container = QFrame()
         self.top_container.setFrameShape(QFrame.Shape.StyledPanel)
         self.top_container.setMaximumHeight(60)
-        self.top_container.setStyleSheet("background-color: #f5f5f5; border-radius: 5px;")
-        
+        apply_themed_stylesheet(
+            self.top_container,
+            lambda t: "background-color: " + t("SURFACE_RAISED") + "; border-radius: 5px;",
+        )
+
         top_bar = QHBoxLayout(self.top_container)
         top_bar.setContentsMargins(10, 5, 10, 5)
         top_bar.setSpacing(10)
-        
-        # Estilos
-        btn_action_style = """
-            QPushButton { background-color: #ffffff; border: 1px solid #ccc; padding: 6px 12px; border-radius: 4px; color: #333; }
-            QPushButton:hover { background-color: #e6e6e6; }
-        """
-        btn_primary_style = "QPushButton { background-color: #28a745; color: white; font-weight: bold; border-radius: 4px; padding: 6px 12px; } QPushButton:hover { background-color: #218838; }"
-        btn_blue_style = "QPushButton { background-color: #0078d7; color: white; font-weight: bold; border-radius: 4px; padding: 6px 12px; } QPushButton:hover { background-color: #005a9e; }"
+
+        # Estilos — derivados de tokens do tema atual (claro/escuro).
+        t = current_token_fn()
+        btn_action_style = (
+            "QPushButton { background-color: " + t("SURFACE") + "; border: 1px solid "
+            + t("BORDER") + "; padding: 6px 12px; border-radius: 4px; color: "
+            + t("TEXT") + "; }\n"
+            "QPushButton:hover { background-color: " + t("SURFACE_ALT") + "; }"
+        )
+        btn_primary_style = (
+            "QPushButton { background-color: " + t("SUCCESS") + "; color: "
+            + t("HIGHLIGHT_TEXT") + "; font-weight: bold; border-radius: 4px; "
+            "padding: 6px 12px; } QPushButton:hover { background-color: "
+            + t("SUCCESS") + "; }"
+        )
+        btn_blue_style = (
+            "QPushButton { background-color: " + t("PRIMARY") + "; color: "
+            + t("HIGHLIGHT_TEXT") + "; font-weight: bold; border-radius: 4px; "
+            "padding: 6px 12px; } QPushButton:hover { background-color: "
+            + t("PRIMARY_STRONG") + "; }"
+        )
 
         # Botões
         self.btn_new = QtWidgets.QPushButton("➕ Novo")
@@ -276,7 +301,10 @@ class DatasetViewerWidget(QWidget):
         self.btn_filter.setEnabled(False)
 
         self.lbl_status = QLabel("Nenhum dataset.")
-        self.lbl_status.setStyleSheet("color: #666; margin-left: 10px;")
+        apply_themed_stylesheet(
+            self.lbl_status,
+            lambda tk: "color: " + tk("TEXT_MUTED") + "; margin-left: 10px;",
+        )
 
         # Adiciona ao layout
         top_bar.addWidget(self.btn_new)
@@ -308,7 +336,10 @@ class DatasetViewerWidget(QWidget):
         self.table_view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.table_view.setSortingEnabled(True)
         self.table_view.alternatingRowColors = True
-        self.table_view.setStyleSheet("QTableView { border: 1px solid #ccc; }")
+        apply_themed_stylesheet(
+            self.table_view,
+            lambda t: "QTableView { border: 1px solid " + t("BORDER") + "; }",
+        )
         self.splitter.addWidget(self.table_view)
 
         self.detail_panel = FaceDetailPanel()

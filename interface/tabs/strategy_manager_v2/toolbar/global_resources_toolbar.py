@@ -2,6 +2,8 @@
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 class GlobalResourcesToolbar(QtWidgets.QToolBar):
     """
@@ -22,14 +24,24 @@ class GlobalResourcesToolbar(QtWidgets.QToolBar):
     def __init__(self, parent=None):
         super().__init__("Recursos Globais", parent)
         self.setMovable(False)
-        self.setStyleSheet("""
-            QToolBar { border: none; background: #f0f0f0; spacing: 4px; padding: 2px 4px; }
-        """)
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "QToolBar { border: none; background: " + t("SURFACE_ALT")
+                + "; spacing: 4px; padding: 2px 4px; }"
+            ),
+        )
         self._build()
 
     def _build(self) -> None:
         label = QtWidgets.QLabel("  Biblioteca de Configurações:  ")
-        label.setStyleSheet("font-size: 11px; color: #555; font-weight: bold;")
+        apply_themed_stylesheet(
+            label,
+            lambda t: (
+                "font-size: 11px; color: " + t("TEXT_MUTED")
+                + "; font-weight: bold;"
+            ),
+        )
         self.addWidget(label)
 
         self.btn_pipeline = self._make_button("🔗 Pipeline", "Criar ou editar configuração de pipeline de transformação")
@@ -54,12 +66,16 @@ class GlobalResourcesToolbar(QtWidgets.QToolBar):
     def _make_button(text: str, tooltip: str) -> QtWidgets.QPushButton:
         btn = QtWidgets.QPushButton(text)
         btn.setToolTip(tooltip)
-        btn.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #bbb; border-radius: 4px;
-                background: white; padding: 3px 10px; font-size: 12px;
-            }
-            QPushButton:hover { background: #e8f0fe; border-color: #4a90d9; }
-            QPushButton:pressed { background: #d2e3fc; }
-        """)
+        apply_themed_stylesheet(
+            btn,
+            lambda t: (
+                "QPushButton {"
+                "    border: 1px solid " + t("BORDER") + "; border-radius: 4px;"
+                "    background: " + t("SURFACE") + "; padding: 3px 10px; font-size: 12px;"
+                "}"
+                "QPushButton:hover { background: " + t("PRIMARY_BG")
+                + "; border-color: " + t("PRIMARY") + "; }"
+                "QPushButton:pressed { background: " + t("PRIMARY_BG") + "; }"
+            ),
+        )
         return btn

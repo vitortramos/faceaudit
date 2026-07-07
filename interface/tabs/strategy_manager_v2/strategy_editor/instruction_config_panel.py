@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet
+
 from faceaudit.models.instructions.pipeline_application_instruction import (
     PipelineApplicationInstruction,
 )
@@ -212,7 +214,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         empty_layout = QtWidgets.QVBoxLayout(empty_page)
         empty_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         lbl = QtWidgets.QLabel("Selecione uma instrução para configurar.")
-        lbl.setStyleSheet("color: #888; font-size: 13px;")
+        apply_themed_stylesheet(
+            lbl,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 13px;",
+        )
         lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         empty_layout.addWidget(lbl)
         self.stack.addWidget(empty_page)   # index 0
@@ -293,13 +298,15 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._btn_add_validation_rule.setCursor(
             QtCore.Qt.CursorShape.PointingHandCursor
         )
-        _validation_btn_style = (
-            "QPushButton { background: transparent; border: 1px solid #E8A020;"
-            " border-radius: 3px; color: #8B5E00; font-size: 10px;"
-            " padding: 2px 8px; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-        )
-        self._btn_add_validation_rule.setStyleSheet(_validation_btn_style)
+        def _validation_btn_style(t):
+            return (
+                "QPushButton { background: transparent; border: 1px solid "
+                + t("ACCENT") + ";"
+                " border-radius: 3px; color: " + t("ACCENT_TEXT") + "; font-size: 10px;"
+                " padding: 2px 8px; }"
+                "QPushButton:hover { background: " + t("ACCENT_BG") + "; }"
+            )
+        apply_themed_stylesheet(self._btn_add_validation_rule, _validation_btn_style)
         self._btn_add_validation_rule.clicked.connect(
             self._on_add_validation_rule_clicked
         )
@@ -317,7 +324,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._btn_restore_validation_defaults.setCursor(
             QtCore.Qt.CursorShape.PointingHandCursor
         )
-        self._btn_restore_validation_defaults.setStyleSheet(_validation_btn_style)
+        apply_themed_stylesheet(
+            self._btn_restore_validation_defaults, _validation_btn_style
+        )
         self._btn_restore_validation_defaults.clicked.connect(
             self._on_restore_default_validation_rules
         )
@@ -350,19 +359,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # consultam.
         _vis_buttons_visible = not self._outputs_in_results_panel
 
+        # Estilo âmbar forense compartilhado pelos 4 botões de visualização.
+        def _amber_view_btn_style(t):
+            return (
+                "QPushButton { border: 1px solid " + t("ACCENT") + "; border-radius: 4px;"
+                " background: " + t("ACCENT_BG") + "; color: " + t("ACCENT_TEXT") + ";"
+                " padding: 5px 14px; font-weight: bold; }"
+                "QPushButton:hover { background: " + t("ACCENT_BG") + "; }"
+                "QPushButton:disabled { color: " + t("TEXT_MUTED")
+                + "; background: " + t("SURFACE_RAISED") + ";"
+                " border: 1px solid " + t("BORDER") + "; }"
+            )
+
         # Botão de visualização da trajetória — visível apenas em
         # PipelineApplicationInstruction; habilitado quando há trajetória
         # disponível em memória ou em disco.
         self.btn_view_trajectory = QtWidgets.QPushButton("📊 Visualizar Trajetória 3D")
         self.btn_view_trajectory.setMinimumWidth(220)
-        self.btn_view_trajectory.setStyleSheet(
-            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
-            " background: #FFF8E8; color: #8B5E00;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
-            " border: 1px solid #ccc; }"
-        )
+        apply_themed_stylesheet(self.btn_view_trajectory, _amber_view_btn_style)
         self.btn_view_trajectory.setVisible(False)
         self.btn_view_trajectory.setEnabled(False)
         self.btn_view_trajectory.clicked.connect(self._on_view_trajectory)
@@ -375,14 +389,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             "📊 Visualizar Distribuição de Scores"
         )
         self.btn_view_distribution.setMinimumWidth(240)
-        self.btn_view_distribution.setStyleSheet(
-            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
-            " background: #FFF8E8; color: #8B5E00;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
-            " border: 1px solid #ccc; }"
-        )
+        apply_themed_stylesheet(self.btn_view_distribution, _amber_view_btn_style)
         self.btn_view_distribution.setVisible(False)
         self.btn_view_distribution.setEnabled(False)
         self.btn_view_distribution.clicked.connect(self._on_view_distribution)
@@ -396,14 +403,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             "📊 Visualizar Resultado de Validação"
         )
         self.btn_view_validation_result.setMinimumWidth(260)
-        self.btn_view_validation_result.setStyleSheet(
-            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
-            " background: #FFF8E8; color: #8B5E00;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
-            " border: 1px solid #ccc; }"
-        )
+        apply_themed_stylesheet(self.btn_view_validation_result, _amber_view_btn_style)
         self.btn_view_validation_result.setVisible(False)
         self.btn_view_validation_result.setEnabled(False)
         self.btn_view_validation_result.clicked.connect(self._on_view_validation_result)
@@ -417,13 +417,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             "📊 Visualizar Caso"
         )
         self.btn_view_casework_visualization.setMinimumWidth(220)
-        self.btn_view_casework_visualization.setStyleSheet(
-            "QPushButton { border: 1px solid #E8A020; border-radius: 4px;"
-            " background: #FFF8E8; color: #8B5E00;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #FFEFC4; }"
-            "QPushButton:disabled { color: #aaa; background: #f5f5f5;"
-            " border: 1px solid #ccc; }"
+        apply_themed_stylesheet(
+            self.btn_view_casework_visualization, _amber_view_btn_style
         )
         self.btn_view_casework_visualization.setVisible(False)
         self.btn_view_casework_visualization.setEnabled(False)
@@ -437,22 +432,28 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         self.btn_validate = QtWidgets.QPushButton("Validar")
         self.btn_validate.setMinimumWidth(120)
-        self.btn_validate.setStyleSheet(
-            "QPushButton { border: 1px solid #1565c0; border-radius: 4px;"
-            " background: #e3f2fd; color: #1565c0;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #bbdefb; }"
+        apply_themed_stylesheet(
+            self.btn_validate,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("PRIMARY") + "; border-radius: 4px;"
+                " background: " + t("PRIMARY_BG") + "; color: " + t("PRIMARY") + ";"
+                " padding: 5px 14px; font-weight: bold; }"
+                "QPushButton:hover { background: " + t("PRIMARY_BG") + "; }"
+            ),
         )
         self.btn_validate.clicked.connect(self._on_validate)
         btn_row.addWidget(self.btn_validate)
 
         self.btn_apply = QtWidgets.QPushButton("Aplicar alterações")
         self.btn_apply.setMinimumWidth(160)
-        self.btn_apply.setStyleSheet(
-            "QPushButton { border: 1px solid #2e7d32; border-radius: 4px;"
-            " background: #e8f5e9; color: #2e7d32;"
-            " padding: 5px 14px; font-weight: bold; }"
-            "QPushButton:hover { background: #c8e6c9; }"
+        apply_themed_stylesheet(
+            self.btn_apply,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("SUCCESS") + "; border-radius: 4px;"
+                " background: " + t("SUCCESS_BG") + "; color: " + t("SUCCESS") + ";"
+                " padding: 5px 14px; font-weight: bold; }"
+                "QPushButton:hover { background: " + t("SUCCESS_BG") + "; }"
+            ),
         )
         self.btn_apply.clicked.connect(self._on_apply)
         btn_row.addWidget(self.btn_apply)
@@ -707,9 +708,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         # Tipo + ID exibidos como campos read-only dentro da Identificação,
         # em vez de num header competindo com o título da coluna.
         type_lbl = QtWidgets.QLabel(instr.instruction_type.label_pt)
-        type_lbl.setStyleSheet(
-            "color: #1A2942; font-size: 11px; font-weight: bold;"
-            " padding: 2px 0px;"
+        apply_themed_stylesheet(
+            type_lbl,
+            lambda t: (
+                "color: " + t("PRIMARY_STRONG") + "; font-size: 11px; font-weight: bold;"
+                " padding: 2px 0px;"
+            ),
         )
         type_lbl.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
@@ -717,9 +721,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._form_id.addRow("Tipo:", type_lbl)
 
         id_lbl = QtWidgets.QLabel(str(instr.instruction_id))
-        id_lbl.setStyleSheet(
-            "color: #555E6D; font-size: 10px; font-family: monospace;"
-            " padding: 2px 0px;"
+        apply_themed_stylesheet(
+            id_lbl,
+            lambda t: (
+                "color: " + t("TEXT_MUTED") + "; font-size: 10px; font-family: monospace;"
+                " padding: 2px 0px;"
+            ),
         )
         id_lbl.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
@@ -788,18 +795,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         help_text = instr.get_configuration_help() if hasattr(instr, "get_configuration_help") else None
         if help_text:
             help_box = QtWidgets.QFrame()
-            help_box.setStyleSheet(
-                "QFrame { background-color: #FFF8E8;"
-                " border-left: 3px solid #E8A020;"
-                " border-radius: 2px;"
-                " margin: 0px 0px 6px 0px; }"
+            apply_themed_stylesheet(
+                help_box,
+                lambda t: (
+                    "QFrame { background-color: " + t("ACCENT_BG") + ";"
+                    " border-left: 3px solid " + t("ACCENT") + ";"
+                    " border-radius: 2px;"
+                    " margin: 0px 0px 6px 0px; }"
+                ),
             )
             help_layout = QtWidgets.QHBoxLayout(help_box)
             help_layout.setContentsMargins(8, 6, 8, 6)
             help_lbl = QtWidgets.QLabel(help_text)
-            help_lbl.setStyleSheet(
-                "background: transparent; border: none;"
-                " color: #5a4500; font-size: 11px;"
+            apply_themed_stylesheet(
+                help_lbl,
+                lambda t: (
+                    "background: transparent; border: none;"
+                    " color: " + t("ACCENT_TEXT") + "; font-size: 11px;"
+                ),
             )
             help_lbl.setWordWrap(True)
             help_layout.addWidget(help_lbl, 1)
@@ -853,11 +866,14 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             # imediatamente conforme a seleção (antes do rebuild completo).
             if cspec.descriptions:
                 desc_box = QtWidgets.QFrame()
-                desc_box.setStyleSheet(
-                    "QFrame { background-color: #FFF8E8;"
-                    " border-left: 3px solid #E8A020;"
-                    " border-radius: 2px;"
-                    " margin: 0px 0px 4px 4px; }"
+                apply_themed_stylesheet(
+                    desc_box,
+                    lambda t: (
+                        "QFrame { background-color: " + t("ACCENT_BG") + ";"
+                        " border-left: 3px solid " + t("ACCENT") + ";"
+                        " border-radius: 2px;"
+                        " margin: 0px 0px 4px 4px; }"
+                    ),
                 )
                 desc_layout = QtWidgets.QHBoxLayout(desc_box)
                 desc_layout.setContentsMargins(8, 4, 8, 4)
@@ -866,9 +882,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 desc_lbl = QtWidgets.QLabel(
                     cspec.descriptions.get(combo.currentText(), "")
                 )
-                desc_lbl.setStyleSheet(
-                    "background: transparent; border: none;"
-                    " color: #5a4500; font-size: 11px;"
+                apply_themed_stylesheet(
+                    desc_lbl,
+                    lambda t: (
+                        "background: transparent; border: none;"
+                        " color: " + t("ACCENT_TEXT") + "; font-size: 11px;"
+                    ),
                 )
                 desc_lbl.setWordWrap(True)
                 desc_layout.addWidget(desc_lbl, 1)
@@ -1181,7 +1200,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             cv.setSpacing(2)
 
             lbl = QtWidgets.QLabel(spec.label)
-            lbl.setStyleSheet("font-size: 10px; color: #555;")
+            apply_themed_stylesheet(
+                lbl,
+                lambda t: "font-size: 10px; color: " + t("TEXT_MUTED") + ";",
+            )
             cv.addWidget(lbl)
 
             combo = self._make_input_resource_combo(self._instruction, spec)
@@ -1401,9 +1423,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     panel._update_dataset_info_label(self._target_combo, self._lbl)
 
         info_lbl = QtWidgets.QLabel("")
-        info_lbl.setStyleSheet(
-            "QLabel { color: #555; font-size: 11px; font-style: italic;"
-            " padding-left: 4px; }"
+        apply_themed_stylesheet(
+            info_lbl,
+            lambda t: (
+                "QLabel { color: " + t("TEXT_MUTED") + "; font-size: 11px; font-style: italic;"
+                " padding-left: 4px; }"
+            ),
         )
         info_lbl.setWordWrap(True)
         info_lbl.setVisible(False)
@@ -1577,7 +1602,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         if not output_specs:
             empty = QtWidgets.QLabel("(esta instrução não declara saídas)")
-            empty.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+            apply_themed_stylesheet(
+                empty,
+                lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px; font-style: italic;",
+            )
             self._outputs_layout.addWidget(empty)
             return
 
@@ -1755,8 +1783,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 "<b>Restaurar padrões</b> se já preencheu mas não viu "
                 "regras aparecerem."
             )
-            empty.setStyleSheet(
-                "color: #888; font-size: 11px; font-style: italic;"
+            apply_themed_stylesheet(
+                empty,
+                lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px; font-style: italic;",
             )
             empty.setWordWrap(True)
             self._validation_layout.addWidget(empty)
@@ -1774,9 +1803,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             [icon] [Rule label]   [params summary]            [🗑]
         """
         row = QtWidgets.QFrame()
-        row.setStyleSheet(
-            "QFrame { background: #FFFCF2; border: 1px solid #F3E0B0;"
-            " border-radius: 3px; }"
+        apply_themed_stylesheet(
+            row,
+            lambda t: (
+                "QFrame { background: " + t("ACCENT_BG") + "; border: 1px solid "
+                + t("ACCENT") + ";"
+                " border-radius: 3px; }"
+            ),
         )
         h = QtWidgets.QHBoxLayout(row)
         h.setContentsMargins(8, 4, 6, 4)
@@ -1793,17 +1826,23 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         rule_type = cfg.rule_type
         name_lbl = QtWidgets.QLabel(rule_type.label)
-        name_lbl.setStyleSheet(
-            "color: #5D4500; font-size: 11px; font-weight: bold;"
-            " background: transparent; border: none;"
+        apply_themed_stylesheet(
+            name_lbl,
+            lambda t: (
+                "color: " + t("ACCENT_TEXT") + "; font-size: 11px; font-weight: bold;"
+                " background: transparent; border: none;"
+            ),
         )
         v.addWidget(name_lbl)
 
         summary = self._summarize_rule_params(rule_type, cfg.params)
         summary_lbl = QtWidgets.QLabel(summary)
-        summary_lbl.setStyleSheet(
-            "color: #6E5A2E; font-size: 10px;"
-            " background: transparent; border: none;"
+        apply_themed_stylesheet(
+            summary_lbl,
+            lambda t: (
+                "color: " + t("ACCENT_TEXT") + "; font-size: 10px;"
+                " background: transparent; border: none;"
+            ),
         )
         summary_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
         summary_lbl.setWordWrap(True)
@@ -1828,10 +1867,14 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         )
         btn_save.setFixedWidth(28)
         btn_save.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        btn_save.setStyleSheet(
-            "QToolButton { background: transparent; border: 1px solid #6E5A2E;"
-            " border-radius: 3px; color: #6E5A2E; }"
-            "QToolButton:hover { background: #F5EBD0; }"
+        apply_themed_stylesheet(
+            btn_save,
+            lambda t: (
+                "QToolButton { background: transparent; border: 1px solid "
+                + t("ACCENT_TEXT") + ";"
+                " border-radius: 3px; color: " + t("ACCENT_TEXT") + "; }"
+                "QToolButton:hover { background: " + t("ACCENT_BG") + "; }"
+            ),
         )
         btn_save.clicked.connect(
             lambda _checked=False, c=cfg: self.save_validation_rule_as_template_requested.emit(c)
@@ -1846,10 +1889,14 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         )
         btn_del.setFixedWidth(28)
         btn_del.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
-        btn_del.setStyleSheet(
-            "QToolButton { background: transparent; border: 1px solid #E8A020;"
-            " border-radius: 3px; color: #8B5E00; }"
-            "QToolButton:hover { background: #FFEFC4; }"
+        apply_themed_stylesheet(
+            btn_del,
+            lambda t: (
+                "QToolButton { background: transparent; border: 1px solid "
+                + t("ACCENT") + ";"
+                " border-radius: 3px; color: " + t("ACCENT_TEXT") + "; }"
+                "QToolButton:hover { background: " + t("ACCENT_BG") + "; }"
+            ),
         )
         btn_del.clicked.connect(
             lambda _checked=False, i=index: self._on_delete_validation_rule(i)
@@ -1870,9 +1917,13 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         atributos privados pra dict de params.
         """
         row = QtWidgets.QFrame()
-        row.setStyleSheet(
-            "QFrame { background: #F5F5F8; border: 1px solid #D8D8E0;"
-            " border-radius: 3px; }"
+        apply_themed_stylesheet(
+            row,
+            lambda t: (
+                "QFrame { background: " + t("SURFACE_RAISED") + "; border: 1px solid "
+                + t("BORDER") + ";"
+                " border-radius: 3px; }"
+            ),
         )
         h = QtWidgets.QHBoxLayout(row)
         h.setContentsMargins(8, 4, 6, 4)
@@ -1887,18 +1938,24 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         v.setSpacing(0)
 
         name_lbl = QtWidgets.QLabel(getattr(rule, "name", "Regra intrínseca"))
-        name_lbl.setStyleSheet(
-            "color: #34344A; font-size: 11px; font-weight: bold;"
-            " background: transparent; border: none;"
+        apply_themed_stylesheet(
+            name_lbl,
+            lambda t: (
+                "color: " + t("TEXT") + "; font-size: 11px; font-weight: bold;"
+                " background: transparent; border: none;"
+            ),
         )
         v.addWidget(name_lbl)
 
         desc = getattr(rule, "description", None) or ""
         if desc:
             desc_lbl = QtWidgets.QLabel(desc)
-            desc_lbl.setStyleSheet(
-                "color: #555566; font-size: 10px;"
-                " background: transparent; border: none;"
+            apply_themed_stylesheet(
+                desc_lbl,
+                lambda t: (
+                    "color: " + t("TEXT_MUTED") + "; font-size: 10px;"
+                    " background: transparent; border: none;"
+                ),
             )
             desc_lbl.setWordWrap(True)
             v.addWidget(desc_lbl)
@@ -1920,9 +1977,12 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         lock = QtWidgets.QLabel("🔒")
         lock.setFixedWidth(28)
         lock.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        lock.setStyleSheet(
-            "QLabel { color: #888; background: transparent; border: none;"
-            " font-size: 12px; }"
+        apply_themed_stylesheet(
+            lock,
+            lambda t: (
+                "QLabel { color: " + t("TEXT_MUTED") + "; background: transparent; border: none;"
+                " font-size: 12px; }"
+            ),
         )
         h.addWidget(lock, 0)
 

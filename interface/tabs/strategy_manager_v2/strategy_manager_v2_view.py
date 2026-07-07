@@ -2,6 +2,8 @@
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
+from interface.theme import apply_themed_stylesheet
+
 
 class StrategyManagerV2View(QtWidgets.QWidget):
     """
@@ -56,7 +58,7 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         # Separador visual
         sep = QtWidgets.QFrame()
         sep.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        sep.setStyleSheet("color: #dcdde1;")
+        apply_themed_stylesheet(sep, lambda t: "color: " + t("BORDER") + ";")
         root.addWidget(sep)
 
         # ── Content: QStackedWidget (welcome ↔ workspace) ────────────────────
@@ -83,7 +85,10 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         icon.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         title = QtWidgets.QLabel("Gerenciador de Estratégias")
-        title.setStyleSheet("font-size: 22px; font-weight: bold; color: #2c3e50;")
+        apply_themed_stylesheet(
+            title,
+            lambda t: "font-size: 22px; font-weight: bold; color: " + t("TEXT") + ";",
+        )
 
         subtitle = QtWidgets.QLabel(
             "Crie ou abra um projeto para:\n\n"
@@ -91,8 +96,12 @@ class StrategyManagerV2View(QtWidgets.QWidget):
             "• Executar e validar estratégias configuradas\n"
             "• Comparar resultados entre estratégias"
         )
-        subtitle.setStyleSheet(
-            "font-size: 14px; color: #5f6368; line-height: 180%; padding: 20px;"
+        apply_themed_stylesheet(
+            subtitle,
+            lambda t: (
+                "font-size: 14px; color: " + t("TEXT_MUTED")
+                + "; line-height: 180%; padding: 20px;"
+            ),
         )
         subtitle.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -115,14 +124,17 @@ class StrategyManagerV2View(QtWidgets.QWidget):
         self._workspace_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         self._workspace_splitter.setChildrenCollapsible(False)
         self._workspace_splitter.setHandleWidth(4)
-        self._workspace_splitter.setStyleSheet("""
-            QSplitter::handle {
-                background: #dcdde1;
-            }
-            QSplitter::handle:hover {
-                background: #a0a0a0;
-            }
-        """)
+        apply_themed_stylesheet(
+            self._workspace_splitter,
+            lambda t: (
+                "QSplitter::handle {"
+                "    background: " + t("BORDER") + ";"
+                "}"
+                "QSplitter::handle:hover {"
+                "    background: " + t("TEXT_MUTED") + ";"
+                "}"
+            ),
+        )
 
         # Left panel placeholder — substituído por LeftPanelWidget pelo controller
         self.left_panel_placeholder = QtWidgets.QWidget()

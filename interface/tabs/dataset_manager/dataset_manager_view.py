@@ -1,6 +1,8 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QSplitter, QFrame
 from PyQt6.QtCore import Qt
 
+from interface.theme import apply_themed_stylesheet
+
 class DatasetManagerView(QWidget):
     """
     View Principal (Container) do Gerenciador de Datasets.
@@ -29,7 +31,10 @@ class DatasetManagerView(QWidget):
         # 2. Splitter Central
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(1)
-        self.splitter.setStyleSheet("QSplitter::handle { background-color: #ccc; }")
+        apply_themed_stylesheet(
+            self.splitter,
+            lambda t: "QSplitter::handle { background-color: " + t("BORDER") + "; }",
+        )
         
         main_layout.addWidget(self.splitter, 1)
 

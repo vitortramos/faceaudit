@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.resource_category import ResourceCategory
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.strategy_resource import StrategyResource
@@ -44,33 +45,34 @@ _TYPE_LABELS: Dict[StrategyResourceType, str] = {
 }
 
 
-_TREE_STYLESHEET = """
-    QTreeWidget {
-        font-size: 11px;
-        border: none;
-        background: white;
-    }
-    QTreeWidget::item:selected {
-        background: #cfe7fa;
-        color: inherit;
-    }
-    QTreeWidget::item:selected:!active {
-        background: #cfe7fa;
-        color: inherit;
-    }
-    QTreeWidget::item:hover:!selected {
-        background: #f0f4f8;
-    }
-    QHeaderView::section {
-        font-weight: bold;
-        font-size: 12px;
-        color: #2c3e50;
-        background: #eef2f7;
-        border: none;
-        border-bottom: 1px solid #c0c8d0;
-        padding: 5px 8px;
-    }
-"""
+def _tree_qss(t) -> str:
+    return (
+        "QTreeWidget {"
+        "  font-size: 11px;"
+        "  border: none;"
+        "  background: " + t("SURFACE") + ";"
+        "}"
+        "QTreeWidget::item:selected {"
+        "  background: " + t("PRIMARY_BG") + ";"
+        "  color: inherit;"
+        "}"
+        "QTreeWidget::item:selected:!active {"
+        "  background: " + t("PRIMARY_BG") + ";"
+        "  color: inherit;"
+        "}"
+        "QTreeWidget::item:hover:!selected {"
+        "  background: " + t("PRIMARY_BG") + ";"
+        "}"
+        "QHeaderView::section {"
+        "  font-weight: bold;"
+        "  font-size: 12px;"
+        "  color: " + t("PRIMARY_STRONG") + ";"
+        "  background: " + t("SURFACE_ALT") + ";"
+        "  border: none;"
+        "  border-bottom: 1px solid " + t("BORDER") + ";"
+        "  padding: 5px 8px;"
+        "}"
+    )
 
 
 class ResourceTreeWidget(QtWidgets.QWidget):
@@ -128,9 +130,12 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         layout.setSpacing(0)
 
         self._tabs = QtWidgets.QTabWidget(parent=self)
-        self._tabs.setStyleSheet(
-            "QTabBar::tab { padding: 6px 14px; font-size: 11px; }"
-            "QTabBar::tab:selected { background: white; font-weight: bold; }"
+        apply_themed_stylesheet(
+            self._tabs,
+            lambda t: (
+                "QTabBar::tab { padding: 6px 14px; font-size: 11px; }"
+                "QTabBar::tab:selected { background: " + t("SURFACE") + "; font-weight: bold; }"
+            ),
         )
         # NÃO conectar `currentChanged` aqui — `addTab` dispara o sinal
         # quando o índice muda de -1 pra 0, e nesse ponto `btn_add` ainda
@@ -161,17 +166,20 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         self.btn_add.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.MenuButtonPopup
         )
-        self.btn_add.setStyleSheet("""
-            QToolButton {
-                border: 1px solid #bbb; border-radius: 4px;
-                background: white; padding: 3px 8px; font-size: 11px;
-            }
-            QToolButton:hover { background: #e8f0fe; border-color: #4a90d9; }
-            QToolButton:disabled { background: #f0f0f0; color: #aaa; border-color: #ddd; }
-            QToolButton::menu-button {
-                border-left: 1px solid #bbb; width: 16px; border-radius: 0 4px 4px 0;
-            }
-        """)
+        apply_themed_stylesheet(
+            self.btn_add,
+            lambda t: (
+                "QToolButton {"
+                "  border: 1px solid " + t("BORDER") + "; border-radius: 4px;"
+                "  background: " + t("SURFACE") + "; padding: 3px 8px; font-size: 11px;"
+                "}"
+                "QToolButton:hover { background: " + t("PRIMARY_BG") + "; border-color: " + t("PRIMARY") + "; }"
+                "QToolButton:disabled { background: " + t("SURFACE_ALT") + "; color: " + t("TEXT_MUTED") + "; border-color: " + t("BORDER") + "; }"
+                "QToolButton::menu-button {"
+                "  border-left: 1px solid " + t("BORDER") + "; width: 16px; border-radius: 0 4px 4px 0;"
+                "}"
+            ),
+        )
         menu = QtWidgets.QMenu(self.btn_add)
         menu.addAction("📦  Dataset  (.parquet)", self.add_dataset_requested)
         menu.addAction("✂   Split Config  (.json)", self.add_split_config_requested)
@@ -188,14 +196,17 @@ class ResourceTreeWidget(QtWidgets.QWidget):
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
         self.btn_remove.setEnabled(False)
-        self.btn_remove.setStyleSheet("""
-            QPushButton {
-                border: 1px solid #bbb; border-radius: 4px;
-                background: white; padding: 3px 8px; font-size: 11px;
-            }
-            QPushButton:hover { background: #fdecea; border-color: #e53935; color: #c62828; }
-            QPushButton:disabled { background: #f0f0f0; color: #aaa; border-color: #ddd; }
-        """)
+        apply_themed_stylesheet(
+            self.btn_remove,
+            lambda t: (
+                "QPushButton {"
+                "  border: 1px solid " + t("BORDER") + "; border-radius: 4px;"
+                "  background: " + t("SURFACE") + "; padding: 3px 8px; font-size: 11px;"
+                "}"
+                "QPushButton:hover { background: " + t("DANGER_BG") + "; border-color: " + t("DANGER") + "; color: " + t("DANGER") + "; }"
+                "QPushButton:disabled { background: " + t("SURFACE_ALT") + "; color: " + t("TEXT_MUTED") + "; border-color: " + t("BORDER") + "; }"
+            ),
+        )
         self.btn_remove.clicked.connect(self._on_remove_clicked)
 
         # Conexão tardia — `btn_add` já existe nesse ponto, então o slot
@@ -210,7 +221,7 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         tree = QtWidgets.QTreeWidget(parent=self)
         tree.setHeaderLabels(["Recursos"])
         tree.setAlternatingRowColors(True)
-        tree.setStyleSheet(_TREE_STYLESHEET)
+        apply_themed_stylesheet(tree, _tree_qss)
         tree.itemClicked.connect(self._on_item_clicked)
         # Context menu pra renomear name (Fase 4 da migração id/name).
         tree.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)

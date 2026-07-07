@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 class BalanceMetricsWidget(QtWidgets.QWidget):
     """Card com verdict + tabela de métricas de balanceamento."""
@@ -29,9 +31,13 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
         self._verdict_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignCenter,
         )
-        self._verdict_label.setStyleSheet(
-            "font-size: 22px; font-weight: bold; padding: 14px; "
-            "border-radius: 6px; background: #f5f5f5; color: #333;"
+        apply_themed_stylesheet(
+            self._verdict_label,
+            lambda t: (
+                "font-size: 22px; font-weight: bold; padding: 14px; "
+                "border-radius: 6px; background: " + t("SURFACE_RAISED")
+                + "; color: " + t("TEXT") + ";"
+            ),
         )
         outer.addWidget(self._verdict_label)
 
@@ -41,8 +47,9 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
         self._explain_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignCenter,
         )
-        self._explain_label.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 0 20px;"
+        apply_themed_stylesheet(
+            self._explain_label,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px; padding: 0 20px;",
         )
         outer.addWidget(self._explain_label)
 
@@ -95,10 +102,11 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
             ("Razão max/min",
              f"{float(metrics.get('imbalance_ratio', 0.0)):.1f} : 1"),
         ]
+        t = current_token_fn()
         for row_idx, (label, value) in enumerate(rows):
             lbl = QtWidgets.QLabel(label + ":")
             lbl.setStyleSheet(
-                "color: #555; font-size: 12px;"
+                "color: " + t("TEXT_MUTED") + "; font-size: 12px;"
             )
             lbl.setAlignment(
                 QtCore.Qt.AlignmentFlag.AlignRight
@@ -106,7 +114,7 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
             )
             val = QtWidgets.QLabel(str(value))
             val.setStyleSheet(
-                "color: #1a3d6e; font-size: 13px; font-weight: bold;"
+                "color: " + t("PRIMARY_STRONG") + "; font-size: 13px; font-weight: bold;"
             )
             val.setTextInteractionFlags(
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse,
@@ -116,9 +124,11 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
 
     def clear(self) -> None:
         self._verdict_label.setText("—")
+        t = current_token_fn()
         self._verdict_label.setStyleSheet(
             "font-size: 22px; font-weight: bold; padding: 14px; "
-            "border-radius: 6px; background: #f5f5f5; color: #333;"
+            "border-radius: 6px; background: " + t("SURFACE_RAISED")
+            + "; color: " + t("TEXT") + ";"
         )
         self._explain_label.setText("")
         while self._grid.count() > 0:
@@ -130,16 +140,18 @@ class BalanceMetricsWidget(QtWidgets.QWidget):
     @staticmethod
     def _verdict_palette(verdict: str) -> tuple:
         """Retorna (bg, fg) baseado no emoji do verdict — alinhado com
-        os 4 tiers do `BalanceMetrics`."""
+        os 4 tiers do `BalanceMetrics`. Cores derivadas de tokens do tema
+        atual (status semânticos)."""
+        t = current_token_fn()
         if verdict.startswith("✅"):
-            return "#e8f5e9", "#1b5e20"  # verde
+            return t("SUCCESS_BG"), t("SUCCESS")  # verde
         if verdict.startswith("🟢"):
-            return "#f1f8e9", "#2e7d32"  # verde-claro
+            return t("SUCCESS_BG"), t("SUCCESS")  # verde-claro
         if verdict.startswith("🟡"):
-            return "#fff8e1", "#ef6c00"  # âmbar
+            return t("WARNING_BG"), t("WARNING")  # âmbar
         if verdict.startswith("🔴"):
-            return "#ffebee", "#c62828"  # vermelho
-        return "#f5f5f5", "#333"
+            return t("DANGER_BG"), t("DANGER")  # vermelho
+        return t("SURFACE_RAISED"), t("TEXT")
 
     @staticmethod
     def _verdict_explanation(verdict: str) -> str:

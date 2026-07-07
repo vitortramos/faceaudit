@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
 )
 
 from faceaudit.enums.sepael_model import SepaelModel
+from interface.theme import apply_themed_stylesheet
 
 
 def _supported_ff_models() -> tuple:
@@ -68,11 +69,15 @@ class NewDatasetView(QDialog):
         # Rodapé: resumo + bloqueio + botões
         outer.addWidget(self._hline())
         self.lbl_summary = QLabel("")
-        self.lbl_summary.setStyleSheet("color: #555; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.lbl_summary, lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;"
+        )
         self.lbl_summary.setWordWrap(True)
         outer.addWidget(self.lbl_summary)
         self.lbl_blocker = QLabel("")
-        self.lbl_blocker.setStyleSheet("color: #b00020; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.lbl_blocker, lambda t: "color: " + t("DANGER") + "; font-size: 11px;"
+        )
         self.lbl_blocker.setWordWrap(True)
         outer.addWidget(self.lbl_blocker)
 
@@ -150,7 +155,9 @@ class NewDatasetView(QDialog):
         self.grp_imgtype.addButton(self.rb_img_aligned, 1)
         img_h.addWidget(self.rb_img_original); img_h.addWidget(self.rb_img_aligned)
         self._lbl_imgtype_hint = QLabel("(o que copiar)", grp)
-        self._lbl_imgtype_hint.setStyleSheet("color: #888; font-size: 11px;")
+        apply_themed_stylesheet(
+            self._lbl_imgtype_hint, lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;"
+        )
         img_h.addWidget(self._lbl_imgtype_hint); img_h.addStretch()
         g.addWidget(self.row_imgtype, 3, 1)
         v.addLayout(g)
@@ -159,7 +166,10 @@ class NewDatasetView(QDialog):
         # a Origem, que é coluna por-face, foi para "Conteúdo do dataset") — colapsado.
         self._meta_btn = QPushButton("▸ Descrição (opcional)", grp)
         self._meta_btn.setCheckable(True)
-        self._meta_btn.setStyleSheet("text-align: left; border: none; color: #555;")
+        apply_themed_stylesheet(
+            self._meta_btn,
+            lambda t: "text-align: left; border: none; color: " + t("TEXT_MUTED") + ";",
+        )
         v.addWidget(self._meta_btn)
         self._meta_panel = QWidget(grp)
         mg = QGridLayout(self._meta_panel); mg.setContentsMargins(14, 2, 2, 2)
@@ -357,21 +367,27 @@ class NewDatasetView(QDialog):
         v.addLayout(row)
         self._det_size_hint = QLabel(
             "Det size não se aplica a faces já alinhadas (detecção é pulada).", grp)
-        self._det_size_hint.setStyleSheet("color: #888; font-size: 11px;")
+        apply_themed_stylesheet(
+            self._det_size_hint, lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;"
+        )
         self._det_size_hint.setVisible(False)
         v.addWidget(self._det_size_hint)
         return grp
 
     def _slow_badge(self) -> QLabel:
         lbl = QLabel("⏱ lento", self)
-        lbl.setStyleSheet(
-            "background: #fff3cd; color: #856404; font-size: 10px; "
-            "padding: 1px 6px; border-radius: 4px;")
+        apply_themed_stylesheet(
+            lbl,
+            lambda t: (
+                "background: " + t("WARNING_BG") + "; color: " + t("WARNING") + "; font-size: 10px; "
+                "padding: 1px 6px; border-radius: 4px;"
+            ),
+        )
         return lbl
 
     def _hline(self) -> QFrame:
         ln = QFrame(self); ln.setFrameShape(QFrame.Shape.HLine)
-        ln.setStyleSheet("color: #e0e0e0; max-height: 1px;")
+        apply_themed_stylesheet(ln, lambda t: "color: " + t("BORDER") + "; max-height: 1px;")
         return ln
 
     # ──────────────────────────────────────────────────────────────────

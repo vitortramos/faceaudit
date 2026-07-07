@@ -41,6 +41,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 # Roles disponíveis — uma fonte só. Carregado lazy do enum.
 def _column_role_choices() -> List[Tuple[str, str]]:
@@ -241,8 +243,10 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
             "ribbon.",
             parent=paths_box,
         )
-        hint_lbl.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 11px;"
+        apply_themed_stylesheet(
+            hint_lbl,
+            lambda t: "color: " + t("TEXT_MUTED")
+                      + "; font-style: italic; font-size: 11px;",
         )
         hint_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
         hint_lbl.setWordWrap(True)
@@ -265,7 +269,9 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
                 val_lbl = self._readonly_label(str(prov[key]))
                 val_lbl.setWordWrap(True)
                 if key == "selection_warning":
-                    val_lbl.setStyleSheet("color: #b26a00;")  # âmbar (destaque)
+                    apply_themed_stylesheet(  # âmbar (destaque)
+                        val_lbl, lambda t: "color: " + t("ACCENT_TEXT") + ";"
+                    )
                 prov_form.addRow(f"{label}:", val_lbl)
             # Chaves fora do allowlist — mostra genérico pra não esconder.
             for key, val in prov.items():
@@ -305,11 +311,14 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self._table_columns.setAlternatingRowColors(True)
-        self._table_columns.setStyleSheet(
-            "QTableWidget { font-size: 11px; gridline-color: #e0e0e0;"
-            " alternate-background-color: #f8f9fa; }"
-            "QHeaderView::section { background: #eef2f7; padding: 4px 6px;"
-            " border: none; border-bottom: 1px solid #c0c8d0; font-weight: bold; }"
+        apply_themed_stylesheet(
+            self._table_columns,
+            lambda t: (
+                "QTableWidget { font-size: 11px; gridline-color: " + t("BORDER") + ";"
+                " alternate-background-color: " + t("SURFACE_RAISED") + "; }"
+                "QHeaderView::section { background: " + t("SURFACE_ALT") + "; padding: 4px 6px;"
+                " border: none; border-bottom: 1px solid " + t("BORDER") + "; font-weight: bold; }"
+            ),
         )
         self._table_columns.itemSelectionChanged.connect(
             self._on_column_selected
@@ -346,9 +355,12 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
 
         self.btn_ok = QtWidgets.QPushButton("Salvar", parent=self)
         self.btn_ok.setDefault(True)
-        self.btn_ok.setStyleSheet(
-            "QPushButton { background: #2e7d32; color: white;"
-            " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
+        apply_themed_stylesheet(
+            self.btn_ok,
+            lambda t: (
+                "QPushButton { background: " + t("SUCCESS") + "; color: " + t("HEADER_TEXT") + ";"
+                " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
+            ),
         )
         self.btn_ok.clicked.connect(self.accept)
         btn_row.addWidget(self.btn_ok)
@@ -441,11 +453,14 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
         self._role_box = QtWidgets.QGroupBox(
             "Propriedades específicas do role", parent=host,
         )
-        self._role_box.setStyleSheet(
-            "QGroupBox { font-size: 11px; font-weight: bold;"
-            " border: 1px solid #ccc; border-radius: 4px; margin-top: 8px;"
-            " padding-top: 12px; }"
-            "QGroupBox::title { left: 8px; subcontrol-position: top left; }"
+        apply_themed_stylesheet(
+            self._role_box,
+            lambda t: (
+                "QGroupBox { font-size: 11px; font-weight: bold;"
+                " border: 1px solid " + t("BORDER") + "; border-radius: 4px; margin-top: 8px;"
+                " padding-top: 12px; }"
+                "QGroupBox::title { left: 8px; subcontrol-position: top left; }"
+            ),
         )
         self._role_form = QtWidgets.QFormLayout(self._role_box)
         self._role_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -463,7 +478,10 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
             "visualmente na tabela.",
             parent=host,
         )
-        self._vocab_hint.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            self._vocab_hint,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         self._vocab_hint.setWordWrap(True)
         form.addRow("", self._vocab_hint)
 
@@ -975,7 +993,7 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
     @staticmethod
     def _readonly_label(text: str) -> QtWidgets.QLabel:
         lbl = QtWidgets.QLabel(str(text))
-        lbl.setStyleSheet("color: #555;")
+        apply_themed_stylesheet(lbl, lambda t: "color: " + t("TEXT_MUTED") + ";")
         lbl.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -985,7 +1003,9 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
     def _section_header(text: str) -> QtWidgets.QLabel:
         lbl = QtWidgets.QLabel(f"<b>{text}</b>")
         lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        lbl.setStyleSheet("color: #2c3e50; margin-top: 6px;")
+        apply_themed_stylesheet(
+            lbl, lambda t: "color: " + t("PRIMARY_STRONG") + "; margin-top: 6px;"
+        )
         return lbl
 
 

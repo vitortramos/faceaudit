@@ -4,15 +4,18 @@ from __future__ import annotations
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 class SectionHeader(QtWidgets.QFrame):
     """Faixa colorida com título da seção do InstructionConfigPanel."""
 
+    # (bg_token, fg_token, accent_token) por variante.
     _VARIANTS = {
-        "identification": ("#F4F6FA", "#555E6D", "#C8D0DC"),
-        "configuration":  ("#D6E4F7", "#1A2942", "#2E5090"),
-        "outputs":        ("#E8F5E9", "#2E7D32", "#4CAF50"),
-        "validation":     ("#FFF8E8", "#8B5E00", "#E8A020"),
+        "identification": ("SURFACE_RAISED", "TEXT_MUTED", "BORDER"),
+        "configuration":  ("PRIMARY_BG", "PRIMARY_STRONG", "HEADER_BG"),
+        "outputs":        ("SUCCESS_BG", "SUCCESS", "SUCCESS"),
+        "validation":     ("ACCENT_BG", "ACCENT_TEXT", "ACCENT"),
     }
 
     def __init__(self, title: str, variant: str = "identification", parent=None):
@@ -20,7 +23,9 @@ class SectionHeader(QtWidgets.QFrame):
         if variant not in self._VARIANTS:
             variant = "identification"
 
-        bg, fg, accent = self._VARIANTS[variant]
+        t = current_token_fn()
+        bg_tok, fg_tok, accent_tok = self._VARIANTS[variant]
+        bg, fg, accent = t(bg_tok), t(fg_tok), t(accent_tok)
 
         self.setStyleSheet(
             f"QFrame {{"
@@ -73,15 +78,15 @@ class ColumnHeader(QtWidgets.QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
 
-        bg = "#2C3E50"
-        fg = "#FFFFFF"
-
         self.setFixedHeight(30)
-        self.setStyleSheet(
-            f"QFrame {{"
-            f"  background-color: {bg};"
-            f"  border-radius: 3px;"
-            f"}}"
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "QFrame {"
+                "  background-color: " + t("HEADER_BG") + ";"
+                "  border-radius: 3px;"
+                "}"
+            ),
         )
 
         layout = QtWidgets.QHBoxLayout(self)
@@ -89,10 +94,13 @@ class ColumnHeader(QtWidgets.QFrame):
         layout.setSpacing(0)
 
         self._label = QtWidgets.QLabel(title.upper())
-        self._label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f" color: {fg}; font-size: 13px; font-weight: bold;"
-            f" letter-spacing: 1px;"
+        apply_themed_stylesheet(
+            self._label,
+            lambda t: (
+                "background: transparent; border: none;"
+                " color: " + t("HEADER_TEXT") + "; font-size: 13px; font-weight: bold;"
+                " letter-spacing: 1px;"
+            ),
         )
         layout.addWidget(self._label)
         layout.addStretch(1)

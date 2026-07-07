@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import current_token_fn
 from .availability_resolver import ComparisonItem
 from .comparison_kind import ComparisonKind
 
@@ -32,6 +33,8 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
         # Reconstruído a cada `populate_items`.
         self._items_by_key: Dict[tuple, ComparisonItem] = {}
 
+        t = current_token_fn()
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -40,8 +43,8 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(4)
         splitter.setStyleSheet(
-            "QSplitter::handle { background: #dcdde1; }"
-            "QSplitter::handle:hover { background: #a0a0a0; }"
+            "QSplitter::handle { background: " + t("BORDER") + "; }"
+            "QSplitter::handle:hover { background: " + t("TEXT_MUTED") + "; }"
         )
 
         # ── Topo: kind selector ──────────────────────────────────────────
@@ -52,7 +55,7 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
 
         kind_header = QtWidgets.QLabel("O QUE COMPARAR")
         kind_header.setStyleSheet(
-            "background: #2C3E50; color: white; font-size: 11px;"
+            "background: " + t("HEADER_BG") + "; color: " + t("HEADER_TEXT") + "; font-size: 11px;"
             " font-weight: bold; letter-spacing: 1px; padding: 6px 10px;"
         )
         kind_layout.addWidget(kind_header)
@@ -61,18 +64,18 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
         self._kind_list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
         )
-        self._kind_list.setStyleSheet("""
-            QListWidget { font-size: 12px; border: none; background: white; }
-            QListWidget::item { padding: 8px 10px; }
-            QListWidget::item:selected {
-                background: #cfe7fa; color: inherit;
-                border-left: 3px solid #1565c0;
-            }
-            QListWidget::item:selected:!active {
-                background: #cfe7fa; color: inherit;
-            }
-            QListWidget::item:hover:!selected { background: #f0f4f8; }
-        """)
+        self._kind_list.setStyleSheet(
+            "QListWidget { font-size: 12px; border: none; background: " + t("SURFACE") + "; }"
+            "QListWidget::item { padding: 8px 10px; }"
+            "QListWidget::item:selected {"
+            "    background: " + t("PRIMARY_BG") + "; color: inherit;"
+            "    border-left: 3px solid " + t("PRIMARY") + ";"
+            "}"
+            "QListWidget::item:selected:!active {"
+            "    background: " + t("PRIMARY_BG") + "; color: inherit;"
+            "}"
+            "QListWidget::item:hover:!selected { background: " + t("SURFACE_RAISED") + "; }"
+        )
         for kind in ComparisonKind:
             item = QtWidgets.QListWidgetItem(kind.label)
             item.setData(QtCore.Qt.ItemDataRole.UserRole, kind)
@@ -91,19 +94,19 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
 
         items_header = QtWidgets.QLabel("ITENS A COMPARAR")
         items_header.setStyleSheet(
-            "background: #2C3E50; color: white; font-size: 11px;"
+            "background: " + t("HEADER_BG") + "; color: " + t("HEADER_TEXT") + "; font-size: 11px;"
             " font-weight: bold; letter-spacing: 1px; padding: 6px 10px;"
         )
         items_layout.addWidget(items_header)
 
         self._items_tree = QtWidgets.QTreeWidget()
         self._items_tree.setHeaderHidden(True)
-        self._items_tree.setStyleSheet("""
-            QTreeWidget { font-size: 11px; border: none; background: white; }
-            QTreeWidget::item { padding: 2px 0px; }
-            QTreeWidget::item:selected { background: transparent; }
-            QTreeWidget::item:hover:!selected { background: #f0f4f8; }
-        """)
+        self._items_tree.setStyleSheet(
+            "QTreeWidget { font-size: 11px; border: none; background: " + t("SURFACE") + "; }"
+            "QTreeWidget::item { padding: 2px 0px; }"
+            "QTreeWidget::item:selected { background: transparent; }"
+            "QTreeWidget::item:hover:!selected { background: " + t("SURFACE_RAISED") + "; }"
+        )
         self._items_tree.itemChanged.connect(self._on_item_check_changed)
         items_layout.addWidget(self._items_tree, 1)
 
@@ -112,7 +115,7 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
             "Selecione um tipo de comparação acima."
         )
         self._empty_lbl.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 11px; padding: 10px;"
+            "color: " + t("TEXT_MUTED") + "; font-style: italic; font-size: 11px; padding: 10px;"
         )
         self._empty_lbl.setWordWrap(True)
         self._empty_lbl.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)

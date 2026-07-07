@@ -7,6 +7,7 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.models.strategy.lr_strategy_definition import LRStrategyDefinition
 from faceaudit.models.strategy.strategy_resource import StrategyResource
@@ -56,12 +57,15 @@ class OutputRowWidget(QtWidgets.QFrame):
         self._info_container: Optional[QtWidgets.QWidget] = None
         self._last_info_signature: Optional[tuple] = None
 
-        self.setStyleSheet(
-            "OutputRowWidget {"
-            "  background-color: #fafdf6;"
-            "  border: 1px solid #d6e8d0;"
-            "  border-radius: 4px;"
-            "}"
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "OutputRowWidget {"
+                "  background-color: " + t("SUCCESS_BG") + ";"
+                "  border: 1px solid " + t("BORDER") + ";"
+                "  border-radius: 4px;"
+                "}"
+            ),
         )
 
         # Vertical Maximum: o widget cresce até o sizeHint do conteúdo e
@@ -94,15 +98,19 @@ class OutputRowWidget(QtWidgets.QFrame):
             layout.addWidget(self._status_lbl, 0, 0)
 
         lbl = QtWidgets.QLabel(f"{label}:", parent=self)
-        lbl.setStyleSheet("font-size: 11px; color: #2e7d32; font-weight: bold;")
+        apply_themed_stylesheet(
+            lbl,
+            lambda t: "font-size: 11px; color: " + t("SUCCESS") + "; font-weight: bold;",
+        )
         layout.addWidget(lbl, 0, 1)
 
         if self._read_only:
             # Display puro — QLabel, visualmente sintoniza com o painel
             # informativo da 3ª coluna.
             self._name_field = QtWidgets.QLabel(resource_id or "", parent=self)
-            self._name_field.setStyleSheet(
-                "font-size: 11px; color: #222; font-weight: 500;"
+            apply_themed_stylesheet(
+                self._name_field,
+                lambda t: "font-size: 11px; color: " + t("TEXT") + "; font-weight: 500;",
             )
             self._name_field.setTextInteractionFlags(
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
@@ -119,7 +127,10 @@ class OutputRowWidget(QtWidgets.QFrame):
         layout.addWidget(self._name_field, 0, 2)
 
         type_lbl = QtWidgets.QLabel(f"[{self._resource_type.value}]", parent=self)
-        type_lbl.setStyleSheet("font-size: 9px; color: #888;")
+        apply_themed_stylesheet(
+            type_lbl,
+            lambda t: "font-size: 9px; color: " + t("TEXT_MUTED") + ";",
+        )
         layout.addWidget(type_lbl, 0, 3)
 
         # Linha 2: status textual (e.g. "salvo em disco", "em memória",
@@ -272,8 +283,9 @@ class OutputRowWidget(QtWidgets.QFrame):
     def _set_status(self, icon: str, status_text: str) -> None:
         self._status_lbl.setText(icon)
         status_lbl = QtWidgets.QLabel(status_text)
+        t = current_token_fn()
         status_lbl.setStyleSheet(
-            "font-size: 10px; color: #555; font-style: italic;"
+            "font-size: 10px; color: " + t("TEXT_MUTED") + "; font-style: italic;"
         )
         self._summary_layout.addWidget(status_lbl)
 

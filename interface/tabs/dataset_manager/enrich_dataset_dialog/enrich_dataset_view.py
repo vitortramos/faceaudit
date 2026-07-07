@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from faceaudit.enums.sepael_model import SepaelModel
+from interface.theme import apply_themed_stylesheet, current_token_fn
 
 
 def _supported_ff_models() -> tuple:
@@ -27,12 +28,12 @@ def _supported_ff_models() -> tuple:
     return (SepaelModel.default().ff_name,)
 
 
-# Selo de status: (texto, cor de fundo, cor de texto). Cores da paleta do app.
-_STATUS_STYLE = {
-    "present": ("#eaf3de", "#3b6d11"),
-    "partial": ("#faeeda", "#854f0b"),
-    "absent": ("#fcebeb", "#a32d2d"),
-    "neutral": ("#f1efe8", "#5f5e5a"),
+# Selo de status: (token de fundo, token de texto). Resolvidos por tema em runtime.
+_STATUS_TOKENS = {
+    "present": ("SUCCESS_BG", "SUCCESS"),
+    "partial": ("WARNING_BG", "WARNING"),
+    "absent": ("DANGER_BG", "DANGER"),
+    "neutral": ("SURFACE_ALT", "TEXT_MUTED"),
 }
 
 
@@ -66,7 +67,7 @@ class EnrichDatasetView(QDialog):
 
         self.lbl_info = QLabel("", self)
         self.lbl_info.setWordWrap(True)
-        self.lbl_info.setStyleSheet("color:#555;")
+        apply_themed_stylesheet(self.lbl_info, lambda t: "color:" + t("TEXT_MUTED") + ";")
         outer.addWidget(self.lbl_info)
 
         outer.addWidget(self._build_group_ff_settings())
@@ -137,7 +138,10 @@ class EnrichDatasetView(QDialog):
 
         self._det_size_hint = QLabel(
             "Det size não se aplica a faces já alinhadas (detecção é pulada).", grp)
-        self._det_size_hint.setStyleSheet("color:#888; font-size:11px;")
+        apply_themed_stylesheet(
+            self._det_size_hint,
+            lambda t: "color:" + t("TEXT_MUTED") + "; font-size:11px;",
+        )
         self._det_size_hint.setVisible(False)
         v.addWidget(self._det_size_hint)
         return grp
@@ -227,7 +231,7 @@ class EnrichDatasetView(QDialog):
             "detector (não recalcula o embedding). FIQA exige o passo de "
             "reconhecimento.", grp)
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#888; font-size:11px;")
+        apply_themed_stylesheet(hint, lambda t: "color:" + t("TEXT_MUTED") + "; font-size:11px;")
         v.addWidget(hint)
         return grp
 
@@ -240,7 +244,7 @@ class EnrichDatasetView(QDialog):
     def _hline(self) -> QFrame:
         ln = QFrame(self)
         ln.setFrameShape(QFrame.Shape.HLine)
-        ln.setStyleSheet("color:#e0e0e0; max-height:1px;")
+        apply_themed_stylesheet(ln, lambda t: "color:" + t("BORDER") + "; max-height:1px;")
         return ln
 
     # ──────────────────────────────────────────────────────────────────
@@ -271,7 +275,9 @@ class EnrichDatasetView(QDialog):
         lbl = self._status_labels.get(key)
         if lbl is None:
             return
-        bg, fg = _STATUS_STYLE.get(kind, _STATUS_STYLE["neutral"])
+        bg_token, fg_token = _STATUS_TOKENS.get(kind, _STATUS_TOKENS["neutral"])
+        t = current_token_fn()
+        bg, fg = t(bg_token), t(fg_token)
         lbl.setText(text)
         lbl.setStyleSheet(
             f"background:{bg}; color:{fg}; border-radius:8px; padding:1px 7px; font-size:11px;")

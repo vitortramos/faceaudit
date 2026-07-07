@@ -82,6 +82,27 @@ class FFConfig(JSONSerializableMixin):
 
 
 @dataclass
+class ThemeConfig(JSONSerializableMixin):
+    """Preferência de tema da UI (claro/escuro).
+
+    `mode` ∈ {"light", "dark"}. É preferência por-máquina (vive no
+    config.json local, ao lado dos paths específicos da máquina). Puramente
+    de apresentação — não é lida por nenhum provider do backend.
+    """
+    mode: str = "light"
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ThemeConfig":
+        if not data:
+            return cls()
+        valid = {k: v for k, v in data.items() if k in cls.__annotations__}
+        # Sanitização: só aceita "light"/"dark"; qualquer outra coisa → light.
+        raw = str(valid.get("mode", "light")).strip().lower()
+        valid["mode"] = raw if raw in ("light", "dark") else "light"
+        return cls(**valid)
+
+
+@dataclass
 class PathsConfig(JSONSerializableMixin):
     """Pastas globais do sistema.
 
@@ -235,6 +256,7 @@ class SystemConfig(JSONSerializableMixin):
     paths: PathsConfig = field(default_factory=PathsConfig)
     ofiq: OFIQConfig = field(default_factory=OFIQConfig)
     ff: FFConfig = field(default_factory=FFConfig)
+    theme: ThemeConfig = field(default_factory=ThemeConfig)
 
     @classmethod
     def from_dict(cls: Type[T], data: dict) -> T:
@@ -244,6 +266,7 @@ class SystemConfig(JSONSerializableMixin):
             paths=PathsConfig.from_dict(data.get("paths", {})),
             ofiq=OFIQConfig.from_dict(data.get("ofiq", {})),
             ff=FFConfig.from_dict(data.get("ff", {})),
+            theme=ThemeConfig.from_dict(data.get("theme", {})),
         )
 
     # Métodos de retrocompat (callers antigos chamavam diretamente).
