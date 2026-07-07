@@ -23,7 +23,7 @@ from .dataset_analysis.dataset_analysis_controller import DatasetAnalysisControl
 
 # --- WORKERS (PROCESSAMENTO) ---
 from .workers.load_dataset_worker import LoadDatasetWorker
-from .workers.localize_dataset_worker import LocalizeDatasetWorker  # PR L1d
+from .workers.modify_paths_worker import ModifyPathsWorker  # PR L1d
 from .workers.filter_worker import FilterWorker
 from .workers.new_dataset_worker import NewDatasetWorker
 from .workers.enrich_worker import EnrichWorker
@@ -37,6 +37,11 @@ from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 # PR 25 (Tema 5.4) — audit log forense / chain of custody
 from faceaudit.enums.audit_operation import AuditOperation
 from faceaudit.enums.localization_mode import LocalizationMode
+from faceaudit.enums.path_mode import PathMode
+from faceaudit.services.image_path_resolver import (
+    normalize_stored_path,
+    resolve_image_path,
+)
 
 # Feedback visual em operações síncronas pesadas
 from interface.wait_cursor import wait_cursor
@@ -138,9 +143,9 @@ class DatasetManagerController(QtCore.QObject):
         # PR 25 (Tema 5.4) — audit log forense
         if hasattr(self.toolbar_ctrl, "action_audit_log"):
             self.toolbar_ctrl.action_audit_log.connect(self.fluxo_audit_log)
-        # PR L1d — Localização de paths
-        if hasattr(self.toolbar_ctrl, "action_localize"):
-            self.toolbar_ctrl.action_localize.connect(self.fluxo_localizar)
+        # PR L1d — Modificação de caminhos das imagens
+        if hasattr(self.toolbar_ctrl, "action_modify_paths"):
+            self.toolbar_ctrl.action_modify_paths.connect(self.fluxo_modificar_caminhos)
         # PR I2 — Editor de pipeline de imagens
         if hasattr(self.toolbar_ctrl, "action_image_pipeline_editor"):
             self.toolbar_ctrl.action_image_pipeline_editor.connect(
@@ -1399,12 +1404,14 @@ class DatasetManagerController(QtCore.QObject):
         dialog.exec()
 
     # =================================================================================
-    # PR L1d — FLUXO DE LOCALIZAÇÃO (paths absolutos → relativos / cópia)
+    # PR L1d — FLUXO "MODIFICAR CAMINHOS" (corrige path_root / relativiza / copia)
     # =================================================================================
-    def fluxo_localizar(self):
-        """Abre o LocalizeDatasetDialog. Após exec aceito, dispara o
-        worker de localização e, ao final, substitui o dataset
-        corrente + propõe Save As (consistência com Enrich/Filter)."""
+    def fluxo_modificar_caminhos(self):
+        """Abre o ModifyPathsDialog. `FIX_PATH_ROOT` é aplicado direto
+        (só-metadados, sem mover arquivos); as migrações pesadas
+        (REWRITE/COPY/REBASE) disparam o worker e, ao final, substituem
+        o dataset corrente + propõem Save As (consistência com
+        Enrich/Filter)."""
         if not self.dataset:
             return
 
@@ -1429,32 +1436,166 @@ class DatasetManagerController(QtCore.QObject):
             )
             detected = DatasetLocalizationService.detect_path_prefix(self.dataset)
 
-            from .localize_dataset_dialog import LocalizeDatasetDialog
-            dialog = LocalizeDatasetDialog(
+            # Pasta do parquet: ancora o picker de subpasta e a validação
+            # de path_root. `_parquet_dir` é runtime (from_parquet); cai
+            # no diretório do current_path quando ausente.
+            parquet_dir = getattr(self.dataset, "_parquet_dir", None)
+            if parquet_dir is None and self.current_path:
+                parquet_dir = Path(self.current_path).parent
+
+            from .modify_paths_dialog import ModifyPathsDialog, PathOp
+            dialog = ModifyPathsDialog(
                 dataset_name=self.dataset.name,
                 suggested_target_dir=suggested,
                 parent=self.view,
                 detected_prefix=detected,
+                path_mode=self.dataset.path_mode,
+                path_root=self.dataset.path_root,
+                parquet_dir=parquet_dir,
+                dataset=self.dataset,
             )
         # exec() fora do wait_cursor — dialog precisa de cursor normal
         if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
 
         try:
-            opts = dialog.get_options()
+            result = dialog.get_result()
         except ValueError as e:
             QMessageBox.warning(self.view, "Configuração inválida", str(e))
             return
 
-        self._iniciar_worker_localize(
-            target_dir=opts["target_dir"],
-            mode=opts["mode"],
-            naming=opts["naming"],
-            skip_existing=opts["skip_existing"],
-            old_prefix=opts.get("old_prefix"),
+        # Correção leve de path_root — só-metadados, aplicada em memória
+        # sem worker (não move nenhum arquivo).
+        if result["op"] == PathOp.FIX_PATH_ROOT:
+            self._aplicar_path_root(result["path_root"])
+            return
+
+        self._iniciar_worker_modificar_caminhos(
+            target_dir=result["target_dir"],
+            mode=result["mode"],
+            naming=result["naming"],
+            skip_existing=result["skip_existing"],
+            old_prefix=result.get("old_prefix"),
         )
 
-    def _iniciar_worker_localize(
+    # ── Correção de path_root (só-metadados, sem mover arquivos) ─────────
+    def _aplicar_path_root(self, new_root: str):
+        """Repontar a subpasta (`path_root`) de um dataset RELATIVE sem
+        mover arquivos. Valida por amostragem; se falhar, exige
+        confirmação explícita antes de aplicar."""
+        if not self.dataset:
+            return
+        old_root = self.dataset.path_root or ""
+        new_root = normalize_stored_path((new_root or "").strip())
+
+        # "", ".", None são todos equivalentes à raiz — early-out se
+        # não houve mudança efetiva.
+        if self._canon_root(new_root) == self._canon_root(old_root):
+            QMessageBox.information(
+                self.view, "Sem alteração",
+                "A subpasta (path_root) já está com esse valor.",
+            )
+            return
+
+        ok, msg = self._validate_path_root(new_root)
+        if not ok:
+            resp = QMessageBox.question(
+                self.view, "Validação falhou",
+                f"{msg}\n\nAplicar mesmo assim?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+
+        # Aplica em memória. path_mode defensivamente RELATIVE (path_root
+        # só faz sentido em RELATIVE; o combo só oferece FIX nesse modo,
+        # mas garantimos coerência).
+        self.dataset.path_root = new_root or None
+        self.dataset.path_mode = PathMode.RELATIVE
+
+        # Refresh mínimo ANTES do set_dirty (o refresh não toca no dirty;
+        # carregar_dataset_na_tela tocaria — por isso NÃO é usado aqui).
+        self._refresh_after_path_root_change()
+        self.set_dirty(True)
+
+        try:
+            self._audit(
+                AuditOperation.COPY_IMAGES,
+                (
+                    f"path_root alterado de '{old_root or '(raiz)'}' para "
+                    f"'{new_root or '(raiz)'}' (edição de metadados, sem "
+                    "mover arquivos)."
+                ),
+                metadata={
+                    "operation": "fix_path_root",
+                    "old_path_root": old_root,
+                    "new_path_root": new_root,
+                },
+            )
+        except Exception:
+            pass  # audit é best-effort
+
+        QMessageBox.information(
+            self.view, "Subpasta atualizada",
+            "O path_root foi atualizado em memória. Use 'Salvar' pra "
+            "gravar a mudança no arquivo do dataset.",
+        )
+
+    @staticmethod
+    def _canon_root(root: Optional[str]) -> str:
+        """Canonicaliza um path_root pra comparação: '', '.', None → ''."""
+        r = (root or "").strip()
+        return "" if r in ("", ".") else normalize_stored_path(r)
+
+    def _validate_path_root(self, candidate: str) -> tuple:
+        """Valida um path_root candidato resolvendo a 1ª face com imagem,
+        SEM mutar o dataset. Retorna (ok: bool, msg: str). Indisponível
+        (retorna ok=True) quando o dataset ainda não tem pasta em disco."""
+        parquet_dir = getattr(self.dataset, "_parquet_dir", None)
+        if parquet_dir is None and self.current_path:
+            parquet_dir = Path(self.current_path).parent
+        if parquet_dir is None:
+            return True, "Validação indisponível (dataset ainda não salvo)."
+        faces = getattr(self.dataset, "faces", None) or []
+        sample = next(
+            (f for f in faces if getattr(f, "image_path", None)), None,
+        )
+        if sample is None:
+            return True, "Nenhuma face com caminho de imagem para validar."
+        resolved = resolve_image_path(
+            sample,
+            parquet_dir=parquet_dir,
+            path_mode=PathMode.RELATIVE,
+            path_root=candidate,
+        )
+        if resolved.exists():
+            return True, f"OK — o arquivo de exemplo existe: {resolved}"
+        return False, f"O arquivo de exemplo NÃO existe: {resolved}"
+
+    def _refresh_after_path_root_change(self):
+        """Refresh mínimo após mudar path_root: re-resolve imagens (só a
+        RESOLUÇÃO mudou, não as células). NÃO chama
+        `carregar_dataset_na_tela` — este termina em `set_dirty(False)` e
+        apagaria o estado dirty que acabamos de marcar."""
+        if not self.dataset:
+            return
+        self.detail_ctrl.set_dataset(self.dataset)
+        if hasattr(self.gallery_widget, "set_dataset"):
+            self.gallery_widget.set_dataset(self.dataset)
+        if hasattr(self.table_ctrl, "set_dataset"):
+            self.table_ctrl.set_dataset(self.dataset)
+        # Reseta o painel direito (a face antes selecionada pode agora
+        # resolver pra um arquivo diferente).
+        self.detail_ctrl.load_face_data(None)
+        # Invalida o cache de miniaturas — thumbnails são resolvidas via
+        # path e mudaram de origem.
+        self.gallery_widget.clear_cache()
+        if self._view_stack.currentIndex() == 1:
+            self.gallery_widget.populate(list(self.dataset.faces))
+
+    def _iniciar_worker_modificar_caminhos(
         self,
         target_dir: Path,
         mode,
@@ -1462,7 +1603,7 @@ class DatasetManagerController(QtCore.QObject):
         skip_existing: bool,
         old_prefix: Optional[str] = None,
     ):
-        worker = LocalizeDatasetWorker(
+        worker = ModifyPathsWorker(
             dataset=self.dataset,
             target_dir=target_dir,
             mode=mode,
@@ -1476,19 +1617,20 @@ class DatasetManagerController(QtCore.QObject):
         self._localize_naming = naming
         self._run_worker(
             worker,
-            label=f"Localizando dataset: {self.dataset.name}",
+            label=f"Modificando caminhos: {self.dataset.name}",
             allow_cancel=True,
             determinate=True,
             use_log_dialog=True,  # feedback constante (decisão #3 do usuário)
-            on_finished=self._on_localize_concluido,
+            on_finished=self._on_modificar_caminhos_concluido,
         )
 
-    def _on_localize_concluido(self, result):
+    def _on_modificar_caminhos_concluido(self, result):
         """Result é `LocalizationResult` ou None (cancelado/erro)."""
         if result is None:
             QMessageBox.warning(
                 self.view, "Cancelado",
-                "Localização cancelada ou finalizada sem resultado.",
+                "Modificação de caminhos cancelada ou finalizada sem "
+                "resultado.",
             )
             return
 
@@ -1513,7 +1655,7 @@ class DatasetManagerController(QtCore.QObject):
             self._audit(
                 AuditOperation.COPY_IMAGES,
                 (
-                    f"Localização concluída: {result.summary()}. "
+                    f"Modificação de caminhos concluída: {result.summary()}. "
                     f"Destino: {result.target_dir}"
                 ),
                 metadata={
@@ -1546,8 +1688,8 @@ class DatasetManagerController(QtCore.QObject):
         self.carregar_dataset_na_tela(self.dataset, path=self.current_path)
 
         QMessageBox.information(
-            self.view, "Localização concluída",
-            f"Dataset localizado em memória.\n\n{result.summary()}{extra}\n\n"
+            self.view, "Caminhos modificados",
+            f"Dataset atualizado em memória.\n\n{result.summary()}{extra}\n\n"
             "Use 'Salvar' pra sobrescrever o arquivo original ou "
             "'Salvar Como' pra gravar com outro nome.",
         )

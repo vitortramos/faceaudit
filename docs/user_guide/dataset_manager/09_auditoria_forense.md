@@ -398,7 +398,7 @@ operações que mutaram o dataset.
 | 🎬 VIDEO_EXTRACT | Dataset criado a partir de vídeo (seleção condicionada à âncora — ver [cap. 02b](02b_criando_dataset_de_video.md)) |
 | 🔗 MERGE / ✂️ SPLIT | Operações estruturais |
 | 📤 EXPORT | Exportação CSV/Excel |
-| 🗂 COPY_IMAGES | Localização (REBASE/REWRITE/COPY) |
+| 🗂 COPY_IMAGES | Modificação de caminhos das imagens (path_root/REBASE/REWRITE/COPY) |
 | ✅ INTEGRITY_VERIFIED / ❌ INTEGRITY_FAILED | Verificação da cadeia |
 
 ### Estrutura do log

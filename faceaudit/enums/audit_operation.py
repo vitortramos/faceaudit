@@ -91,7 +91,7 @@ class AuditOperation(str, Enum):
             "split": "Divisão",
             "video_extract": "Extração de vídeo",
             "export": "Exportação",
-            "copy_images": "Localização (cópia/reescrita de imagens)",
+            "copy_images": "Modificação de caminhos das imagens",
             "integrity_verified": "Integridade verificada",
             "integrity_failed": "Falha de integridade",
         }.get(self.value, self.value)

@@ -1,41 +1,48 @@
-# 03 — Carregando e localizando
+# 03 — Carregando e modificando caminhos
 
 Este capítulo cobre dois fluxos complementares:
 
 - **Carregar** um dataset `.parquet` já existente (criado por você
   anteriormente, recebido de um colega, ou copiado da biblioteca
   global).
-- **Localizar** — corrigir os caminhos das imagens (`image_path`)
-  quando eles apontam para um local que **não existe** na máquina
-  atual. Esse é o problema clássico do *“abri o parquet aqui, mas as
-  miniaturas aparecem vazias”*.
+- **Modificar Caminhos** — gerenciar como o dataset aponta pras
+  imagens (`image_path`) em disco: desde uma correção leve da subpasta
+  relativa (`path_root`) até migrações pesadas que reescrevem todos os
+  caminhos ou copiam as imagens. Esse é o menu de soluções para o
+  problema clássico do *“abri o parquet aqui, mas as miniaturas
+  aparecem vazias”*.
+
+> ℹ️ Em versões anteriores este botão se chamava **Localizar**. O nome
+> mudou para **Modificar Caminhos** porque a janela hoje faz mais do
+> que “localizar” imagens perdidas — ela também corrige o `path_root`
+> de datasets relativos sem mover nenhum arquivo.
 
 ## Sumário do capítulo
 
 1. [Abrindo um `.parquet`](#abrindo-um-parquet)
 2. [Anatomia dos caminhos de imagem](#anatomia-dos-caminhos)
-3. [Quando preciso usar *Localizar*?](#quando-preciso-usar-localizar)
-4. [O diálogo *Localizar*](#o-diálogo-localizar)
-5. [Modo 1 — REBASE_PREFIX (substituir prefixo)](#modo-1--rebase_prefix)
-6. [Modo 2 — REWRITE_RELATIVE (caminhos relativos)](#modo-2--rewrite_relative)
-7. [Modo 3 — COPY_ORIGINALS (empacotar pra portabilidade)](#modo-3--copy_originals)
-8. [Estratégia de nomeação (NamingStrategy)](#estratégia-de-nomeação)
-9. [`skip_existing` — idempotência](#skip_existing--idempotência)
-10. [Cenários práticos com antes/depois](#cenários-práticos)
-11. [Erros comuns e diagnóstico](#erros-comuns)
-12. [O que **nunca** muda](#o-que-nunca-muda)
+3. [Quando preciso modificar os caminhos?](#quando-preciso-modificar-os-caminhos)
+4. [O diálogo *Modificar Caminhos*](#o-diálogo-modificar-caminhos)
+5. [Operação — Corrigir a subpasta (`path_root`)](#operação--corrigir-a-subpasta-path_root)
+6. [Operação — REBASE_PREFIX (substituir prefixo)](#operação--rebase_prefix)
+7. [Operação — REWRITE_RELATIVE (caminhos relativos)](#operação--rewrite_relative)
+8. [Operação — COPY_ORIGINALS (empacotar pra portabilidade)](#operação--copy_originals)
+9. [Estratégia de nomeação (NamingStrategy)](#estratégia-de-nomeação)
+10. [`skip_existing` — idempotência](#skip_existing--idempotência)
+11. [Cenários práticos com antes/depois](#cenários-práticos)
+12. [Erros comuns e diagnóstico](#erros-comuns)
+13. [O que **nunca** muda](#o-que-nunca-muda)
 
 ---
 
 ## Abrindo um `.parquet`
 
 A operação básica para trabalhar com um dataset existente é o botão
-📂 **Abrir** da aba *Arquivo*.
+📂 **Abrir** da aba *Arquivo*. Atalho: `Ctrl+O` (ou `⌘O` no macOS).
 
-O diálogo nativo do SO abre no último diretório do pipeline/dataset
-(quando definido) ou no diretório padrão do SO caso nenhum esteja
-definido. Você pode navegar livremente; só são listados arquivos
-`.parquet` (filtro `Parquet (*.parquet)`).
+O diálogo nativo do SO abre na pasta configurada em `paths.library`
+do `config.json`. Você pode navegar livremente; só são listados
+arquivos `.parquet`.
 
 Selecionado o arquivo:
 
@@ -44,16 +51,13 @@ Selecionado o arquivo:
 2. Ao concluir:
    - A tabela é populada com as linhas
    - O painel de detalhes mostra a primeira face (se houver)
-   - A barra de status mostra uma linha compacta de badges
-     (📂 nome | 🖼️ N Imagens | 👤 N IDs | 🧬 N FF · 📐 N OFIQ ·
-     🎲 N SER-FIQ | …); o `path` e o hash do parquet aparecem no
-     *tooltip*, não na linha principal
+   - A barra de status mostra `N° faces • hash do parquet`
    - O *Audit Log* registra a operação `OPEN` com timestamp e SHA-256
 3. Em caso de erro (parquet corrompido, formato inválido, falta de
    colunas obrigatórias), um diálogo `QMessageBox` mostra a mensagem.
 
 > 💡 Você também pode abrir um dataset **a partir do Gerenciador de
-> Estratégias** — o botão *"📂 Abrir no Gerenciador de Datasets"* num
+> Estratégias** — o botão *"Editar no Gerenciador de Datasets"* num
 > recurso do tipo `DATASET` chama `open_dataset_from_path()`
 > diretamente, sem passar pelo seletor de arquivo.
 
@@ -76,88 +80,112 @@ indisponível”).
 > parquet `RELATIVE` é portável por construção, basta carregar o
 > `.parquet` junto com a pasta de imagens.
 
-## Quando preciso usar *Localizar*?
+O `path_root` é a **subpasta** (relativa à pasta do parquet) onde as
+imagens moram. Se ele estiver errado — por exemplo, você copiou o
+parquet e as imagens para uma estrutura de pastas diferente — as
+miniaturas ficam em branco mesmo estando o arquivo bem ali no disco.
+Corrigir esse ponteiro é a operação mais leve da janela (veja
+[Corrigir a subpasta](#operação--corrigir-a-subpasta-path_root)).
 
-A operação *Localizar* (botão 🗂 **Localizar** na aba *Dataset*) é
-necessária em qualquer situação onde **os caminhos no parquet não
-batem com a localização das imagens no disco atual**. Os três
+## Quando preciso modificar os caminhos?
+
+A operação *Modificar Caminhos* (botão 🗂 **Modificar Caminhos** na aba
+*Dataset*) é necessária em qualquer situação onde **os caminhos no
+parquet não batem com a localização das imagens no disco atual**. Os
 cenários mais comuns:
 
-| Situação | Sintoma | Modo recomendado |
+| Situação | Sintoma | Operação recomendada |
 |---|---|---|
+| Dataset **relativo** com `path_root` errado (imagens já estão no lugar, só o ponteiro está errado) | Miniaturas em branco, mas os arquivos existem numa subpasta próxima | **Corrigir a subpasta (path_root)** |
 | O parquet veio de outra máquina (colega, backup) | Miniaturas em branco; `image_path` aponta para `/Users/colega/...` ou `C:\Users\...` | **REBASE_PREFIX** |
 | O parquet aponta para um caminho absoluto local que mudou de lugar | Você reorganizou pastas e mudou o local das imagens | **REBASE_PREFIX** ou **REWRITE_RELATIVE** |
 | Você quer empacotar o dataset para arquivar ou transferir | Quer um zip autocontido com parquet + imagens | **COPY_ORIGINALS** |
 | O parquet ficou com caminhos absolutos legados e você quer torná-lo portável | Funciona aqui, mas não em outra máquina | **REWRITE_RELATIVE** |
 
-## O diálogo *Localizar*
+## O diálogo *Modificar Caminhos*
 
-Ao clicar em 🗂 **Localizar** abre-se o diálogo (640×580), com título
-*Localizar Dataset — <nome>*:
+Ao clicar em 🗂 **Modificar Caminhos** abre-se o diálogo (660×600):
 
-![Diálogo Localizar com modo, estratégia de nomeação, pasta destino](assets/31_localizar.png)
+![Diálogo Modificar Caminhos com combo de operação, sub-form de subpasta e destino](assets/31_localizar.png)
 
 | Seção | O que controla |
 |---|---|
 | **Texto explicativo** (topo) | Resumo do propósito da operação |
-| **Modo** (*Operação*) | Combobox com **Copiar imagens originais** (padrão) / **Reescrever caminhos (sem cópia)** / **Atualizar prefixo de caminho (sem cópia)** |
-| **Estratégia de nome** | *Habilitado* apenas em **Copiar imagens originais** (nos demais modos fica visível, mas em cinza) |
-| **Prefixo antigo** | Visível apenas em **Atualizar prefixo de caminho**; auto-preenchido com `detect_path_prefix()` |
-| **Pasta destino** | Sugere `<parquet_dir>/<nome>__localized/`; em **Atualizar prefixo** o rótulo muda para *Prefixo novo (pasta nesta máquina)* |
-| **Pular arquivos que já existem** | *Habilitado* apenas em **Copiar imagens originais**; idempotência |
+| **Estado atual** | Read-only: `Relativo · Subpasta (path_root): …` ou `Absoluto` |
+| **Operação** | Combobox com as operações disponíveis para o `path_mode` atual |
+| **Corrigir subpasta** | Visível apenas na operação *Corrigir subpasta*; campo `path_root` + **Procurar…** + **Validar** |
+| **Prefixo Antigo** | Visível apenas em REBASE_PREFIX; auto-preenchido com `detect_path_prefix()` |
+| **Estratégia de Nomeação** | Visível apenas em COPY_ORIGINALS |
+| **Pasta destino** | Sugere `<parquet_dir>/<nome>__localized/` em COPY/REWRITE; em REBASE muda o rótulo para *Prefixo novo* |
+| **Skip Existing** | Habilitado apenas em COPY; idempotência |
 
-O combo **Modo** abre por padrão em **Copiar imagens originais** (o
-primeiro item). A escolha do modo **dinamicamente reconfigura** quais
-campos ficam visíveis ou ativos, e atualiza o texto de ajuda do
-diálogo. O botão de confirmação exibe **🗂 Localizar** (não *OK*).
+A escolha da operação **dinamicamente reconfigura** quais campos ficam
+visíveis ou ativos, atualiza o texto de ajuda, e alterna o rótulo do
+botão de confirmação entre **✔ Aplicar path_root** (correção leve) e
+**🗂 Modificar caminhos** (migração pesada).
 
-> ⚠️ Apenas o grupo **Prefixo antigo** é escondido/mostrado conforme
-> o modo. **Estratégia de nome** e **Pular arquivos existentes**
-> nunca somem — só são *habilitados/desabilitados* (aparecem em
-> cinza fora do modo de cópia).
+> 💡 O combo é **filtrado pelo `path_mode`**: em datasets **relativos** a
+> operação *Corrigir subpasta* aparece primeiro e vem selecionada por
+> padrão; em datasets **absolutos** ela nem é oferecida (não há
+> `path_root` em modo absoluto) — o padrão vira COPY_ORIGINALS.
 
-### Progresso e cancelamento
+## Operação — Corrigir a subpasta (path_root)
 
-Ao confirmar em **🗂 Localizar**, a operação roda em um *worker*
-assíncrono (`LocalizeDatasetWorker`) com um diálogo de progresso —
-a UI continua responsiva. O progresso é reportado a cada 50 faces
-(*throttle*) para não saturar o event loop em datasets grandes. O
-diálogo permite **cancelar**: o cancelamento é cooperativo (o
-serviço termina a face atual e a chamada em curso, mas o resultado
-é descartado). Ao final, um resumo é exibido com as contagens de
-copiadas/puladas/falhas.
+**O que faz:** Atualiza **apenas** o ponteiro `path_root` — a subpasta
+(relativa à pasta do parquet) onde o dataset procura as imagens.
+**Nenhum arquivo é movido ou copiado**: só o metadado muda. Disponível
+**exclusivamente** em datasets `RELATIVE`.
 
-### O que acontece depois (persistência)
+**Quando usar:** As imagens já estão no disco, mas o `path_root`
+gravado no parquet aponta para a subpasta errada. Caso típico: você
+copiou o `.parquet` e a pasta de imagens juntos, mas a estrutura de
+subpastas ficou diferente da original (ex: as imagens estavam em
+`crops/` e agora estão em `images/`).
 
-Concluída a localização, o dataset **em memória** é substituído
-pelo localizado — o arquivo em disco ainda **não** foi gravado. O
-comportamento de salvamento depende do modo:
+### O sub-form *Corrigir subpasta*
 
-| Modo | `current_path` | Efeito no salvamento |
-|---|---|---|
-| **Atualizar prefixo** (REBASE_PREFIX) | 🔒 Preservado | *Salvar* sobrescreve o parquet original (só os paths mudaram); *Salvar Como* grava uma cópia |
-| **Reescrever caminhos** / **Copiar imagens** | ✏️ Zerado | Força *Salvar Como* — as imagens foram relativizadas/copiadas e o original perde significado |
+| Controle | Função |
+|---|---|
+| Campo de texto | O novo `path_root` (subpasta relativa; deixe **vazio** para apontar à raiz da pasta do parquet) |
+| **📁 Procurar…** | Abre um seletor de pasta ancorado na pasta do parquet e converte a escolha em caminho relativo automaticamente. Recusa pastas **fora** da pasta do parquet |
+| **✔ Validar** | Resolve uma face de exemplo com o `path_root` candidato e confirma se o arquivo **existe** em disco — verde ✅ (existe) ou vermelho ⚠ (não existe). Não fecha o diálogo |
 
-Em todos os casos o dataset fica marcado como *não salvo* (`*` após
-o nome na barra de status) até você gravar.
+> ⚠️ **Validar confirma que os arquivos existem, não que são as
+> imagens certas.** Um `path_root` que aponta para uma pasta *válida
+> mas errada* (outra pasta de imagens quaisquer) passa na validação de
+> existência. A conferência final é visual, na galeria.
 
-> ⚠️ *Localizar* lida **exclusivamente** com gerenciamento de
-> caminhos (path management). O antigo modo *COPY_ALIGNED* (que
-> gerava faces alinhadas 112×112) foi **removido** deste diálogo —
-> alinhar faces é transformação de **conteúdo**, não de caminho.
-> Para alinhar, use o **Editor de Pipeline de Imagens** com
-> *Origem = Face alinhada (112×112)* e zero steps.
+### O que muda
 
-## Modo 1 — REBASE_PREFIX
+| Item | Estado |
+|---|---|
+| `path_root` (metadado do dataset) | ✏️ Atualizado para a nova subpasta |
+| `path_mode` | 🔒 Permanece `RELATIVE` |
+| `image_path` de cada face | 🔒 Intacto (a *resolução* muda, não o valor gravado) |
+| Arquivos no disco | 🔒 Intactos — nada é movido nem copiado |
+| Hashes, embeddings, identidades | 🔒 Inalterados |
+
+### Aplicando
+
+Ao clicar **✔ Aplicar path_root**, a mudança é feita **em memória** e o
+dataset fica marcado como *não salvo* (`★` na barra de status). As
+miniaturas re-resolvem imediatamente. Use **Salvar** para gravar o novo
+`path_root` no parquet.
+
+> 💡 Se a validação falhar, o FaceAudit ainda oferece **aplicar mesmo
+> assim** (útil quando o dataset ainda não foi salvo e a validação está
+> indisponível) — mas confirme o resultado na galeria antes de salvar.
+
+## Operação — REBASE_PREFIX
 
 **O que faz:** Substitui um **prefixo de caminho** em todos os
 `image_path` por outro. Operação puramente em texto — **nada é
 copiado**.
 
-**Quando usar:** O caso mais comum. Você recebeu um parquet com
-caminhos tipo `/Users/colega/imgs/foto.jpg` e suas imagens estão em
-`/Users/voce/dados/imgs/foto.jpg`. As pastas finais batem
-exatamente — só o prefixo é diferente.
+**Quando usar:** O caso mais comum em datasets absolutos. Você recebeu
+um parquet com caminhos tipo `/Users/colega/imgs/foto.jpg` e suas
+imagens estão em `/Users/voce/dados/imgs/foto.jpg`. As pastas finais
+batem exatamente — só o prefixo é diferente.
 
 ### Detecção automática do prefixo antigo
 
@@ -190,7 +218,7 @@ O serviço **verifica** que cada novo caminho realmente existe no
 disco — qualquer caminho inexistente entra na lista de `failures`
 do `LocalizationResult` e é reportado na UI.
 
-## Modo 2 — REWRITE_RELATIVE
+## Operação — REWRITE_RELATIVE
 
 **O que faz:** Recalcula cada `image_path` como **relativo** à
 *Pasta destino*. **Nada é copiado**.
@@ -216,12 +244,14 @@ portabilidade. Nesse caso a face entra em `failures` e a UI exibe
 um aviso sugerindo usar COPY_ORIGINALS ou mover o destino para um
 ancestral comum.
 
-## Modo 3 — COPY_ORIGINALS
+## Operação — COPY_ORIGINALS
 
-**O que faz:** **Copia** os arquivos de imagem para uma subpasta
-por dataset — `<pasta_destino>/<nome_do_dataset>_images/` — e gera um
-novo parquet com caminhos relativos. Cria uma cópia autocontida do
-dataset.
+**O que faz:** **Copia** os arquivos de imagem para
+`<pasta_destino>/<nome do dataset>_images/` e gera um novo parquet com
+caminhos relativos. Cria uma cópia autocontida do dataset. Como cada
+dataset usa a **sua própria subpasta** (`<nome>_images`), você pode
+copiar **vários datasets para a MESMA pasta destino** sem misturar as
+imagens.
 
 **Quando usar:** Empacotar o dataset para arquivamento em mídia
 externa, transferência por USB/cloud, ou snapshot perícia
@@ -233,19 +263,15 @@ externa, transferência por USB/cloud, ou snapshot perícia
 |---|---|
 | `image_path` | ✏️ Caminho relativo na nova estrutura |
 | `path_mode` | ✏️ Vira `RELATIVE` |
-| `path_root` | ✏️ `<nome_do_dataset>_images` |
-| Arquivos no disco | ✏️ **Copiados** para `<destino>/<nome_do_dataset>_images/` |
+| `path_root` | ✏️ `"<nome do dataset>_images"` |
+| Arquivos no disco | ✏️ **Copiados** para `<destino>/<nome>_images/` |
 | `file_name` | 🔒 Preservado (a menos que colisão force sufixo) |
 | Hashes | 🔒 Inalterados (cópia byte-a-byte preserva conteúdo) |
 | Tudo mais | 🔒 Inalterado |
 
-> 💡 A subpasta leva o nome do dataset (`<nome>_images`) de propósito:
-> assim você pode localizar **vários datasets na mesma pasta destino**
-> sem misturar as imagens de um com as do outro.
-
-> 💡 Após **Copiar imagens originais**, comprima `<pasta_destino>/`
-> num zip e você tem um dataset **100 % portátil** — funciona em
-> qualquer máquina com FaceAudit instalado.
+> 💡 Após COPY_ORIGINALS, comprima `<pasta_destino>/` num zip e você
+> tem um dataset **100 % portátil** — funciona em qualquer máquina
+> com FaceAudit instalado.
 
 ## Estratégia de nomeação
 
@@ -279,6 +305,32 @@ operação fica idempotente:
 
 ## Cenários práticos
 
+### Cenário 0 — Corrigindo a subpasta de um dataset relativo
+
+**Antes** (parquet relativo copiado, mas as imagens ficaram noutra subpasta):
+
+```
+parquet   : /Users/me/caso/dataset.parquet
+imagens   : /Users/me/caso/images/*.png   (estão AQUI)
+path_mode : RELATIVE
+path_root : "crops"                        ← ponteiro ERRADO → miniaturas vazias
+```
+
+**Ação:**
+
+1. 🗂 **Modificar Caminhos**
+2. Operação: **Corrigir subpasta (path_root)** *(já vem selecionada)*
+3. Campo `path_root`: digite `images` ou use **📁 Procurar…**
+4. **✔ Validar** → verde ✅ (o arquivo de exemplo existe)
+5. **✔ Aplicar path_root** → miniaturas re-resolvem; `★` na barra de status
+6. **Salvar**
+
+**Depois:**
+
+```
+path_root : "images"   ← corrigido; nenhum arquivo movido
+```
+
 ### Cenário A — Movendo um projeto de `/Users/alice` para `/Users/bob`
 
 **Antes** (parquet recebido da Alice):
@@ -291,11 +343,11 @@ path_mode  = ABSOLUTE
 
 **Ação:**
 
-1. 🗂 **Localizar**
-2. Modo: **Atualizar prefixo de caminho (sem cópia)** (REBASE_PREFIX)
-3. Prefixo antigo: `/Users/alice/data/celeb` *(auto-detectado)*
-4. Prefixo novo (pasta destino): `/Users/bob/projects/celeb` *(onde as imagens estão na sua máquina)*
-5. **🗂 Localizar**
+1. 🗂 **Modificar Caminhos**
+2. Operação: **REBASE_PREFIX**
+3. Prefixo Antigo: `/Users/alice/data/celeb` *(auto-detectado)*
+4. Pasta destino: `/Users/bob/projects/celeb` *(onde as imagens estão na sua máquina)*
+5. **OK**
 
 **Depois:**
 
@@ -318,11 +370,11 @@ image_path = C:\Users\colega\datasets\faces\foto_02.jpg
 
 **Ação:**
 
-1. 🗂 **Localizar**
-2. Modo: **Atualizar prefixo de caminho (sem cópia)** (REBASE_PREFIX)
-3. Prefixo antigo: `C:/Users/colega/datasets/faces` *(separadores normalizados)*
-4. Prefixo novo (pasta destino): `/Users/voce/imagens_perito/2024/faces`
-5. **🗂 Localizar**
+1. 🗂 **Modificar Caminhos**
+2. Operação: **REBASE_PREFIX**
+3. Prefixo Antigo: `C:/Users/colega/datasets/faces` *(separadores normalizados)*
+4. Pasta destino: `/Users/voce/imagens_perito/2024/faces`
+5. **OK**
 
 ### Cenário C — Empacotar dataset para arquivamento
 
@@ -336,14 +388,14 @@ image_path: /Users/me/projects/old_case/imgs/<filename>  (ABSOLUTE)
 
 **Ação:**
 
-1. 🗂 **Localizar**
-2. Modo: **Copiar imagens originais**
-3. Estratégia de nome: **Preservar nomes**
+1. 🗂 **Modificar Caminhos**
+2. Operação: **COPY_ORIGINALS**
+3. Estratégia: **PRESERVE**
 4. Pasta destino: `/Volumes/HD_Externo/arquivo_2024/case_2024/`
-5. Pular arquivos existentes: ☑️
-6. **🗂 Localizar**
+5. Skip Existing: ☑️
+6. **OK**
 
-**Depois** (supondo o dataset chamado `case_2024`):
+**Depois:**
 
 ```
 parquet  : /Users/me/projects/old_case/case_2024.parquet  ← original intacto
@@ -375,10 +427,10 @@ image_path: /home/user/projects/active/imgs/<file>  (ABSOLUTE)
 
 **Ação:**
 
-1. 🗂 **Localizar**
-2. Modo: **Reescrever caminhos (sem cópia)** (REWRITE_RELATIVE)
+1. 🗂 **Modificar Caminhos**
+2. Operação: **REWRITE_RELATIVE**
 3. Pasta destino: `~/projects/active/`
-4. **🗂 Localizar**
+4. **OK**
 
 **Depois:**
 
@@ -395,32 +447,33 @@ e o dataset continua funcionando — sem cópia, sem renomear nada.
 
 | Erro | Causa | Diagnóstico |
 |---|---|---|
+| Validei o `path_root` e deu verde, mas as imagens estão erradas | A validação só confere **existência**, não conteúdo | Confira na galeria; aponte o `path_root` para a subpasta correta |
+| A operação *Corrigir subpasta* não aparece no combo | O dataset é `ABSOLUTE` (não tem `path_root`) | Use REWRITE_RELATIVE ou COPY_ORIGINALS pra convertê-lo em relativo primeiro |
 | `REBASE_PREFIX: pasta destino X não existe` | Você digitou um caminho inválido como prefixo novo | Confirme com Finder/Explorer que a pasta realmente existe |
 | Muitas linhas em `failures` no resumo final | Imagens não foram encontradas no destino | Verifique se o prefixo novo + estrutura interna bate com o local real das imagens. Tire algumas amostras do parquet e tente abrir manualmente |
-| `fora de target_dir (…); use COPY_ORIGINALS pra mover…` (REWRITE_RELATIVE) | Alguma imagem está em pasta-pai do destino | Mude o destino para um ancestral comum, ou use **Copiar imagens originais** |
+| `Image outside target_dir` (REWRITE_RELATIVE) | Alguma imagem está em pasta-pai do destino | Mude o destino para um ancestral comum, ou use COPY_ORIGINALS |
 | `n_skipped` enorme em COPY com skip OFF | Você tinha deixado skip ON antes — re-execução copiou tudo | Não é um problema; significa que a operação anterior foi parcial |
 | Hashes diferem após COPY | **Não acontece** se a cópia foi byte-a-byte | Se acontecer, indica corrupção de disco; reporte como bug |
 
 ## O que **nunca** muda
 
-Para tranquilidade forense — `Localizar` é **garantidamente
+Para tranquilidade forense — *Modificar Caminhos* é **garantidamente
 não-destrutivo** em relação ao conteúdo biométrico:
 
 | Atributo | Garantia |
 |---|---|
-| `hash` (SHA-256 da imagem) | Imutável em todas as 3 modalidades |
+| `hash` (SHA-256 da imagem) | Imutável em todas as operações |
 | `identity` | Imutável |
 | `embedding_v2`, `embedding_v4` | Imutáveis |
 | `ff_info`, `ofiq_info`, `serfiq_info` | Imutáveis |
 | `column_specs` (esquema do dataset) | Imutáveis |
 | `name`, `description`, `is_aligned` | Imutáveis |
-| Arquivos de imagem originais | Intactos em REBASE_PREFIX e REWRITE_RELATIVE; copiados (não movidos nem deletados) em COPY_ORIGINALS |
+| Arquivos de imagem originais | Intactos em *Corrigir subpasta*, REBASE_PREFIX e REWRITE_RELATIVE; copiados (não movidos nem deletados) em COPY_ORIGINALS |
 
-Toda operação *Localizar* é **registrada no Audit Log** com a
-operação `COPY_IMAGES` (rotulada *"Localização (cópia/reescrita de
-imagens)"* no log, emoji 🗂), o modo usado e as contagens
-(`n_processed`, `n_copied`, `n_skipped`, `n_failed`) — preservando a
-cadeia de custódia.
+Toda operação *Modificar Caminhos* é **registrada no Audit Log** com a
+operação **Modificação de caminhos das imagens**, o modo usado (ou
+`fix_path_root` na correção leve) e a contagem de faces afetadas —
+preservando a cadeia de custódia.
 
 ---
 

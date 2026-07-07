@@ -40,7 +40,7 @@ estiverem disponíveis, a aba continua funcionando — apenas as
 funcionalidades que **dependem** deles (criar/enriquecer com embeddings
 e calcular qualidade) ficam **desabilitadas dentro dos diálogos**. Tudo
 o que **não** depende do ForensicFace — **abrir**, **filtrar**,
-**comparar**, **balancear**, **localizar**, **exportar** — continua
+**comparar**, **balancear**, **modificar caminhos**, **exportar** — continua
 plenamente utilizável, inclusive só para leitura de datasets já prontos.
 
 ## Leiaute geral
@@ -95,7 +95,7 @@ Operações de **ciclo de vida** do dataset:
 
 ### Aba *Dataset*
 
-![Ribbon Dataset: Auditar, Filtrar, Localizar, Enriquecer, Coluna, Metadados, Juntar, Dividir, Balancear, Comparar, Estatísticas, Custódia](assets/20_ribbon_1_dataset.png)
+![Ribbon Dataset: Auditar, Filtrar, Modificar Caminhos, Enriquecer, Coluna, Metadados, Juntar, Dividir, Balancear, Comparar, Estatísticas, Custódia](assets/20_ribbon_1_dataset.png)
 
 Operações que **agem sobre o conteúdo**:
 
@@ -103,7 +103,7 @@ Operações que **agem sobre o conteúdo**:
 |---|---|---|
 | **Auditoria** | 🔎 *Auditar* | Análise de integridade biométrica + visualizações forenses |
 | **Filtragem** | 🔍 *Filtrar* / 🗑️ *Limpar Filtro* | Subconjuntos por expressão; o filtro vira a visão ativa da tabela |
-| **Localização** | 🗂 *Localizar* | Corrige `image_path` quebrado e/ou empacota o dataset em pasta portátil ([capítulo 03](03_carregando_e_localizando.md)) |
+| **Caminhos** | 🗂 *Modificar Caminhos* | Corrige `path_root`/`image_path` quebrado e/ou empacota o dataset em pasta portátil ([capítulo 03](03_carregando_e_localizando.md)) |
 | **Enriquecimento** | 💎 *Enriquecer* / ➕📋 *Coluna* / 🏷️ *Metadados* | Adicionar/recalcular embeddings, FIQA e OFIQ, pose e demografia; coluna custom; editar rótulos e vocabulários |
 | **Estrutural** | 🔗 *Juntar* / ✂️ *Dividir* / ⚖ *Balancear* | Concatenar; particionar por identidade ou índice; balancear amostras |
 | **Análise** | ⚖️ *Comparar* / 📊 *Estatísticas* | Comparação par-a-par com outro dataset; estatísticas agregadas |
@@ -185,8 +185,8 @@ Quando uma linha é selecionada, o painel direito mostra:
 > ⚠️ Se a miniatura aparece em branco (placeholder) mesmo com o
 > dataset carregado, é provável que o caminho `image_path` esteja
 > quebrado — o parquet foi gerado em outra máquina (ou foi
-> *commitado* sem as imagens). Use a função **Localizar** ([capítulo
-> 03](03_carregando_e_localizando.md)) para corrigir.
+> *commitado* sem as imagens). Use a função **Modificar Caminhos**
+> ([capítulo 03](03_carregando_e_localizando.md)) para corrigir.
 
 ## Próximos passos
 
@@ -195,6 +195,6 @@ Quando uma linha é selecionada, o painel direito mostra:
 - **Tem vídeos e quer achar um investigado neles?** Veja [capítulo 02b
   — Criando a partir de vídeo](02b_criando_dataset_de_video.md).
 - **Já tem um parquet pronto?** Pule para [capítulo 03 — Carregando
-  e localizando](03_carregando_e_localizando.md).
+  e modificando caminhos](03_carregando_e_localizando.md).
 - **Quer adicionar métricas em um dataset existente?** Veja
   [capítulo 05 — Enriquecimento](05_enriquecimento.md).

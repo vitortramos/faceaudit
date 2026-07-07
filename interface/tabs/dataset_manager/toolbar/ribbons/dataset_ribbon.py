@@ -1,8 +1,9 @@
 """Ribbon de operações sobre o conteúdo do dataset (PR Ribbon refactor).
 
 Ordem dos botões consolidada com o usuário:
-Auditar, Filtrar, Limpar Filtro, Localizar, Enriquecer, Adicionar Coluna,
-Juntar, Dividir, Balancear, Comparar, Estatísticas, Custódia.
+Auditar, Filtrar, Limpar Filtro, Modificar Caminhos, Enriquecer,
+Adicionar Coluna, Juntar, Dividir, Balancear, Comparar, Estatísticas,
+Custódia.
 
 Movidos pra outras abas: Galeria + Relatório → Exibir;
 → Estratégia → Arquivo.
@@ -41,13 +42,15 @@ class DatasetRibbon(ResponsiveRibbon):
         layout.addWidget(self.btn_clear_filter)
         layout.addWidget(ToolbarSeparator())
 
-        # ── Localizar (paths absolutos → relativos / cópia portátil) ──
-        self.btn_localize = ToolbarButton(
-            "Localizar", "🗂",
-            tooltip="Converte paths absolutos em relativos, opcionalmente "
-                    "copiando imagens pra pasta autocontida (portátil).",
+        # ── Modificar Caminhos (corrige path_root / relativiza / copia) ──
+        self.btn_modify_paths = ToolbarButton(
+            "Modificar Caminhos", "🗂",
+            tooltip="Gerencia como o dataset aponta pras imagens: corrige "
+                    "a subpasta relativa (path_root), converte paths "
+                    "absolutos em relativos ou copia as imagens pra pasta "
+                    "autocontida (portátil).",
         )
-        layout.addWidget(self.btn_localize)
+        layout.addWidget(self.btn_modify_paths)
         layout.addWidget(ToolbarSeparator())
 
         # ── Enriquecer + Adicionar Coluna (mutações que adicionam dados) ──

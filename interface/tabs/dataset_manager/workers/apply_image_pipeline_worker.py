@@ -2,7 +2,7 @@
 thread separada (PR I5).
 
 Sinais Qt seguindo padrão dos outros workers (igual
-LocalizeDatasetWorker do PR L1d).
+ModifyPathsWorker do PR L1d).
 """
 
 from __future__ import annotations

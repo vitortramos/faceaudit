@@ -1,5 +1,10 @@
-"""LocalizeDatasetWorker — roda DatasetLocalizationService em thread
-separada (PR L1d).
+"""ModifyPathsWorker — roda DatasetLocalizationService em thread
+separada (renomeado de LocalizeDatasetWorker — PR L1d).
+
+Cobre as três operações *pesadas* de "Modificar Caminhos"
+(REWRITE_RELATIVE / COPY_ORIGINALS / REBASE_PREFIX). A correção leve de
+`path_root` (FIX_PATH_ROOT) é só-metadados e é aplicada direto no
+controller, sem passar por aqui.
 
 Sinais Qt seguindo o padrão dos outros workers do dataset_manager
 (EnrichWorker, FilterWorker, etc.).
@@ -22,8 +27,9 @@ from faceaudit.services.dataset_localization_service import (
 )
 
 
-class LocalizeDatasetWorker(QtCore.QObject):
-    """Worker assíncrono para localização (REWRITE_RELATIVE / COPY_ORIGINALS).
+class ModifyPathsWorker(QtCore.QObject):
+    """Worker assíncrono para modificação de caminhos (REWRITE_RELATIVE /
+    COPY_ORIGINALS / REBASE_PREFIX).
 
     Emite progress periodicamente — uma vez a cada `_PROGRESS_THROTTLE_FACES`
     faces ou ao chegar no final. Sem throttle, datasets de 100k faces
@@ -70,9 +76,10 @@ class LocalizeDatasetWorker(QtCore.QObject):
                 naming=self.naming,
                 skip_existing=self.skip_existing,
                 old_prefix=self.old_prefix,
-                # Subpasta de imagens POR dataset (`<nome>_images`): localizar
-                # vários datasets para a mesma pasta não mistura as imagens.
-                # Só tem efeito em COPY_ORIGINALS.
+                # Subpasta de imagens POR dataset (`<nome>_images`):
+                # modificar caminhos de vários datasets para a mesma
+                # pasta não mistura as imagens. Só tem efeito em
+                # COPY_ORIGINALS.
                 copy_subdir=dataset_images_subdir(self.dataset.name),
                 progress_callback=self._on_progress,
             )

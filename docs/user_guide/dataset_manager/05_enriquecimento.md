@@ -36,7 +36,7 @@ ideal para:
 | Tenho um dataset, quero **substituir** todas as métricas (porque mudei parâmetros) | **Enriquecer** com *Reprocessar* marcado |
 | Algumas faces falharam, quero retentar só elas | **Enriquecer** sem *Reprocessar* |
 | O parquet veio com `is_aligned` errado | **Enriquecer** (qualquer extractor; a flag é ajustada) |
-| Quero corrigir caminhos de imagem | [Localizar](03_carregando_e_localizando.md), **não** Enriquecer |
+| Quero corrigir caminhos de imagem | [Modificar Caminhos](03_carregando_e_localizando.md), **não** Enriquecer |
 
 ## O diálogo *Enriquecer Dataset*
 

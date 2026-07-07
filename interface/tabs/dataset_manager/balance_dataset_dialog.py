@@ -1,7 +1,7 @@
 """Diálogo de balanceamento por identidade (PR balance-toolbar).
 
 Single-file (controller + view juntos, padrão do app:
-schema_report_dialog.py / localize_dataset_dialog.py /
+schema_report_dialog.py / modify_paths_dialog.py /
 apply_image_pipeline_dialog.py).
 
 Replica as opções do `DatasetBalancingInstruction` do Strategy Manager:

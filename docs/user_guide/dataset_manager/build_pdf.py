@@ -454,7 +454,7 @@ CHAPTERS = [
     ("01_visao_geral.md", "Visão geral"),
     ("02_criando_dataset.md", "Criando um dataset"),
     ("02b_criando_dataset_de_video.md", "Criando a partir de vídeo"),
-    ("03_carregando_e_localizando.md", "Carregando e localizando"),
+    ("03_carregando_e_localizando.md", "Carregando e modificando caminhos"),
     ("04_navegando_dataset.md", "Navegando no dataset"),
     ("05_enriquecimento.md", "Enriquecimento"),
     ("06_filtros_e_estatisticas.md", "Filtros e estatísticas"),

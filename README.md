@@ -185,7 +185,7 @@ Um dataset é um arquivo **parquet** (`.parquet`) com:
 |---|---|
 | **Auditar** | Auditoria forense completa — 14+ verificações automáticas (ver abaixo) |
 | **Filtrar / Limpar Filtro** | Filtros multi-coluna com critérios tipados (numérico, string/categórico, booleano) |
-| **Localizar** | Reescreve paths in-place como relativos (`REWRITE_RELATIVE`), copia imagens para pasta autocontida (`COPY_ORIGINALS`) ou substitui um prefixo de path cross-machine (`REBASE_PREFIX`). Para alinhar faces use o Editor de Pipeline de Imagens (`Origem = Face alinhada (112×112)`, zero steps) |
+| **Modificar Caminhos** | Corrige a subpasta `path_root` de datasets relativos sem mover arquivos (`FIX_PATH_ROOT`), reescreve paths in-place como relativos (`REWRITE_RELATIVE`), copia imagens para pasta autocontida (`COPY_ORIGINALS`) ou substitui um prefixo de path cross-machine (`REBASE_PREFIX`). Para alinhar faces use o Editor de Pipeline de Imagens (`Origem = Face alinhada (112×112)`, zero steps) |
 | **Enriquecer** | Adiciona embeddings de outros modelos Sepael, FIQA, OFIQ (qualidade ISO), pose e demografia — cada item com selo de cobertura (presente/parcial/ausente); só processa o que falta, salvo *Reprocessar* |
 | **Coluna** | Adiciona coluna custom (anotação livre) |
 | **Metadados** | Edita nome, descrição, rótulos, roles e vocabulários de colunas |

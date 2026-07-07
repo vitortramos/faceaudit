@@ -101,17 +101,17 @@ Edição dos atributos globais:
 | **Nome** | 🔒 Read-only | Pra mudar, use *Salvar Como* com novo nome |
 | **Descrição** | ✏️ Sim | Texto livre, salvo no metadado |
 | ☑️ **is_aligned** | ✏️ Sim | Override manual *(também acessível via Enriquecer)* |
-| **path_mode** / **path_root** | 🔒 Read-only | Pra mudar, use *Localizar* ([capítulo 03](03_carregando_e_localizando.md)) |
+| **path_mode** / **path_root** | 🔒 Read-only | Pra mudar/migrar, use *Modificar Caminhos* ([capítulo 03](03_carregando_e_localizando.md)) |
 
-> ⚠️ **Proveniência de datasets de vídeo não é editável aqui.**
+> ℹ️ **Proveniência de datasets de vídeo é exibida (read-only).**
 > Datasets criados por extração de vídeo (veja o
 > [capítulo 02b](02b_criando_dataset_de_video.md)) carregam metadados
 > de proveniência estruturada — `dataset_origin_type`,
 > `selection_warning` (aviso de viés de seleção), `source_run_id`,
-> `selection_anchor_model` e `selection_threshold`. O Editor de
-> Metadados **não exibe nem edita** esses campos: ele só cobre nome,
-> descrição, `is_aligned`, `path_mode`/`path_root` e as colunas. A
-> proveniência viaja com o parquet, mas é somente-leitura por aqui.
+> `selection_anchor_model` e `selection_threshold`. Quando presentes,
+> o Editor de Metadados os mostra num grupo **Proveniência** somente-
+> leitura na aba *Dataset* (com o aviso de seleção em destaque âmbar).
+> Não são editáveis por aqui — viajam com o parquet.
 
 ### Aba *Colunas*
 

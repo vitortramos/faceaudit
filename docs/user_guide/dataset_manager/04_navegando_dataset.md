@@ -179,7 +179,7 @@ Selecione uma linha na tabela e o painel direito popula-se:
 A miniatura da face selecionada, dimensionada pra caber no painel.
 Quando a imagem não existe no disco (caminho quebrado), aparece um
 placeholder cinza com o texto **Imagem não encontrada** — use
-*Localizar* ([capítulo 03](03_carregando_e_localizando.md)) pra
+*Modificar Caminhos* ([capítulo 03](03_carregando_e_localizando.md)) pra
 corrigir. Sem nenhuma linha selecionada, o placeholder mostra
 **Selecione uma face**.
 
@@ -347,4 +347,4 @@ salvar, fechar) — essas ações são acionadas pelos botões da ribbon
 
 ---
 
-[← Capítulo 03 — Carregando e localizando](03_carregando_e_localizando.md) · [Capítulo 05 — Enriquecimento →](05_enriquecimento.md)
+[← Capítulo 03 — Carregando e modificando caminhos](03_carregando_e_localizando.md) · [Capítulo 05 — Enriquecimento →](05_enriquecimento.md)

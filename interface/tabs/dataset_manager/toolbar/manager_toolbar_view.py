@@ -5,7 +5,7 @@ com 3 ribbons (Arquivo / Dataset / Imagens) + barra de status dedicada
 abaixo, sempre visível.
 
 **Compatibilidade preservada (decisão #5 do usuário)** — a view continua
-expondo os mesmos atributos `self.btn_save`, `self.btn_localize`, etc.
+expondo os mesmos atributos `self.btn_save`, `self.btn_modify_paths`, etc.
 via delegação aos ribbons. Controller (`manager_toolbar_controller.py`)
 e demais call sites continuam inalterados.
 
@@ -146,7 +146,7 @@ class ManagerToolbarView(QFrame):
         self.btn_stats = self.dataset_ribbon.btn_stats
         self.btn_analyze = self.dataset_ribbon.btn_analyze
         self.btn_audit_log = self.dataset_ribbon.btn_audit_log
-        self.btn_localize = self.dataset_ribbon.btn_localize
+        self.btn_modify_paths = self.dataset_ribbon.btn_modify_paths
         self.btn_filter = self.dataset_ribbon.btn_filter
         self.btn_clear_filter = self.dataset_ribbon.btn_clear_filter
         self.btn_add_column = self.dataset_ribbon.btn_add_column
@@ -176,7 +176,7 @@ class ManagerToolbarView(QFrame):
             self.btn_merge, self.btn_split, self.btn_compare,
             self.btn_stats, self.btn_analyze,
             self.btn_schema_report, self.btn_audit_log,
-            self.btn_localize, self.btn_filter,
+            self.btn_modify_paths, self.btn_filter,
             self.btn_add_column, self.btn_metadata,
             self.btn_toggle_gallery,
             self.btn_send_to_strategy,

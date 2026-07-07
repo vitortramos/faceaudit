@@ -102,7 +102,7 @@ num *worker* separado pra não travar a UI.
 > 💡 **Truque**: selecione **Origem = Face alinhada (112×112)** e deixe o
 > pipeline **sem nenhum step**. O *Processar* então produz um dataset
 > contendo apenas as faces alinhadas 112×112 como PNG — é o substituto do
-> antigo *Copiar Faces Alinhadas* do diálogo *Localizar Dataset*. O dataset
+> antigo *Copiar Faces Alinhadas* do diálogo *Modificar Caminhos*. O dataset
 > derivado é marcado como `is_aligned=True`, de modo que um **Enriquecer**
 > posterior ([capítulo 05](05_enriquecimento.md)) não re-detecta a face
 > dentro do crop já alinhado.

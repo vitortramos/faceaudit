@@ -319,4 +319,4 @@ parcial** antes de abortar.
 
 ---
 
-[← Capítulo 01 — Visão geral](01_visao_geral.md) · [Capítulo 03 — Carregando e localizando →](03_carregando_e_localizando.md)
+[← Capítulo 01 — Visão geral](01_visao_geral.md) · [Capítulo 03 — Carregando e modificando caminhos →](03_carregando_e_localizando.md)

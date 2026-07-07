@@ -463,4 +463,4 @@ repete na tela.
 
 ---
 
-[← Capítulo 02 — Criando um dataset](02_criando_dataset.md) · [Capítulo 03 — Carregando e localizando →](03_carregando_e_localizando.md)
+[← Capítulo 02 — Criando um dataset](02_criando_dataset.md) · [Capítulo 03 — Carregando e modificando caminhos →](03_carregando_e_localizando.md)

@@ -84,6 +84,21 @@ def _axis_choices() -> List[Tuple[str, str]]:
 # Singletons cujos roles não podem ser duplicados nem alterados.
 _SINGLETON_ROLES = frozenset({"identity", "image_path", "file_hash"})
 
+# Rótulos PT para as chaves de proveniência (allowlist
+# `FaceDataset._PROVENANCE_METADATA_KEYS`). Definido localmente e não
+# importado de propósito: a seção só é renderizada quando o dataset
+# expõe `provenance_metadata` não-vazio (getattr defensivo), então este
+# diálogo não acopla a um campo que pode não existir em todo branch.
+_PROVENANCE_LABELS = {
+    "dataset_origin_type": "Origem",
+    "selection_warning": "⚠ Aviso de seleção",
+    "selection_conditioned_on_embedding": "Seleção condicionada ao embedding",
+    "selection_anchor_model": "Modelo âncora",
+    "selection_threshold": "Limiar de seleção",
+    "source_run_id": "Run de origem",
+    "source_run_manifest": "Manifesto de origem",
+}
+
 
 class DatasetMetadataEditorDialog(QtWidgets.QDialog):
     """Modal de edição completa de metadados do dataset.
@@ -163,26 +178,40 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
         root.addWidget(self._tabs, 1)
 
         # ── Tab 1: Dataset ──────────────────────────────────────────────
+        # Reorganizada em grupos (antes era um QFormLayout ancorado no
+        # topo com ~5 linhas → um vazião no meio da janela). Grupos:
+        # Identificação · Imagens · Caminhos (read-only) · Proveniência
+        # (read-only, condicional).
         ds_tab = QtWidgets.QWidget(parent=self._tabs)
-        ds_layout = QtWidgets.QFormLayout(ds_tab)
-        ds_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
-        ds_layout.setVerticalSpacing(8)
-        ds_layout.setHorizontalSpacing(10)
+        ds_outer = QtWidgets.QVBoxLayout(ds_tab)
+        ds_outer.setContentsMargins(8, 8, 8, 8)
+        ds_outer.setSpacing(10)
 
-        self.txt_name = QtWidgets.QLineEdit(parent=ds_tab)
+        # ── Grupo: Identificação ──
+        id_box = QtWidgets.QGroupBox("Identificação", parent=ds_tab)
+        id_form = QtWidgets.QFormLayout(id_box)
+        id_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        id_form.setVerticalSpacing(8)
+        id_form.setHorizontalSpacing(10)
+
+        self.txt_name = QtWidgets.QLineEdit(parent=id_box)
         self.txt_name.setToolTip(
             "Nome do dataset, gravado em `faceaudit:dataset_name` no parquet."
         )
-        ds_layout.addRow("Nome:", self.txt_name)
+        id_form.addRow("Nome:", self.txt_name)
 
-        self.txt_description = QtWidgets.QPlainTextEdit(parent=ds_tab)
+        self.txt_description = QtWidgets.QPlainTextEdit(parent=id_box)
         self.txt_description.setMaximumHeight(120)
         self.txt_description.setPlaceholderText("Descrição livre do dataset...")
-        ds_layout.addRow("Descrição:", self.txt_description)
+        id_form.addRow("Descrição:", self.txt_description)
+        ds_outer.addWidget(id_box)
 
+        # ── Grupo: Imagens ──
+        img_box = QtWidgets.QGroupBox("Imagens", parent=ds_tab)
+        img_layout = QtWidgets.QVBoxLayout(img_box)
         self.chk_is_aligned = QtWidgets.QCheckBox(
             "Imagens já alinhadas (112×112 — pula detect+align no FFService)",
-            parent=ds_tab,
+            parent=img_box,
         )
         self.chk_is_aligned.setToolTip(
             "Marque quando as imagens em `image_path` já são crops 112×112 "
@@ -190,31 +219,64 @@ class DatasetMetadataEditorDialog(QtWidgets.QDialog):
             "input_source=ALIGNED_FACE). Re-enriquecimentos vão direto pra "
             "extração de embedding sem detect+align."
         )
-        ds_layout.addRow("", self.chk_is_aligned)
+        img_layout.addWidget(self.chk_is_aligned)
+        ds_outer.addWidget(img_box)
 
-        info_lbl = QtWidgets.QLabel(
-            "<b>Path mode:</b> {} {}".format(
-                getattr(getattr(self._dataset, "path_mode", None), "value", "n/a"),
-                "(`{}`)".format(getattr(self._dataset, "path_root", "") or "")
-                if getattr(getattr(self._dataset, "path_mode", None), "value", None) == "relative"
-                else "",
-            ),
-            parent=ds_tab,
+        # ── Grupo: Caminhos (read-only) ──
+        paths_box = QtWidgets.QGroupBox("Caminhos das imagens", parent=ds_tab)
+        paths_form = QtWidgets.QFormLayout(paths_box)
+        paths_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        pm_value = getattr(
+            getattr(self._dataset, "path_mode", None), "value", "n/a",
         )
-        info_lbl.setStyleSheet("color: #666; font-size: 11px;")
-        info_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        info_lbl.setWordWrap(True)
-        ds_layout.addRow("", info_lbl)
+        paths_form.addRow("Modo:", self._readonly_label(pm_value))
+        if pm_value == "relative":
+            root_disp = getattr(self._dataset, "path_root", "") or "(raiz)"
+            paths_form.addRow(
+                "Subpasta (path_root):", self._readonly_label(root_disp),
+            )
         hint_lbl = QtWidgets.QLabel(
-            "Para alterar `path_mode`/`path_root` use o botão "
-            "<b>Localizar</b> no ribbon (operação separada que migra os "
-            "image_paths).",
-            parent=ds_tab,
+            "Para editar <code>path_mode</code>/<code>path_root</code> e "
+            "migrar os caminhos, use o botão <b>Modificar Caminhos</b> no "
+            "ribbon.",
+            parent=paths_box,
         )
-        hint_lbl.setStyleSheet("color: #888; font-style: italic; font-size: 11px;")
+        hint_lbl.setStyleSheet(
+            "color: #888; font-style: italic; font-size: 11px;"
+        )
+        hint_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
         hint_lbl.setWordWrap(True)
-        ds_layout.addRow("", hint_lbl)
+        paths_form.addRow("", hint_lbl)
+        ds_outer.addWidget(paths_box)
 
+        # ── Grupo: Proveniência (read-only, condicional) ──
+        # Só aparece quando o dataset traz `provenance_metadata` não-vazio
+        # (ex: datasets extraídos de vídeo, que carregam aviso de viés de
+        # seleção). getattr defensivo — dormant quando o campo não existe.
+        prov = getattr(self._dataset, "provenance_metadata", None) or {}
+        if prov:
+            prov_box = QtWidgets.QGroupBox("Proveniência", parent=ds_tab)
+            prov_form = QtWidgets.QFormLayout(prov_box)
+            prov_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+            # Chaves conhecidas primeiro, na ordem do allowlist.
+            for key, label in _PROVENANCE_LABELS.items():
+                if key not in prov:
+                    continue
+                val_lbl = self._readonly_label(str(prov[key]))
+                val_lbl.setWordWrap(True)
+                if key == "selection_warning":
+                    val_lbl.setStyleSheet("color: #b26a00;")  # âmbar (destaque)
+                prov_form.addRow(f"{label}:", val_lbl)
+            # Chaves fora do allowlist — mostra genérico pra não esconder.
+            for key, val in prov.items():
+                if key in _PROVENANCE_LABELS:
+                    continue
+                val_lbl = self._readonly_label(str(val))
+                val_lbl.setWordWrap(True)
+                prov_form.addRow(f"{key}:", val_lbl)
+            ds_outer.addWidget(prov_box)
+
+        ds_outer.addStretch(1)
         self._tabs.addTab(ds_tab, "Dataset")
 
         # ── Tab 2: Colunas ──────────────────────────────────────────────

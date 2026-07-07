@@ -201,7 +201,7 @@ def main() -> None:
                 controller.manager_controller.fluxo_novo_dataset()
             elif s == 7:
                 _dialog_label["name"] = "31_localizar"
-                controller.manager_controller.fluxo_localizar()
+                controller.manager_controller.fluxo_modificar_caminhos()
             elif s == 8:
                 _dialog_label["name"] = "32_enriquecer"
                 controller.manager_controller.fluxo_enriquecer()

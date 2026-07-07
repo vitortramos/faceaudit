@@ -16,7 +16,7 @@ um caso concreto e, em seguida, descreve cada tela em detalhe.
 | [01 — Visão geral](01_visao_geral.md) | O que é o Gerenciador de Datasets, quando usar, leiaute da janela principal |
 | [02 — Criando um dataset](02_criando_dataset.md) | Diálogo *Novo dataset* (quatro grupos), *Criador de Template*, modelos SEPAEL, opções de alinhamento |
 | [02b — Criando a partir de vídeo](02b_criando_dataset_de_video.md) | Extrair faces de vídeo(s) por âncora: janela de extração, revisão humana, importação e manifesto de reprodutibilidade |
-| [03 — Carregando e localizando](03_carregando_e_localizando.md) | Abrir um `.parquet`, corrigir caminhos quebrados (modos `REWRITE_RELATIVE`, `COPY_ORIGINALS`, `REBASE_PREFIX`) |
+| [03 — Carregando e modificando caminhos](03_carregando_e_localizando.md) | Abrir um `.parquet`; corrigir a subpasta `path_root` (sem mover arquivos), reescrever/copiar caminhos (`REWRITE_RELATIVE`, `COPY_ORIGINALS`, `REBASE_PREFIX`) |
 | [04 — Navegando no dataset](04_navegando_dataset.md) | Tabela, painel de detalhes (Geral/Bio e Qualidade ISO), galeria e seu menu de contexto, ribbons |
 | [05 — Enriquecimento](05_enriquecimento.md) | Adicionar/recalcular embeddings, FIQA, OFIQ (qualidade ISO), pose e demografia em um dataset existente |
 | [06 — Filtros e estatísticas](06_filtros_e_estatisticas.md) | Diálogo *Filtrar*, *Estatísticas*, *Relatório de Esquema* |
