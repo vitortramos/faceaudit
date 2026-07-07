@@ -192,7 +192,7 @@ Step-by-step execution (used by the UI for per-instruction runs):
 
 **Tuning anti-freeze no Windows (`interface/run.py` topo).** Antes de qualquer import pesado: `sys.setswitchinterval(0.001)` reduz o intervalo de troca da GIL de 5ms para 1ms; e em `sys.platform=="win32"`, `ctypes.windll.user32.DisableProcessWindowsGhosting()` desabilita o "ghost window" do Windows. `HashService.calculate_file_hash` usa `hashlib.file_digest` em Python ≥ 3.11.
 
-**Light palette forçada no startup (`interface/run.py:_apply_light_palette`).** Vários `setStyleSheet(...)` têm hex codes fixos que assumem fundo claro. Solução: imediatamente após `setStyle("Fusion")`, `_apply_light_palette(app)` define todos os `QPalette.ColorRole` com cores claras. Trava a app em modo claro independente do tema do SO. **Workaround temporário.**
+**Light palette forçada no startup (`interface/run.py:_apply_light_palette`).** Vários `setStyleSheet(...)` têm hex codes fixos que assumem fundo claro. Solução: imediatamente após `setStyle("Fusion")`, `_apply_light_palette(app)` define todos os `QPalette.ColorRole` com cores claras. Trava a app em modo claro independente do tema do SO. **Workaround temporário / dívida técnica — não é decisão de design.** Alvo: módulo central de tema com **tokens semânticos** (dicts LIGHT/DARK), `ThemeManager` que persiste a escolha, `QPalette` + QSS global gerados dos mesmos tokens, **zero hex cravado**, e **modo claro/escuro configurável** pelo usuário. Migração incremental (trocar hex por token a cada widget tocado). Detalhado na skill `faceaudit-qt-design`.
 
 **Performance: serialização de `StrategyResource` NÃO recursa no `payload`.** `StrategyResource.to_dict()` **NÃO chama `super().to_dict()`** do `JSONSerializableMixin`. O mixin usaria `dataclasses.asdict(self)` que recursa em TODOS os campos — incluindo `payload`. Para um `SimilarityScoreDataset` com 5M+ samples, isso alocaria ~70M+ objetos Python por chamada. `to_dict()` constrói o dict manualmente: `{resource_id, name, resource_type, artifact_ref}`. **Não reintroduzir `super().to_dict()` aqui sob hipótese alguma.**
 
@@ -538,6 +538,21 @@ Quando `copy_artifact_to_project()` é chamado com um tipo da global-library, `S
 ---
 
 ## Qt/PyQt patterns e convenções
+
+### Design de UI — SEMPRE usar as skills de design
+
+Qualquer trabalho de interface — criar/redesenhar telas, diálogos, painéis, widgets, ou mexer em QSS/`QPalette`/stylesheets/tema — **deve seguir as skills de design do projeto** (em `.claude/skills/`, versionadas no git):
+
+- **`faceaudit-qt-design`** — específica do FaceAudit: arquitetura, tema e idiomas Qt/QWidgets.
+- **`qt-ui-design`** (oficial da Qt Company) — leis de UX nomeadas, WCAG, escala tipográfica, modo auditoria.
+
+**Regras duras (não-negociáveis)** encodadas na skill:
+- **Regra de negócio mora no backend** (services/executors/models); a UI apenas orquestra.
+- **UI ↔ backend troca apenas DTOs** — sem lógica de domínio dentro de widgets/controllers. Meta: trocar o frontend = chamar os mesmos métodos do backend.
+- **Trabalho pesado sempre em worker** (`QObject` + `moveToThread`), nunca na thread da GUI.
+- **Tema**: migrar para **tokens semânticos centralizados** com modo **claro/escuro configurável** — **não** cravar hex inline nem assumir light-only (ver nota "Light palette forçada" abaixo).
+
+Essas skills valem em qualquer superfície (CLI, IDE, web/nuvem, e edição via app no celular que faça checkout do repo).
 
 ### Sempre passar `parent=` ao criar QWidgets — anti-flash de janela top-level
 

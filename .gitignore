@@ -36,9 +36,10 @@ FaceAudit_Nova_Arquitetura.pdf
 *.swp
 
 # Claude Code — cache local de sessão (memory, planos, hooks)
-# Ignora tudo em .claude EXCETO as skills do projeto (versionadas p/ sincronizar via git).
+# Ignora tudo em .claude EXCETO as skills e commands do projeto (versionados p/ sincronizar via git).
 .claude/*
 !.claude/skills/
+!.claude/commands/
 
 # Configuração local (chaves, paths privados)
 .env
