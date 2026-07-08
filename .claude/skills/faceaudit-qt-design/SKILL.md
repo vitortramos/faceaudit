@@ -121,6 +121,16 @@ modos (delegar à `qt-ui-design` §2). Verifique com `widget.grab()` offscreen.
   logo após criar. (Ver seção "Qt/PyQt patterns" no CLAUDE.md.)
 - **Layout managers são o grid**: `QVBoxLayout`/`QHBoxLayout`/`QGridLayout`/
   `QSplitter`, com `spacing`/`margins` deliberados. Nada de posição fixa em pixel.
+- **Model/View para listas/tabelas que CRESCEM.** A partir de alguns milhares de
+  linhas (tabela de dataset, score datasets, grades de imagem), use
+  `QAbstractItemModel`/`QAbstractTableModel` + `QTableView`/`QTreeView`/`QListView` —
+  **não** `QTableWidget`/`QListWidget`/`QTreeWidget` populados linha a linha. A view
+  virtualiza (só renderiza o viewport) e não trava a GUI; ordenação/filtro vão em
+  `QSortFilterProxyModel`, não em recomputar a lista. Item-widgets continuam ok para
+  listas **curtas e estáveis** (árvore de recursos, lista de instruções). Combina com
+  os summarizers por amostragem já usados — o modelo puxa dado sob demanda, não
+  materializa tudo. Regra de camada continua valendo: o modelo lê **DTOs** do backend
+  (via serviço/worker), sem tocar em parquet/negócio dentro da view.
 - **QSS via `apply_themed_stylesheet`** (nível do widget mas theme-aware) ou global;
   evitar `setStyleSheet(...)` com **hex cravado** — foi o anti-padrão que gerou a antiga
   dívida de tema (já migrada). Toda cor nova passa por token.
@@ -128,6 +138,11 @@ modos (delegar à `qt-ui-design` §2). Verifique com `widget.grab()` offscreen.
   Nada de animação gratuita — reforça o "cara de gerado por IA" e distrai o perito.
 - **Tipografia** via `QFont` com escala clara; fontes do sistema/empacotadas (não
   web fonts). Ciente de High-DPI.
+- **Persistência de config/estado é `config.json`, NUNCA `QSettings`.** Decisão
+  deliberada do paradigma pendrive (projeto autocontido/portátil): estado vai em
+  `SystemConfig` + `JSONSerializableMixin` (por-máquina) ou nos artefatos do projeto.
+  Ignore recomendações genéricas de PyQt que sugiram `QSettings` (INI/Registry/Plist) —
+  elas quebram a portabilidade e espalham estado fora do projeto.
 
 ---
 
