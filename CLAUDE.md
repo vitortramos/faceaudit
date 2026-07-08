@@ -192,7 +192,7 @@ Step-by-step execution (used by the UI for per-instruction runs):
 
 **Tuning anti-freeze no Windows (`interface/run.py` topo).** Antes de qualquer import pesado: `sys.setswitchinterval(0.001)` reduz o intervalo de troca da GIL de 5ms para 1ms; e em `sys.platform=="win32"`, `ctypes.windll.user32.DisableProcessWindowsGhosting()` desabilita o "ghost window" do Windows. `HashService.calculate_file_hash` usa `hashlib.file_digest` em Python ≥ 3.11.
 
-**Light palette forçada no startup (`interface/run.py:_apply_light_palette`).** Vários `setStyleSheet(...)` têm hex codes fixos que assumem fundo claro. Solução: imediatamente após `setStyle("Fusion")`, `_apply_light_palette(app)` define todos os `QPalette.ColorRole` com cores claras. Trava a app em modo claro independente do tema do SO. **Workaround temporário / dívida técnica — não é decisão de design.** Alvo: módulo central de tema com **tokens semânticos** (dicts LIGHT/DARK), `ThemeManager` que persiste a escolha, `QPalette` + QSS global gerados dos mesmos tokens, **zero hex cravado**, e **modo claro/escuro configurável** pelo usuário. Migração incremental (trocar hex por token a cada widget tocado). Detalhado na skill `faceaudit-qt-design`.
+**Tema claro/escuro via `ThemeManager` (substituiu a paleta clara forçada).** O sistema de tema já existe — ver **"Sistema de tema claro/escuro (`interface/theme/`)"** na seção Qt/PyQt patterns. No bootstrap (`interface/run.py`), `_apply_light_palette(app)` roda como default seguro imediatamente após `setStyle("Fusion")`, mas é **sobrescrito** logo em seguida por `ThemeManager.initialize(app, mode)` (após ler `config.json`), que constrói a `QPalette` + QSS global a partir dos tokens do modo escolhido. O modo claro dos tokens é byte-idêntico ao `_apply_light_palette`. Regra permanente: **nunca cravar hex em `setStyleSheet` — usar `apply_themed_stylesheet`/`current_token_fn`** (tokens em `interface/theme/tokens.py`).
 
 **Performance: serialização de `StrategyResource` NÃO recursa no `payload`.** `StrategyResource.to_dict()` **NÃO chama `super().to_dict()`** do `JSONSerializableMixin`. O mixin usaria `dataclasses.asdict(self)` que recursa em TODOS os campos — incluindo `payload`. Para um `SimilarityScoreDataset` com 5M+ samples, isso alocaria ~70M+ objetos Python por chamada. `to_dict()` constrói o dict manualmente: `{resource_id, name, resource_type, artifact_ref}`. **Não reintroduzir `super().to_dict()` aqui sob hipótese alguma.**
 
@@ -553,6 +553,34 @@ Qualquer trabalho de interface — criar/redesenhar telas, diálogos, painéis, 
 - **Tema**: migrar para **tokens semânticos centralizados** com modo **claro/escuro configurável** — **não** cravar hex inline nem assumir light-only (ver nota "Light palette forçada" abaixo).
 
 Essas skills valem em qualquer superfície (CLI, IDE, web/nuvem, e edição via app no celular que faça checkout do repo).
+
+### Sistema de tema claro/escuro (`interface/theme/`)
+
+A UI tem tema **claro e escuro configurável**, com fonte única de verdade em tokens semânticos. **Nunca cravar hex inline em `setStyleSheet` — sempre rotear por tokens.**
+
+**Estrutura (`interface/theme/`):**
+- `tokens.py` — dicts `LIGHT` e `DARK` (mesmo conjunto de chaves) mapeando token → hex. Tokens: `SURFACE`, `SURFACE_ALT`, `SURFACE_RAISED`, `BORDER`, `TEXT`, `TEXT_MUTED`, `ACCENT`/`ACCENT_BG`/`ACCENT_TEXT` (âmbar forense), `PRIMARY`/`PRIMARY_BG`/`PRIMARY_STRONG`, `HEADER_BG`/`HEADER_TEXT` (cabeçalho navy = fundo escuro + texto claro), `SUCCESS`/`DANGER`/`WARNING` (+ `_BG`), `HIGHLIGHT`/`HIGHLIGHT_TEXT`, e os papéis de `QPalette` (`WINDOW`, `BASE`, etc.). **O modo claro é byte-idêntico à paleta histórica** (`_apply_light_palette`) — ativar o tema não regride o visual claro. Módulo puro (sem PyQt), com `assert set(LIGHT)==set(DARK)`.
+- `theme_manager.py` — `ThemeManager(QObject)` **singleton**. `ThemeManager.initialize(app, mode)` no bootstrap; `ThemeManager.instance()` em qualquer lugar. `apply(mode)` seta Fusion + `build_palette(mode)` (QPalette) + `build_global_qss(mode)` (QSS global — vazio no claro p/ não regredir; baseline no escuro) e emite `theme_changed`. `set_mode(mode)` troca em runtime. `color(token)`/`qcolor(token)` leem o modo atual.
+- `themed_widget.py` — **`apply_themed_stylesheet(widget, builder)`**: o padrão de migração. `builder(t)` recebe `t(token)->hex` e retorna o QSS; aplica imediatamente E **re-aplica ao trocar de tema** (um `_ThemedStyler` filho do widget escuta `theme_changed`; morre junto com o widget). Para QSS montado dinamicamente (loop/por-item/por-estado, ex.: `setForeground` de célula), use `current_token_fn()` no momento da criação (nasce com a cor certa; não re-aplica ao vivo).
+
+**Padrão de migração (obrigatório para QUALQUER QSS novo com cor):**
+```python
+from interface.theme import apply_themed_stylesheet, current_token_fn
+# estático (self ou filho fixo) — re-aplica ao vivo:
+apply_themed_stylesheet(self, lambda t: "QFrame { background: " + t("SURFACE_RAISED")
+    + "; color: " + t("TEXT") + "; border: 1px solid " + t("BORDER") + "; }")
+# dinâmico/por-estado — lê o token na criação:
+t = current_token_fn(); item.setForeground(QtGui.QColor(t("DANGER")))
+```
+
+**Persistência e toggle:** `SystemConfig.theme.mode` (`"light"`/`"dark"`) em `config.json` (por-máquina, tolerante a chave ausente). Lido em `interface/run.py` no bootstrap (após `bootstrap_configuration`, antes de criar a view) e aplicado via `ThemeManager.initialize`. O `ConfigDialog` tem o grupo **🎨 Aparência** com seletor Claro/Escuro; `MainGuiController.abrir_dialogo_configuracoes` chama `ThemeManager.instance().set_mode(...)` para aplicar **ao vivo** ao salvar.
+
+**Exceções intencionais (NÃO migrar para tema):**
+- **Plots matplotlib ficam BRANCOS sempre** (decisão forense — gráfico de laudo é branco/print-consistente). Nunca tocar em `color=`/`facecolor=`/`edgecolor=`/`cmap`/`ax.*`/`plt.*`/`Figure`/`sns.*` nem em `STRATEGY_COLOR_PALETTE`. Os *cards* que hospedam PNGs de plot também ficam brancos (ex.: `hubness_report_viewer_dialog`, `plot_card`) — plot branco em card branco é coerente.
+- **Pintura de canvas** via `QColor`/`QPainter` (máscara de oclusão, scrubber de vídeo, placeholders de ícone): é desenho, não chrome — deixar como está.
+- **Console de log** (`log_progress_dialog`, `#1e1e1e`): estética de terminal, escuro nos dois modos.
+
+**Status:** infra + todo o chrome sempre-visível + praticamente todos os diálogos migrados (62 arquivos). Os widgets de plot permanecem claros por design (acima).
 
 ### Sempre passar `parent=` ao criar QWidgets — anti-flash de janela top-level
 
