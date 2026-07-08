@@ -798,8 +798,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             apply_themed_stylesheet(
                 help_box,
                 lambda t: (
-                    "QFrame { background-color: " + t("ACCENT_BG") + ";"
-                    " border-left: 3px solid " + t("ACCENT") + ";"
+                    "QFrame { background-color: " + t("SURFACE_RAISED") + ";"
+                    " border-left: 3px solid " + t("TEXT_MUTED") + ";"
                     " border-radius: 2px;"
                     " margin: 0px 0px 6px 0px; }"
                 ),
@@ -811,7 +811,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 help_lbl,
                 lambda t: (
                     "background: transparent; border: none;"
-                    " color: " + t("ACCENT_TEXT") + "; font-size: 11px;"
+                    " color: " + t("TEXT_MUTED") + "; font-size: 11px;"
                 ),
             )
             help_lbl.setWordWrap(True)
@@ -869,8 +869,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 apply_themed_stylesheet(
                     desc_box,
                     lambda t: (
-                        "QFrame { background-color: " + t("ACCENT_BG") + ";"
-                        " border-left: 3px solid " + t("ACCENT") + ";"
+                        "QFrame { background-color: " + t("SURFACE_RAISED") + ";"
+                        " border-left: 3px solid " + t("TEXT_MUTED") + ";"
                         " border-radius: 2px;"
                         " margin: 0px 0px 4px 4px; }"
                     ),
@@ -886,7 +886,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     desc_lbl,
                     lambda t: (
                         "background: transparent; border: none;"
-                        " color: " + t("ACCENT_TEXT") + "; font-size: 11px;"
+                        " color: " + t("TEXT_MUTED") + "; font-size: 11px;"
                     ),
                 )
                 desc_lbl.setWordWrap(True)
