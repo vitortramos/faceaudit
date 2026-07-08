@@ -57,11 +57,15 @@ class OutputRowWidget(QtWidgets.QFrame):
         self._info_container: Optional[QtWidgets.QWidget] = None
         self._last_info_signature: Optional[tuple] = None
 
+        # Fundo NEUTRO (surface) — o verde do "outputs" fica só no título da
+        # seção (SectionHeader) e no label da linha. Fundo colorido é reservado
+        # para títulos/callouts, não para o conteúdo. (Original #fafdf6 era
+        # quase-branco; migração o havia saturado indevidamente em SUCCESS_BG.)
         apply_themed_stylesheet(
             self,
             lambda t: (
                 "OutputRowWidget {"
-                "  background-color: " + t("SUCCESS_BG") + ";"
+                "  background-color: " + t("SURFACE_RAISED") + ";"
                 "  border: 1px solid " + t("BORDER") + ";"
                 "  border-radius: 4px;"
                 "}"
