@@ -2,7 +2,7 @@ import os
 from PyQt6 import QtWidgets, uic, QtCore, QtGui
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton
 
-from interface.theme import ThemeManager
+from interface.theme import ThemeManager, apply_titlebar_theme
 from interface.theme.tokens import color as _theme_color
 
 class MainGuiView(QtWidgets.QMainWindow):
@@ -29,6 +29,10 @@ class MainGuiView(QtWidgets.QMainWindow):
         _theme_mgr = ThemeManager.instance()
         if _theme_mgr is not None:
             _theme_mgr.theme_changed.connect(self._on_theme_changed)
+            # Barra de título nativa (Windows) acompanha o tema — evita título
+            # claro sobre app escura. Aplicado aqui (antes do show) para a
+            # janela já nascer com a barra correta.
+            apply_titlebar_theme(self, _theme_mgr.mode == "dark")
         # CRÍTICO em telas pequenas: o QTabWidget propaga o MAX dos
         # minimumSizeHint de TODAS as tabs (não só a ativa). A tab
         # Dataset Manager (com ribbon de muitos botões) tem min ~1630,
@@ -109,12 +113,14 @@ class MainGuiView(QtWidgets.QMainWindow):
             return mgr.color(name)
         return _theme_color(name, "light")
 
-    def _on_theme_changed(self, _mode: str) -> None:
+    def _on_theme_changed(self, mode: str) -> None:
         """Reaplica o chrome que usa QSS próprio quando o tema troca."""
         if self.main_tabs is not None:
             self._apply_main_tabs_style()
         if getattr(self, "btn_config", None) is not None:
             self._restyle_config_button()
+        # Barra de título nativa acompanha a troca ao vivo.
+        apply_titlebar_theme(self, mode == "dark")
 
     def _apply_main_tabs_style(self):
         """Estilo Office accent bar nas tabs principais — mesma família

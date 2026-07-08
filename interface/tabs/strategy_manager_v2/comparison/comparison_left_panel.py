@@ -68,11 +68,11 @@ class ComparisonLeftPanel(QtWidgets.QWidget):
             "QListWidget { font-size: 12px; border: none; background: " + t("SURFACE") + "; }"
             "QListWidget::item { padding: 8px 10px; }"
             "QListWidget::item:selected {"
-            "    background: " + t("PRIMARY_BG") + "; color: inherit;"
+            "    background: " + t("PRIMARY_BG") + "; color: " + t("TEXT") + ";"
             "    border-left: 3px solid " + t("PRIMARY") + ";"
             "}"
             "QListWidget::item:selected:!active {"
-            "    background: " + t("PRIMARY_BG") + "; color: inherit;"
+            "    background: " + t("PRIMARY_BG") + "; color: " + t("TEXT") + ";"
             "}"
             "QListWidget::item:hover:!selected { background: " + t("SURFACE_RAISED") + "; }"
         )

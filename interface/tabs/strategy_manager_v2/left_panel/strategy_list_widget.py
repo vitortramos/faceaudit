@@ -71,11 +71,11 @@ class StrategyListWidget(QtWidgets.QWidget):
             lambda t: (
                 "QListWidget { font-size: 11px; border: none; background: " + t("SURFACE") + "; }"
                 "QListWidget::item:selected {"
-                "  background: " + t("PRIMARY_BG") + "; color: inherit;"
+                "  background: " + t("PRIMARY_BG") + "; color: " + t("TEXT") + ";"
                 "  border-left: 3px solid " + t("PRIMARY") + ";"
                 "}"
                 "QListWidget::item:selected:!active {"
-                "  background: " + t("PRIMARY_BG") + "; color: inherit;"
+                "  background: " + t("PRIMARY_BG") + "; color: " + t("TEXT") + ";"
                 "}"
                 "QListWidget::item:hover:!selected {"
                 "  background: " + t("PRIMARY_BG") + ";"
