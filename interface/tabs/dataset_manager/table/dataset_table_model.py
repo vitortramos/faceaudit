@@ -8,10 +8,7 @@ from PyQt6.QtCore import Qt
 
 from faceaudit.enums.dataset_columns import DatasetColumns
 
-
-# Background sutil pra células com valor fora do vocabulário definido.
-# Amarelo claro — chama atenção sem ofuscar a leitura.
-_OUT_OF_VOCAB_BRUSH = QtGui.QBrush(QtGui.QColor("#FFF5C2"))
+from interface.theme import current_token_fn
 
 
 @dataclass(frozen=True)
@@ -367,6 +364,8 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         # BackgroundRole — flag visual quando valor fora do vocab definido.
         # Política tolerante: o valor permanece aceito; só fica destacado
         # em amarelo claro pra inspeção visual + tooltip "fora do vocab".
+        # Cor lida do token de tema (WARNING_BG) no momento do render, de
+        # modo que acompanha a troca claro/escuro.
         if role == Qt.ItemDataRole.BackgroundRole:
             vocab = self._get_vocab_for_column(key)
             if vocab and key in self._df.columns:
@@ -374,7 +373,8 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
                     str_val = str(val).strip()
                     if str_val and str_val not in vocab:
-                        return _OUT_OF_VOCAB_BRUSH
+                        t = current_token_fn()
+                        return QtGui.QBrush(QtGui.QColor(t("WARNING_BG")))
             return None
 
         if role == Qt.ItemDataRole.DisplayRole or role == Qt.ItemDataRole.EditRole:

@@ -1,6 +1,8 @@
 from PyQt6.QtWidgets import QTableView, QAbstractItemView, QHeaderView
 from PyQt6.QtCore import Qt
 
+from interface.theme import apply_themed_stylesheet
+
 class ManagerTableView(QTableView):
     """
     View da Tabela de Dados.
@@ -25,7 +27,10 @@ class ManagerTableView(QTableView):
         self.alternatingRowColors = True
         self.setAlternatingRowColors(True)
         self.setShowGrid(False) # Grid falso deixa mais limpo (estilo moderno)
-        self.setStyleSheet("QTableView { border: none; selection-background-color: #0078d7; }")
+        apply_themed_stylesheet(
+            self,
+            lambda t: "QTableView { border: none; selection-background-color: " + t("PRIMARY") + "; }",
+        )
 
         # --- CABEÇALHO (AQUI ESTÁ A MUDANÇA) ---
         header = self.horizontalHeader()

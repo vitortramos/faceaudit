@@ -24,6 +24,8 @@ from typing import Any, Optional, Tuple
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 class ColumnPropertiesDialog(QtWidgets.QDialog):
     """Edita atributos editáveis de um ColumnSpec já existente.
@@ -106,7 +108,10 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
         else:
             self.txt_default = None
             note = QtWidgets.QLabel("Coluna canônica — `default_value` não editável.")
-            note.setStyleSheet("color: #888; font-style: italic;")
+            apply_themed_stylesheet(
+                note,
+                lambda t: "color: " + t("TEXT_MUTED") + "; font-style: italic;",
+            )
             form.addRow("Valor padrão:", note)
 
         layout.addLayout(form)
@@ -118,7 +123,10 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
             note = QtWidgets.QLabel(
                 "Edite as opções permitidas (uma por linha). Vazio = sem vocabulário fixo."
             )
-            note.setStyleSheet("color: #666; font-size: 11px;")
+            apply_themed_stylesheet(
+                note,
+                lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+            )
             note.setWordWrap(True)
             layout.addWidget(note)
 
@@ -140,7 +148,10 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
             "Nomes alternativos aceitos ao carregar parquets antigos "
             "(uma entrada por linha). Vazio = sem aliases."
         )
-        note_alias.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            note_alias,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         note_alias.setWordWrap(True)
         layout.addWidget(note_alias)
 
@@ -228,6 +239,6 @@ class ColumnPropertiesDialog(QtWidgets.QDialog):
 
 def _readonly_label(text: str) -> QtWidgets.QLabel:
     lbl = QtWidgets.QLabel(str(text))
-    lbl.setStyleSheet("color: #555;")
+    apply_themed_stylesheet(lbl, lambda t: "color: " + t("TEXT") + ";")
     lbl.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
     return lbl

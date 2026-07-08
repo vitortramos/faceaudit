@@ -1,9 +1,11 @@
 from PyQt6 import QtWidgets, QtGui
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QTabWidget, QWidget, QLabel, 
+    QDialog, QVBoxLayout, QTabWidget, QWidget, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import Qt
+
+from interface.theme import current_token_fn
 
 class StatsDialogView(QDialog):
     """
@@ -84,7 +86,7 @@ class StatsDialogView(QDialog):
             item_pct.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             
             # Lógica Visual: Destacar valores muito baixos em vermelho
-            if pct < 1.0: 
-                item_pct.setForeground(QtGui.QColor("#d9534f"))
+            if pct < 1.0:
+                item_pct.setForeground(QtGui.QColor(current_token_fn()("DANGER")))
             
             table.setItem(row_idx, 2, item_pct)

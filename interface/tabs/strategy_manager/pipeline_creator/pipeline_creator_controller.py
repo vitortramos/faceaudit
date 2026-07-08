@@ -17,6 +17,8 @@ from faceaudit.enums.wccn_grid_search_metric import WccnGridSearchMetric
 from faceaudit.enums.lda_estimator_type import LdaEstimatorType
 from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
 
+from interface.theme import apply_themed_stylesheet
+
 from .pipeline_creator_view import PipelineCreatorView
 
 ROLE_DTO = QtCore.Qt.ItemDataRole.UserRole + 1
@@ -58,8 +60,12 @@ class PipelineCreatorController(QtCore.QObject):
                 "Renomear o pipeline será uma operação dedicada no painel "
                 "esquerdo (ainda não disponível)."
             )
-            self.view.input_name.setStyleSheet(
-                "QLineEdit { background-color: #f0f0f0; color: #555; }"
+            apply_themed_stylesheet(
+                self.view.input_name,
+                lambda t: (
+                    "QLineEdit { background-color: " + t("SURFACE_ALT")
+                    + "; color: " + t("TEXT") + "; }"
+                ),
             )
 
     def run(self) -> Optional[TransformationPipelineConfig]:
@@ -199,7 +205,13 @@ class PipelineCreatorController(QtCore.QObject):
         else:
             label = getattr(t_type, "label", str(t_type))
             widget = QtWidgets.QLabel(f"{label}\nnão possui parâmetros editáveis.")
-            widget.setStyleSheet("color: gray; font-style: italic; margin-top: 20px;")
+            apply_themed_stylesheet(
+                widget,
+                lambda t: (
+                    "color: " + t("TEXT_MUTED")
+                    + "; font-style: italic; margin-top: 20px;"
+                ),
+            )
             widget.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.view.set_properties_widget(widget)

@@ -2,7 +2,9 @@ from PyQt6 import QtWidgets, QtCore, QtGui
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
 # Import necessário para projeção 3D
-from mpl_toolkits.mplot3d import Axes3D 
+from mpl_toolkits.mplot3d import Axes3D
+
+from interface.theme import apply_themed_stylesheet
 
 class TransformationTrajectoryViewerView(QtWidgets.QDialog):
     """
@@ -16,7 +18,10 @@ class TransformationTrajectoryViewerView(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Auditoria Visual de Trajetória (Source vs Target)")
         self.resize(1300, 800) # Aumentei um pouco para garantir conforto
-        self.setStyleSheet("background-color: white;")
+        apply_themed_stylesheet(
+            self,
+            lambda t: "background-color: " + t("SURFACE") + ";",
+        )
         
         self._init_ui()
 
@@ -27,7 +32,10 @@ class TransformationTrajectoryViewerView(QtWidgets.QDialog):
         header_layout = QtWidgets.QHBoxLayout()
         
         self.lbl_title = QtWidgets.QLabel("Visualização do Espaço Latente")
-        self.lbl_title.setStyleSheet("font-size: 18px; font-weight: bold; color: #212529;")
+        apply_themed_stylesheet(
+            self.lbl_title,
+            lambda t: "font-size: 18px; font-weight: bold; color: " + t("TEXT") + ";",
+        )
         
         # Removi o lbl_info daqui. Ele ficava escondido no canto.
         
@@ -54,20 +62,36 @@ class TransformationTrajectoryViewerView(QtWidgets.QDialog):
 
         # 3. Controles (Slider e Informações Detalhadas)
         control_group = QtWidgets.QGroupBox("Auditoria do Passo")
-        control_group.setStyleSheet("""
-            QGroupBox { font-weight: bold; margin-top: 10px; border: 1px solid #ddd; border-radius: 5px; padding-top: 15px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }
-        """)
+        apply_themed_stylesheet(
+            control_group,
+            lambda t: (
+                "QGroupBox { font-weight: bold; margin-top: 10px; border: 1px solid "
+                + t("BORDER") + "; border-radius: 5px; padding-top: 15px; } "
+                "QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; }"
+            ),
+        )
         control_layout = QtWidgets.QVBoxLayout(control_group)
         
         # A) Nome do Passo (Destaque Azul)
         self.lbl_step_name = QtWidgets.QLabel("-")
-        self.lbl_step_name.setStyleSheet("font-weight: 900; color: #0d6efd; font-size: 16px; margin-bottom: 2px;")
+        apply_themed_stylesheet(
+            self.lbl_step_name,
+            lambda t: (
+                "font-weight: 900; color: " + t("PRIMARY")
+                + "; font-size: 16px; margin-bottom: 2px;"
+            ),
+        )
         self.lbl_step_name.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         
         # B) Métricas (O novo lugar das informações)
         self.lbl_metrics = QtWidgets.QLabel("Aguardando dados...")
-        self.lbl_metrics.setStyleSheet("color: #495057; font-size: 13px; font-family: Consolas, monospace; margin-bottom: 10px;")
+        apply_themed_stylesheet(
+            self.lbl_metrics,
+            lambda t: (
+                "color: " + t("TEXT")
+                + "; font-size: 13px; font-family: Consolas, monospace; margin-bottom: 10px;"
+            ),
+        )
         self.lbl_metrics.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.lbl_metrics.setWordWrap(True) # Permite que o texto quebre linha se for muito longo
         

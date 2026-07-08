@@ -2,6 +2,8 @@
 
 from PyQt6 import QtWidgets, QtCore, QtGui
 
+from interface.theme import current_token_fn
+
 class LogProgressDialog(QtWidgets.QDialog):
     """
     Janela modal para exibir logs. Suporta cancelamento.
@@ -78,9 +80,14 @@ class LogProgressDialog(QtWidgets.QDialog):
         # botão de fechar embaixo).
         self.btn_action.setVisible(True)
 
+        t = current_token_fn()
         if success:
             self.text_log.append("\n✅ PROCESSO CONCLUÍDO.")
-            self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #28a745; }")
+            self.progress_bar.setStyleSheet(
+                "QProgressBar::chunk { background-color: " + t("SUCCESS") + "; }"
+            )
         else:
             self.text_log.append("\n❌ PROCESSO INTERROMPIDO OU FALHOU.")
-            self.progress_bar.setStyleSheet("QProgressBar::chunk { background-color: #dc3545; }")
+            self.progress_bar.setStyleSheet(
+                "QProgressBar::chunk { background-color: " + t("DANGER") + "; }"
+            )

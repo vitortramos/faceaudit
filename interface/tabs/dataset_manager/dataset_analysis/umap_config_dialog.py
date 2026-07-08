@@ -16,6 +16,7 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.models.umap_config import UmapConfig
 
 
@@ -46,7 +47,10 @@ class UmapConfigDialog(QtWidgets.QDialog):
             "espalhados e o que o algoritmo considera \"vizinhança\"."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color: #555; font-size: 11px; padding-bottom: 4px;")
+        apply_themed_stylesheet(
+            intro,
+            lambda t: "color: " + t("TEXT") + "; font-size: 11px; padding-bottom: 4px;",
+        )
         layout.addWidget(intro)
 
         form = QtWidgets.QFormLayout()
@@ -168,11 +172,14 @@ class UmapConfigDialog(QtWidgets.QDialog):
         # Atualizada dinamicamente conforme o usuário muda max_samples
         self._estimate_label = QtWidgets.QLabel("")
         self._estimate_label.setWordWrap(True)
-        self._estimate_label.setStyleSheet(
-            "color: #1a3d6e; font-size: 11px; "
-            "background: #e3f2fd; "
-            "border-left: 3px solid #1976d2; "
-            "padding: 6px 8px; margin-top: 6px;"
+        apply_themed_stylesheet(
+            self._estimate_label,
+            lambda t: (
+                "color: " + t("PRIMARY_STRONG") + "; font-size: 11px; "
+                "background: " + t("PRIMARY_BG") + "; "
+                "border-left: 3px solid " + t("PRIMARY") + "; "
+                "padding: 6px 8px; margin-top: 6px;"
+            ),
         )
         self._update_estimate()
         layout.addWidget(self._estimate_label)

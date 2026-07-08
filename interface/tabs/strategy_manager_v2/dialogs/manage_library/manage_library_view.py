@@ -2,6 +2,8 @@
 
 from PyQt6 import QtWidgets, QtCore
 
+from interface.theme import apply_themed_stylesheet
+
 
 class ManageLibraryView(QtWidgets.QDialog):
     """
@@ -32,12 +34,19 @@ class ManageLibraryView(QtWidgets.QDialog):
 
         self.btn_remove = QtWidgets.QPushButton("🗑 Remover selecionado")
         self.btn_remove.setEnabled(False)
-        self.btn_remove.setStyleSheet("""
-            QPushButton { border: 1px solid #c62828; border-radius: 4px;
-                          background: #ffebee; color: #c62828; padding: 4px 10px; }
-            QPushButton:hover { background: #ffcdd2; }
-            QPushButton:disabled { color: #aaa; border-color: #ddd; background: #f5f5f5; }
-        """)
+        apply_themed_stylesheet(
+            self.btn_remove,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("DANGER") + ";"
+                " border-radius: 4px;"
+                " background: " + t("DANGER_BG") + "; color: " + t("DANGER") + ";"
+                " padding: 4px 10px; }"
+                "QPushButton:hover { background: " + t("DANGER_BG") + "; }"
+                "QPushButton:disabled { color: " + t("TEXT_MUTED") + ";"
+                " border-color: " + t("BORDER") + ";"
+                " background: " + t("SURFACE_RAISED") + "; }"
+            ),
+        )
 
         btn_close = QtWidgets.QPushButton("Fechar")
         btn_close.clicked.connect(self.accept)

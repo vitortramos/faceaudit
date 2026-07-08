@@ -23,6 +23,8 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 from faceaudit.enums.dataset_balancing_mode import DatasetBalancingMode
 from faceaudit.enums.dataset_balancing_selection import (
     DatasetBalancingSelection,
@@ -107,8 +109,9 @@ class BalanceDatasetDialog(QtWidgets.QDialog):
         mode_layout.addWidget(self.cmb_mode)
         self.lbl_mode_help = QtWidgets.QLabel("")
         self.lbl_mode_help.setWordWrap(True)
-        self.lbl_mode_help.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_mode_help,
+            lambda t: "color: " + t("TEXT") + "; font-size: 11px; padding: 4px;",
         )
         mode_layout.addWidget(self.lbl_mode_help)
         layout.addWidget(mode_box)
@@ -135,8 +138,9 @@ class BalanceDatasetDialog(QtWidgets.QDialog):
         sel_layout.addWidget(self.cmb_selection)
         self.lbl_sel_help = QtWidgets.QLabel("")
         self.lbl_sel_help.setWordWrap(True)
-        self.lbl_sel_help.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_sel_help,
+            lambda t: "color: " + t("TEXT") + "; font-size: 11px; padding: 4px;",
         )
         sel_layout.addWidget(self.lbl_sel_help)
 

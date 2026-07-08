@@ -1,9 +1,11 @@
 from PyQt6 import QtWidgets, QtCore
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, 
-    QComboBox, QStackedWidget, QWidget, QDoubleSpinBox, 
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
+    QComboBox, QStackedWidget, QWidget, QDoubleSpinBox,
     QListWidget, QPushButton, QDialogButtonBox, QFormLayout, QGroupBox
 )
+
+from interface.theme import apply_themed_stylesheet
 
 class SplitDatasetDialogView(QDialog):
     """
@@ -24,7 +26,10 @@ class SplitDatasetDialogView(QDialog):
         group_info = QGroupBox("Dataset Original")
         info_layout = QVBoxLayout(group_info)
         self.lbl_dataset_info = QLabel("Carregando...")
-        self.lbl_dataset_info.setStyleSheet("color: #444; font-weight: bold;")
+        apply_themed_stylesheet(
+            self.lbl_dataset_info,
+            lambda t: "color: " + t("TEXT") + "; font-weight: bold;",
+        )
         info_layout.addWidget(self.lbl_dataset_info)
         main_layout.addWidget(group_info)
 

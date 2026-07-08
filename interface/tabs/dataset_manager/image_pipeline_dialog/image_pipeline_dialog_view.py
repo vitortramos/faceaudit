@@ -17,6 +17,7 @@ from typing import Callable, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.image_input_source import ImageInputSource
 
 from .image_compare_widget import ImageCompareWidget
@@ -100,8 +101,12 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         # Cinza pequeno, abaixo do dropdown. Critical pra que o usuário
         # entenda o efeito sem ter que descobrir empiricamente.
         self.lbl_input_source_help = QtWidgets.QLabel()
-        self.lbl_input_source_help.setStyleSheet(
-            "color: #666; font-size: 10px; padding: 0 4px;"
+        apply_themed_stylesheet(
+            self.lbl_input_source_help,
+            lambda t: (
+                "color: " + t("TEXT_MUTED")
+                + "; font-size: 10px; padding: 0 4px;"
+            ),
         )
         self.lbl_input_source_help.setWordWrap(True)
 
@@ -153,9 +158,13 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         # Frame ao redor do StepConfigPanel pra dar contraste visual
         config_frame = QtWidgets.QFrame()
         config_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        config_frame.setStyleSheet(
-            "QFrame { background: #fafafa; border: 1px solid #e0e0e0; "
-            "border-radius: 4px; }"
+        apply_themed_stylesheet(
+            config_frame,
+            lambda t: (
+                "QFrame { background: " + t("SURFACE_RAISED") + "; "
+                "border: 1px solid " + t("BORDER") + "; "
+                "border-radius: 4px; }"
+            ),
         )
         config_layout = QtWidgets.QVBoxLayout(config_frame)
         config_layout.setContentsMargins(0, 0, 0, 0)

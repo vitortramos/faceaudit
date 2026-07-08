@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 
 
@@ -50,10 +51,14 @@ class _StepRow(QtWidgets.QWidget):
         self.btn_remove = QtWidgets.QToolButton()
         self.btn_remove.setText("✕")
         self.btn_remove.setToolTip("Remover step")
-        self.btn_remove.setStyleSheet(
-            "QToolButton { color: #c33; border: none; padding: 2px 6px; "
-            "font-weight: bold; } "
-            "QToolButton:hover { background: #fee; border-radius: 3px; }"
+        apply_themed_stylesheet(
+            self.btn_remove,
+            lambda t: (
+                "QToolButton { color: " + t("DANGER") + "; border: none; "
+                "padding: 2px 6px; font-weight: bold; } "
+                "QToolButton:hover { background: " + t("DANGER_BG") + "; "
+                "border-radius: 3px; }"
+            ),
         )
         self.btn_remove.clicked.connect(self.remove_clicked.emit)
         layout.addWidget(self.btn_remove)
@@ -82,10 +87,16 @@ class StepsListWidget(QtWidgets.QWidget):
         self.btn_add.setPopupMode(
             QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup,
         )
-        self.btn_add.setStyleSheet(
-            "QToolButton { padding: 6px 12px; background: #28a745; "
-            "color: white; border-radius: 4px; font-weight: bold; } "
-            "QToolButton:hover { background: #218838; }"
+        apply_themed_stylesheet(
+            self.btn_add,
+            lambda t: (
+                "QToolButton { padding: 6px 12px; background: "
+                + t("SUCCESS") + "; "
+                "color: " + t("HIGHLIGHT_TEXT") + "; border-radius: 4px; "
+                "font-weight: bold; } "
+                "QToolButton:hover { background: " + t("SUCCESS_BG") + "; "
+                "color: " + t("SUCCESS") + "; }"
+            ),
         )
         menu = QtWidgets.QMenu(self.btn_add)
         for step_type in _AVAILABLE_TYPES:

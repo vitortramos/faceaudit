@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import QMessageBox
 from faceaudit.models.split_config import SplitConfig, SplitMode, GroupingStrategy
+from interface.theme import apply_themed_stylesheet
 from .new_split_config_dialog_view import NewSplitConfigDialogView
 
 class NewSplitConfigDialogController:
@@ -39,8 +40,12 @@ class NewSplitConfigDialogController:
                 "Renomear a config de split será uma operação dedicada "
                 "no painel esquerdo (ainda não disponível)."
             )
-            self.view.name_input.setStyleSheet(
-                "QLineEdit { background-color: #f0f0f0; color: #555; }"
+            apply_themed_stylesheet(
+                self.view.name_input,
+                lambda t: (
+                    "QLineEdit { background-color: " + t("SURFACE_ALT")
+                    + "; color: " + t("TEXT") + "; }"
+                ),
             )
 
     def _setup_connections(self):

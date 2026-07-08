@@ -23,6 +23,8 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 from faceaudit.enums.global_library_folder import GlobalLibraryFolder
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.models.image_processing.image_processing_pipeline_config import (
@@ -87,8 +89,9 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         pipe_layout.addWidget(self.cmb_pipeline)
 
         self.lbl_pipeline_meta = QtWidgets.QLabel("")
-        self.lbl_pipeline_meta.setStyleSheet(
-            "color: #555; padding: 4px; font-size: 11px;"
+        apply_themed_stylesheet(
+            self.lbl_pipeline_meta,
+            lambda t: "color: " + t("TEXT") + "; padding: 4px; font-size: 11px;",
         )
         self.lbl_pipeline_meta.setWordWrap(True)
         pipe_layout.addWidget(self.lbl_pipeline_meta)
@@ -132,7 +135,10 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
             "coluna <code>error_message</code>."
         )
         target_help.setWordWrap(True)
-        target_help.setStyleSheet("color: #666; font-size: 10px;")
+        apply_themed_stylesheet(
+            target_help,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 10px;",
+        )
         target_outer.addWidget(target_help)
 
         layout.addWidget(target_box)

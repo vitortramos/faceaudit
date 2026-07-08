@@ -21,23 +21,20 @@ from PyQt6.QtGui import QBrush, QColor
 
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.services.dataset_stats_service import DatasetStatsService
-
-
-# ─── Cores de cobertura — verde/amarelo/vermelho ───
-_COLOR_FULL = QColor("#d4edda")     # 100%
-_COLOR_PARTIAL = QColor("#fff3cd")  # 50–99%
-_COLOR_LOW = QColor("#f8d7da")      # < 50%
-_COLOR_EMPTY = QColor("#dddddd")    # 0%
+from interface.theme import current_token_fn
 
 
 def _coverage_color(pct: float) -> QColor:
+    # Cores de cobertura como estado (verde=100 / amarelo=parcial /
+    # vermelho=<50 / neutro=0) — lidas dos tokens no momento da pintura.
+    t = current_token_fn()
     if pct >= 1.0:
-        return _COLOR_FULL
+        return QColor(t("SUCCESS_BG"))     # 100%
     if pct <= 0.0:
-        return _COLOR_EMPTY
+        return QColor(t("BORDER"))         # 0% (neutro)
     if pct >= 0.5:
-        return _COLOR_PARTIAL
-    return _COLOR_LOW
+        return QColor(t("WARNING_BG"))     # 50–99%
+    return QColor(t("DANGER_BG"))          # < 50%
 
 
 def _format_pct(pct: float) -> str:
@@ -110,12 +107,13 @@ class SchemaReportDialog(QtWidgets.QDialog):
         layout.setSpacing(8)
 
         # Header explicativo
+        _muted = current_token_fn()("TEXT_MUTED")
         header = QtWidgets.QLabel(
             "<b>Painel de colunas</b> — marque/desmarque <i>Visível</i> "
             "pra controlar quais colunas aparecem na tabela do dataset "
             "(aplicação imediata). Demais colunas são informativas: "
             "cobertura (% não-nulos), distintos, min/max etc. "
-            "<span style='color:#666;font-size:11px;'>Verde = 100%, "
+            f"<span style='color:{_muted};font-size:11px;'>Verde = 100%, "
             "amarelo = parcial, vermelho = &lt; 50%.</span>"
         )
         header.setWordWrap(True)

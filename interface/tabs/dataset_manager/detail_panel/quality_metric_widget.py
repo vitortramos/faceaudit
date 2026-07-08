@@ -3,6 +3,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from interface.theme import current_token_fn
+
 class QualityMetricWidget(QWidget):
     """
     Widget visual auxiliar para exibir uma barra de progresso colorida.
@@ -30,12 +32,13 @@ class QualityMetricWidget(QWidget):
             pbar.setValue(int(display_val))
             
             # Cores baseadas no valor (Visual)
-            if display_val < 40: 
-                pbar.setStyleSheet("QProgressBar::chunk { background-color: #d9534f; }") # Vermelho
-            elif display_val < 70: 
-                pbar.setStyleSheet("QProgressBar::chunk { background-color: #f0ad4e; }") # Laranja
-            else: 
-                pbar.setStyleSheet("QProgressBar::chunk { background-color: #5cb85c; }") # Verde
+            t = current_token_fn()
+            if display_val < 40:
+                pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("DANGER") + "; }") # Vermelho
+            elif display_val < 70:
+                pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("WARNING") + "; }") # Laranja
+            else:
+                pbar.setStyleSheet("QProgressBar::chunk { background-color: " + t("SUCCESS") + "; }") # Verde
         else:
             pbar.setValue(0)
 

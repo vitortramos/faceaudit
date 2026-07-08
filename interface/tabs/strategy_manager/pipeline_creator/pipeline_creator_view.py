@@ -1,6 +1,8 @@
 from PyQt6 import QtWidgets, QtCore, QtGui
 from faceaudit.enums.transformation_type import TransformationType
 
+from interface.theme import apply_themed_stylesheet
+
 class PipelineCreatorView(QtWidgets.QDialog):
     """
     View do criador de pipelines.
@@ -36,7 +38,10 @@ class PipelineCreatorView(QtWidgets.QDialog):
         # COLUNA 1: Ferramentas Disponíveis
         col1_layout = QtWidgets.QVBoxLayout()
         lbl_avail = QtWidgets.QLabel("🛠️ Disponíveis")
-        lbl_avail.setStyleSheet("font-weight: bold; color: #495057;")
+        apply_themed_stylesheet(
+            lbl_avail,
+            lambda t: "font-weight: bold; color: " + t("TEXT") + ";",
+        )
         col1_layout.addWidget(lbl_avail)
         
         self.list_available = QtWidgets.QListWidget()
@@ -49,7 +54,10 @@ class PipelineCreatorView(QtWidgets.QDialog):
         btns_layout.addStretch()
         self.btn_add = QtWidgets.QPushButton("➡")
         self.btn_remove = QtWidgets.QPushButton("❌")
-        self.btn_remove.setStyleSheet("color: red; font-weight: bold;")
+        apply_themed_stylesheet(
+            self.btn_remove,
+            lambda t: "color: " + t("DANGER") + "; font-weight: bold;",
+        )
         btns_layout.addWidget(self.btn_add)
         btns_layout.addWidget(self.btn_remove)
         btns_layout.addStretch()
@@ -57,7 +65,10 @@ class PipelineCreatorView(QtWidgets.QDialog):
         # Lista de Sequência
         col2_layout = QtWidgets.QVBoxLayout()
         lbl_seq = QtWidgets.QLabel("🚀 Sequência de Execução")
-        lbl_seq.setStyleSheet("font-weight: bold; color: #007bff;")
+        apply_themed_stylesheet(
+            lbl_seq,
+            lambda t: "font-weight: bold; color: " + t("PRIMARY") + ";",
+        )
         col2_layout.addWidget(lbl_seq)
         
         self.list_sequence = QtWidgets.QListWidget()
@@ -82,7 +93,10 @@ class PipelineCreatorView(QtWidgets.QDialog):
         # Placeholder inicial
         self.lbl_no_props = QtWidgets.QLabel("Selecione um item na\nsequência para editar.")
         self.lbl_no_props.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_no_props.setStyleSheet("color: #adb5bd;")
+        apply_themed_stylesheet(
+            self.lbl_no_props,
+            lambda t: "color: " + t("TEXT_MUTED") + ";",
+        )
         self.layout_props.addWidget(self.lbl_no_props)
         
         col3_layout.addWidget(self.group_props)

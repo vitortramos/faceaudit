@@ -7,6 +7,8 @@ from typing import Optional, Tuple
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 _TEMPLATE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -130,10 +132,15 @@ class SaveValidationRuleTemplateDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.btn_cancel)
 
         self.btn_ok = QtWidgets.QPushButton("Salvar", parent=self)
-        self.btn_ok.setStyleSheet(
-            "QPushButton { background: #2e7d32; color: white;"
-            " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
-            "QPushButton:disabled { background: #aaa; color: #eee; }"
+        apply_themed_stylesheet(
+            self.btn_ok,
+            lambda t: (
+                "QPushButton { background: " + t("SUCCESS") + ";"
+                " color: " + t("HIGHLIGHT_TEXT") + ";"
+                " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
+                "QPushButton:disabled { background: " + t("BORDER") + ";"
+                " color: " + t("TEXT_MUTED") + "; }"
+            ),
         )
         self.btn_ok.setDefault(True)
         self.btn_ok.clicked.connect(self._on_ok)

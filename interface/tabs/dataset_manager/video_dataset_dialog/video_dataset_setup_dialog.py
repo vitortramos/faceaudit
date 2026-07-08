@@ -15,6 +15,7 @@ import cv2
 import numpy as np
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.services.ff_service import FFService
 from faceaudit.services.image_io import imread_unicode_safe
 from faceaudit.services.video_frame_face_extraction_service import (
@@ -39,23 +40,26 @@ _EMPTY_PREVIEW_MSG = (
 
 # Estilo de botão primário (azul de acento do app). O destaque segue o estado:
 # ver `_refresh_video_button_emphasis`. Neutro = setStyleSheet("").
-_BTN_PRIMARY_QSS = (
-    "QPushButton { background:#1976d2; color:white; border:none;"
-    " border-radius:4px; padding:4px 8px; font-weight:bold; }"
-    "QPushButton:hover { background:#1e88e5; }"
-    "QPushButton:pressed { background:#1565c0; }"
-)
+# Builder temável: lê os tokens no momento da aplicação (via current_token_fn()).
+def _btn_primary_qss(t) -> str:
+    return (
+        "QPushButton { background:" + t("PRIMARY") + "; color:" + t("HIGHLIGHT_TEXT")
+        + "; border:none; border-radius:4px; padding:4px 8px; font-weight:bold; }"
+        "QPushButton:hover { background:" + t("PRIMARY") + "; }"
+        "QPushButton:pressed { background:" + t("PRIMARY_STRONG") + "; }"
+    )
 
 # Destaque das seções: título do QGroupBox em negrito + acento + um pouco maior,
 # com a seção emoldurada. Aplicado no diálogo (escopo = os QGroupBox das 4 seções:
 # Detecção, Vídeos, Alvos, Extração de vídeo) para separá-los dos rótulos de campo.
 # Nota: uma vez que se estiliza o QGroupBox, o Fusion deixa de desenhar a moldura
 # nativa — por isso a borda é declarada explicitamente aqui.
-_GROUPBOX_TITLE_QSS = (
-    "QGroupBox { border:1px solid #d7dbe0; border-radius:6px; margin-top:10px; }"
-    "QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left;"
-    " left:8px; padding:1px 6px; color:#1a3a6b; font-weight:bold; font-size:13px; }"
-)
+def _groupbox_title_qss(t) -> str:
+    return (
+        "QGroupBox { border:1px solid " + t("BORDER") + "; border-radius:6px; margin-top:10px; }"
+        "QGroupBox::title { subcontrol-origin:margin; subcontrol-position:top left;"
+        " left:8px; padding:1px 6px; color:" + t("PRIMARY_STRONG") + "; font-weight:bold; font-size:13px; }"
+    )
 
 
 def _bbox_iou(a, b) -> float:
@@ -104,8 +108,9 @@ class _FrameView(QtWidgets.QGraphicsView):
         self._empty = QtWidgets.QLabel("", self)
         self._empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
-        self._empty.setStyleSheet(
-            "color:#8a929e; font-size:14px; background:transparent;")
+        apply_themed_stylesheet(
+            self._empty,
+            lambda t: "color:" + t("TEXT_MUTED") + "; font-size:14px; background:transparent;")
         self._empty.hide()
 
     def set_empty_message(self, text: Optional[str]):
@@ -329,7 +334,9 @@ class _TargetRowWidget(QtWidgets.QFrame):
             "é descartada. Cada alvo tem o seu; calibre com <b>Testar limiar</b>.")
         self.spn_thr.valueChanged.connect(lambda _v: self.threshold_changed.emit(self))
         self.lbl_status = QtWidgets.QLabel("sem âncora", self)
-        self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+        apply_themed_stylesheet(
+            self.lbl_status,
+            lambda t: "color:" + t("ACCENT_TEXT") + "; font-size:11px;")
         self.btn_anchors = QtWidgets.QPushButton("Âncoras", self)
         self.btn_anchors.setToolTip("Ver, combinar e remover âncoras deste alvo.")
         self.btn_anchors.setEnabled(False)
@@ -382,23 +389,26 @@ class _TargetRowWidget(QtWidgets.QFrame):
         detail = (" · " + " · ".join(parts)) if parts else ""
         plural = "âncora" if n == 1 else "âncoras"
         self.lbl_status.setText(f"{n} {plural}{detail}")
-        self.lbl_status.setStyleSheet("color:#2e7d32; font-size:11px;")
+        _t = current_token_fn()
+        self.lbl_status.setStyleSheet("color:" + _t("SUCCESS") + "; font-size:11px;")
         self.btn_anchors.setEnabled(n > 0)
 
     def clear_anchor(self):
         self.video_target = None
         self.anchor_det_index = None
         self.lbl_status.setText("sem âncora")
-        self.lbl_status.setStyleSheet("color:#b26a00; font-size:11px;")
+        _t = current_token_fn()
+        self.lbl_status.setStyleSheet("color:" + _t("ACCENT_TEXT") + "; font-size:11px;")
         self.btn_anchors.setEnabled(False)
 
     def set_active(self, active: bool):
         self._active = active
+        _t = current_token_fn()
         self.setStyleSheet(
-            "QFrame#targetRow { border:2px solid #1976d2; border-radius:6px; "
-            "background:#e8f1fb; }"
+            "QFrame#targetRow { border:2px solid " + _t("PRIMARY") + "; border-radius:6px; "
+            "background:" + _t("PRIMARY_BG") + "; }"
             if active else
-            "QFrame#targetRow { border:0.5px solid #cfcfcf; border-radius:6px; }")
+            "QFrame#targetRow { border:0.5px solid " + _t("BORDER") + "; border-radius:6px; }")
 
     def mousePressEvent(self, ev):
         self.activated.emit(self)
@@ -887,7 +897,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         gt = QtWidgets.QVBoxLayout(g_tgt)
         hdr = QtWidgets.QHBoxLayout()
         self.lbl_targets_count = QtWidgets.QLabel("", self)
-        self.lbl_targets_count.setStyleSheet("color:#666;")
+        apply_themed_stylesheet(
+            self.lbl_targets_count, lambda t: "color:" + t("TEXT_MUTED") + ";")
         btn_add = QtWidgets.QPushButton("➕ Adicionar alvo", self)
         btn_add.setToolTip(
             "Adiciona um novo alvo. Depois, clique na face dele no quadro para "
@@ -918,7 +929,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "O alvo ativo recebe a próxima âncora; clique numa linha para trocá-lo.", self)
         hint.setTextFormat(QtCore.Qt.TextFormat.RichText)
         hint.setWordWrap(True)
-        hint.setStyleSheet("color:#888; font-size:11px;")
+        apply_themed_stylesheet(
+            hint, lambda t: "color:" + t("TEXT_MUTED") + "; font-size:11px;")
         gt.addWidget(hint)
         right.addWidget(g_tgt)   # altura natural (lista de alvos contida acima)
 
@@ -954,7 +966,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "acrescentado. Não sobrescreve extrações anteriores.")
         self.lbl_name_warn = QtWidgets.QLabel("", self)
         self.lbl_name_warn.setWordWrap(True)
-        self.lbl_name_warn.setStyleSheet("color:#c62828; font-size:11px;")
+        apply_themed_stylesheet(
+            self.lbl_name_warn, lambda t: "color:" + t("DANGER") + "; font-size:11px;")
         self.lbl_name_warn.setVisible(False)
         name_w = QtWidgets.QWidget(self)
         name_v = QtWidgets.QVBoxLayout(name_w)
@@ -976,7 +989,8 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             "ao lado. O passo é derivado do FPS reportado pelo arquivo.")
         self.spn_fps.valueChanged.connect(self._update_fps_hint)
         self.lbl_fps_hint = QtWidgets.QLabel("", self)
-        self.lbl_fps_hint.setStyleSheet("color:#666;")
+        apply_themed_stylesheet(
+            self.lbl_fps_hint, lambda t: "color:" + t("TEXT_MUTED") + ";")
         fps_w = QtWidgets.QWidget(self)
         fps_h = QtWidgets.QHBoxLayout(fps_w)
         fps_h.setContentsMargins(0, 0, 0, 0)
@@ -1012,7 +1026,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # Prévia + botões
         self.lbl_preview = QtWidgets.QLabel("", self)
         self.lbl_preview.setWordWrap(True)
-        self.lbl_preview.setStyleSheet("color:#444; background:#f5f5f5; padding:6px; border-radius:4px;")
+        apply_themed_stylesheet(
+            self.lbl_preview,
+            lambda t: "color:" + t("TEXT") + "; background:" + t("SURFACE_RAISED")
+            + "; padding:6px; border-radius:4px;")
         root.addWidget(self.lbl_preview)
 
         btn_row = QtWidgets.QHBoxLayout()
@@ -1049,13 +1066,14 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         bar = QtWidgets.QWidget(self)
         self._action_bar = bar
         bar.setObjectName("actionBar")
-        bar.setStyleSheet("#actionBar { border-top: 1px solid #d0d0d0; }")
+        apply_themed_stylesheet(
+            bar, lambda t: "#actionBar { border-top: 1px solid " + t("BORDER") + "; }")
         btn_row.setContentsMargins(9, 6, 9, 9)
         bar.setLayout(btn_row)
         outer.addWidget(bar)
 
         # Destaca os títulos das seções (QGroupBox) — negrito + acento + moldura.
-        self.setStyleSheet(_GROUPBOX_TITLE_QSS)
+        apply_themed_stylesheet(self, _groupbox_title_qss)
 
     # ───────────────────────────── slots ─────────────────────────────
     def _on_add_videos(self):
@@ -1159,8 +1177,10 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         selecionado' (Adicionar volta a neutro, mas segue clicável). Sempre um
         único botão aceso — e é o passo correto."""
         has_videos = self.lst_videos.count() > 0
-        self.btn_add_videos.setStyleSheet("" if has_videos else _BTN_PRIMARY_QSS)
-        self.btn_load.setStyleSheet(_BTN_PRIMARY_QSS if has_videos else "")
+        t = current_token_fn()
+        primary_qss = _btn_primary_qss(t)
+        self.btn_add_videos.setStyleSheet("" if has_videos else primary_qss)
+        self.btn_load.setStyleSheet(primary_qss if has_videos else "")
 
     def _probe_duration_secs(self, path) -> float:
         """Duração em segundos via metadados do cv2 — sem carregar o vídeo nem o
@@ -1197,19 +1217,22 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def _set_loaded_label(self, name, *, is_image: bool = False):
         """Cabeçalho da prévia: nome do vídeo/imagem CARREGADO (não o que está
         SELECIONADO na lista — só carrega ao clicar “Carregar selecionado”)."""
+        _t = current_token_fn()
         if not name:
             self.lbl_loaded.setText(
                 "Nenhum vídeo carregado — selecione um e clique em “Carregar selecionado”.")
             self.lbl_loaded.setStyleSheet(
-                "background:#f4f4f4; border:1px solid #e0e0e0; border-radius:4px; "
-                "padding:4px 8px; color:#888; font-style:italic;")
+                "background:" + _t("SURFACE_RAISED") + "; border:1px solid " + _t("BORDER")
+                + "; border-radius:4px; padding:4px 8px; color:" + _t("TEXT_MUTED")
+                + "; font-style:italic;")
         else:
             kind, icon, part = (("Imagem", "🖼", "carregada") if is_image
                                 else ("Vídeo", "🎬", "carregado"))
             self.lbl_loaded.setText(f"{icon} {kind} {part}: {name}")
             self.lbl_loaded.setStyleSheet(
-                "background:#e8f0fe; border:1px solid #c5d9f7; border-radius:4px; "
-                "padding:4px 8px; color:#1a3a6b; font-weight:bold;")
+                "background:" + _t("PRIMARY_BG") + "; border:1px solid " + _t("BORDER")
+                + "; border-radius:4px; padding:4px 8px; color:" + _t("PRIMARY_STRONG")
+                + "; font-weight:bold;")
 
     def _on_row_window_changed(self, path: str, start_s: float, end_s: float):
         """Campos de trecho de uma linha mudaram: persiste a janela (parcial-only)

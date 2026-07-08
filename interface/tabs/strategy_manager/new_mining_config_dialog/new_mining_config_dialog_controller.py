@@ -1,5 +1,6 @@
 import uuid
 from PyQt6 import QtCore, QtWidgets
+from interface.theme import apply_themed_stylesheet
 from .new_mining_config_dialog_view import NewMiningConfigDialogView
 
 # Importe os seus DTOs e Enums
@@ -27,8 +28,12 @@ class NewMiningConfigDialogController(QtCore.QObject):
                 "Renomear a config de mineração será uma operação dedicada "
                 "no painel esquerdo (ainda não disponível)."
             )
-            self.view.txt_name.setStyleSheet(
-                "QLineEdit { background-color: #f0f0f0; color: #555; }"
+            apply_themed_stylesheet(
+                self.view.txt_name,
+                lambda t: (
+                    "QLineEdit { background-color: " + t("SURFACE_ALT")
+                    + "; color: " + t("TEXT") + "; }"
+                ),
             )
 
     def _connect_signals(self):

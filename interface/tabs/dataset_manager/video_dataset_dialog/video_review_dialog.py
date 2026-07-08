@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.enums.video_extraction_mode import VideoExtractionMode
 from faceaudit.services.image_io import imread_unicode_safe
@@ -94,13 +95,15 @@ class _Thumb(QtWidgets.QFrame):
         lbl_q.setToolTip(
             "det_score (confiança) · fiqa_score (qualidade CR-FIQA, não 0–1) · "
             "yaw/pitch (pose, graus)")
-        lbl_q.setStyleSheet("color:#555; font-size:9px;")
+        apply_themed_stylesheet(
+            lbl_q, lambda t: "color:" + t("TEXT_MUTED") + "; font-size:9px;")
         v.addWidget(lbl_q)
 
         if rf.review_reasons:
             hint = QtWidgets.QLabel("⚠ " + ", ".join(rf.review_reasons), self)
             hint.setWordWrap(True)
-            hint.setStyleSheet("color:#e65100; font-size:9px;")
+            apply_themed_stylesheet(
+                hint, lambda t: "color:" + t("WARNING") + "; font-size:9px;")
             v.addWidget(hint)
 
     def is_accepted(self) -> bool:
@@ -228,7 +231,8 @@ class VideoReviewDialog(QtWidgets.QDialog):
             sld.setMinimumWidth(130)
             sld.setMaximumWidth(170)
             val_lbl = QtWidgets.QLabel("", grp)
-            val_lbl.setStyleSheet("color:#555; font-size:11px;")
+            apply_themed_stylesheet(
+                val_lbl, lambda t: "color:" + t("TEXT_MUTED") + "; font-size:11px;")
             sld.rangeChanged.connect(
                 lambda a, b, k=key, f=fmt: self._set_filter_label(k, a, b, f))
             self._filters[key] = sld
@@ -299,7 +303,8 @@ class VideoReviewDialog(QtWidgets.QDialog):
             filt_row.addWidget(self.cmb_video_filter)
         filt_row.addStretch()
         self.lbl_count = QtWidgets.QLabel("", grp)
-        self.lbl_count.setStyleSheet("color:#555; font-size:11px;")
+        apply_themed_stylesheet(
+            self.lbl_count, lambda t: "color:" + t("TEXT_MUTED") + "; font-size:11px;")
         filt_row.addWidget(self.lbl_count)
         v.addLayout(filt_row)
 

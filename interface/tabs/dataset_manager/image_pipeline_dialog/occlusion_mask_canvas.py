@@ -33,6 +33,7 @@ from typing import List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.occlusion_mask_shape import OcclusionMaskShape
 from faceaudit.models.image_processing.occlusion_mask import (
     OcclusionMask,
@@ -680,7 +681,10 @@ class OcclusionMaskCanvas(QtWidgets.QDialog):
         toolbar.addStretch()
 
         self.help_lbl = QtWidgets.QLabel("")
-        self.help_lbl.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.help_lbl,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         toolbar.addWidget(self.help_lbl)
 
         root.addLayout(toolbar)
@@ -738,11 +742,15 @@ class OcclusionMaskCanvas(QtWidgets.QDialog):
         btn = QtWidgets.QPushButton(text)
         btn.setToolTip(tooltip)
         btn.setCheckable(True)
-        btn.setStyleSheet(
-            "QPushButton { padding: 6px 12px; border: 1px solid #ccc; "
-            "border-radius: 4px; background: white; } "
-            "QPushButton:checked { background: #cce4ff; "
-            "border-color: #4a90d9; font-weight: bold; }"
+        apply_themed_stylesheet(
+            btn,
+            lambda t: (
+                "QPushButton { padding: 6px 12px; border: 1px solid "
+                + t("BORDER") + "; "
+                "border-radius: 4px; background: " + t("SURFACE") + "; } "
+                "QPushButton:checked { background: " + t("PRIMARY_BG") + "; "
+                "border-color: " + t("PRIMARY") + "; font-weight: bold; }"
+            ),
         )
         return btn
 

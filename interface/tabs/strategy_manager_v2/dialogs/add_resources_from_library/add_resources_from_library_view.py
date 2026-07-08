@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.models.storage.strategy_artifact_reference import (
     StrategyArtifactReference,
 )
@@ -70,7 +71,10 @@ class AddResourcesFromLibraryView(QtWidgets.QDialog):
             parent=self,
         )
         header.setWordWrap(True)
-        header.setStyleSheet("color: #444; font-size: 11px;")
+        apply_themed_stylesheet(
+            header,
+            lambda t: "color: " + t("TEXT") + "; font-size: 11px;",
+        )
         layout.addWidget(header)
 
         self.tabs = QtWidgets.QTabWidget(parent=self)
@@ -94,13 +98,19 @@ class AddResourcesFromLibraryView(QtWidgets.QDialog):
         btn_row.addStretch()
 
         self.btn_ok = QtWidgets.QPushButton("Adicionar", parent=self)
-        self.btn_ok.setStyleSheet(
-            "QPushButton { border: 1px solid #1565c0; border-radius: 4px;"
-            " background: #1976d2; color: white; padding: 5px 14px; "
-            " font-weight: bold; }"
-            "QPushButton:hover { background: #1565c0; }"
-            "QPushButton:disabled { background: #ddd; color: #888; "
-            " border: 1px solid #bbb; }"
+        apply_themed_stylesheet(
+            self.btn_ok,
+            lambda t: (
+                "QPushButton { border: 1px solid " + t("PRIMARY") + ";"
+                " border-radius: 4px;"
+                " background: " + t("PRIMARY") + ";"
+                " color: " + t("HIGHLIGHT_TEXT") + "; padding: 5px 14px; "
+                " font-weight: bold; }"
+                "QPushButton:hover { background: " + t("PRIMARY_STRONG") + "; }"
+                "QPushButton:disabled { background: " + t("BORDER") + ";"
+                " color: " + t("TEXT_MUTED") + "; "
+                " border: 1px solid " + t("BORDER") + "; }"
+            ),
         )
         self.btn_ok.setEnabled(False)
         self.btn_ok.clicked.connect(self.accept)

@@ -16,6 +16,8 @@ from typing import Any, List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 class HubnessTablesWidget(QtWidgets.QWidget):
     """Painel com duas tabelas + preview de imagem único."""
@@ -49,7 +51,10 @@ class HubnessTablesWidget(QtWidgets.QWidget):
         lbl_hubs = QtWidgets.QLabel(
             "<b>Top hubs</b> — Nk alto (atraem vizinhança errada)"
         )
-        lbl_hubs.setStyleSheet("color: #c62828; font-size: 11px;")
+        apply_themed_stylesheet(
+            lbl_hubs,
+            lambda t: "color: " + t("DANGER") + "; font-size: 11px;",
+        )
         hubs_layout.addWidget(lbl_hubs)
         self.table_hubs = self._make_table()
         hubs_layout.addWidget(self.table_hubs)
@@ -63,7 +68,10 @@ class HubnessTablesWidget(QtWidgets.QWidget):
         lbl_anti = QtWidgets.QLabel(
             "<b>Top anti-hubs</b> — Nk baixo (faces topologicamente isoladas)"
         )
-        lbl_anti.setStyleSheet("color: #2e7d32; font-size: 11px;")
+        apply_themed_stylesheet(
+            lbl_anti,
+            lambda t: "color: " + t("SUCCESS") + "; font-size: 11px;",
+        )
         anti_layout.addWidget(lbl_anti)
         self.table_anti = self._make_table()
         anti_layout.addWidget(self.table_anti)
@@ -82,14 +90,19 @@ class HubnessTablesWidget(QtWidgets.QWidget):
             "<i>Selecione uma linha pra ver a face</i>"
         )
         self._caption_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self._caption_label.setStyleSheet(
-            "color: #666; font-size: 11px;"
+        apply_themed_stylesheet(
+            self._caption_label,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
         )
         preview_layout.addWidget(self._caption_label)
         self._image_label = QtWidgets.QLabel()
         self._image_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self._image_label.setStyleSheet(
-            "background: #fafafa; border: 1px solid #ddd;"
+        apply_themed_stylesheet(
+            self._image_label,
+            lambda t: (
+                "background: " + t("SURFACE_RAISED") + "; "
+                "border: 1px solid " + t("BORDER") + ";"
+            ),
         )
         self._image_label.setMinimumHeight(200)
         preview_layout.addWidget(self._image_label, 1)

@@ -32,6 +32,7 @@ from faceaudit.services.image_path_resolver import (
     normalize_stored_path,
     resolve_image_path,
 )
+from interface.theme import apply_themed_stylesheet, current_token_fn
 
 
 class PathOp(str, Enum):
@@ -178,9 +179,12 @@ class ModifyPathsDialog(QtWidgets.QDialog):
         self.lbl_state = QtWidgets.QLabel(state_txt, parent=self)
         self.lbl_state.setTextFormat(QtCore.Qt.TextFormat.RichText)
         self.lbl_state.setWordWrap(True)
-        self.lbl_state.setStyleSheet(
-            "color: #2c3e50; background: #eef3f8; border-radius: 4px; "
-            "padding: 6px;"
+        apply_themed_stylesheet(
+            self.lbl_state,
+            lambda t: (
+                "color: " + t("TEXT") + "; background: " + t("PRIMARY_BG")
+                + "; border-radius: 4px; padding: 6px;"
+            ),
         )
         layout.addWidget(self.lbl_state)
 
@@ -196,8 +200,10 @@ class ModifyPathsDialog(QtWidgets.QDialog):
         self.lbl_op_help = QtWidgets.QLabel(parent=op_box)
         self.lbl_op_help.setWordWrap(True)
         self.lbl_op_help.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self.lbl_op_help.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_op_help,
+            lambda t: "color: " + t("TEXT")
+            + "; font-size: 11px; padding: 4px;",
         )
         op_layout.addRow("", self.lbl_op_help)
         layout.addWidget(op_box)
@@ -258,8 +264,10 @@ class ModifyPathsDialog(QtWidgets.QDialog):
         rebase_layout.addWidget(self.input_old_prefix)
         self.lbl_rebase_help = QtWidgets.QLabel(parent=self.rebase_box)
         self.lbl_rebase_help.setWordWrap(True)
-        self.lbl_rebase_help.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_rebase_help,
+            lambda t: "color: " + t("TEXT")
+            + "; font-size: 11px; padding: 4px;",
         )
         if self._detected_prefix:
             self.lbl_rebase_help.setText(
@@ -288,8 +296,10 @@ class ModifyPathsDialog(QtWidgets.QDialog):
 
         self.lbl_naming_help = QtWidgets.QLabel(parent=self.naming_box)
         self.lbl_naming_help.setWordWrap(True)
-        self.lbl_naming_help.setStyleSheet(
-            "color: #555; font-size: 11px; padding: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_naming_help,
+            lambda t: "color: " + t("TEXT")
+            + "; font-size: 11px; padding: 4px;",
         )
         naming_layout.addRow("", self.lbl_naming_help)
         layout.addWidget(self.naming_box)
@@ -455,7 +465,8 @@ class ModifyPathsDialog(QtWidgets.QDialog):
             self.input_path_root.text().strip()
         )
         ok, msg = self._validate_candidate(candidate)
-        color = "#2e7d32" if ok else "#c62828"
+        t = current_token_fn()
+        color = t("SUCCESS") if ok else t("DANGER")
         icon = "✅" if ok else "⚠"
         self.lbl_validation.setText(
             f"<span style='color:{color}'>{icon} {msg}</span>"

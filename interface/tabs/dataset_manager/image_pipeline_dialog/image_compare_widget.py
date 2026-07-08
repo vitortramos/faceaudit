@@ -28,6 +28,8 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 _PREVIEW_SIZE = 480  # tamanho fixo das duas thumbnails
 
@@ -43,9 +45,12 @@ class _ImagePane(QtWidgets.QWidget):
 
         self.lbl_title = QtWidgets.QLabel(title)
         self.lbl_title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_title.setStyleSheet(
-            "font-weight: bold; padding: 4px; "
-            "background: #f0f0f0; border-radius: 3px;"
+        apply_themed_stylesheet(
+            self.lbl_title,
+            lambda t: (
+                "font-weight: bold; padding: 4px; "
+                "background: " + t("SURFACE_ALT") + "; border-radius: 3px;"
+            ),
         )
         layout.addWidget(self.lbl_title)
 
@@ -53,9 +58,13 @@ class _ImagePane(QtWidgets.QWidget):
         self.lbl_image.setMinimumSize(_PREVIEW_SIZE, _PREVIEW_SIZE)
         self.lbl_image.setMaximumSize(_PREVIEW_SIZE, _PREVIEW_SIZE)
         self.lbl_image.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_image.setStyleSheet(
-            "background: #fafafa; border: 1px solid #ddd; "
-            "border-radius: 4px; color: #999;"
+        apply_themed_stylesheet(
+            self.lbl_image,
+            lambda t: (
+                "background: " + t("SURFACE_RAISED") + "; "
+                "border: 1px solid " + t("BORDER") + "; "
+                "border-radius: 4px; color: " + t("TEXT_MUTED") + ";"
+            ),
         )
         layout.addWidget(self.lbl_image)
 
@@ -108,14 +117,21 @@ class ImageCompareWidget(QtWidgets.QWidget):
         self.btn_random.clicked.connect(self.random_clicked.emit)
 
         for b in (self.btn_prev, self.btn_next, self.btn_random):
-            b.setStyleSheet(
-                "QToolButton { padding: 4px 10px; border: 1px solid #ccc; "
-                "border-radius: 3px; background: white; } "
-                "QToolButton:hover { background: #e8f0fe; }"
+            apply_themed_stylesheet(
+                b,
+                lambda t: (
+                    "QToolButton { padding: 4px 10px; border: 1px solid "
+                    + t("BORDER") + "; "
+                    "border-radius: 3px; background: " + t("SURFACE") + "; } "
+                    "QToolButton:hover { background: " + t("PRIMARY_BG") + "; }"
+                ),
             )
 
         self.lbl_index = QtWidgets.QLabel("(sem dataset)")
-        self.lbl_index.setStyleSheet("color: #666; padding: 0 8px;")
+        apply_themed_stylesheet(
+            self.lbl_index,
+            lambda t: "color: " + t("TEXT_MUTED") + "; padding: 0 8px;",
+        )
 
         nav_row.addWidget(self.btn_prev)
         nav_row.addWidget(self.btn_next)
@@ -138,8 +154,9 @@ class ImageCompareWidget(QtWidgets.QWidget):
         # Status (filename + erro)
         self.lbl_status = QtWidgets.QLabel("")
         self.lbl_status.setWordWrap(True)
-        self.lbl_status.setStyleSheet(
-            "color: #555; padding: 4px; font-size: 11px;"
+        apply_themed_stylesheet(
+            self.lbl_status,
+            lambda t: "color: " + t("TEXT") + "; padding: 4px; font-size: 11px;",
         )
         layout.addWidget(self.lbl_status)
 
@@ -149,11 +166,16 @@ class ImageCompareWidget(QtWidgets.QWidget):
         self.btn_apply.setToolTip(
             "Re-aplica o pipeline atual na imagem mostrada"
         )
-        self.btn_apply.setStyleSheet(
-            "QPushButton { padding: 6px 16px; background: #0078d7; "
-            "color: white; font-weight: bold; border-radius: 4px; } "
-            "QPushButton:hover { background: #005a9e; } "
-            "QPushButton:disabled { background: #ccc; }"
+        apply_themed_stylesheet(
+            self.btn_apply,
+            lambda t: (
+                "QPushButton { padding: 6px 16px; background: "
+                + t("PRIMARY") + "; "
+                "color: " + t("HIGHLIGHT_TEXT") + "; font-weight: bold; "
+                "border-radius: 4px; } "
+                "QPushButton:hover { background: " + t("PRIMARY_STRONG") + "; } "
+                "QPushButton:disabled { background: " + t("BORDER") + "; }"
+            ),
         )
         self.btn_apply.clicked.connect(self.apply_clicked.emit)
         apply_row.addStretch()
@@ -184,10 +206,11 @@ class ImageCompareWidget(QtWidgets.QWidget):
 
     def show_status(self, text: str, is_error: bool = False):
         self.lbl_status.setText(text)
+        # QSS montado por estado (erro × normal): lê o token no momento.
+        t = current_token_fn()
+        color = t("DANGER") if is_error else t("TEXT")
         self.lbl_status.setStyleSheet(
-            "color: #c33; padding: 4px; font-size: 11px;"
-            if is_error
-            else "color: #555; padding: 4px; font-size: 11px;"
+            "color: " + color + "; padding: 4px; font-size: 11px;"
         )
 
     def show_index(self, idx: int, total: int, file_name: Optional[str]):

@@ -20,6 +20,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 class SetColumnValueDialog(QtWidgets.QDialog):
     """Escolhe uma coluna editável + valor a aplicar a `n_selected` faces.
@@ -64,7 +66,10 @@ class SetColumnValueDialog(QtWidgets.QDialog):
         form.addRow("", self.txt_value)
 
         self.lbl_hint = QtWidgets.QLabel("", parent=self)
-        self.lbl_hint.setStyleSheet("color: #666; font-size: 11px;")
+        apply_themed_stylesheet(
+            self.lbl_hint,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
         form.addRow("", self.lbl_hint)
 
         buttons = QtWidgets.QDialogButtonBox(

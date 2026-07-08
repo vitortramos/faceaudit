@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
 from faceaudit.enums.validation_rule_type import ValidationRuleType
 from faceaudit.models.strategy.strategy_resource import StrategyResource
@@ -284,20 +285,27 @@ class AddValidationRuleDialog(QtWidgets.QDialog):
         self._desc_box = QtWidgets.QLabel(parent=self)
         self._desc_box.setWordWrap(True)
         self._desc_box.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        self._desc_box.setStyleSheet(
-            "QLabel { background: #FDF6E6; border: 1px solid #F3E0B0;"
-            " border-radius: 3px; padding: 8px; color: #5D4500;"
-            " font-size: 11px; }"
+        apply_themed_stylesheet(
+            self._desc_box,
+            lambda t: (
+                "QLabel { background: " + t("ACCENT_BG") + ";"
+                " border: 1px solid " + t("ACCENT") + ";"
+                " border-radius: 3px; padding: 8px; color: " + t("ACCENT_TEXT") + ";"
+                " font-size: 11px; }"
+            ),
         )
         root.addWidget(self._desc_box)
 
         # ── Param form ────────────────────────────────────────────────────
         params_group = QtWidgets.QGroupBox("Parâmetros", parent=self)
-        params_group.setStyleSheet(
-            "QGroupBox { font-size: 11px; font-weight: bold;"
-            " border: 1px solid #ccc; border-radius: 4px; margin-top: 8px;"
-            " padding-top: 12px; }"
-            "QGroupBox::title { left: 8px; subcontrol-position: top left; }"
+        apply_themed_stylesheet(
+            params_group,
+            lambda t: (
+                "QGroupBox { font-size: 11px; font-weight: bold;"
+                " border: 1px solid " + t("BORDER") + "; border-radius: 4px;"
+                " margin-top: 8px; padding-top: 12px; }"
+                "QGroupBox::title { left: 8px; subcontrol-position: top left; }"
+            ),
         )
         self._form_layout = QtWidgets.QFormLayout(params_group)
         self._form_layout.setContentsMargins(10, 10, 10, 10)
@@ -313,10 +321,15 @@ class AddValidationRuleDialog(QtWidgets.QDialog):
         btn_row.addWidget(self.btn_cancel)
 
         self.btn_ok = QtWidgets.QPushButton("Adicionar", parent=self)
-        self.btn_ok.setStyleSheet(
-            "QPushButton { background: #2e7d32; color: white;"
-            " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
-            "QPushButton:disabled { background: #aaa; color: #eee; }"
+        apply_themed_stylesheet(
+            self.btn_ok,
+            lambda t: (
+                "QPushButton { background: " + t("SUCCESS") + ";"
+                " color: " + t("HIGHLIGHT_TEXT") + ";"
+                " padding: 5px 18px; border-radius: 3px; font-weight: bold; }"
+                "QPushButton:disabled { background: " + t("BORDER") + ";"
+                " color: " + t("TEXT_MUTED") + "; }"
+            ),
         )
         self.btn_ok.setDefault(True)
         self.btn_ok.clicked.connect(self._on_ok)
@@ -420,7 +433,10 @@ class AddValidationRuleDialog(QtWidgets.QDialog):
                 "(esta regra não tem parâmetros configuráveis)",
                 parent=self,
             )
-            empty.setStyleSheet("color: #888; font-style: italic;")
+            apply_themed_stylesheet(
+                empty,
+                lambda t: "color: " + t("TEXT_MUTED") + "; font-style: italic;",
+            )
             self._form_layout.addRow(empty)
             return
 

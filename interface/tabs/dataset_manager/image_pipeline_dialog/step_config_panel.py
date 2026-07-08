@@ -20,6 +20,7 @@ from typing import Callable, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.blur_kind import BlurKind
 from faceaudit.enums.crop_mode import CropMode
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
@@ -92,8 +93,11 @@ class StepConfigPanel(QtWidgets.QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
 
         self._title = QtWidgets.QLabel("<i>Selecione um step à esquerda</i>")
-        self._title.setStyleSheet(
-            "color: #666; padding: 4px; font-size: 11px;"
+        apply_themed_stylesheet(
+            self._title,
+            lambda t: (
+                "color: " + t("TEXT_MUTED") + "; padding: 4px; font-size: 11px;"
+            ),
         )
         layout.addWidget(self._title)
 

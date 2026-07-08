@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple
 
 from PyQt6 import QtCore, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
 from faceaudit.models.face_dataset import FaceDataset
@@ -78,7 +79,10 @@ class SealProjectDialog(QtWidgets.QDialog):
 
         # Resumo
         self.lbl_summary = QtWidgets.QLabel("")
-        self.lbl_summary.setStyleSheet("color: #555; padding: 4px;")
+        apply_themed_stylesheet(
+            self.lbl_summary,
+            lambda t: "color: " + t("TEXT") + "; padding: 4px;",
+        )
         layout.addWidget(self.lbl_summary)
 
         # ── Dry-run ──

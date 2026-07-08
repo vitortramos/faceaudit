@@ -19,6 +19,7 @@ from typing import Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.models.image_processing.quality_scores_result import (
     QualityScoresResult,
 )
@@ -84,8 +85,12 @@ class QualityScoresPanel(QtWidgets.QWidget):
 
         # Status line
         self.lbl_status = QtWidgets.QLabel("")
-        self.lbl_status.setStyleSheet(
-            "color: #888; font-size: 10px; padding: 2px 4px;"
+        apply_themed_stylesheet(
+            self.lbl_status,
+            lambda t: (
+                "color: " + t("TEXT_MUTED")
+                + "; font-size: 10px; padding: 2px 4px;"
+            ),
         )
         layout.addWidget(self.lbl_status)
 
@@ -159,8 +164,10 @@ class QualityScoresPanel(QtWidgets.QWidget):
             for c in range(1, 4):
                 self._set_cell(r, c, _DASH)
         self.lbl_status.setText(f"⚠ Erro: {message}")
+        t = current_token_fn()
         self.lbl_status.setStyleSheet(
-            "color: #c33; font-size: 10px; padding: 2px 4px; font-weight: 500;"
+            "color: " + t("DANGER")
+            + "; font-size: 10px; padding: 2px 4px; font-weight: 500;"
         )
 
     # ── Helpers ─────────────────────────────────────────────────────────────
@@ -197,13 +204,15 @@ class QualityScoresPanel(QtWidgets.QWidget):
         text = fmt.format(delta)
         # Arrow + cor
         if arrow_lower_is_worse:
-            # FIQA: caiu = pior (vermelho); subiu = melhor (verde)
+            # FIQA: caiu = pior (vermelho); subiu = melhor (verde).
+            # Cores de ESTADO da célula → tokens de tema (SUCCESS/DANGER).
+            tk = current_token_fn()
             if delta < -0.1:
                 text += " ↓"
-                color = QtGui.QColor("#c33")
+                color = QtGui.QColor(tk("DANGER"))
             elif delta > 0.1:
                 text += " ↑"
-                color = QtGui.QColor("#2a7")
+                color = QtGui.QColor(tk("SUCCESS"))
             else:
                 color = None
         else:

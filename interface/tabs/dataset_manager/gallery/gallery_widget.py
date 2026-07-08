@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet
+
 
 _THUMB_SIZE = 96            # lado em pixels do ícone exibido
 _LOAD_BATCH_SIZE = 12       # items carregados por tick do timer
@@ -73,8 +75,9 @@ class GalleryWidget(QtWidgets.QWidget):
 
         # Header com contador (cresce dinamicamente conforme dataset)
         self.lbl_header = QtWidgets.QLabel("(nenhum dataset carregado)")
-        self.lbl_header.setStyleSheet(
-            "padding: 6px 8px; color: #555; font-size: 11px;"
+        apply_themed_stylesheet(
+            self.lbl_header,
+            lambda t: "padding: 6px 8px; color: " + t("TEXT_MUTED") + "; font-size: 11px;",
         )
         outer.addWidget(self.lbl_header)
 

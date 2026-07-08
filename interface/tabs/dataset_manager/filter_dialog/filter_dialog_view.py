@@ -21,11 +21,11 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from faceaudit.models.filter.column_filter_data_type import (
     ColumnFilterDataType,
 )
+from interface.theme import apply_themed_stylesheet, current_token_fn
 
 
-# Cor de fundo pra row inválida (coluna não existe no dataset corrente)
-_INVALID_BG = "#ffebee"
-_INVALID_BORDER = "#c62828"
+# Fundo transparente para row válida (as cores de row inválida vêm dos
+# tokens DANGER_BG / DANGER, lidos no momento da aplicação do estilo).
 _VALID_BG = "transparent"
 
 
@@ -145,8 +145,9 @@ class _FilterRowWidget(QtWidgets.QFrame):
 
         # Indicador de inválido (oculto por default)
         self._invalid_indicator = QtWidgets.QLabel("⚠")
-        self._invalid_indicator.setStyleSheet(
-            f"color: {_INVALID_BORDER}; font-size: 16px;"
+        apply_themed_stylesheet(
+            self._invalid_indicator,
+            lambda t: "color: " + t("DANGER") + "; font-size: 16px;",
         )
         self._invalid_indicator.hide()
         layout.addWidget(self._invalid_indicator)
@@ -185,7 +186,10 @@ class _FilterRowWidget(QtWidgets.QFrame):
         empty = QtWidgets.QLabel(
             "<i>Selecione uma coluna pra configurar o filtro</i>"
         )
-        empty.setStyleSheet("color: #999; padding: 4px;")
+        apply_themed_stylesheet(
+            empty,
+            lambda t: "color: " + t("TEXT_MUTED") + "; padding: 4px;",
+        )
         self._criterion_stack.addWidget(empty)
 
         # Página 1 — numérico (values + ranges em linha de texto)
@@ -392,10 +396,11 @@ class _FilterRowWidget(QtWidgets.QFrame):
         """Marca a row em vermelho com tooltip do motivo."""
         self._is_invalid = bool(invalid)
         self._invalid_reason = reason or ""
+        t = current_token_fn()
         if self._is_invalid:
             self.setStyleSheet(
-                f"#FilterRow {{ background: {_INVALID_BG}; "
-                f"border: 1px solid {_INVALID_BORDER}; }}"
+                f"#FilterRow {{ background: {t('DANGER_BG')}; "
+                f"border: 1px solid {t('DANGER')}; }}"
             )
             self._invalid_indicator.show()
             self._invalid_indicator.setToolTip(reason)
@@ -554,10 +559,15 @@ class FilterDialogView(QtWidgets.QDialog):
         footer.addWidget(self.btn_cancel)
 
         self.btn_apply = QtWidgets.QPushButton("Aplicar")
-        self.btn_apply.setStyleSheet(
-            "QPushButton { background: #1976d2; color: white; "
-            "font-weight: bold; padding: 5px 16px; border-radius: 4px; } "
-            "QPushButton:hover { background: #115293; }"
+        apply_themed_stylesheet(
+            self.btn_apply,
+            lambda t: (
+                "QPushButton { background: " + t("PRIMARY") + "; color: "
+                + t("HIGHLIGHT_TEXT") + "; font-weight: bold; "
+                "padding: 5px 16px; border-radius: 4px; } "
+                "QPushButton:hover { background: " + t("PRIMARY_STRONG")
+                + "; }"
+            ),
         )
         self.btn_apply.clicked.connect(self.apply_requested.emit)
         footer.addWidget(self.btn_apply)

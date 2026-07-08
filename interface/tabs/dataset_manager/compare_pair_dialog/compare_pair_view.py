@@ -28,6 +28,8 @@ from typing import Any, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from interface.theme import apply_themed_stylesheet, current_token_fn
+
 
 _THUMB_SIZE = 360            # lado do quadro de imagem em pixels
 _PROPS_LABEL_WIDTH = 80      # largura fixa do label "FIQA:" etc.
@@ -60,8 +62,10 @@ class ComparePairView(QtWidgets.QDialog):
 
         # Header
         self.lbl_header = QtWidgets.QLabel("Comparação de Faces")
-        self.lbl_header.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #1a3d6e;"
+        apply_themed_stylesheet(
+            self.lbl_header,
+            lambda t: "font-size: 14px; font-weight: bold; color: "
+            + t("PRIMARY_STRONG") + ";",
         )
         outer.addWidget(self.lbl_header)
 
@@ -77,9 +81,13 @@ class ComparePairView(QtWidgets.QDialog):
         # Bloco de comparação inter-pares (similarity, etc.)
         self.lbl_similarity = QtWidgets.QLabel("Similaridade: —")
         self.lbl_similarity.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.lbl_similarity.setStyleSheet(
-            "font-size: 13px; padding: 8px; "
-            "background-color: #f3f6fa; border-radius: 4px; color: #333;"
+        apply_themed_stylesheet(
+            self.lbl_similarity,
+            lambda t: (
+                "font-size: 13px; padding: 8px; "
+                "background-color: " + t("SURFACE_RAISED")
+                + "; border-radius: 4px; color: " + t("TEXT") + ";"
+            ),
         )
         outer.addWidget(self.lbl_similarity)
 
@@ -118,9 +126,13 @@ class _FacePanel(QtWidgets.QFrame):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        self.setStyleSheet(
-            "QFrame { background: #fafafa; border: 1px solid #ddd; "
-            "border-radius: 6px; }"
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "QFrame { background: " + t("SURFACE_RAISED")
+                + "; border: 1px solid " + t("BORDER")
+                + "; border-radius: 6px; }"
+            ),
         )
         self._dataset: Optional[Any] = None
         self._build_ui()
@@ -138,22 +150,31 @@ class _FacePanel(QtWidgets.QFrame):
         self.lbl_img = QtWidgets.QLabel()
         self.lbl_img.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setMinimumSize(_THUMB_SIZE, _THUMB_SIZE)
-        self.lbl_img.setStyleSheet(
-            "background: #eee; border: 1px solid #ccc; border-radius: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_img,
+            lambda t: (
+                "background: " + t("SURFACE_ALT") + "; border: 1px solid "
+                + t("BORDER") + "; border-radius: 4px;"
+            ),
         )
         v.addWidget(self.lbl_img, 0, QtCore.Qt.AlignmentFlag.AlignCenter)
 
         # Identidade em destaque
         self.lbl_identity = QtWidgets.QLabel("(sem identidade)")
-        self.lbl_identity.setStyleSheet(
-            "font-size: 13px; font-weight: bold; color: #1a3d6e; padding-top: 4px;"
+        apply_themed_stylesheet(
+            self.lbl_identity,
+            lambda t: "font-size: 13px; font-weight: bold; color: "
+            + t("PRIMARY_STRONG") + "; padding-top: 4px;",
         )
         self.lbl_identity.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         v.addWidget(self.lbl_identity)
 
         # Path em fonte pequena
         self.lbl_path = QtWidgets.QLabel("")
-        self.lbl_path.setStyleSheet("color: #666; font-size: 10px;")
+        apply_themed_stylesheet(
+            self.lbl_path,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 10px;",
+        )
         self.lbl_path.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.lbl_path.setWordWrap(True)
         v.addWidget(self.lbl_path)
@@ -166,9 +187,12 @@ class _FacePanel(QtWidgets.QFrame):
         # Embrulha em widget pra estilizar (background + padding)
         props_widget = QtWidgets.QWidget()
         props_widget.setLayout(self.props_form)
-        props_widget.setStyleSheet(
-            "QWidget { background: #fff; border: 1px solid #eee; "
-            "border-radius: 3px; }"
+        apply_themed_stylesheet(
+            props_widget,
+            lambda t: (
+                "QWidget { background: " + t("SURFACE") + "; border: 1px solid "
+                + t("BORDER") + "; border-radius: 3px; }"
+            ),
         )
         v.addWidget(props_widget)
 
@@ -189,15 +213,19 @@ class _FacePanel(QtWidgets.QFrame):
                 QtCore.Qt.TransformationMode.SmoothTransformation,
             )
             self.lbl_img.setPixmap(scaled)
+            t = current_token_fn()
             self.lbl_img.setStyleSheet(
-                "background: #fff; border: 1px solid #ccc; border-radius: 4px;"
+                "background: " + t("SURFACE") + "; border: 1px solid "
+                + t("BORDER") + "; border-radius: 4px;"
             )
         else:
             self.lbl_img.setPixmap(QtGui.QPixmap())
             self.lbl_img.setText("⚠️ arquivo\nnão encontrado")
+            t = current_token_fn()
             self.lbl_img.setStyleSheet(
-                "background: #fff3e0; border: 1px solid #ffb74d; "
-                "color: #c62828; font-size: 12px; border-radius: 4px;"
+                "background: " + t("WARNING_BG") + "; border: 1px solid "
+                + t("WARNING") + "; color: " + t("DANGER")
+                + "; font-size: 12px; border-radius: 4px;"
             )
 
         # Identidade + path
@@ -212,15 +240,17 @@ class _FacePanel(QtWidgets.QFrame):
             self.props_form.removeRow(0)
 
         # Adiciona linhas conforme atributos disponíveis
+        t = current_token_fn()
         for label_text, value in _extract_properties(face):
             lbl = QtWidgets.QLabel(label_text)
             lbl.setFixedWidth(_PROPS_LABEL_WIDTH)
             lbl.setStyleSheet(
-                "font-size: 11px; color: #555; font-weight: bold;"
+                "font-size: 11px; color: " + t("TEXT")
+                + "; font-weight: bold;"
             )
             val_lbl = QtWidgets.QLabel(value)
             val_lbl.setStyleSheet(
-                "font-size: 11px; color: #222;"
+                "font-size: 11px; color: " + t("TEXT") + ";"
             )
             val_lbl.setTextInteractionFlags(
                 QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
