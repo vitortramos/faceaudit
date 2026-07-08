@@ -232,6 +232,15 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        # Barra de rolagem vertical SEMPRE reservada → a largura do viewport
+        # não muda quando a barra aparece/some. Sem isso, quando a barra
+        # surge ela estreita o viewport DEPOIS que os rótulos word-wrap já
+        # calcularam a altura (QFormLayout não recomputa heightForWidth de
+        # linhas que abrangem as 2 colunas), cortando a última linha das
+        # caixas de ajuda/descrição.
+        scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn
+        )
 
         scroll_content = QtWidgets.QWidget()
         scroll_layout = QtWidgets.QVBoxLayout(scroll_content)
@@ -1806,8 +1815,8 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         apply_themed_stylesheet(
             row,
             lambda t: (
-                "QFrame { background: " + t("ACCENT_BG") + "; border: 1px solid "
-                + t("ACCENT") + ";"
+                "QFrame { background: " + t("SURFACE_RAISED") + "; border: 1px solid "
+                + t("BORDER") + ";"
                 " border-radius: 3px; }"
             ),
         )
@@ -1829,7 +1838,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         apply_themed_stylesheet(
             name_lbl,
             lambda t: (
-                "color: " + t("ACCENT_TEXT") + "; font-size: 11px; font-weight: bold;"
+                "color: " + t("TEXT") + "; font-size: 11px; font-weight: bold;"
                 " background: transparent; border: none;"
             ),
         )
@@ -1840,7 +1849,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         apply_themed_stylesheet(
             summary_lbl,
             lambda t: (
-                "color: " + t("ACCENT_TEXT") + "; font-size: 10px;"
+                "color: " + t("TEXT_MUTED") + "; font-size: 10px;"
                 " background: transparent; border: none;"
             ),
         )
@@ -1871,9 +1880,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             btn_save,
             lambda t: (
                 "QToolButton { background: transparent; border: 1px solid "
-                + t("ACCENT_TEXT") + ";"
-                " border-radius: 3px; color: " + t("ACCENT_TEXT") + "; }"
-                "QToolButton:hover { background: " + t("ACCENT_BG") + "; }"
+                + t("BORDER") + ";"
+                " border-radius: 3px; color: " + t("TEXT_MUTED") + "; }"
+                "QToolButton:hover { background: " + t("SURFACE_ALT") + "; }"
             ),
         )
         btn_save.clicked.connect(
@@ -1893,9 +1902,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             btn_del,
             lambda t: (
                 "QToolButton { background: transparent; border: 1px solid "
-                + t("ACCENT") + ";"
-                " border-radius: 3px; color: " + t("ACCENT_TEXT") + "; }"
-                "QToolButton:hover { background: " + t("ACCENT_BG") + "; }"
+                + t("DANGER") + ";"
+                " border-radius: 3px; color: " + t("DANGER") + "; }"
+                "QToolButton:hover { background: " + t("DANGER_BG") + "; }"
             ),
         )
         btn_del.clicked.connect(
