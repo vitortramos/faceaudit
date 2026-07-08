@@ -4,16 +4,19 @@ from __future__ import annotations
 
 from PyQt6 import QtWidgets, QtCore
 
-from interface.theme import apply_themed_stylesheet, current_token_fn
+from interface.theme import apply_themed_stylesheet
 
 
 class SectionHeader(QtWidgets.QFrame):
     """Faixa colorida com título da seção do InstructionConfigPanel."""
 
     # (bg_token, fg_token, accent_token) por variante.
+    # fg = cor do título: LEGÍVEL nos dois modos (nada de TEXT_MUTED apagado).
+    # accent = barra/borda: um token VISÍVEL (não BORDER/HEADER_BG, quase
+    # invisíveis no escuro).
     _VARIANTS = {
-        "identification": ("SURFACE_RAISED", "TEXT_MUTED", "BORDER"),
-        "configuration":  ("PRIMARY_BG", "PRIMARY_STRONG", "HEADER_BG"),
+        "identification": ("SURFACE_RAISED", "TEXT", "TEXT_MUTED"),
+        "configuration":  ("PRIMARY_BG", "PRIMARY_STRONG", "PRIMARY"),
         "outputs":        ("SUCCESS_BG", "SUCCESS", "SUCCESS"),
         "validation":     ("ACCENT_BG", "ACCENT_TEXT", "ACCENT"),
     }
@@ -23,17 +26,19 @@ class SectionHeader(QtWidgets.QFrame):
         if variant not in self._VARIANTS:
             variant = "identification"
 
-        t = current_token_fn()
         bg_tok, fg_tok, accent_tok = self._VARIANTS[variant]
-        bg, fg, accent = t(bg_tok), t(fg_tok), t(accent_tok)
 
-        self.setStyleSheet(
-            f"QFrame {{"
-            f"  background-color: {bg};"
-            f"  border-left: 4px solid {accent};"
-            f"  border-top: 1px solid {accent};"
-            f"  border-bottom: 1px solid {accent};"
-            f"}}"
+        # apply_themed_stylesheet → re-aplica ao trocar de tema ao vivo.
+        apply_themed_stylesheet(
+            self,
+            lambda t: (
+                "QFrame {"
+                "  background-color: " + t(bg_tok) + ";"
+                "  border-left: 4px solid " + t(accent_tok) + ";"
+                "  border-top: 1px solid " + t(accent_tok) + ";"
+                "  border-bottom: 1px solid " + t(accent_tok) + ";"
+                "}"
+            ),
         )
 
         layout = QtWidgets.QHBoxLayout(self)
@@ -41,10 +46,13 @@ class SectionHeader(QtWidgets.QFrame):
         layout.setSpacing(0)
 
         self._label = QtWidgets.QLabel(title.upper())
-        self._label.setStyleSheet(
-            f"background: transparent; border: none;"
-            f"color: {fg}; font-size: 11px; font-weight: bold;"
-            f"letter-spacing: 0.5px;"
+        apply_themed_stylesheet(
+            self._label,
+            lambda t: (
+                "background: transparent; border: none;"
+                " color: " + t(fg_tok) + "; font-size: 11px; font-weight: bold;"
+                " letter-spacing: 0.5px;"
+            ),
         )
         layout.addWidget(self._label)
         layout.addStretch(1)
