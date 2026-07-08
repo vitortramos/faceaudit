@@ -49,46 +49,64 @@ signifique apenas chamar os mesmos métodos do backend**.
 
 ---
 
-## 2. Tema — sistema claro/escuro configurável (ARQUITETURA-ALVO)
+## 2. Tema claro/escuro — o sistema EXISTE em `interface/theme/`
 
-### Estado atual (dívida técnica, a corrigir)
-- **Não existe módulo central de tema.** ~76 arquivos da UI chamam `setStyleSheet`
-  direto, com **centenas de cores hex cravadas** assumindo fundo claro (ex.:
-  `#1976d2`, `#c62828`, `#2e7d32`, o âmbar `#E8A020`…).
-- `interface/run.py::_apply_light_palette` (linha ~98) **força a paleta clara** como
-  curativo. O próprio docstring diz que é temporário *"até o team auditar todos os
-  stylesheets pra serem theme-aware"*. Não é um princípio de design — é um band-aid.
-- Consequência histórica: no macOS em dark mode, os widgets que usavam `QPalette`
-  ficavam escuros e os de hex fixo ficavam claros → contraste quebrado.
+Tema claro e escuro configurável, com fonte única de verdade em tokens semânticos.
+**Nunca cravar hex inline em `setStyleSheet` — sempre rotear por tokens.** Detalhes
+completos (tokens, integração) na seção "Sistema de tema claro/escuro" do CLAUDE.md.
 
-### Alvo: tema claro E escuro, alternável pelo usuário
-1. **UM módulo de tema** (ex.: `interface/theme/theme.py`) com **tokens semânticos**
-   — não cores literais. Dois dicionários `LIGHT` e `DARK` mapeando token → hex:
-   `SURFACE`, `SURFACE_ALT`, `TEXT`, `TEXT_MUTED`, `BORDER`, `ACCENT` (o âmbar
-   forense), `SUCCESS`, `WARNING`, `DANGER`, `INFO`, `HIGHLIGHT`, etc.
-2. **`ThemeManager`** (singleton/`QObject`): guarda o modo atual, persiste a escolha
-   (`config.json` ou `QSettings`), expõe `color(token) -> QColor`, e emite
-   `theme_changed` ao trocar.
-3. **Duas camadas de aplicação, MESMA fonte de verdade (os tokens):**
-   - **QPalette** construída dos tokens — `build_palette(mode)` substitui o
-     `_apply_light_palette` e é aplicada no `QApplication`.
-   - **QSS global** gerado dos tokens — `app.setStyleSheet(build_qss(mode))`,
-     aplicado **no nível do `QApplication`**, não por widget.
-4. **Nunca cravar hex inline.** Código novo/alterado referencia tokens via o módulo
-   de tema; prefira **papéis de `QPalette`** + **QSS escopado por `objectName`** a
-   `setStyleSheet` inline espalhado.
-5. **Troca em runtime**: uma opção em Preferências alterna o modo →
-   `ThemeManager` reconstrói paleta + QSS e emite `theme_changed`; widgets que
-   pintam algo custom (ex.: plots matplotlib, swatches) escutam e repintam.
-6. **Contraste**: cada par token (texto sobre superfície) passa **WCAG AA nos DOIS
-   modos** (delegar verificação à `qt-ui-design` §2). Plots matplotlib também
-   precisam de par de temas (facecolor/edgecolor/grid dos tokens).
+- `interface/theme/tokens.py` — dicts `LIGHT`/`DARK` (mesmas chaves; `assert` garante).
+  Tokens: `SURFACE`/`SURFACE_ALT`/`SURFACE_RAISED`, `BORDER`, `TEXT`/`TEXT_MUTED`,
+  `ACCENT`/`ACCENT_BG`/`ACCENT_TEXT` (âmbar forense), `PRIMARY`/`PRIMARY_BG`/`PRIMARY_STRONG`,
+  `HEADER_BG`/`HEADER_TEXT` (cabeçalho navy = fundo escuro + texto claro),
+  `SUCCESS`/`DANGER`/`WARNING` (+`_BG`), `HIGHLIGHT`/`HIGHLIGHT_TEXT`, papéis de `QPalette`.
+  **Modo claro é byte-idêntico** à paleta histórica.
+- `interface/theme/theme_manager.py` — `ThemeManager` singleton (`instance()`,
+  `initialize(app, mode)`, `apply(mode)`, `set_mode(mode)`, sinal `theme_changed`,
+  `color(token)`/`qcolor(token)`). Constrói `QPalette` + QSS global dos tokens.
+- `interface/theme/themed_widget.py` — **`apply_themed_stylesheet(widget, builder)`**
+  (aplica e **re-aplica ao trocar de tema**) e **`current_token_fn()`** (lê o modo atual;
+  para QSS dinâmico/por-item/por-estado, ex.: `setForeground` de célula).
+- `interface/theme/native_titlebar.py` — `apply_titlebar_theme(widget, dark)` (barra de
+  título nativa no Windows via DWM). Já aplicado na `MainGuiView`.
 
-### Migração (incremental, NÃO big-bang)
-- A cada vez que tocar num widget com hex cravado, **substitua por token**. Mantenha
-  `_apply_light_palette` funcionando até a migração avançar; quando os pontos
-  críticos estiverem theme-aware, o toggle habilita o dark de fato.
-- Fluxo pesado é só reescrita de cor — sem tocar em lógica.
+**Padrão obrigatório para QUALQUER QSS novo com cor:**
+```python
+from interface.theme import apply_themed_stylesheet, current_token_fn
+# estático (self/filho fixo) — re-aplica ao vivo:
+apply_themed_stylesheet(self, lambda t: "QFrame { background: " + t("SURFACE_RAISED")
+    + "; color: " + t("TEXT") + "; border: 1px solid " + t("BORDER") + "; }")
+# dinâmico/por-estado — lê o token na criação:
+t = current_token_fn(); item.setForeground(QtGui.QColor(t("DANGER")))
+```
+
+**Persistência**: `SystemConfig.theme.mode` em `config.json`; toggle no `ConfigDialog`
+(grupo 🎨 Aparência); aplicado no bootstrap (`run.py`) e ao vivo pelo `MainGuiController`.
+
+**Status**: infra + ~65 arquivos migrados. **Contraste** deve passar WCAG AA nos dois
+modos (delegar à `qt-ui-design` §2). Verifique com `widget.grab()` offscreen.
+
+### Armadilhas / lições aprendidas (regras duras da migração)
+1. **Fundo colorido = SÓ título/callout, NUNCA conteúdo/campo.** Ex.: a linha de saída
+   (`OutputRowWidget`) deve ter fundo neutro; o verde vai no título da seção e no label.
+2. **Nunca `color: inherit` em `::item:selected`** — no escuro resolve para PRETO sobre
+   o fundo de seleção. Use `t("TEXT")` explícito (lista, árvore, comparação).
+3. **Callouts de ajuda/nota = estilo NEUTRO** (surface + barra de acento cinza `TEXT_MUTED`
+   + texto suave). O âmbar `ACCENT` fica reservado a **títulos/validação**, não a dicas.
+4. **Ao migrar cor quase-branca/quase-preta** (ex.: `#fafdf6`, `#fff8e8` sutil) →
+   **surface neutro** (`SURFACE_RAISED`), NUNCA um token de status saturado
+   (`SUCCESS_BG` etc.) — senão vira destaque onde antes era só um sussurro.
+5. **Barra de accent precisa ser VISÍVEL no escuro** — não use `BORDER`/`HEADER_BG`
+   como barra de acento (somem no fundo escuro); use `TEXT_MUTED`/`PRIMARY`/cor semântica.
+6. **`ACCENT`/`PRIMARY_STRONG`/etc. como TEXTO vs FUNDO**: navy `#2c3e50` como *fundo*
+   de cabeçalho → `HEADER_BG`; como *cor de texto* de título → `PRIMARY_STRONG`/`TEXT`.
+7. **Word-wrap + `QFormLayout` + `QScrollArea`**: reserve a barra de rolagem
+   (`setVerticalScrollBarPolicy(ScrollBarAlwaysOn)`) — senão a última linha corta quando
+   a barra aparece e estreita o viewport (QFormLayout não recomputa heightForWidth).
+8. **`QColor` de pintura de canvas** (máscara, scrubber, ícone via `QPainter`) fica como
+   está; **`QColor` de ESTADO de célula** (ok/erro) pode virar token via `current_token_fn()`.
+9. **Verificação offscreen**: `QT_QPA_PLATFORM=offscreen` + `widget.grab().save(png)` para
+   conferir contraste/legibilidade nos dois modos sem subir o app inteiro.
 
 ---
 
@@ -103,8 +121,9 @@ signifique apenas chamar os mesmos métodos do backend**.
   logo após criar. (Ver seção "Qt/PyQt patterns" no CLAUDE.md.)
 - **Layout managers são o grid**: `QVBoxLayout`/`QHBoxLayout`/`QGridLayout`/
   `QSplitter`, com `spacing`/`margins` deliberados. Nada de posição fixa em pixel.
-- **QSS no nível do app ou escopado por `objectName`**; evitar `setStyleSheet` inline
-  espalhado por widget (o anti-padrão atual que gerou a dívida de tema).
+- **QSS via `apply_themed_stylesheet`** (nível do widget mas theme-aware) ou global;
+  evitar `setStyleSheet(...)` com **hex cravado** — foi o anti-padrão que gerou a antiga
+  dívida de tema (já migrada). Toda cor nova passa por token.
 - **Movimento com parcimônia**: `QPropertyAnimation` / `QGraphicsOpacityEffect`.
   Nada de animação gratuita — reforça o "cara de gerado por IA" e distrai o perito.
 - **Tipografia** via `QFont` com escala clara; fontes do sistema/empacotadas (não
@@ -159,10 +178,11 @@ Para o checklist de UX/acessibilidade genérico, delegue à `qt-ui-design` §5.
 
 ## Pontos de integração no repositório
 
-- **Paleta/estilo**: `interface/run.py` → `_apply_light_palette` (~L98),
-  `setStyle("Fusion")` + aplicação (~L147). É aqui que o `ThemeManager` se conecta.
+- **Tema**: `interface/theme/` (tokens, `ThemeManager`, `apply_themed_stylesheet`,
+  `native_titlebar`). Bootstrap em `interface/run.py` (`ThemeManager.initialize` após
+  ler `config.json`); toggle no `ConfigDialog`; aplicação ao vivo no `MainGuiController`.
 - **Workers**: `interface/tabs/*/workers/` (padrão `QObject` + `moveToThread`).
 - **Padrões Qt do projeto**: seção "Qt/PyQt patterns e convenções" do `CLAUDE.md`
-  (anti-flash `parent=`, paleta clara forçada, tuning anti-freeze no Windows).
+  (sistema de tema, anti-flash `parent=`, tuning anti-freeze no Windows).
 - **Cores/assinatura**: âmbar `#E8A020` (resultados forenses),
   `STRATEGY_COLOR_PALETTE` (janela de Comparação).

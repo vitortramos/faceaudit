@@ -580,7 +580,14 @@ t = current_token_fn(); item.setForeground(QtGui.QColor(t("DANGER")))
 - **Pintura de canvas** via `QColor`/`QPainter` (máscara de oclusão, scrubber de vídeo, placeholders de ícone): é desenho, não chrome — deixar como está.
 - **Console de log** (`log_progress_dialog`, `#1e1e1e`): estética de terminal, escuro nos dois modos.
 
-**Status:** infra + todo o chrome sempre-visível + praticamente todos os diálogos migrados (62 arquivos). Os widgets de plot permanecem claros por design (acima).
+**Status:** infra + todo o chrome sempre-visível + praticamente todos os diálogos migrados (~65 arquivos). Os widgets de plot permanecem claros por design (acima).
+
+**Ciladas comuns (aprendidas na migração — lista completa na skill `faceaudit-qt-design`):**
+- **Fundo colorido = SÓ título/callout, nunca conteúdo/campo.** Conteúdo usa surface neutro; a cor semântica vai no título da seção e no label.
+- **Nunca `color: inherit` em `::item:selected`** — no escuro resolve para PRETO sobre o fundo de seleção; use `t("TEXT")`.
+- **Cor quase-branca/quase-preta → surface neutro** (`SURFACE_RAISED`), NUNCA um token de status saturado (`SUCCESS_BG` etc.).
+- **Barra de accent precisa ser visível no escuro** — não usar `BORDER`/`HEADER_BG` como acento (somem); usar `TEXT_MUTED`/`PRIMARY`/cor semântica.
+- **Word-wrap + `QFormLayout` + `QScrollArea`** → reservar a barra de rolagem (`ScrollBarAlwaysOn`), senão a última linha corta quando a barra aparece.
 
 ### Sempre passar `parent=` ao criar QWidgets — anti-flash de janela top-level
 
