@@ -134,8 +134,79 @@ class DatasetStatsService:
         if not dataset or len(dataset) == 0:
             return DatasetStats()
 
-        df = dataset.to_pandas()
-        return self._stats_from_dataframe(df, total_rows=len(dataset))
+        # df de cobertura é metadata-only: NÃO materializa os embeddings. O
+        # `emb.tolist()` de ~512 floats por face/modelo era o custo dominante
+        # (dezenas de milhões de objetos Python em 40k+ faces) e 100%
+        # desperdiçado — a cobertura só usa a DIMENSÃO do vetor, nunca os
+        # valores. A cobertura das colunas de embedding é reinjetada abaixo
+        # direto das faces (contagem de slots não-None + dim), produzindo o
+        # MESMO ColumnStats que o caminho antigo, sem pagar o tolist().
+        df = dataset.to_pandas(include_embeddings=False)
+        stats = self._stats_from_dataframe(df, total_rows=len(dataset))
+        self._inject_embedding_coverage(stats, dataset)
+        return stats
+
+    def _inject_embedding_coverage(self, stats: DatasetStats, dataset) -> None:
+        """Reinjeta em `stats.column_coverage` as colunas de embedding (que o
+        df metadata-only não contém), computando cobertura direto das faces
+        sem serializar vetores. Reatualiza `embedding_dim`/`embedding_columns`
+        — do contrário `_stats_from_dataframe` os deixaria zerados (o coverage
+        sem embeddings não tem `dim`), quebrando regras como a de Fisher.
+
+        Saída idêntica ao caminho que materializava os embeddings: por coluna,
+        `non_null_count` = nº de faces com aquele slot não-None e `dim` = tamanho
+        do vetor (as demais métricas ficam None, como no caminho antigo)."""
+        faces = getattr(dataset, "faces", None)
+        if not faces:
+            return
+        from faceaudit.enums.sepael_model import SepaelModel
+
+        total = len(faces)
+        slots = [(m.parquet_column, m.ffinfo_slot) for m in SepaelModel]
+        counts: Dict[str, int] = {col: 0 for col, _ in slots}
+        dims: Dict[str, Optional[int]] = {col: None for col, _ in slots}
+        serfiq_col = "serfiq_embedding_serfiq"
+        serfiq_count = 0
+        serfiq_dim: Optional[int] = None
+
+        for f in faces:
+            ff = getattr(f, "ff_info", None)
+            if ff is not None:
+                for col, slot in slots:
+                    emb = getattr(ff, slot, None)
+                    if emb is not None:
+                        counts[col] += 1
+                        if dims[col] is None:
+                            shape = getattr(emb, "shape", None)
+                            if shape:
+                                dims[col] = int(shape[0])
+            sf = getattr(f, "serfiq_info", None)
+            semb = getattr(sf, "mean_embedding", None) if sf is not None else None
+            if semb is not None:
+                serfiq_count += 1
+                if serfiq_dim is None:
+                    shape = getattr(semb, "shape", None)
+                    if shape:
+                        serfiq_dim = int(shape[0])
+
+        for col, _ in slots:
+            if counts[col] > 0:
+                stats.column_coverage[col] = ColumnStats(
+                    name=col, non_null_count=counts[col],
+                    total_count=total, dim=dims[col],
+                )
+        if serfiq_count > 0:
+            stats.column_coverage[serfiq_col] = ColumnStats(
+                name=serfiq_col, non_null_count=serfiq_count,
+                total_count=total, dim=serfiq_dim,
+            )
+
+        # Reatualiza os derivados (idêntico ao cálculo de _stats_from_dataframe,
+        # agora sobre o coverage COM as colunas de embedding).
+        stats.embedding_columns = {
+            name for name, cs in stats.column_coverage.items() if cs.dim is not None
+        }
+        stats.embedding_dim = _first_dim(stats.column_coverage)
 
     # ─────────────────────── Leitura de disco ───────────────────────
 
