@@ -333,15 +333,25 @@ class FaceDataset:
             FaceDataset(name=n_b, faces=faces_b, description=f"Split manual de {self.name} (Específicos)")
         )
 
-    def to_pandas(self) -> pd.DataFrame:
+    def to_pandas(self, include_embeddings: bool = True) -> pd.DataFrame:
         """
         Converte a lista de objetos FaceInfo em um pandas DataFrame tabular.
         Útil para visualização em tabelas (QTableView) e exportação.
+
+        `include_embeddings=False` produz um DataFrame **metadata-only** (sem
+        as colunas de vetor), usado no caminho de EXIBIÇÃO da tabela — a
+        tabela nunca mostra o embedding e mantê-lo no df custa gigabytes em
+        datasets de milhões de faces. O default `True` preserva o
+        comportamento de `to_parquet`/estatísticas (round-trip completo).
+        Ver `FaceInfo.to_flat_dict`.
         """
         if not self.faces:
             return pd.DataFrame()
-        
-        data = [face.to_flat_dict() for face in self.faces]
+
+        data = [
+            face.to_flat_dict(include_embeddings=include_embeddings)
+            for face in self.faces
+        ]
         return pd.DataFrame(data)
             
     @classmethod

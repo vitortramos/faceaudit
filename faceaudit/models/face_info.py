@@ -188,10 +188,16 @@ class FaceInfo:
         )
     
     
-    def to_flat_dict(self) -> Dict[str, Any]:
+    def to_flat_dict(self, include_embeddings: bool = True) -> Dict[str, Any]:
         """
         Achata a hierarquia para salvar em Parquet.
         Atualizado para persistir múltiplos embeddings se existirem.
+
+        `include_embeddings=False` pula a serialização dos vetores (o
+        `emb.tolist()` de ~512 floats por face/modelo) — usado pelo caminho
+        de EXIBIÇÃO da tabela, que nunca mostra o embedding e não deve pagar
+        o custo de RAM/tempo em datasets de milhões. Persistência
+        (`to_parquet`) usa o default `True`.
         """
         row = {}
         
@@ -221,12 +227,13 @@ class FaceInfo:
             # aceitando `embedding` como fallback pra carregar parquets
             # antigos, então a remoção da escrita é puramente economia
             # de disco — sem quebra de retrocompat.
-            from faceaudit.enums.sepael_model import SepaelModel
-            for member in SepaelModel:
-                emb = getattr(self.ff_info, member.ffinfo_slot, None)
-                if emb is None:
-                    continue
-                ff_data[member.parquet_column] = emb.tolist()
+            if include_embeddings:
+                from faceaudit.enums.sepael_model import SepaelModel
+                for member in SepaelModel:
+                    emb = getattr(self.ff_info, member.ffinfo_slot, None)
+                    if emb is None:
+                        continue
+                    ff_data[member.parquet_column] = emb.tolist()
             
             # Tratamento de conflitos de nome
             if 'gender' in ff_data:
@@ -251,8 +258,9 @@ class FaceInfo:
         if self.serfiq_info:
             serfiq_data = self.serfiq_info.to_dict()
             
-            # Se tiver mean_embedding, salva também
-            if getattr(self.serfiq_info, 'mean_embedding', None) is not None:
+            # Se tiver mean_embedding, salva também (pulado no caminho de
+            # exibição — include_embeddings=False).
+            if include_embeddings and getattr(self.serfiq_info, 'mean_embedding', None) is not None:
                  serfiq_data['embedding_serfiq'] = self.serfiq_info.mean_embedding.tolist()
 
             row.update({f"serfiq_{k}": v for k, v in serfiq_data.items()})
