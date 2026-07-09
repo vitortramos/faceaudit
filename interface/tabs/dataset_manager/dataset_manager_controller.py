@@ -341,7 +341,7 @@ class DatasetManagerController(QtCore.QObject):
         """Reconstrói tabela + galeria a partir de self.dataset (fonte de
         verdade) e marca modificado. Reseta a ordenação da tabela para a ordem
         do dataset (efeito colateral aceitável de uma mutação estrutural)."""
-        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas(include_embeddings=False))
         self.gallery_widget.populate(list(self.dataset.faces))
         self.detail_ctrl.load_face_data(None)
         self.set_dirty(True)
@@ -415,7 +415,7 @@ class DatasetManagerController(QtCore.QObject):
         if not matched:
             return
         # Alinha a ordem da tabela à de dataset.faces (df row == faces index).
-        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas(include_embeddings=False))
         model = self.table_ctrl.model
         # Colunas EDITÁVEIS (label, key, vocabulary, dtype) para o diálogo —
         # dtype faz o campo de valor se adaptar (bool→combo, numérico→validação).
@@ -664,7 +664,7 @@ class DatasetManagerController(QtCore.QObject):
             print(f"[AuditLog] Falha ao registrar {operation.value}: {e}",
                   file=_sys.stderr)
 
-    def carregar_dataset_na_tela(self, dataset, path=None):
+    def carregar_dataset_na_tela(self, dataset, path=None, display_df=None):
         self.dataset = dataset
         self.current_path = path
         # Propaga referência pra todos os widgets que precisam resolver
@@ -686,7 +686,14 @@ class DatasetManagerController(QtCore.QObject):
         elif hasattr(self.table_ctrl, "model") and hasattr(self.table_ctrl.model, "set_column_specs"):
             self.table_ctrl.model.set_column_specs(column_specs)
 
-        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        # df de EXIBIÇÃO é metadata-only (sem embeddings). Quando o worker de
+        # abertura já o construiu fora da GUI, reusa; senão (refresh de
+        # datasets em memória — filtro/merge/split) constrói on-demand.
+        df_exibicao = (
+            display_df if display_df is not None
+            else self.dataset.to_pandas(include_embeddings=False)
+        )
+        self.table_ctrl.load_dataframe(df_exibicao)
 
         # Reseta o painel direito — sem isso, ao trocar de dataset
         # (ou limpar filtro) a face selecionada antes continua
@@ -711,43 +718,120 @@ class DatasetManagerController(QtCore.QObject):
 
     def sync_changes_from_table(self):
         if not self.dataset: return
+        # Sem edições pendentes, self.dataset já reflete a tabela — reconstruir
+        # via from_dataframe (iterrows sobre N faces, com laço de colunas
+        # aninhado) seria O(N) puro desperdício. TODA edição de célula/coluna
+        # seta dirty (set_dirty(True)); se não-dirty, nada mudou desde o load.
+        # Isso barateia dramaticamente save / filtro / troca de view / abrir
+        # diálogos em datasets grandes quando o usuário só está navegando.
+        if not self._is_dirty:
+            return
         df_edited = self.table_ctrl.get_current_dataframe()
-        if df_edited is None or df_edited.empty: return
+        if df_edited is None or df_edited.empty:
+            return
+        if "image_path" not in df_edited.columns:
+            # image_path é a chave de junção (coluna essencial, sempre presente).
+            # Sem ela não há como casar linhas com faces — aborta em vez de
+            # arriscar um sync incorreto.
+            return
 
-        dataset_visual_atualizado = FaceDataset.from_dataframe(df_edited, name=self.dataset.name)
-        # PR 21 (Tema 4.2) — `from_dataframe` constrói um FaceDataset novo
-        # sem column_specs (default {}). Preserva os specs vindos do
-        # parquet/UI pra que custom columns continuem visíveis no filter
-        # dialog e na próxima save (parquet metadata).
-        if self.dataset.column_specs:
-            dataset_visual_atualizado.column_specs = dict(self.dataset.column_specs)
-        # `from_dataframe` também não restaura path_mode/path_root/
-        # _parquet_dir/is_aligned — sem isso, datasets RELATIVE viravam
-        # ABSOLUTE silenciosamente e enrich falhava (cv2.imread em paths
-        # relativos contra CWD), gravando metadata corrompida no save
-        # subsequente. is_aligned tem o mesmo problema: ao trocar de
-        # view (galeria/tabela) ou editar qualquer célula, o flag se
-        # perdia e o status bar passava a mostrar "fotos originais".
-        dataset_visual_atualizado.path_mode = self.dataset.path_mode
-        dataset_visual_atualizado.path_root = self.dataset.path_root
-        dataset_visual_atualizado._parquet_dir = self.dataset._parquet_dir
-        dataset_visual_atualizado.is_aligned = self.dataset.is_aligned
-        self.dataset = dataset_visual_atualizado
+        # APLICAÇÃO IN-PLACE (substitui o from_dataframe/iterrows, que custava
+        # ~35s em 40k). Só metadados editáveis + colunas custom podem ter mudado
+        # na tabela; aplicamos esses valores DIRETO nas faces existentes,
+        # casadas por image_path, com extração vetorizada das colunas. O
+        # enriquecimento pesado (FF/OFIQ/SER-FIQ/embeddings) permanece intacto
+        # nas faces — não é editável e nunca é tocado. `column_specs` é mantido
+        # pelo `_on_schema_changed`; path_mode/path_root/_parquet_dir/is_aligned
+        # já estão corretos porque o dataset NÃO é recriado.
+        self._apply_table_edits_inplace(df_edited)
 
-        if self.dataset_original:
-            print(f"🔄 Sync: Propagando {len(self.dataset)} registros editados para o Dataset Original...")
-            mapa_edicoes = {face.image_path: face for face in self.dataset.faces}
-            count_updates = 0
+        # Propaga pro backup. Após um filtro, self.dataset (subset) e
+        # dataset_original (full) compartilham as MESMAS FaceInfo, então a
+        # mutação in-place já se reflete lá; a substituição por image_path
+        # abaixo é defensiva para o caso (raro) de objetos separados.
+        if self.dataset_original is not None and self.dataset_original is not self.dataset:
+            by_path = {f.image_path: f for f in self.dataset.faces}
             for i, face_orig in enumerate(self.dataset_original.faces):
-                if face_orig.image_path in mapa_edicoes:
-                    self.dataset_original.faces[i] = mapa_edicoes[face_orig.image_path]
-                    count_updates += 1
-            print(f"✅ Sync Concluído: {count_updates} faces atualizadas no backup.")
-        else:
-            print(f"✅ Sync Simples: Dataset atualizado ({len(self.dataset)} registros).")
+                repl = by_path.get(face_orig.image_path)
+                if repl is not None:
+                    self.dataset_original.faces[i] = repl
         # NOTE: dirty é marcado por _on_table_data_changed quando o usuário edita
-        # uma célula. Sync apenas propaga; não inventa estado dirty quando o df
-        # estiver sem alterações reais.
+        # uma célula. Sync apenas propaga; não reseta dirty (o "*" de não-salvo
+        # permanece até o save). Como o apply-in-place é barato (<1s), re-syncs
+        # redundantes enquanto dirty=True não pesam.
+
+    def _apply_table_edits_inplace(self, df_edited) -> None:
+        """Aplica edições da tabela (metadados de FaceInfo + colunas custom)
+        direto nas faces existentes, casadas por image_path. Extração
+        VETORIZADA por coluna (`df[col].tolist()`) + laço enxuto — evita o
+        `from_dataframe` (iterrows sobre N faces, com laço de colunas aninhado)
+        que custava ~35s em 40k. NÃO toca no enriquecimento pesado
+        (FF/OFIQ/SER-FIQ/embeddings), que não é editável e permanece nas faces.
+        Replica a semântica de FaceInfo de `from_dataframe` (mesma normalização
+        de erro / `clean` / extra_data)."""
+        import pandas as pd
+        import numpy as np
+
+        faces_by_path = {f.image_path: f for f in self.dataset.faces}
+
+        cols = list(df_edited.columns)
+        col_lists = {c: df_edited[c].tolist() for c in cols}
+        raw_paths = col_lists.get("image_path", [])
+        # Normaliza como FaceInfo.__post_init__ (\\ -> /) pra casar as chaves.
+        paths = [str(p).replace("\\", "/") if p is not None else "" for p in raw_paths]
+
+        # Metadados de FaceInfo aplicáveis presentes no df (colunas pesadas —
+        # embeddings/ff/ofiq/serfiq — não entram no df metadata-only e/ou não
+        # são editáveis, então são ignoradas e preservadas nas sub-estruturas).
+        attr_cols = [
+            c for c in ("file_name", "identity", "ethnicity", "gender",
+                        "hash", "origin", "error_stage", "error_message")
+            if c in cols
+        ]
+        source_col = "source" if ("source" in cols and "origin" not in cols) else None
+        has_error = "error" in cols
+        # Custom columns → extra_data (não-canônicas; array/NaN excluídos, igual from_dataframe)
+        from faceaudit.models.face_dataset import _is_canonical_face_column
+        custom_cols = [c for c in cols if not _is_canonical_face_column(c)]
+
+        def _clean(v):
+            try:
+                if pd.isna(v):
+                    return None
+            except (TypeError, ValueError):
+                pass
+            if v == "":
+                return None
+            return v
+
+        for i in range(len(paths)):
+            face = faces_by_path.get(paths[i])
+            if face is None:
+                continue
+            for c in attr_cols:
+                setattr(face, c, _clean(col_lists[c][i]))
+            if source_col is not None:
+                face.origin = _clean(col_lists[source_col][i])
+            if has_error:
+                raw = _clean(col_lists["error"][i])
+                if raw is None:
+                    face.error = None
+                elif isinstance(raw, str):
+                    face.error = raw.strip().lower() in ("true", "1", "yes")
+                else:
+                    face.error = bool(raw)
+            extra: Dict[str, Any] = {}
+            for c in custom_cols:
+                v = col_lists[c][i]
+                if isinstance(v, (list, np.ndarray, dict)):
+                    continue
+                try:
+                    if pd.isna(v):
+                        continue
+                except (TypeError, ValueError):
+                    pass
+                extra[c] = _clean(v)
+            face.extra_data = extra
 
     def is_dirty(self) -> bool:
         return self._is_dirty
@@ -779,7 +863,26 @@ class DatasetManagerController(QtCore.QObject):
             return ("Nenhum dataset carregado.", "")
         ds = self.dataset
         n_imgs = len(ds)
-        n_ids = ds.number_of_identities
+        # Passada ÚNICA sobre as faces — antes eram 5+ varreduras O(N)
+        # separadas (number_of_identities ×2 + 4×sum) na thread da GUI, o que
+        # somava segundos em datasets de 1M+. Aqui acumulamos tudo num loop só
+        # e reusamos as contagens no verdict de balanceamento.
+        from collections import Counter as _Counter
+        _id_counts = _Counter()
+        n_ff = n_ofiq = n_serfiq = n_err = 0
+        for _f in ds.faces:
+            _idv = _f.identity
+            if _idv:
+                _id_counts[_idv] += 1
+            if _f.ff_info is not None:
+                n_ff += 1
+            if _f.ofiq_info is not None:
+                n_ofiq += 1
+            if _f.serfiq_info is not None:
+                n_serfiq += 1
+            if getattr(_f, "error", False):
+                n_err += 1
+        n_ids = len(_id_counts)
         nome = ds.name or "Sem Nome"
         star = "*" if self._is_dirty else ""
         suffix = " (Filtrado)" if filtered else ""
@@ -794,10 +897,7 @@ class DatasetManagerController(QtCore.QObject):
         if getattr(ds, "is_aligned", False):
             parts.append("🎯 alinhado")
 
-        # Coberturas de enriquecimento (count com *_info populado).
-        n_ff = sum(1 for f in ds.faces if f.ff_info is not None)
-        n_ofiq = sum(1 for f in ds.faces if f.ofiq_info is not None)
-        n_serfiq = sum(1 for f in ds.faces if f.serfiq_info is not None)
+        # Coberturas de enriquecimento (já contadas na passada única acima).
         enrich_badges = []
         if n_ff:
             enrich_badges.append(f"🧬 {n_ff} FF")
@@ -810,12 +910,13 @@ class DatasetManagerController(QtCore.QObject):
 
         # Balanceamento — usa BalanceMetrics consistente com o resto
         # do app (CV + imbalance ratio, worst-of-two).
-        balance_main, balance_detail = self._compute_balance_for_status(ds)
+        balance_main, balance_detail = self._compute_balance_for_status(
+            ds, id_counts=_id_counts,
+        )
         if balance_main:
             parts.append(balance_main)
 
-        # Erros (do tracking de creation/enrich).
-        n_err = sum(1 for f in ds.faces if getattr(f, "error", False))
+        # Erros (já contados na passada única acima).
         if n_err:
             parts.append(f"⚠️ {n_err} erro(s)")
 
@@ -875,14 +976,20 @@ class DatasetManagerController(QtCore.QObject):
         return (text, tooltip)
 
     @staticmethod
-    def _compute_balance_for_status(ds) -> tuple[str, str]:
+    def _compute_balance_for_status(ds, id_counts=None) -> tuple[str, str]:
         """Calcula verdict de balanceamento + detalhe.
         Retorna ("", "") quando inaplicável (≤1 identidade).
+
+        `id_counts` (Counter identidade→contagem) pode ser passado já
+        computado pela passada única de `_build_dataset_status` — evita
+        uma segunda varredura O(N) sobre as faces.
         """
         from collections import Counter
         from faceaudit.models.dataset_stats import DatasetStats
-        ids = [f.identity for f in ds.faces if f.identity]
-        counts = Counter(ids)
+        if id_counts is not None:
+            counts = id_counts
+        else:
+            counts = Counter(f.identity for f in ds.faces if f.identity)
         if len(counts) < 2:
             return ("", "")
         # Reusa a lógica de BalanceMetrics via DatasetStats inline.
@@ -977,9 +1084,16 @@ class DatasetManagerController(QtCore.QObject):
         runner.start()
         return runner
 
-    def _on_load_success(self, dataset, path):
+    def _on_load_success(self, payload, path):
         try:
-            self.carregar_dataset_na_tela(dataset, path)
+            # O worker de abertura emite (dataset, display_df) com o df de
+            # exibição metadata-only já construído fora da GUI. Defensivo:
+            # aceita também um dataset puro (compat com chamadas legadas).
+            if isinstance(payload, tuple):
+                dataset, display_df = payload
+            else:
+                dataset, display_df = payload, None
+            self.carregar_dataset_na_tela(dataset, path, display_df=display_df)
             # PR 25 (Tema 5.4) — registra OPEN no audit log do dataset.
             # hash_file=True calcula SHA-256 do parquet (eficiente via
             # hashlib.file_digest) — anchor da cadeia de custódia.
@@ -2014,7 +2128,7 @@ class DatasetManagerController(QtCore.QObject):
         deletadas/modificadas via o painel de auditoria."""
         if self.dataset is None:
             return
-        self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+        self.table_ctrl.load_dataframe(self.dataset.to_pandas(include_embeddings=False))
         self.set_dirty(True)
 
     def fluxo_comparar(self):
@@ -2173,7 +2287,7 @@ class DatasetManagerController(QtCore.QObject):
         try:
             if len(filtered_ds) > 0:
                 self.dataset = filtered_ds
-                self.table_ctrl.load_dataframe(self.dataset.to_pandas())
+                self.table_ctrl.load_dataframe(self.dataset.to_pandas(include_embeddings=False))
                 # Propaga o NOVO dataset filtrado pros widgets que
                 # resolvem paths/atributos contra ele. Sem isso, o
                 # detail_panel/gallery continuam apontando pro dataset

@@ -87,12 +87,17 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         # specs; invalidado em set_column_specs/update_column_spec/etc.
         # Cada entrada vai como `frozenset[str]` pra lookup O(1).
         self._vocab_cache: Optional[Dict[str, frozenset]] = None
+        # Cache dim do vetor por coluna de embedding — usado só pro placeholder
+        # de exibição "[Array (N,)]" (o df é metadata-only; o vetor real vive
+        # no FaceInfo). Invalidado em set_dataset.
+        self._embedding_dim_cache: Dict[str, Optional[int]] = {}
 
     def set_dataset(self, dataset: Optional[Any]) -> None:
         """Recebe referência ao dataset corrente. Cache de tooltip
         precisa ser invalidado porque as chaves (paths absolutos)
         mudam entre datasets diferentes."""
         self._dataset = dataset
+        self._embedding_dim_cache = {}
         if self._tooltip_cache is not None:
             self._tooltip_cache.clear()
 
@@ -354,6 +359,35 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
             self._vocab_cache = cache
         return self._vocab_cache.get(name)
 
+    def _embedding_dim_for_column(self, key: str) -> Optional[int]:
+        """Dimensão do vetor de uma coluna de embedding, para o placeholder
+        de exibição "[Array (N,)]" — o df é metadata-only, então o vetor real
+        vive no FaceInfo (fonte de verdade). Descoberto varrendo o dataset
+        até a primeira face com esse embedding; cacheado por coluna."""
+        if key in self._embedding_dim_cache:
+            return self._embedding_dim_cache[key]
+        dim: Optional[int] = None
+        faces = getattr(self._dataset, "faces", None) if self._dataset is not None else None
+        if faces:
+            slot = None
+            try:
+                from faceaudit.enums.sepael_model import SepaelModel
+                for m in SepaelModel:
+                    if m.parquet_column == key:
+                        slot = m.ffinfo_slot
+                        break
+            except Exception:
+                slot = None
+            if slot is not None:
+                for f in faces:
+                    ff = getattr(f, "ff_info", None)
+                    emb = getattr(ff, slot, None) if ff is not None else None
+                    if emb is not None and getattr(emb, "shape", None):
+                        dim = int(emb.shape[0])
+                        break
+        self._embedding_dim_cache[key] = dim
+        return dim
+
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid():
             return None
@@ -369,7 +403,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
         if role == Qt.ItemDataRole.BackgroundRole:
             vocab = self._get_vocab_for_column(key)
             if vocab and key in self._df.columns:
-                val = self._df.iloc[index.row()][key]
+                val = self._df[key].iloc[index.row()]
                 if val is not None and not (isinstance(val, float) and pd.isna(val)):
                     str_val = str(val).strip()
                     if str_val and str_val not in vocab:
@@ -400,9 +434,19 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
                 return str(val)
 
             if key not in self._df.columns:
+                # Colunas de embedding NÃO entram no df de exibição (ele é
+                # metadata-only por RAM/perf — ver FaceDataset.to_pandas).
+                # Quando o usuário torna uma visível, mostramos um placeholder:
+                # o vetor existe na fonte de verdade (FaceInfo), apenas não é
+                # materializado na tabela. Mantém paridade com o antigo
+                # "[Array (…)]" sem carregar 512 floats por célula.
+                role_val = getattr(getattr(spec, "role", None), "value", None)
+                if role_val == "embedding":
+                    dim = self._embedding_dim_for_column(key)
+                    return f"[Array ({dim},)]" if dim else "[Array]"
                 return ""
 
-            val = self._df.iloc[index.row()][key]
+            val = self._df[key].iloc[index.row()]
 
             if isinstance(val, (list, tuple, np.ndarray)):
                 if hasattr(val, "shape"):
@@ -425,7 +469,7 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
             if "image_path" not in self._df.columns:
                 return None
             try:
-                path = self._df.iloc[index.row()]["image_path"]
+                path = self._df["image_path"].iloc[index.row()]
             except (IndexError, KeyError):
                 return None
             if not path or pd.isna(path):

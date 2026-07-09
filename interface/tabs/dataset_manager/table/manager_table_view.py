@@ -46,3 +46,10 @@ class ManagerTableView(QTableView):
         # `column_specs` (mantém Python dict insertion order), de modo que
         # save → reopen do parquet preserva a escolha do usuário.
         header.setSectionsMovable(True)
+
+        # Perf: resizeColumnsToContents() amostra até `resizeContentsPrecision`
+        # linhas por coluna. O default (1000) × acesso pandas por célula pesa
+        # em datasets grandes — cada toggle de coluna / load re-mede. 50 linhas
+        # dão largura suficiente e deixam o resize ~20× mais leve (colunas são
+        # Interactive; o usuário ainda pode ajustar manualmente).
+        header.setResizeContentsPrecision(50)
