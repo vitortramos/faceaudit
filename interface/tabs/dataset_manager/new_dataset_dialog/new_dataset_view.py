@@ -124,6 +124,10 @@ class NewDatasetView(QDialog):
         dest_w = QWidget(grp); dest_h = QHBoxLayout(dest_w); dest_h.setContentsMargins(0, 0, 0, 0)
         self.txt_dest = QLineEdit(grp); self.txt_dest.setText(self._default_dataset_dir)
         self.txt_dest.setPlaceholderText("Pasta onde o dataset (.parquet) será gravado")
+        self.txt_dest.setToolTip(
+            "Pasta onde o <b>dataset final</b> (.parquet) será gravado. Default: a "
+            "pasta global de datasets, para reuso entre projetos. Gravar fora dela "
+            "significa que o dataset <b>não aparece na biblioteca global</b>.")
         self.btn_browse_dest = QPushButton("…", grp); self.btn_browse_dest.setFixedWidth(40)
         dest_h.addWidget(self.txt_dest, 1); dest_h.addWidget(self.btn_browse_dest)
         g.addWidget(dest_w, 1, 1)
@@ -134,8 +138,12 @@ class NewDatasetView(QDialog):
         self.rb_absolute = QRadioButton("Caminho absoluto (referencia originais)", grp)
         self.rb_absolute.setChecked(True)
         self.rb_self_contained.setToolTip(
-            "Copia as imagens para a pasta do dataset (portátil). Caminho absoluto "
-            "referencia as imagens originais no lugar (mais leve, não portátil).")
+            "<b>Autocontido</b>: copia as imagens para <i>&lt;Destino&gt;/&lt;nome&gt;_images/</i> "
+            "e grava caminhos relativos — portátil entre máquinas/drives. Custa "
+            "espaço em disco (duplica as imagens).")
+        self.rb_absolute.setToolTip(
+            "<b>Caminho absoluto</b>: referencia as imagens onde elas estão, sem "
+            "copiar. Mais leve, mas <b>quebra</b> se as imagens mudarem de lugar.")
         self.grp_storage = QButtonGroup(self)
         self.grp_storage.addButton(self.rb_absolute, 0)
         self.grp_storage.addButton(self.rb_self_contained, 1)
