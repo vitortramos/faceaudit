@@ -96,12 +96,22 @@ def test_setup_video_buttons_consolidated_and_renamed(app):
 def test_setup_load_button_emphasis_follows_state(app, monkeypatch, tmp_path):
     # Destaque azul segue o próximo passo: Adicionar (lista vazia) → Carregar
     # (há vídeo) → Adicionar (esvaziou). Sempre um único botão aceso.
+    #
+    # O QSS deixou de ser a constante `_BTN_PRIMARY_QSS` na migração de tema
+    # (322b7b6): virou o builder `_btn_primary_qss(t)`, que lê os tokens no
+    # momento da aplicação. O esperado é construído aqui pelo mesmo caminho da
+    # implementação, então o teste vale nos dois modos (claro e escuro) sem
+    # cravar cor nenhuma.
+    from interface.theme import current_token_fn
     from interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog import (
-        _BTN_PRIMARY_QSS,
+        _btn_primary_qss,
     )
+    primary_qss = _btn_primary_qss(current_token_fn())
+    assert primary_qss, "builder do botão primário não pode devolver QSS vazio"
+
     dlg = _setup_dialog()
     # lista vazia → Adicionar destacado, Carregar neutro
-    assert dlg.btn_add_videos.styleSheet() == _BTN_PRIMARY_QSS
+    assert dlg.btn_add_videos.styleSheet() == primary_qss
     assert dlg.btn_load.styleSheet() == ""
 
     vid = tmp_path / "clip.mp4"
@@ -110,12 +120,12 @@ def test_setup_load_button_emphasis_follows_state(app, monkeypatch, tmp_path):
     dlg._on_add_videos()
     # há vídeo → destaque passa para Carregar
     assert dlg.btn_add_videos.styleSheet() == ""
-    assert dlg.btn_load.styleSheet() == _BTN_PRIMARY_QSS
+    assert dlg.btn_load.styleSheet() == primary_qss
 
     dlg.lst_videos.setCurrentRow(0)
     dlg._on_remove_video()
     # esvaziou → destaque volta para Adicionar
-    assert dlg.btn_add_videos.styleSheet() == _BTN_PRIMARY_QSS
+    assert dlg.btn_add_videos.styleSheet() == primary_qss
     assert dlg.btn_load.styleSheet() == ""
 
 
