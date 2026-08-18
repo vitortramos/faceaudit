@@ -115,8 +115,12 @@ class FeatureExtractionPipeline:
         """
         
         # 1. Setup e Definição de Caminhos
+        # `config.dataset_dir` (campo "Destino" do diálogo) manda; sem ele,
+        # cai na biblioteca global — o default histórico.
         dataset_name = config.dataset_name
-        cache_file = self.storage_path / f"{dataset_name}.parquet"
+        dataset_dir = Path(config.dataset_dir) if config.dataset_dir else self.storage_path
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = dataset_dir / f"{dataset_name}.parquet"
 
         # 2. Extract: Ingestão de Dados
         if progress_callback: 
@@ -207,10 +211,18 @@ class FeatureExtractionPipeline:
                 # PNGs em modo RELATIVE. Estágios OFIQ/SERFIQ subsequentes
                 # rodam nas faces ALINHADAS — sem precisar re-alinhar
                 # via Image Pipeline depois.
-                if config.align_during_ingestion and config.aligned_target_dir:
+                # Em autocontido os crops nascem já dentro da pasta de imagens
+                # do dataset — assim a portabilidade sai de um REWRITE_RELATIVE
+                # no final, sem uma segunda cópia de todos os PNGs.
+                crops_dir = config.aligned_target_dir
+                if config.self_contained:
+                    from faceaudit.services.dataset_localization_service import (
+                        dataset_images_subdir,
+                    )
+                    crops_dir = dataset_dir / dataset_images_subdir(dataset_name)
+                if config.align_during_ingestion and crops_dir:
                     self._materialize_aligned_crops(
-                        dataset, config.aligned_target_dir,
-                        progress_callback,
+                        dataset, crops_dir, progress_callback,
                     )
                 current_stage_idx += 1
 
@@ -283,9 +295,14 @@ class FeatureExtractionPipeline:
         self._apply_ff_column_selection(dataset, config.ff_kept_attributes)
 
         # 5. Load: Persistência (Sobrescreve se existir).
-        # O parquet sempre vai pra `storage_path` da biblioteca global de
-        # datasets, independente de `align_during_ingestion` — o
-        # `aligned_target_dir` é destino apenas dos PNGs alinhados.
+        # O parquet vai pra `config.dataset_dir` quando informado; senão pra
+        # `storage_path` da biblioteca global. Antes de salvar, o modo de
+        # armazenamento é materializado: autocontido copia/relativiza as
+        # imagens pra junto do parquet; caminho absoluto só resolve os paths.
+        dataset = self._finalize_storage_mode(
+            dataset, config, dataset_dir, progress_callback,
+        )
+
         if progress_callback:
             progress_callback("Salvando arquivo Parquet...", 99)
 
@@ -871,6 +888,81 @@ class FeatureExtractionPipeline:
             f"📐 [Pipeline] {n_materialized}/{n} face(s) materializada(s). "
             f"Dataset marcado: is_aligned=True, path_mode=ABSOLUTE."
         )
+
+    @staticmethod
+    def _finalize_storage_mode(
+        dataset: FaceDataset,
+        config,
+        dataset_dir: Path,
+        progress_callback=None,
+    ) -> FaceDataset:
+        """Materializa o modo de armazenamento escolhido, ANTES do save.
+
+        - **Autocontido**: copia/relativiza as imagens pra
+          `<dataset_dir>/<nome>_images/` via `DatasetLocalizationService`
+          (`COPY_ORIGINALS`), deixando o dataset portátil (RELATIVE).
+          Crops já materializados nessa pasta pelo "alinhar durante a
+          criação" são pulados por hash (`skip_existing=True`), então esse
+          caminho NÃO paga uma segunda cópia. Faces que falharam no
+          alinhamento seguem apontando pro original — a cópia as traz
+          junto, em vez de descartá-las (as linhas `error=True` são o que
+          o perito usa pra inspecionar falhas).
+        - **Caminho absoluto**: resolve cada path e marca ABSOLUTE, sem
+          cópia — o dataset referencia as imagens onde elas estão.
+
+        Retorna o dataset a persistir (objeto NOVO no modo autocontido —
+        `localize` não muta a entrada).
+        """
+        from faceaudit.enums.path_mode import PathMode
+
+        if not getattr(config, "self_contained", False):
+            for face in dataset.faces:
+                try:
+                    face.image_path = str(dataset.resolve_image_path(face))
+                except Exception:
+                    continue    # path irresolvível: preserva o que já está lá
+            dataset.path_mode = PathMode.ABSOLUTE
+            dataset.path_root = None
+            dataset._parquet_dir = Path(dataset_dir).resolve()
+            return dataset
+
+        from faceaudit.enums.localization_mode import LocalizationMode
+        from faceaudit.services.dataset_localization_service import (
+            DatasetLocalizationService, dataset_images_subdir,
+        )
+
+        def _cb(idx, total, _msg):
+            if progress_callback and total and (idx % 50 == 0 or idx + 1 == total):
+                progress_callback(
+                    f"Copiando imagens para a pasta do dataset… ({idx + 1}/{total})", 98,
+                )
+
+        res = DatasetLocalizationService().localize(
+            dataset, Path(dataset_dir),
+            mode=LocalizationMode.COPY_ORIGINALS,
+            copy_subdir=dataset_images_subdir(dataset.name),
+            progress_callback=_cb,
+        )
+        final = res.dataset
+        # `localize` constrói um FaceDataset novo; estes campos não vêm junto.
+        final.name = dataset.name
+        final.provenance_metadata = dict(getattr(dataset, "provenance_metadata", {}) or {})
+        final.is_aligned = dataset.is_aligned
+        final._parquet_dir = Path(dataset_dir).resolve()
+
+        # `_copy_originals` DESCARTA a face cuja imagem não pôde ser copiada.
+        # Num dataset pericial isso não pode passar silenciosamente.
+        if res.n_failed:
+            aviso = (
+                f"{res.n_failed} imagem(ns) não puderam ser copiadas e ficaram "
+                f"DE FORA do dataset autocontido (de {res.n_processed})."
+            )
+            print(f"⚠️  [Pipeline] {aviso}")
+            for caminho, motivo in list(res.failures)[:10]:
+                print(f"    - {caminho}: {motivo}")
+            if progress_callback:
+                progress_callback(f"⚠️ {aviso}", 98)
+        return final
 
     @staticmethod
     def _apply_ff_column_selection(dataset: FaceDataset, kept_attributes) -> None:

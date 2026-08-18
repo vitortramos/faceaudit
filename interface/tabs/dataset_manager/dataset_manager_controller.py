@@ -1393,7 +1393,8 @@ class DatasetManagerController(QtCore.QObject):
         
         if dialog.exec():
             ingestion_config: DatasetIngestionConfig = dialog.get_config()
-            storage_path = Path(self.pipeline.storage_path)
+            # O destino escolhido no diálogo manda; sem ele, biblioteca global.
+            storage_path = Path(ingestion_config.dataset_dir or self.pipeline.storage_path)
             cache_file = storage_path / f"{ingestion_config.dataset_name}.parquet"
             
             if cache_file.exists():
@@ -1415,7 +1416,10 @@ class DatasetManagerController(QtCore.QObject):
 
     def _on_criacao_concluida(self, dataset):
         if dataset and len(dataset) > 0:
-            path_cache = self.pipeline.storage_path / f"{dataset.name}.parquet"
+            # `_parquet_dir` é populado pelo pipeline com o destino efetivo
+            # (mesmo padrão do fluxo de vídeo); storage_path é só o fallback.
+            base_dir = Path(getattr(dataset, "_parquet_dir", None) or self.pipeline.storage_path)
+            path_cache = base_dir / f"{dataset.name}.parquet"
             self.carregar_dataset_na_tela(dataset, path=str(path_cache))
             # PR 25 (Tema 5.4) — registra CREATE como primeira entrada
             # da chain. hash_file=True dá um anchor inicial: o hash do

@@ -10,6 +10,32 @@ from .new_dataset_view import NewDatasetView
 from .template_creator_dialog.template_creator_controller import TemplateCreatorController
 
 
+# Nomes de pasta que descrevem o CONTEÚDO, não o dataset. Layout comum:
+# `J:/FGNET/images` — sugerir "images" como nome do dataset é inútil e passa
+# despercebido (o campo Nome fica no passo 2, depois do browse do passo 1).
+_GENERIC_FOLDER_NAMES = frozenset({
+    "images", "image", "imgs", "img", "imagens", "fotos", "photos", "pics",
+    "faces", "crops", "aligned", "data", "dataset", "datasets", "input",
+    "inputs", "raw", "src", "source", "originais", "originals",
+})
+
+
+def suggest_dataset_name(path) -> str:
+    """Nome sugerido pro dataset a partir da pasta de imagens escolhida.
+
+    Usa o último componente do caminho, EXCETO quando ele é um nome genérico
+    de contêiner — aí sobe um nível: `J:/FGNET/images` → `FGNET`. Se o pai não
+    tem nome (raiz de drive), fica com o último componente mesmo.
+    """
+    p = Path(path)
+    leaf = p.name
+    if leaf.strip().lower() in _GENERIC_FOLDER_NAMES:
+        parent = p.parent.name
+        if parent:
+            return parent
+    return leaf
+
+
 class NewDatasetController(QtCore.QObject):
     """Controlador do diálogo de criação de novo dataset (redesenho — Etapa 1).
 
@@ -64,7 +90,11 @@ class NewDatasetController(QtCore.QObject):
         if path:
             self.view.txt_path.setText(path)
             if not self.view.txt_name.text():
-                self.view.txt_name.setText(Path(path).name)
+                self.view.txt_name.setText(suggest_dataset_name(path))
+                # Deixa o nome sugerido selecionado: quem for digitar o seu
+                # sobrescreve direto, e fica visível que é um palpite editável.
+                self.view.txt_name.setFocus()
+                self.view.txt_name.selectAll()
 
     def _browse_dest(self):
         start = self.view.get_dataset_dir() or ""
@@ -163,11 +193,16 @@ class NewDatasetController(QtCore.QObject):
         g_text = v.cmb_gender.currentText() if single else ""
         e_text = v.txt_ethnicity.text().strip() if single else ""
 
-        # Mapeamento dos rádios de armazenamento → flags de ingestão existentes.
-        # (Etapa 2 liga gravar-no-destino/cópia autocontida; aqui só o que já
-        #  existe é honrado: is_aligned + align_during/aligned_target_dir.)
+        # Mapeamento dos rádios de armazenamento → campos de ingestão.
+        # `dataset_dir` decide onde o parquet é gravado; `self_contained`
+        # decide se as imagens vão junto (relativo/portátil) ou se o dataset
+        # referencia os originais no lugar (absoluto). "Face alinhada" liga
+        # o alinhamento durante a ingestão; o pipeline materializa os crops
+        # já dentro da pasta de imagens do dataset quando autocontido.
         input_aligned = v.is_input_aligned()
-        align_now = (not input_aligned) and v.get_self_contained() and v.get_image_type() == "aligned"
+        self_contained = v.get_self_contained()
+        dest = v.get_dataset_dir()
+        align_now = (not input_aligned) and self_contained and v.get_image_type() == "aligned"
 
         # Toggles granulares de atributo → coluna. O engine computa gênero/idade/
         # pose EM BLOCO (`ff_extended`), então extended liga se QUALQUER atributo
@@ -201,7 +236,9 @@ class NewDatasetController(QtCore.QObject):
             batch_size=v.get_batch_size(),
             is_aligned=input_aligned,
             align_during_ingestion=align_now,
-            aligned_target_dir=(Path(v.get_dataset_dir()) if align_now and v.get_dataset_dir() else None),
+            aligned_target_dir=(Path(dest) if align_now and dest else None),
+            dataset_dir=(Path(dest) if dest else None),
+            self_contained=self_contained,
         )
 
     # ── Getters novos (consumidos pela Etapa 2 — gravar-no-destino/autocontido) ──

@@ -101,16 +101,29 @@ class DatasetIngestionConfig:
     # Mutuamente exclusivo com is_aligned (face é OU alinhada-fonte
     # OU vai-ser-alinhada).
     align_during_ingestion: bool = False
-    # Pasta onde os PNGs alinhados + parquet vão. Estrutura:
-    #   <aligned_target_dir>/images/<file>.png
-    #   <aligned_target_dir>/<dataset_name>.parquet
-    # Obrigatório quando `align_during_ingestion=True`.
+    # Pasta onde os PNGs alinhados são gravados, direto na raiz dela
+    # (sem subpasta intermediária):
+    #   <aligned_target_dir>/<file>.png
+    # Obrigatório quando `align_during_ingestion=True`. NÃO determina
+    # onde o parquet vai — isso é `dataset_dir`.
     aligned_target_dir: Optional[Path] = None
+
+    # 10. Destino do dataset (parquet) e modo de armazenamento.
+    # `dataset_dir=None` → biblioteca global (`pipeline.storage_path`),
+    # que é o default e preserva o comportamento histórico.
+    dataset_dir: Optional[Path] = None
+    # Quando True, as imagens passam a viver junto do parquet em
+    # `<dataset_dir>/<dataset_name>_images/` e os paths ficam RELATIVOS —
+    # dataset portátil entre máquinas/drives. Quando False, o dataset
+    # referencia as imagens onde elas estão, em PathMode.ABSOLUTE.
+    self_contained: bool = False
 
     def __post_init__(self):
         # Garante que o path seja Path object
         if isinstance(self.input_path, str):
             self.input_path = Path(self.input_path)
+        if isinstance(self.dataset_dir, str):
+            self.dataset_dir = Path(self.dataset_dir) if self.dataset_dir else None
         # Garante que ff_models não fique vazio — sem modelo, FF não roda.
         if not self.ff_models:
             self.ff_models = [_default_ff_model_name()]

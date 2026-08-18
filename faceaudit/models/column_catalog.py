@@ -509,6 +509,24 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         axis=PoseAxis.ROLL, unit="degrees",
     )
 
+    # Escalares 0–100 de pose do OFIQ. Diferente das 24 dimensões geradas
+    # por `_gen_ofiq_extra_specs`, o OFIQ emite só a versão `_scalar` para
+    # pose (o valor bruto em graus vai para `ofiq_yaw`/`_pitch`/`_roll`
+    # acima). Ficam com role=QUALITY, e não POSE, justamente para não
+    # concorrerem com as colunas em graus no índice por role/axis.
+    for _axis_name, _axis_label in (("yaw", "Yaw"), ("pitch", "Pitch"), ("roll", "Roll")):
+        specs[f"ofiq_head_pose_{_axis_name}_scalar"] = ColumnSpec(
+            name=f"ofiq_head_pose_{_axis_name}_scalar",
+            label=f"OFIQ Head Pose {_axis_label} (scalar)",
+            role=ColumnRole.QUALITY, source=ColumnSource.OFIQ,
+            dtype=ColumnDType.FLOAT,
+            editable=False, visible_default=False,
+            category=CATEGORY_OFIQ_DIMENSIONS,
+            metric_name=f"ofiq_head_pose_{_axis_name}",
+            direction=QualityDirection.HIGHER_IS_BETTER,
+            scale=(0.0, 100.0), quality_subtype=QualitySubtype.DIMENSION,
+        )
+
     # ---------- OFIQ — metadados ----------
     specs["ofiq_filename"] = ColumnSpec(
         name="ofiq_filename", label="OFIQ Filename",
@@ -666,6 +684,96 @@ def resolve_column_name(
             if alias in cols:
                 return alias
     return None
+
+
+def dtype_from_pandas_kind(kind: str, sample: Any = None) -> ColumnDType:
+    """Mapeia o `dtype.kind` de uma Series pandas para um `ColumnDType`.
+
+    Recebe a letra do kind (não a Series) para manter este módulo puro —
+    sem dependência de pandas/numpy. Para `kind == "O"` (object), inspeciona
+    `sample` (primeiro valor não-nulo da coluna) para distinguir
+    str/int/float/bool/list.
+    """
+    simple = {"b": ColumnDType.BOOL, "i": ColumnDType.INT,
+              "u": ColumnDType.INT, "f": ColumnDType.FLOAT}
+    if kind in simple:
+        return simple[kind]
+    if kind != "O":
+        # 'U'/'S' (string), 'M'/'m' (datetime/timedelta) → texto.
+        return ColumnDType.STR
+    if isinstance(sample, bool):
+        return ColumnDType.BOOL
+    if isinstance(sample, int):
+        return ColumnDType.INT
+    if isinstance(sample, float):
+        return ColumnDType.FLOAT
+    if isinstance(sample, (list, tuple)):
+        return ColumnDType.LIST
+    # ndarray e afins: sequência sem ser string/bytes.
+    if sample is not None and not isinstance(sample, (str, bytes)) and hasattr(sample, "__len__"):
+        return ColumnDType.LIST
+    return ColumnDType.STR
+
+
+def complete_missing_specs(
+    specs: Dict[str, ColumnSpec],
+    columns,
+    dtypes: Optional[Dict[str, ColumnDType]] = None,
+) -> Dict[str, ColumnSpec]:
+    """Cria specs `role=custom` para colunas reais que não têm spec nenhum.
+
+    Uma coluna sem `ColumnSpec` é invisível na UI: o table model renderiza
+    exatamente `column_specs` (`_columns_from_specs`), e o catálogo default
+    só cobre as colunas conhecidas. Colunas vindas de custom columns de
+    template (`DirTemplate.custom_columns` → `FaceInfo.extra_data`) ou de
+    enriquecimentos ainda não catalogados caíam nesse buraco: persistiam no
+    parquet com os dados corretos, mas sem forma de exibi-las ou filtrá-las.
+
+    Esta função é a rede de segurança: toda coluna presente no DataFrame
+    ganha spec. `role=CUSTOM` é deliberado — um spec sintetizado NUNCA deve
+    reivindicar um role semântico (EMBEDDING/POSE/QUALITY) sobre o qual o
+    código faz branch, sob risco de a coluna ser consumida como se fosse
+    canônica. Colunas realmente conhecidas devem ser declaradas no catálogo.
+
+    Args:
+        specs: specs já resolvidos (catálogo + metadata do parquet).
+        columns: nomes das colunas presentes no DataFrame.
+        dtypes: mapa opcional `nome → ColumnDType` (ver `dtype_from_pandas_kind`).
+            Ausente → assume `STR`.
+
+    Returns:
+        Apenas os specs NOVOS (`nome → ColumnSpec`); o caller decide como
+        mesclar. Vazio quando toda coluna já tem spec.
+    """
+    known = set(specs)
+    for spec in specs.values():
+        if spec.aliases:
+            known.update(spec.aliases)
+
+    minted: Dict[str, ColumnSpec] = {}
+    for name in columns:
+        if name in known or name in minted:
+            continue
+        dtype = (dtypes or {}).get(name, ColumnDType.STR)
+        # Vetores/listas não são editáveis nem exibíveis de forma útil numa
+        # célula de tabela — registra o spec (para não sumirem do schema),
+        # mas fora da visão default.
+        is_sequence = dtype in (ColumnDType.LIST, ColumnDType.VECTOR)
+        minted[name] = ColumnSpec(
+            name=name,
+            label=name,
+            role=ColumnRole.CUSTOM,
+            source=ColumnSource.CUSTOM,
+            dtype=dtype,
+            editable=not is_sequence,
+            visible_default=not is_sequence,
+            category=CATEGORY_CUSTOM,
+            description=(
+                "Coluna sem spec no catálogo — registrada automaticamente "
+                "para permanecer visível e editável na tabela."
+            ),
+        )
+    return minted
 
 
 def validate_required_roles(

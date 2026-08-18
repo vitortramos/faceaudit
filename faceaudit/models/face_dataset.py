@@ -64,6 +64,28 @@ def _is_canonical_face_column(name: str) -> bool:
     return name.startswith("ofiq_") or name.startswith("serfiq_")
 
 
+def _column_dtypes(df: pd.DataFrame) -> Dict[str, Any]:
+    """Infere `ColumnDType` por coluna do DataFrame.
+
+    Alimenta `complete_missing_specs` para que uma coluna sem spec nasça com
+    o tipo certo (e não como texto). Para colunas `object`, amostra o
+    primeiro valor não-nulo — é o que distingue str de int/float/list.
+    """
+    from faceaudit.models.column_catalog import dtype_from_pandas_kind
+
+    dtypes: Dict[str, Any] = {}
+    for name in df.columns:
+        series = df[name]
+        kind = getattr(series.dtype, "kind", "O")
+        sample = None
+        if kind == "O":
+            non_null = series.dropna()
+            if not non_null.empty:
+                sample = non_null.iloc[0]
+        dtypes[name] = dtype_from_pandas_kind(kind, sample)
+    return dtypes
+
+
 # Chaves de proveniência estruturada (sem o prefixo `faceaudit:`) que o
 # `to_parquet`/`from_parquet` aceita gravar/reler em `provenance_metadata`.
 # Allowlist deliberada — evita virar saco genérico de metadata. Ex.: aviso
@@ -462,6 +484,11 @@ class FaceDataset:
             if pd.notna(row.get('fiqa_score')) or embeddings_per_model:
                 face.ff_info = FFInfo(
                     fiqa_score=clean(row.get('fiqa_score')),
+                    # `det_score` faltava aqui: a coluna era emitida por
+                    # `to_flat_dict` (está em `_FF_ATTR_COLUMNS`) mas nunca
+                    # relida, então todo ciclo load → save a zerava e a
+                    # coluna sumia do parquet regravado.
+                    det_score=clean(row.get('det_score')),
                     yaw=clean(row.get('yaw')),
                     pitch=clean(row.get('pitch')),
                     roll=clean(row.get('roll')),
@@ -571,7 +598,9 @@ class FaceDataset:
     def _from_new_format(cls, table, meta: Dict[str, str], path_obj: Path,
                          embedding_column: Optional[str]) -> 'FaceDataset':
         """Lê parquet escrito pelo to_parquet pós-PR 3."""
-        from faceaudit.models.column_catalog import specs_from_json
+        from faceaudit.models.column_catalog import (
+            DatasetType, complete_missing_specs, get_default_specs, specs_from_json,
+        )
 
         ds_name = meta.get("faceaudit:dataset_name") or path_obj.stem
         ds_description = meta.get("faceaudit:dataset_description") or None
@@ -608,6 +637,21 @@ class FaceDataset:
         df = table.to_pandas()
         ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
         ds.description = ds_description
+        # Cura parquets já em disco cujas colunas ficaram sem spec: como os
+        # specs vêm da metadata do próprio arquivo, um dataset gravado antes
+        # da correção esconderia essas colunas para sempre. Ordem de
+        # precedência idêntica à do `to_parquet`: spec da metadata (preserva
+        # customizações do usuário, inclusive visibilidade) > catálogo >
+        # spec sintetizado (`complete_missing_specs`). Colunas removidas pelo
+        # usuário não ressuscitam — `remove_column` também dropa a coluna do
+        # DataFrame, então elas não estão no parquet. A cura é em memória; o
+        # arquivo só é reescrito no próximo save.
+        for _name, _spec in get_default_specs(DatasetType.FACE).items():
+            if _name in df.columns and _name not in column_specs:
+                column_specs[_name] = _spec
+        column_specs.update(
+            complete_missing_specs(column_specs, df.columns, _column_dtypes(df))
+        )
         ds.column_specs = column_specs
         ds.path_mode = path_mode
         ds.path_root = path_root
@@ -655,7 +699,7 @@ class FaceDataset:
         import pyarrow.parquet as pq
 
         from faceaudit.models.column_catalog import (
-            DatasetType, get_default_specs, specs_to_json,
+            DatasetType, complete_missing_specs, get_default_specs, specs_to_json,
         )
         from faceaudit.services.dataset_stats_service import DatasetStatsService
 
@@ -718,6 +762,15 @@ class FaceDataset:
         for name, spec in defaults.items():
             if name in df.columns and name not in specs_to_persist:
                 specs_to_persist[name] = spec
+        # Rede de segurança: colunas que não estão nem nos specs herdados nem
+        # no catálogo (custom columns de template — `DirTemplate.custom_columns`
+        # → `FaceInfo.extra_data` — e enriquecimentos ainda não catalogados)
+        # ganham spec `role=custom`. Sem isto elas eram gravadas no parquet
+        # com os dados corretos porém sem spec, e o table model (que renderiza
+        # exatamente `column_specs`) nunca as exibia.
+        specs_to_persist.update(
+            complete_missing_specs(specs_to_persist, df.columns, _column_dtypes(df))
+        )
         # Atualiza self.column_specs em memória — consistência pós-save
         # garante que a UI veja os novos specs sem reabrir o parquet.
         self.column_specs = dict(specs_to_persist)
