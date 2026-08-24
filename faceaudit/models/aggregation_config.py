@@ -46,10 +46,15 @@ class AggregationConfig(JSONSerializableMixin):
     max_synthetic_templates_per_id: int = field(
         default=100,
         metadata={"help": (
-            "<html>Teto de templates por identidade. O custo bruto é C(N,k), "
-            "que explode rápido: 20 faces em subgrupos de 3 dá 1140 "
-            "combinações.<br>Acima do teto, a seleção é embaralhada de forma "
-            "reprodutível e cortada.</html>"
+            "<html>Teto de templates <b>por identidade</b>. O custo bruto é "
+            "C(N,k), que explode rápido: 20 faces em subgrupos de 3 dá 1140 "
+            "combinações.<br><br>"
+            "Quando o total de combinações <b>cabe</b> no teto, todas são "
+            "geradas.<br>"
+            "Quando <b>excede</b>, são sorteadas exatamente essa quantidade de "
+            "combinações distintas, com probabilidade igual entre todas as "
+            "possíveis e de forma reprodutível — a mesma configuração produz "
+            "sempre a mesma seleção.</html>"
         )},
     )
 
