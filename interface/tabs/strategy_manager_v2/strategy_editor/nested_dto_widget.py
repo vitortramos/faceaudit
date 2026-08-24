@@ -161,9 +161,21 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             if isinstance(value, bool):
                 widget = QtWidgets.QCheckBox()
                 widget.setChecked(value)
-                widget.toggled.connect(
-                    lambda checked, fn=f.name: self._on_field_changed(fn, checked)
-                )
+
+                def _on_bool_changed(checked, fn=f.name,
+                                     is_reactive=(f.name in reactive_fields)):
+                    self._on_field_changed(fn, checked)
+                    # `REACTIVE_FIELDS` era honrado APENAS no ramo Enum, então
+                    # um bool listado ali não reconstruía o form e os campos que
+                    # ele governa em `get_hidden_fields()` não apareciam/sumiam
+                    # ao vivo. Casos afetados: `use_quality_weighting` do
+                    # AggregationConfig (esconde a métrica de qualidade) e
+                    # `enable_clipping` do BiGaussianizedCalibrationModelConfig,
+                    # que já declarava reatividade sem efeito nenhum.
+                    if is_reactive:
+                        QtCore.QTimer.singleShot(0, self._rebuild_form)
+
+                widget.toggled.connect(_on_bool_changed)
             elif isinstance(value, Enum):
                 # Enum field — render as combo. Usa label rico se disponível
                 # (atributo .label do enum), senão o nome.
@@ -476,6 +488,10 @@ NESTED_DTO_ATTRS: Tuple[Tuple[str, str], ...] = (
     # Polimórfico: KNNTypicalityModelConfig ou MoVMFTypicalityModelConfig.
     # O painel gate pela escolha de backend (uses_knn / uses_movmf).
     ("typicality_model_config", "inline"),
+    # Regras de fusão da EMBEDDING_AGGREGATION. O próprio DTO declara
+    # `get_hidden_fields()` e `REACTIVE_FIELDS`, então k/teto/métrica aparecem
+    # e somem conforme o método e a ponderação escolhidos.
+    ("aggregation_config", "inline"),
 )
 
 
@@ -847,6 +863,15 @@ _BIGAUSS_CONFIG_TOOLTIPS = {
 }
 
 
+_AGGREGATION_CONFIG_LABELS = {
+    "method": "Método de fusão",
+    "combination_group_size": "Faces por template (k)",
+    "max_synthetic_templates_per_id": "Teto de templates por identidade",
+    "use_quality_weighting": "Ponderar pela qualidade",
+    "quality_weight_type": "Métrica de qualidade",
+}
+
+
 def get_inline_field_labels(attr_name: str) -> Dict[str, str]:
     """Retorna o mapa de field_name → label legível para o DTO inline conhecido."""
     if attr_name == "training_policy":
@@ -861,6 +886,8 @@ def get_inline_field_labels(attr_name: str) -> Dict[str, str]:
         return _KDE_CONFIG_LABELS
     if attr_name == "bigauss_config":
         return _BIGAUSS_CONFIG_LABELS
+    if attr_name == "aggregation_config":
+        return _AGGREGATION_CONFIG_LABELS
     return {}
 
 
@@ -944,6 +971,8 @@ def get_inline_title(attr_name: str) -> str:
         # Genérico — o backend específico (k-NN ou MoVMF) já está
         # selecionado no dropdown acima.
         return "Hiperparâmetros do Modelo"
+    if attr_name == "aggregation_config":
+        return "Regras de Agregação"
     return attr_name.replace("_", " ").title()
 
 
@@ -985,6 +1014,9 @@ def make_default_dto(attr_name: str) -> Any:
             KNNTypicalityModelConfig,
         )
         return KNNTypicalityModelConfig()
+    if attr_name == "aggregation_config":
+        from faceaudit.models.aggregation_config import AggregationConfig
+        return AggregationConfig()
     return None
 
 

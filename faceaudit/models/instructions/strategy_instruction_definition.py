@@ -419,4 +419,10 @@ class StrategyInstructionDefinition(JSONSerializableMixin):
             )
             return LRArchitectureVectorizationInstruction.from_dict(processed_data)
 
+        if instruction_type == StrategyInstructionType.EMBEDDING_AGGREGATION:
+            from faceaudit.models.instructions.embedding_aggregation_instruction import (
+                EmbeddingAggregationInstruction,
+            )
+            return EmbeddingAggregationInstruction.from_dict(processed_data)
+
         return cls(**processed_data)

@@ -210,6 +210,30 @@ class StrategyInstructionType(Enum):
         "CASEWORK exigindo parameter_mode=INHERIT.",
     )
 
+    EMBEDDING_AGGREGATION = (
+        "EMBEDDING_AGGREGATION",
+        "Embedding Aggregation",
+        "Agregação de Embeddings",
+        "Funde múltiplos embeddings da MESMA identidade em templates "
+        "sintéticos (Smart Enrollment), sem exigir um pipeline de "
+        "transformação. Stateless: não há parâmetro treinado, então não "
+        "existe o par treino/aplicação — é uma única instrução "
+        "DATASET→DATASET. Dois métodos: CENTROID (N→1, funde toda a "
+        "identidade num template) e COMBINATORIAL (N→M, gera templates "
+        "por subgrupos de k faces, com teto por identidade). A média "
+        "pode ser ponderada por score de qualidade (FIQA/OFIQ/SER-FIQ), "
+        "e o resultado é sempre reprojetado na hiperesfera (norma L2=1). "
+        "O template resultante NÃO carrega metadado de foto — sem "
+        "image_path, pose ou quality_scores — porque é a média de N "
+        "faces e não corresponde a imagem nenhuma; seu `face_hash` é um "
+        "identificador determinístico derivado das faces contribuintes. "
+        "Exige identidade em todas as faces: agregar sem identidade não "
+        "tem significado e aborta. Atenção forense: um template de N "
+        "imagens é objeto estatisticamente distinto de um embedding de "
+        "imagem única — a calibração precisa ter sido treinada na mesma "
+        "assimetria em que será aplicada.",
+    )
+
     def __new__(
         cls,
         value: str,

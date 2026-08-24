@@ -67,6 +67,9 @@ from faceaudit.executors.instructions.score_interaction_feature_instruction_exec
 from faceaudit.executors.instructions.lr_architecture_vectorization_instruction_executor import (
     LRArchitectureVectorizationInstructionExecutor,
 )
+from faceaudit.executors.instructions.embedding_aggregation_instruction_executor import (
+    EmbeddingAggregationInstructionExecutor,
+)
 from faceaudit.executors.strategy_executor import StrategyExecutor
 from faceaudit.protocols.artifact_storage_protocol import ArtifactStorageProtocol
 from faceaudit.protocols.validation_rule_protocol import ValidationRuleProtocol
@@ -201,6 +204,11 @@ class StrategyExecutorFactory:
         registry.register(
             StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION,
             LRArchitectureVectorizationInstructionExecutor(),
+        )
+
+        registry.register(
+            StrategyInstructionType.EMBEDDING_AGGREGATION,
+            EmbeddingAggregationInstructionExecutor(),
         )
 
         return registry

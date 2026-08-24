@@ -28,6 +28,12 @@ _INSTRUCTION_ICONS = {
     StrategyInstructionType.SCORE_VECTORIZATION: "🧬",
     StrategyInstructionType.SCORE_INTERACTION_FEATURE: "🪢",
     StrategyInstructionType.LR_ARCHITECTURE_VECTORIZATION: "🧩",
+    StrategyInstructionType.EMBEDDING_AGGREGATION: "🧲",
+    StrategyInstructionType.DATASET_BALANCING: "⚖",
+    StrategyInstructionType.HUBNESS_ANALYSIS: "🕸",
+    StrategyInstructionType.HUBNESS_ABLATION: "🔬",
+    StrategyInstructionType.TYPICALITY_MODEL_TRAINING: "🧭",
+    StrategyInstructionType.TYPICALITY_PAIR_SCORING: "🧮",
     StrategyInstructionType.STRATEGY_EVALUATION: "📈",
     StrategyInstructionType.CASEWORK_VISUALIZATION: "🎯",
 }
