@@ -64,6 +64,18 @@ class QualityScoreType(Enum):
     def __str__(self) -> str:
         return self.label_pt
 
+    # Nomes procurados via getattr pelo editor inline de DTO aninhado
+    # (`NestedDTOInlineWidget`) para o texto do combo e a linha de ajuda.
+    # Sem eles o combo exibiria "FIQA"/"OFIQ" crus, sem descrição.
+    @property
+    def label(self) -> str:
+        return self.display_name
+
+    @property
+    def description(self) -> str:
+        lo, hi = self.value_range
+        return f"{self.display_name} — faixa esperada {lo:g} a {hi:g}."
+
     def extract_from(self, face_info: Any) -> Optional[float]:
         """Extrai o valor numérico do objeto FaceInfo de forma segura."""
         try:
@@ -117,6 +129,13 @@ class QualityScoreType(Enum):
     @classmethod
     def from_str(cls, value: str) -> QualityScoreType:
         """Reconstrói o Enum a partir do nome da constante com fallback para FIQA."""
+        # Idempotência: sem este guard, passar um membro já hidratado caía no
+        # `except AttributeError` e voltava FIQA SILENCIOSAMENTE — trocando a
+        # métrica escolhida pelo usuário sem aviso nenhum. Alcançável via
+        # `AggregationConfig.from_dict` sobre dict já processado, cujo guard é
+        # só um teste de truthiness (membro de Enum é truthy).
+        if isinstance(value, cls):
+            return value
         try:
             return cls[value.upper()]
         except (KeyError, AttributeError):

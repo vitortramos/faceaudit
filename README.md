@@ -278,7 +278,7 @@ Cada fase contém uma sequência ordenada de **instruções**. Cada instrução
 consome recursos do contexto (datasets, configs, modelos treinados) e produz
 novos recursos.
 
-### Tipos de instrução (20)
+### Tipos de instrução (21)
 
 #### Preparação de dados
 
@@ -288,6 +288,7 @@ novos recursos.
 | `PAIRED_DATASET_SPLIT` | Divide DOIS datasets simultaneamente por identidade — útil para preparar pares cross-pose (frontal × lateral) |
 | `DATASET_MERGE` | Combina dois datasets — concat ou update by index list |
 | `DATASET_BALANCING` | Balanceia amostras por identidade — `CAP_ONLY`, `FLOOR_AND_CAP`, `AUTO_MIN_BALANCE`, critério aleatório ou por qualidade |
+| `EMBEDDING_AGGREGATION` | Funde embeddings da MESMA identidade em templates sintéticos (Smart Enrollment) sem exigir pipeline — `CENTROID` (N→1) ou `COMBINATORIAL` (N→M), média simples ou ponderada por qualidade, sempre renormalizada L2. Stateless (sem par treino/aplicação). A saída é dataset de TEMPLATES, não de fotos: `image_path`/`pose`/`quality_scores` saem vazios e o `face_hash` vira identificador determinístico derivado das faces contribuintes. Exige identidade em todas as faces. |
 | `PAIR_MINING` | Curadoria estatística de pares para treino de calibração (HARD/EASY/TYPICAL/RANDOM/MIXED — class-aware) |
 
 #### Pipeline de transformação de embeddings

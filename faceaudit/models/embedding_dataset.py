@@ -223,7 +223,14 @@ class EmbeddingDataset:
                     "source": item.source,
                     "origin": item.origin,
                     "face_image": face_img_list,
-                    "quality_scores_json": q_scores_json
+                    "quality_scores_json": q_scores_json,
+                    # Pose NÃO era gravada — só relida (o `from_parquet` já
+                    # aceitava as colunas). Consequência: pose se perdia em todo
+                    # save e voltava como 0.0 inventado, de modo que o
+                    # HUBNESS_ABLATION BY_POSE operava sobre zeros. `None`
+                    # quando a face não tem pose — ausente continua ausente.
+                    "yaw": item.yaw,
+                    "pitch": item.pitch,
                 }
                 data_dicts.append(row)
 
@@ -235,10 +242,24 @@ class EmbeddingDataset:
         # --- METADADOS NO PARQUET ---
         table = pa.Table.from_pandas(df)
 
+        # `loaded_metadata` era LIDO por `from_parquet` mas nunca GRAVADO —
+        # metadado de dataset (proveniência de agregação, avisos de viés,
+        # origem) vivia só em memória e evaporava no primeiro save. Escrevê-lo
+        # fecha o round-trip. `pandas` é chave reservada do pyarrow: reescrevê-la
+        # a partir de um dict relido corromperia o schema.
+        _RESERVADAS = {"pandas"}
+        combinado = {
+            k: v for k, v in (self.loaded_metadata or {}).items()
+            if k not in _RESERVADAS
+        }
+        # `extra_metadata` é override explícito no momento da chamada — vence.
         if extra_metadata:
-            existing_meta = table.schema.metadata or {}
-            for k, v in extra_metadata.items():
-                existing_meta[k.encode('utf-8')] = str(v).encode('utf-8')
+            combinado.update(extra_metadata)
+
+        if combinado:
+            existing_meta = dict(table.schema.metadata or {})
+            for k, v in combinado.items():
+                existing_meta[str(k).encode('utf-8')] = str(v).encode('utf-8')
             table = table.replace_schema_metadata(existing_meta)
 
         pq.write_table(table, p)
@@ -350,10 +371,27 @@ class EmbeddingDataset:
 
             # Pose também pode vir em colunas separadas (yaw/pitch) no
             # schema legado — preserva pra HUBNESS_ABLATION BY_POSE.
-            yaw_val = row_dict.get('yaw')
-            pitch_val = row_dict.get('pitch')
-            yaw_f = float(yaw_val) if (yaw_val is not None and not (isinstance(yaw_val, float) and np.isnan(yaw_val))) else 0.0
-            pitch_f = float(pitch_val) if (pitch_val is not None and not (isinstance(pitch_val, float) and np.isnan(pitch_val))) else 0.0
+            # AUSENTE ≠ ZERO. Antes, coluna faltando ou nula virava 0.0 — e
+            # 0° é uma pose fisicamente válida (rosto frontal), então o dado
+            # inventado era indistinguível de medição real. Efeito prático: a
+            # `HasPoseMetadataRule` lia cobertura 1.0 e LIBERAVA o
+            # HUBNESS_ABLATION BY_POSE sobre um dataset inteiro de zeros
+            # falsos. `None` deixa o campo fora do dict `pose`, e as regras de
+            # cobertura passam a bloquear corretamente. Também é o que
+            # preserva, após o round-trip, a ausência de pose nos datasets de
+            # templates agregados — que não têm pose por definição.
+            def _pose_ou_none(v):
+                if v is None:
+                    return None
+                if isinstance(v, float) and np.isnan(v):
+                    return None
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+
+            yaw_f = _pose_ou_none(row_dict.get('yaw'))
+            pitch_f = _pose_ou_none(row_dict.get('pitch'))
 
             # `hash` é o nome canônico no novo column_catalog; `face_hash`
             # é o alias legado (parquets antigos + atributo Python interno

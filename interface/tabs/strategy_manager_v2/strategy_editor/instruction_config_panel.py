@@ -980,6 +980,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 or getattr(instr, "uses_movmf", False)
             ):
                 continue
+            if attr_name == "aggregation_config" and not getattr(
+                instr, "uses_aggregation", False
+            ):
+                continue
 
             current_dto = getattr(instr, attr_name, None)
 
