@@ -1,5 +1,6 @@
 # interface/tabs/strategy_manager/new_mining_config
 import itertools
+import math
 import random
 import numpy as np
 import pickle
@@ -36,6 +37,19 @@ from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
 from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.wccn_config import WCCNConfig
 from faceaudit.models.lda_config import LDAConfig
+
+
+# Prefixo do `face_hash` de template agregado. Marca a linha como SINTÉTICA —
+# nenhuma foto real produz um hash com este prefixo, o que torna templates
+# distinguíveis de imagens por inspeção direta (e por grep).
+_SYNTH_PREFIX = "SYNTH_"
+
+# Versão do esquema de derivação do hash sintético. Fica gravada no
+# `loaded_metadata` do dataset agregado: se a fórmula mudar, datasets antigos
+# continuam auditáveis e a incompatibilidade de pareamento fica explícita em
+# vez de aparecer como "N pares não encontrados" lá na frente.
+_SYNTH_HASH_SCHEME = "agg-template-sha256-v2"
+
 
 class EmbeddingMathService:
     """
@@ -1421,42 +1435,18 @@ class EmbeddingMathService:
             items=new_items
         )
 
-    def apply_identity_aggregation(self, dataset: EmbeddingDataset) -> EmbeddingDataset:
-        """
-        Agregação Legada. Cria um vetor centroid (Média L2) agrupando todos os embeddings
-        associados à mesma identidade. Substituída pela 'Smart Aggregation'.
-        """
-        groups = defaultdict(list)
-        meta_templates = {} 
-        for item in dataset.items:
-            groups[item.identity].append(item.embedding)
-            if item.identity not in meta_templates:
-                meta_templates[item.identity] = item
-        new_items = []
-        for identity, embeddings in groups.items():
-            matrix = np.vstack(embeddings)
-            mean_vector = np.mean(matrix, axis=0)
-            norm = np.linalg.norm(mean_vector)
-            if norm > 0: mean_vector = mean_vector / norm
-            original_meta = meta_templates[identity]
-            new_items.append(EmbeddingInfo(
-                identity=identity,
-                file_name=f"AGG_{original_meta.file_name}", 
-                embedding=mean_vector,
-                source=original_meta.source,
-                origin=original_meta.origin,
-                face_hash=original_meta.face_hash,
-                face_image=original_meta.face_image,
-                yaw=original_meta.yaw,
-                pitch=original_meta.pitch,
-                quality_scores=original_meta.quality_scores
-            ))
-        return EmbeddingDataset(
-            name=f"{dataset.name}_Aggregated",
-            items=new_items,
-            description="Agregação por média de identidades"
-        )
-    
+    # `apply_identity_aggregation` foi REMOVIDA. Era agregação legada com zero
+    # chamadores em toda a árvore, e não era sequer executável: construía
+    # `EmbeddingInfo` sem `image_path`, que é parâmetro obrigatório — qualquer
+    # chamada estourava `TypeError`. Pior que morta, documentava a convenção
+    # ERRADA ao lado da certa: herdava o `face_hash` de uma das fotos reais,
+    # fazendo um template sintético se passar por imagem na detecção de
+    # vazamento probe↔referência (`comparison_service.py`), que compara
+    # conjuntos de hash. Herdar o hash faria essa checagem pegar no máximo UMA
+    # das k fotos fundidas e perder as demais — garantia falsa. Use
+    # `apply_smart_aggregation` com `AggregationMethod.CENTROID`, que é o
+    # mesmo resultado matemático com identidade de linha correta.
+
     # =========================================================================
     # 6. UTILITÁRIOS: VISUALIZAÇÃO E PROJEÇÃO (MÁQUINA DE ESTADOS ORIENTADA A DOMÍNIO)
     # =========================================================================
@@ -1659,11 +1649,31 @@ class EmbeddingMathService:
         if quality_weight_key:
             log(f"    -> Usando ponderação por qualidade: '{quality_weight_key}'")
 
-        # 1. Agrupamento Inicial (Identity -> List[Item])
+        # 1. Gate fail-closed: identidade é o que DEFINE o agrupamento.
+        # Antes, faces sem identidade caíam numa chave literal "unknown" e eram
+        # fundidas num único template — pessoas diferentes viravam uma só, em
+        # silêncio, e "unknown" passava a contar como identidade real em
+        # DatasetStats.n_ids, MIN_IDENTITIES, FisherRule e na matriz
+        # intraclasse do PLDA. Agregar o que não tem identidade não é uma
+        # operação com significado; abortar é a única saída honesta.
+        sem_id = [
+            i for i, item in enumerate(dataset.items)
+            if item.identity is None or not str(item.identity).strip()
+        ]
+        if sem_id:
+            amostra = ", ".join(str(i) for i in sem_id[:10])
+            reticencias = "…" if len(sem_id) > 10 else ""
+            raise ValueError(
+                f"Agregação exige identidade em todas as faces: "
+                f"{len(sem_id)} de {len(dataset.items)} estão sem identidade "
+                f"(índices {amostra}{reticencias}). Faces sem identidade não podem "
+                f"ser agregadas — corrija o dataset ou filtre-as antes."
+            )
+
+        # 2. Agrupamento (Identity -> List[Item])
         groups = defaultdict(list)
         for item in dataset.items:
-            key = str(item.identity) if item.identity is not None else "unknown"
-            groups[key].append(item)
+            groups[str(item.identity)].append(item)
 
         new_items = []
         
@@ -1686,20 +1696,9 @@ class EmbeddingMathService:
             tasks_indices = []
 
             if method == AggregationMethod.COMBINATORIAL and n_items >= group_size:
-                # Gera combinatória
-                all_combos = list(itertools.combinations(range(n_items), group_size))
-                
-                # Aplica teto máximo e embaralha para evitar viés dos primeiros itens
-                if len(all_combos) > max_output_per_id:
-                    # Trava o embaralhamento para garantir que a agregação sintética
-                    # produza sempre as mesmas imagens combinadas.
-                    if self.seed is not None:
-                        random.Random(self.seed).shuffle(all_combos)
-                    else:
-                        random.shuffle(all_combos)
-                    tasks_indices = all_combos[:max_output_per_id]
-                else:
-                    tasks_indices = all_combos
+                tasks_indices = self._sample_combinations(
+                    n_items, group_size, max_output_per_id, self.seed,
+                )
             else:
                 # Centróide Padrão: Uma única tarefa contendo todos os índices do grupo
                 # (Se for Combinatorial mas não tiver itens suficientes, faz fallback pra cá)
@@ -1716,39 +1715,266 @@ class EmbeddingMathService:
                 # Média + Normalização
                 mean_vector = self._compute_mean_and_normalize(sub_embeddings, sub_weights)
                 
-                # Metadados herdados do primeiro item do subgrupo
-                ref_item = items[indices[0]]
-                suffix = f"_k{len(indices)}" if method == AggregationMethod.COMBINATORIAL else "_agg"
-                new_fname = f"AGG_{ref_item.file_name}{suffix}"
+                sub_items = [items[i] for i in indices]
 
-                # Proteção para dicionários de qualidade vazios ou nulos
-                avg_quality = ref_item.quality_scores.copy() if getattr(ref_item, 'quality_scores', None) else {}
+                # Identidade da linha: derivada do CONJUNTO de faces que
+                # entraram, determinística entre execuções e distinta de
+                # qualquer hash de foto real (ver _synthetic_template_hash).
+                template_hash = self._synthetic_template_hash(
+                    identity, sub_items, method, len(indices),
+                )
+                # O nome antigo derivava só de items[indices[0]].file_name:
+                # em COMBINATORIAL, todo combo que compartilhava o primeiro
+                # índice gerava nome IDÊNTICO — e, por tabela, hash idêntico.
+                # O sufixo de hash desambigua e mantém o rastro.
+                new_fname = f"AGG_{identity}_k{len(indices)}_{template_hash[len(_SYNTH_PREFIX):][:12]}"
 
                 new_items.append(EmbeddingInfo(
-                    identity=identity,
                     embedding=mean_vector.astype(np.float32),
+                    face_hash=template_hash,
+                    identity=identity,
                     file_name=new_fname,
-                    image_path=ref_item.image_path,
-                    source=ref_item.source,
-                    origin=ref_item.origin,
-                    # Gera um hash único baseado no novo nome sintético
-                    face_hash=f"SYNTH_{hash(new_fname)}",
-                    face_image=None, # Como é sintético, não possui rosto real associado
-                    yaw=ref_item.yaw,
-                    pitch=ref_item.pitch,
-                    quality_scores=avg_quality
+                    # ── Metadado de FOTO não sobrevive à agregação ──
+                    # Um template é a média de N faces: não é imagem nenhuma,
+                    # não tem pose, e "qualidade de imagem" (FIQA/OFIQ) não é
+                    # definida para ele. Herdar do primeiro item, como se
+                    # fazia, produzia um template que se declarava uma foto
+                    # específica — com pose e qualidade que não descrevem o
+                    # que o vetor representa. Vazio é a resposta correta, e é
+                    # o que faz QualityMetricAvailableRule/HasPoseMetadataRule
+                    # bloquearem operações que dependem desses campos.
+                    image_path="",
+                    pose=None,
+                    quality_scores=None,
+                    face_image=None,
+                    # Proveniência da coleção (não da foto): só sobrevive se
+                    # for unânime entre as faces fundidas.
+                    source=self._unanimous_attr(sub_items, "source"),
+                    origin=self._unanimous_attr(sub_items, "origin"),
                 ))
 
+        # `face_hash` é a chave de par de toda a infra a jusante (PAIR_MINING,
+        # SCORE_INTERACTION_FEATURE, LR_ARCHITECTURE_VECTORIZATION,
+        # ScoreVectorPairCompatibilityRule) e é coluna obrigatória nos parquets
+        # de score. Duas linhas com o mesmo hash e embeddings diferentes é
+        # corrupção silenciosa: o PAIR_MINING as trata como auto-comparação e
+        # descarta os genuínos daquela identidade. Falha aqui, alto e claro.
+        from collections import Counter
+        colisoes = {
+            h: n for h, n in Counter(i.face_hash for i in new_items).items() if n > 1
+        }
+        if colisoes:
+            amostra = ", ".join(f"{h[:24]}…×{n}" for h, n in list(colisoes.items())[:5])
+            raise ValueError(
+                f"Agregação produziu {sum(colisoes.values())} templates com "
+                f"{len(colisoes)} hash(es) repetido(s) ({amostra}). Causa provável: "
+                f"faces byte-idênticas (o mesmo arquivo listado mais de uma vez) "
+                f"dentro da mesma identidade. Remova as duplicatas antes de agregar."
+            )
+
         log(f"--- Agregação Finalizada. {len(dataset)} itens -> {len(new_items)} templates sintéticos. ---")
-        
-        desc_extra = f" | Weighted({quality_weight_key})" if quality_weight_key else ""
+
+        # A ponderação só é EFETIVA se a métrica existia em alguma face. Quando
+        # falta em todas, `_extract_weights` devolve pesos unitários e a média
+        # degenera em simples — e afirmar "ponderada" no log e na proveniência
+        # de um dataset que vai a laudo seria falso.
+        n_com_peso, n_total_peso = getattr(self, "_last_weight_presence", (0, 0))
+        ponderacao_efetiva = bool(quality_weight_key) and n_com_peso > 0
+        if quality_weight_key and not ponderacao_efetiva:
+            log(
+                f"⚠ Ponderação por '{quality_weight_key}' pedida, mas a métrica "
+                f"está AUSENTE em todas as faces — a fusão foi por média simples."
+            )
+
+        desc_extra = f" | Weighted({quality_weight_key})" if ponderacao_efetiva else ""
+
+        # Propaga o metadado de dataset (o split e o merge fazem o mesmo em
+        # toda saída) e registra a proveniência da agregação. Sem isso, a
+        # jusante não há como distinguir "campos de foto vazios por design"
+        # de "vazios por falha de ingestão" — e a distinção importa porque
+        # as regras de cobertura passam a bloquear operações sobre este
+        # dataset.
+        meta = dict(getattr(dataset, "loaded_metadata", None) or {})
+        meta.update({
+            "aggregation_applied": "true",
+            "aggregation_method": method.value,
+            "aggregation_source_dataset": str(dataset.name),
+            "aggregation_source_items": str(len(dataset.items)),
+            "aggregation_output_templates": str(len(new_items)),
+            "aggregation_identities": str(len(groups)),
+            # Só declara ponderação quando ela de fato ocorreu — ver acima.
+            "aggregation_quality_weighting": quality_weight_key if ponderacao_efetiva else "",
+            "aggregation_quality_weighting_requested": quality_weight_key or "",
+            "aggregation_quality_weighting_effective": "true" if ponderacao_efetiva else "false",
+            "aggregation_cleared_photo_fields": "image_path,pose,quality_scores,face_image",
+            "aggregation_hash_scheme": _SYNTH_HASH_SCHEME,
+        })
+        if method == AggregationMethod.COMBINATORIAL:
+            meta["aggregation_group_size"] = str(group_size)
+            meta["aggregation_max_per_identity"] = str(max_output_per_id)
+
         return EmbeddingDataset(
             name=f"{dataset.name}_SmartAgg_{method.value}",
             items=new_items,
-            description=f"Smart Aggregation ({method.value}){desc_extra}"
+            description=f"Smart Aggregation ({method.value}){desc_extra}",
+            loaded_metadata=meta,
         )
 
     # --- HELPERS PRIVADOS ---
+
+    @staticmethod
+    def _sample_combinations(
+        n_items: int,
+        group_size: int,
+        max_output: int,
+        seed: Optional[int],
+    ) -> List[Tuple[int, ...]]:
+        """Até `max_output` combinações de `group_size` índices, SEM materializar C(n,k).
+
+        A versão anterior fazia `list(itertools.combinations(...))` e só depois
+        aplicava o teto — pagando o custo inteiro antes de descartar quase tudo.
+        Com 60 faces numa identidade e k=5 isso são 5.461.512 tuplas (~480 MB)
+        para ficar com 100; com 100 faces, C(100,5)=75 milhões e o processo
+        morre por falta de memória. O teto existe justamente para evitar essa
+        explosão, então precisa ser aplicado ANTES da geração.
+
+        Quando o total cabe no teto, enumera direto. Quando não cabe, sorteia
+        `max_output` POSIÇÕES distintas no espaço combinatório e converte cada
+        uma na combinação correspondente (sistema numérico combinatório) — custo
+        O(max_output · k), memória O(max_output). O sorteio é semeado, então a
+        seleção é reprodutível entre execuções, que é o que a agregação
+        sintética exige para ser auditável.
+        """
+        total = math.comb(n_items, group_size)
+        rng = random.Random(seed if seed is not None else 0)
+
+        if total <= max_output:
+            combos = list(itertools.combinations(range(n_items), group_size))
+            rng.shuffle(combos)
+            return combos
+
+        ranks = rng.sample(range(total), max_output)
+        ranks.sort()  # ordem estável do resultado, independente do sorteio
+        return [
+            EmbeddingMathService._unrank_combination(n_items, group_size, r)
+            for r in ranks
+        ]
+
+    @staticmethod
+    def _unrank_combination(n: int, k: int, rank: int) -> Tuple[int, ...]:
+        """A combinação de índices na posição `rank` da ordem lexicográfica.
+
+        Sistema numérico combinatório: permite acessar a r-ésima combinação sem
+        gerar as anteriores. É o que torna possível respeitar o teto sem
+        enumerar o espaço inteiro.
+        """
+        resultado: List[int] = []
+        atual = 0
+        restante = rank
+        for pos in range(k):
+            faltam = k - pos
+            while True:
+                bloco = math.comb(n - atual - 1, faltam - 1)
+                if restante < bloco:
+                    break
+                restante -= bloco
+                atual += 1
+            resultado.append(atual)
+            atual += 1
+        return tuple(resultado)
+
+    @staticmethod
+    def _contributor_key(item: EmbeddingInfo) -> str:
+        """Chave da face contribuinte usada na derivação do hash do template.
+
+        Usa `face_hash` quando existe; senão, um digest do CONTEÚDO.
+
+        `face_hash` vazio é estado NORMAL e frequente aqui — `to_embedding_dataset`
+        faz `face_hash=face.hash or ""` e `EmbeddingDataset.from_parquet` faz
+        `hash_value or ''` para qualquer parquet sem a coluna. Sem este fallback,
+        todo k-combo de uma identidade cujas faces têm hash "" produzia payload
+        canônico byte-idêntico e, portanto, o MESMO digest: N templates com N
+        embeddings distintos colapsavam numa única chave de par — e o PAIR_MINING,
+        que exclui auto-comparação por igualdade de hash, descartaria em silêncio
+        todos os pares genuínos daquela identidade.
+
+        O fallback é derivado de conteúdo (e não da posição no dataset) para
+        preservar a invariância à ordem, que os testes cobram.
+        """
+        h = str(getattr(item, "face_hash", "") or "").strip()
+        if h:
+            return f"h:{h}"
+
+        from faceaudit.models.lr._canonical_hash import sha256_hex
+
+        emb = np.ascontiguousarray(np.asarray(item.embedding, dtype="<f8"))
+        return "c:" + sha256_hex(b"|".join([
+            str(getattr(item, "image_path", "") or "").encode("utf-8"),
+            str(getattr(item, "file_name", "") or "").encode("utf-8"),
+            emb.tobytes(),
+        ]))
+
+    @staticmethod
+    def _synthetic_template_hash(
+        identity: str,
+        items: List[EmbeddingInfo],
+        method: AggregationMethod,
+        group_size: int,
+    ) -> str:
+        """Identificador determinístico de um template agregado.
+
+        `face_hash` não é decoração: é a CHAVE DE PAR de toda a infra de
+        vetorização LR (`_align_pairs` do SCORE_INTERACTION_FEATURE,
+        `_extract_canonical_rarity` do LR_ARCHITECTURE_VECTORIZATION,
+        ScoreVectorPairCompatibilityRule, exclusão de auto-comparação no
+        PAIR_MINING) e é persistido como coluna obrigatória
+        `probe_face_hash`/`reference_face_hash` nos parquets de score.
+
+        Duas exigências, por isso:
+
+        1. **Determinístico.** O `hash()` embutido do Python é salgado por
+           processo (PYTHONHASHSEED) desde a 3.3 — a mesma agregação rodada
+           duas vezes produzia identificadores diferentes, quebrando o
+           pareamento entre execuções. Aqui usa-se SHA-256 sobre payload
+           canônico (mesma convenção dos fingerprints do subsistema LR).
+        2. **Distinto de qualquer foto real.** Derivar do CONJUNTO ordenado
+           de faces contribuintes torna o template rastreável sem que ele
+           colida com nenhuma das fotos que o formaram — o que era o defeito
+           da agregação legada, que herdava o hash de uma delas e fazia um
+           template sintético se passar por imagem real na detecção de
+           vazamento probe↔referência.
+
+        A ordenação dos hashes contribuintes torna o resultado invariante à
+        ordem em que as faces aparecem no dataset.
+        """
+        from faceaudit.models.lr._canonical_hash import hash_canonical_payload
+
+        contribuintes = sorted(
+            EmbeddingMathService._contributor_key(it) for it in items
+        )
+        digest = hash_canonical_payload({
+            "kind": "aggregated_template",
+            "scheme": _SYNTH_HASH_SCHEME,
+            "identity": str(identity),
+            "method": method.value,
+            "group_size": int(group_size),
+            "sources": contribuintes,
+        })
+        return f"{_SYNTH_PREFIX}{digest}"
+
+    @staticmethod
+    def _unanimous_attr(items: List[EmbeddingInfo], attr: str) -> Optional[str]:
+        """Valor do atributo quando TODAS as faces concordam; None se divergem.
+
+        `source`/`origin` descrevem a coleção de onde a face veio, não a foto
+        em si — então sobrevivem à fusão desde que sejam os mesmos. Fundir
+        faces de origens diferentes num template torna a origem ambígua, e
+        ambíguo vira ausente em vez de virar "a primeira".
+        """
+        valores = {getattr(it, attr, None) for it in items}
+        if len(valores) == 1:
+            return valores.pop()
+        return None
 
     def _extract_weights(self, items: List[EmbeddingInfo], key: str) -> np.ndarray:
         """
@@ -1756,30 +1982,58 @@ class EmbeddingMathService:
         seguro. Aplica um fallback para peso=1.0 se a qualidade for Nula ou inexistente.
         """
         weights = []
+        n_presentes = 0
         for item in items:
             val = 1.0
             if item.quality_scores and key in item.quality_scores:
                 v = item.quality_scores[key]
                 if v is not None:
-                    val = float(v)
+                    try:
+                        candidato = float(v)
+                    except (TypeError, ValueError):
+                        candidato = None
+                    # NaN/inf atravessavam TODAS as guardas: `float('nan')` não
+                    # é None, `np.sum(...) == 0` é False quando a soma é NaN, e
+                    # `norm > 1e-9` é False para NaN — o vetor saía inteiramente
+                    # NaN, sem exceção e sem log. Score não-finito é score
+                    # ausente: cai no fallback 1.0.
+                    if candidato is not None and np.isfinite(candidato):
+                        val = candidato
+                        n_presentes += 1
             weights.append(val)
-        
+
         w_arr = np.array(weights, dtype=np.float32)
-        if np.sum(w_arr) == 0: return np.ones(len(items), dtype=np.float32)
+        # `_last_weight_presence` deixa o chamador saber se a ponderação foi
+        # EFETIVA. Sem isso, a proveniência gravada no dataset afirmava fusão
+        # ponderada mesmo quando a métrica faltava em todas as faces e a média
+        # degenerou em simples.
+        self._last_weight_presence = (n_presentes, len(items))
+        if np.sum(w_arr) == 0:
+            return np.ones(len(items), dtype=np.float32)
         return w_arr
 
     def _compute_mean_and_normalize(self, vectors: np.ndarray, weights: Optional[np.ndarray]) -> np.ndarray:
         """
-        Calcula a média ponderada ou simples de tensores 1D e reprojeta 
+        Calcula a média ponderada ou simples de tensores 1D e reprojeta
         o vetor resultante de volta à hiperesfera (Norma L2 = 1.0).
         """
+        # A guarda de soma-zero do `_extract_weights` é do GRUPO inteiro, mas em
+        # COMBINATORIAL o vetor é fatiado por SUBGRUPO antes de chegar aqui: um
+        # combo cujas k faces têm todas qualidade 0.0 soma zero mesmo com o
+        # grupo somando positivo, e `np.average` levantava ZeroDivisionError,
+        # abortando a instrução inteira. Peso degenerado = sem informação de
+        # qualidade neste subgrupo; média simples é a resposta.
+        if weights is not None:
+            soma = float(np.sum(weights))
+            if not np.isfinite(soma) or soma <= 0.0:
+                weights = None
+
         if weights is not None:
             mean = np.average(vectors, axis=0, weights=weights)
         else:
             mean = np.mean(vectors, axis=0)
-        
-        norm = np.linalg.norm(mean)
-        if norm > 1e-9:
+
+        norm = float(np.linalg.norm(mean))
+        if np.isfinite(norm) and norm > 1e-9:
             mean = mean / norm
-        
         return mean

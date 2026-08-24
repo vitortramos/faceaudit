@@ -53,6 +53,19 @@ class AggregationMethod(Enum):
             
         return AggregationMethodInfo(self.name, "")
 
+    # `label`/`description` são os nomes que o editor inline de DTO aninhado
+    # procura via getattr (`NestedDTOInlineWidget`) para montar o texto do
+    # combo e a linha de ajuda contextual. Sem eles, o combo mostraria
+    # "CENTROID"/"COMBINATORIAL" crus e sem descrição. Delegam ao `info`,
+    # que já era a fonte de verdade — nada duplicado.
+    @property
+    def label(self) -> str:
+        return self.info.label
+
+    @property
+    def description(self) -> str:
+        return self.info.description
+
     # --- Interface de Serialização ---
 
     def to_str(self) -> str:
@@ -62,10 +75,16 @@ class AggregationMethod(Enum):
     @classmethod
     def from_str(cls, value: str) -> AggregationMethod:
         """
-        Reconstrói o Enum a partir de uma string. 
+        Reconstrói o Enum a partir de uma string.
         Retorna CENTROID como fallback em caso de valor inválido.
         """
+        # Idempotência: receber um membro já hidratado é comum em round-trips
+        # (`AggregationConfig.from_dict` sobre um dict já processado). Sem este
+        # guard, `value.lower()` levantaria AttributeError não capturado — o
+        # `except ValueError` abaixo não pega.
+        if isinstance(value, cls):
+            return value
         try:
             return cls(value.lower() if value else "")
-        except ValueError:
+        except (ValueError, AttributeError):
             return cls.CENTROID
