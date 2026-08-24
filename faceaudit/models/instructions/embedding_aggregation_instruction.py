@@ -12,7 +12,6 @@ from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.instructions.strategy_instruction_definition import (
     ResourceFieldSpec,
     StrategyInstructionDefinition,
-    ValueFieldSpec,
 )
 from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
 
@@ -216,15 +215,11 @@ class EmbeddingAggregationInstruction(StrategyInstructionDefinition):
             ),
         ]
 
-    def get_value_field_specs(self) -> list:
-        return [
-            ValueFieldSpec(
-                field_name="output_dataset_name",
-                label="Nome do dataset agregado",
-                value_type="str",
-                placeholder="(deriva do dataset de entrada)",
-            ),
-        ]
+    # `output_dataset_name` NÃO é exposto como ValueFieldSpec: o nome da saída
+    # se define na seção "Configurações de saída", e duplicá-lo na seção de
+    # configuração deixava dois campos de nome na mesma tela. Mesma escolha da
+    # DatasetBalancingInstruction, que também tem o campo e também não o expõe
+    # — quando não informado, o executor deriva do dataset de entrada.
 
     def should_rebuild_on_nested_change(self, attr_name: str, new_dto) -> bool:
         """Hook do InstructionConfigPanel: editar o config aninhado muda quais
@@ -244,16 +239,16 @@ class EmbeddingAggregationInstruction(StrategyInstructionDefinition):
         return True
 
     def get_configuration_help(self) -> Optional[str]:
+        # Caixa de DICA, não documentação. O texto anterior tinha 523 caracteres
+        # — cerca de dez linhas de âmbar no topo da seção, que viravam uma
+        # parede e eram a primeira coisa a ser cortada quando a coluna
+        # estreitava. A explicação completa vive no `description` do tipo de
+        # instrução (que o painel usa como tooltip) e nos docs.
         return (
-            "<html><b>O resultado é um dataset de templates, não de fotos.</b><br>"
-            "Cada template é a média L2-normalizada de N faces da mesma "
-            "identidade, e por isso não carrega caminho de imagem, pose nem "
-            "score de qualidade — esses campos descrevem uma foto, e um "
-            "template não é foto nenhuma.<br><br>"
-            "<b>Atenção forense:</b> um template de N imagens tem distribuição "
-            "de score diferente de um embedding de imagem única. Se a "
-            "referência for agregada e a questionada não, o calibrador precisa "
-            "ter sido treinado nessa mesma assimetria.</html>"
+            "<html><b>A saída é um dataset de templates, não de fotos</b> — sem "
+            "caminho de imagem, pose ou qualidade. Um template de N imagens tem "
+            "distribuição de score distinta de um embedding de imagem única: a "
+            "calibração precisa ter sido treinada na mesma assimetria.</html>"
         )
 
     # ── Serialização ─────────────────────────────────────────────────

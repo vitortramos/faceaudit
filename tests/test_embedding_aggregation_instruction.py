@@ -133,6 +133,31 @@ def test_uma_unica_identidade_e_caso_valido():
     assert len(ctx.get_resource("ds_out").payload.items) == 1
 
 
+def test_nome_de_saida_nao_e_duplicado_na_secao_de_configuracao():
+    """O nome da saída se define em "Configurações de saída". Expô-lo também
+    como ValueFieldSpec deixava dois campos de nome na mesma tela — um em
+    Configuração e outro em Saída. Mesma escolha da DatasetBalancingInstruction,
+    que tem o campo e não o expõe."""
+    instr = _instrucao()
+    nomes = {s.field_name for s in (instr.get_value_field_specs() or [])}
+    assert "output_dataset_name" not in nomes
+
+    # E o campo continua existindo no DTO — o executor o honra quando definido.
+    assert hasattr(instr, "output_dataset_name")
+
+
+def test_ajuda_contextual_e_dica_curta_e_nao_documentacao():
+    """A caixa âmbar fica no topo da seção e é a primeira coisa a ser cortada
+    quando a coluna estreita. A explicação longa vive no `description` do tipo
+    de instrução, que o painel usa como tooltip."""
+    ajuda = _instrucao().get_configuration_help()
+    assert ajuda and len(ajuda) < 320, f"ajuda longa demais ({len(ajuda)} chars)"
+    # O essencial permanece: a saída não é dataset de fotos.
+    assert "templates" in ajuda
+    # E o detalhamento continua disponível onde há espaço para ele.
+    assert len(StrategyInstructionType.EMBEDDING_AGGREGATION.description) > 500
+
+
 def test_regras_default_acompanham_a_configuracao():
     instr = _instrucao()
     tipos = [c.rule_type for c in instr.validation_rule_configs]
