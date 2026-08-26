@@ -867,6 +867,7 @@ _AGGREGATION_CONFIG_LABELS = {
     "method": "Método de fusão",
     "combination_group_size": "Faces por template (k)",
     "max_synthetic_templates_per_id": "Teto de templates por identidade",
+    "combination_sampling": "Seleção acima do teto",
     "use_quality_weighting": "Ponderar pela qualidade",
     "quality_weight_type": "Métrica de qualidade",
 }

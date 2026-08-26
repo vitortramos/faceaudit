@@ -4,6 +4,7 @@ from faceaudit.mixins.json_serializable_mixin import JSONSerializableMixin
 
 # Importação dos Enums "Ricos"
 from faceaudit.enums.aggregation_method import AggregationMethod
+from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
 from faceaudit.enums.quality_score_type import QualityScoreType
 
 T = TypeVar("T", bound="AggregationConfig")
@@ -51,10 +52,26 @@ class AggregationConfig(JSONSerializableMixin):
             "combinações.<br><br>"
             "Quando o total de combinações <b>cabe</b> no teto, todas são "
             "geradas.<br>"
-            "Quando <b>excede</b>, são sorteadas exatamente essa quantidade de "
-            "combinações distintas, com probabilidade igual entre todas as "
-            "possíveis e de forma reprodutível — a mesma configuração produz "
-            "sempre a mesma seleção.</html>"
+            "Quando <b>excede</b>, são escolhidas exatamente essa quantidade de "
+            "combinações distintas — o critério de escolha está no campo "
+            "abaixo. Em qualquer caso a seleção é reprodutível: a mesma "
+            "configuração produz sempre os mesmos templates.</html>"
+        )},
+    )
+
+    # Como escolher QUAIS combinações gerar quando C(N,k) passa do teto.
+    combination_sampling: CombinationSamplingMode = field(
+        default=CombinationSamplingMode.BALANCED_COVERAGE,
+        metadata={"help": (
+            "<html>Só tem efeito quando o total de combinações <b>excede</b> o "
+            "teto — abaixo dele todas são geradas.<br><br>"
+            "<b>Cobertura balanceada</b>: cada face participa de "
+            "aproximadamente o mesmo número de templates, e nenhuma fica de "
+            "fora.<br>"
+            "<b>Sorteio uniforme</b>: amostra não-enviesada do espaço de "
+            "combinações, mas o sorteio é uniforme sobre combinações e não "
+            "sobre faces — a cobertura sai desigual e uma foto pode não entrar "
+            "em template nenhum.</html>"
         )},
     )
 
@@ -101,7 +118,10 @@ class AggregationConfig(JSONSerializableMixin):
         """
         ocultos: Set[str] = set()
         if self.method != AggregationMethod.COMBINATORIAL:
-            ocultos.update({"combination_group_size", "max_synthetic_templates_per_id"})
+            ocultos.update({
+                "combination_group_size", "max_synthetic_templates_per_id",
+                "combination_sampling",
+            })
         if not self.use_quality_weighting:
             ocultos.add("quality_weight_type")
         return ocultos
@@ -135,6 +155,11 @@ class AggregationConfig(JSONSerializableMixin):
         # (ambos os from_str são idempotentes — membro já hidratado passa reto).
         if 'method' in processed_data:
             processed_data['method'] = AggregationMethod.from_str(processed_data['method'])
+
+        if 'combination_sampling' in processed_data and processed_data['combination_sampling']:
+            processed_data['combination_sampling'] = CombinationSamplingMode.from_str(
+                processed_data['combination_sampling']
+            )
 
         if 'quality_weight_type' in processed_data and processed_data['quality_weight_type']:
             processed_data['quality_weight_type'] = QualityScoreType.from_str(

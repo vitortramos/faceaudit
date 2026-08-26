@@ -417,6 +417,85 @@ def test_metrica_nula_com_ponderacao_ligada_e_corrigida_na_origem():
     ).quality_weight_type is QualityScoreType.FIQA
 
 
+# ────────────── seleção das combinações acima do teto ──────────────
+
+def _cobertura_por_face(n, k, teto, modo):
+    """Quantas vezes cada face participa dos templates escolhidos."""
+    from collections import Counter
+
+    from faceaudit.services.embedding_math_service import EmbeddingMathService
+
+    combos = EmbeddingMathService._sample_combinations(n, k, teto, 42, sampling=modo)
+    contagem = Counter(i for combo in combos for i in combo)
+    return combos, [contagem.get(i, 0) for i in range(n)]
+
+
+@pytest.mark.parametrize("n, k, teto", [(6, 2, 5), (10, 3, 8), (20, 3, 50), (60, 5, 100)])
+def test_cobertura_balanceada_fica_com_amplitude_um(n, k, teto):
+    """Objetivo do modo: cada face participa de ⌊teto·k/N⌋ ou ⌈teto·k/N⌉
+    templates. Nenhuma foto de referência pode ficar sem representação."""
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    combos, cobertura = _cobertura_por_face(
+        n, k, teto, CombinationSamplingMode.BALANCED_COVERAGE,
+    )
+    assert len(combos) == teto
+    assert len(set(combos)) == teto, "combinações têm de ser distintas"
+    assert min(cobertura) > 0, "nenhuma face pode ficar de fora"
+    assert max(cobertura) - min(cobertura) <= 1, f"cobertura desequilibrada: {cobertura}"
+
+
+def test_uniforme_continua_disponivel_e_e_de_fato_menos_balanceado():
+    """O modo uniforme não foi removido — é amostra não-enviesada do espaço de
+    combinações, útil quando se quer isso em vez de cobertura pareja. Este teste
+    documenta o trade-off que motivou o modo balanceado."""
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    _, bal = _cobertura_por_face(10, 3, 8, CombinationSamplingMode.BALANCED_COVERAGE)
+    _, uni = _cobertura_por_face(10, 3, 8, CombinationSamplingMode.UNIFORM)
+
+    assert (max(bal) - min(bal)) < (max(uni) - min(uni))
+    assert min(uni) == 0, "o caso que motivou o modo novo: face sem template algum"
+
+
+def test_ambos_os_modos_sao_reprodutiveis():
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    for modo in CombinationSamplingMode:
+        a, _ = _cobertura_por_face(20, 3, 30, modo)
+        b, _ = _cobertura_por_face(20, 3, 30, modo)
+        assert a == b, f"{modo.value} não reproduziu a mesma seleção"
+
+
+def test_abaixo_do_teto_o_modo_e_irrelevante():
+    """Cabendo no teto, TODAS as combinações são geradas — a cobertura é
+    uniforme por construção e os dois modos coincidem."""
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    a, cob_a = _cobertura_por_face(5, 2, 99, CombinationSamplingMode.BALANCED_COVERAGE)
+    b, cob_b = _cobertura_por_face(5, 2, 99, CombinationSamplingMode.UNIFORM)
+    assert len(a) == len(b) == 10          # C(5,2)
+    assert set(a) == set(b)
+    assert cob_a == cob_b == [4, 4, 4, 4, 4]
+
+
+def test_modo_default_e_o_balanceado():
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    assert AggregationConfig().combination_sampling is CombinationSamplingMode.BALANCED_COVERAGE
+
+
+def test_modo_escolhido_fica_na_proveniencia():
+    from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
+    meta = _agregar(
+        _dataset(n=8), method=AggregationMethod.COMBINATORIAL,
+        combination_group_size=3, max_synthetic_templates_per_id=5,
+        combination_sampling=CombinationSamplingMode.UNIFORM,
+    ).loaded_metadata
+    assert meta["aggregation_combination_sampling"] == "uniform"
+
+
 # ───────────────────────── método legado removido ─────────────────────────
 
 def test_agregacao_legada_nao_existe_mais():

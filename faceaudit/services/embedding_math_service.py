@@ -1698,6 +1698,7 @@ class EmbeddingMathService:
             if method == AggregationMethod.COMBINATORIAL and n_items >= group_size:
                 tasks_indices = self._sample_combinations(
                     n_items, group_size, max_output_per_id, self.seed,
+                    sampling=getattr(config, "combination_sampling", None),
                 )
             else:
                 # Centróide Padrão: Uma única tarefa contendo todos os índices do grupo
@@ -1812,6 +1813,10 @@ class EmbeddingMathService:
         if method == AggregationMethod.COMBINATORIAL:
             meta["aggregation_group_size"] = str(group_size)
             meta["aggregation_max_per_identity"] = str(max_output_per_id)
+            _amostragem = getattr(config, "combination_sampling", None)
+            meta["aggregation_combination_sampling"] = (
+                _amostragem.value if _amostragem is not None else ""
+            )
 
         return EmbeddingDataset(
             name=f"{dataset.name}_SmartAgg_{method.value}",
@@ -1828,6 +1833,7 @@ class EmbeddingMathService:
         group_size: int,
         max_output: int,
         seed: Optional[int],
+        sampling: Optional["CombinationSamplingMode"] = None,
     ) -> List[Tuple[int, ...]]:
         """Até `max_output` combinações de `group_size` índices, SEM materializar C(n,k).
 
@@ -1838,13 +1844,20 @@ class EmbeddingMathService:
         morre por falta de memória. O teto existe justamente para evitar essa
         explosão, então precisa ser aplicado ANTES da geração.
 
-        Quando o total cabe no teto, enumera direto. Quando não cabe, sorteia
-        `max_output` POSIÇÕES distintas no espaço combinatório e converte cada
-        uma na combinação correspondente (sistema numérico combinatório) — custo
-        O(max_output · k), memória O(max_output). O sorteio é semeado, então a
-        seleção é reprodutível entre execuções, que é o que a agregação
-        sintética exige para ser auditável.
+        Quando o total CABE no teto, enumera direto — a cobertura por face é
+        perfeitamente uniforme por construção e o modo de amostragem é
+        irrelevante. Quando EXCEDE, o critério vem de `sampling`:
+
+        - BALANCED_COVERAGE (default): escolhe a cada passo as k faces menos
+          usadas até então, deixando a cobertura por face com amplitude 1.
+        - UNIFORM: sorteia posições distintas no espaço combinatório e as
+          converte por unranking — amostra não-enviesada, custo O(teto · k).
+
+        Em ambos os casos a seleção é semeada e portanto reprodutível, que é o
+        que a agregação sintética exige para ser auditável.
         """
+        from faceaudit.enums.combination_sampling_mode import CombinationSamplingMode
+
         total = math.comb(n_items, group_size)
         rng = random.Random(seed if seed is not None else 0)
 
@@ -1853,12 +1866,73 @@ class EmbeddingMathService:
             rng.shuffle(combos)
             return combos
 
-        ranks = rng.sample(range(total), max_output)
-        ranks.sort()  # ordem estável do resultado, independente do sorteio
-        return [
-            EmbeddingMathService._unrank_combination(n_items, group_size, r)
-            for r in ranks
-        ]
+        if sampling == CombinationSamplingMode.UNIFORM:
+            ranks = rng.sample(range(total), max_output)
+            ranks.sort()  # ordem estável do resultado, independente do sorteio
+            return [
+                EmbeddingMathService._unrank_combination(n_items, group_size, r)
+                for r in ranks
+            ]
+
+        return EmbeddingMathService._balanced_combinations(
+            n_items, group_size, max_output, rng,
+        )
+
+    @staticmethod
+    def _balanced_combinations(
+        n_items: int,
+        group_size: int,
+        max_output: int,
+        rng: random.Random,
+        max_tentativas: int = 8,
+    ) -> List[Tuple[int, ...]]:
+        """Combinações escolhidas para equilibrar a participação de cada face.
+
+        O sorteio uniforme é uniforme sobre COMBINAÇÕES, não sobre FACES: com o
+        teto cortando, algumas fotos entram em muitos templates e outras em
+        nenhum — o que, num dataset de enrollment, significa que parte do
+        material de referência simplesmente não foi representada.
+
+        A escolha aqui é gulosa: a cada passo pega as `group_size` faces menos
+        usadas até então, com desempate aleatório semeado entre faces de mesma
+        cobertura. Isso mantém a cobertura por face dentro de uma unidade
+        (⌊teto·k/N⌋ ou ⌈teto·k/N⌉) e garante que nenhuma face fique de fora
+        enquanto houver teto disponível.
+
+        O desempate é re-sorteado a cada tentativa porque a mesma escolha
+        gulosa pode reincidir numa combinação já usada; esgotadas as
+        tentativas, cai num sorteio livre de combinação inédita. Na prática o
+        fallback não dispara (medido em n=6..60, k=2..5).
+        """
+        cobertura = [0] * n_items
+        escolhidas: List[Tuple[int, ...]] = []
+        vistas: set = set()
+
+        while len(escolhidas) < max_output:
+            combo: Optional[Tuple[int, ...]] = None
+
+            for _ in range(max_tentativas):
+                ordem = sorted(
+                    range(n_items), key=lambda i: (cobertura[i], rng.random()),
+                )
+                candidata = tuple(sorted(ordem[:group_size]))
+                if candidata not in vistas:
+                    combo = candidata
+                    break
+
+            if combo is None:
+                while True:
+                    candidata = tuple(sorted(rng.sample(range(n_items), group_size)))
+                    if candidata not in vistas:
+                        combo = candidata
+                        break
+
+            vistas.add(combo)
+            escolhidas.append(combo)
+            for idx in combo:
+                cobertura[idx] += 1
+
+        return escolhidas
 
     @staticmethod
     def _unrank_combination(n: int, k: int, rank: int) -> Tuple[int, ...]:
