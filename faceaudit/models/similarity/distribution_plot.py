@@ -23,6 +23,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from faceaudit.enums.project_folder import ProjectFolder
+from faceaudit.models.similarity.kde_curve import is_renderable_density_curve
 
 
 def draw_distribution_from_summary(
@@ -94,9 +95,16 @@ def draw_distribution_from_summary(
     kde_x = summary.get("kde_x")
     if kde_x is not None:
         kde_x_arr = np.asarray(kde_x, dtype=np.float64)
-        kde_imp_y = summary.get("kde_imp_y")
-        kde_gen_y = summary.get("kde_gen_y")
-        kde_case_y = summary.get("kde_case_y")
+        # Sidecars gravados antes da proteção de `kde_curve` podem trazer
+        # o pico degenerado (≈1e13) — descartar para não achatar o gráfico.
+        kde_imp_y, kde_gen_y, kde_case_y = (
+            y if is_renderable_density_curve(kde_x_arr, y) else None
+            for y in (
+                summary.get("kde_imp_y"),
+                summary.get("kde_gen_y"),
+                summary.get("kde_case_y"),
+            )
+        )
         if kde_imp_y is not None:
             ax.plot(
                 kde_x_arr, np.asarray(kde_imp_y, dtype=np.float64),

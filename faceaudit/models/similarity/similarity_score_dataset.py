@@ -581,21 +581,20 @@ class SimilarityScoreDataset(JSONSerializableMixin):
         elif n_case > 0:
             case_values_payload = case_arr.tolist()
 
-        # KDE — 400 pontos no eixo X.
+        # KDE — 400 pontos no eixo X. `kde_curve` devolve None para série
+        # degenerada (ex.: genuínos que são a mesma imagem, escore 1,0 fixo),
+        # cujo pico achataria as demais séries no gráfico.
+        from faceaudit.models.similarity.kde_curve import kde_curve
+
         kde_x = np.linspace(x_min, x_max, 400)
-        kde_gen_y = None
-        kde_imp_y = None
-        kde_case_y = None
-        try:
-            from scipy.stats import gaussian_kde
-            if n_gen > 1:
-                kde_gen_y = gaussian_kde(gen_arr)(kde_x).tolist()
-            if n_imp > 1:
-                kde_imp_y = gaussian_kde(imp_arr)(kde_x).tolist()
-            if n_case > 30:
-                kde_case_y = gaussian_kde(case_arr)(kde_x).tolist()
-        except Exception:
-            pass
+
+        def _kde_list(arr: np.ndarray) -> Optional[list]:
+            ys = kde_curve(arr, kde_x)
+            return ys.tolist() if ys is not None else None
+
+        kde_gen_y = _kde_list(gen_arr) if n_gen > 1 else None
+        kde_imp_y = _kde_list(imp_arr) if n_imp > 1 else None
+        kde_case_y = _kde_list(case_arr) if n_case > 30 else None
 
         # Stats por classe (N, mean, std, percentis) — schema v3.
         # Sempre em raw_score; também em log_lr quando disponível.

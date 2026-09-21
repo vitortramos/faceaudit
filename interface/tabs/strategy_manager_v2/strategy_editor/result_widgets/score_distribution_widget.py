@@ -26,6 +26,8 @@ from matplotlib.backends.backend_qtagg import (
 )
 from matplotlib.figure import Figure
 
+from faceaudit.models.similarity.kde_curve import kde_curve
+
 
 class ScoreDistributionWidget(QtWidgets.QWidget):
     """
@@ -266,22 +268,18 @@ class ScoreDistributionWidget(QtWidgets.QWidget):
                         ),
                     )
 
-        # KDE leve via gaussian_kde — falha silenciosa se scipy não
-        # disponível (histograma ainda funciona).
-        try:
-            from scipy.stats import gaussian_kde
-            xs = np.linspace(x_min, x_max, 400)
-            if n_imp > 1:
-                kde_i = gaussian_kde(imp_scores)
-                ax.plot(xs, kde_i(xs), color="#7a0000", linewidth=1.4, alpha=0.9)
-            if n_gen > 1:
-                kde_g = gaussian_kde(gen_scores)
-                ax.plot(xs, kde_g(xs), color="#0d3a10", linewidth=1.4, alpha=0.9)
-            if n_case > 30:
-                kde_c = gaussian_kde(case_scores)
-                ax.plot(xs, kde_c(xs), color="#0d3a6c", linewidth=1.4, alpha=0.9)
-        except Exception:
-            pass
+        # KDE por série — `kde_curve` devolve None se scipy faltar ou se a
+        # série for degenerada (o pico achataria as demais; o histograma
+        # continua mostrando a massa concentrada).
+        xs = np.linspace(x_min, x_max, 400)
+        for series, min_n, color in (
+            (imp_scores, 2, "#7a0000"),
+            (gen_scores, 2, "#0d3a10"),
+            (case_scores, 31, "#0d3a6c"),
+        ):
+            ys = kde_curve(series, xs) if series.size >= min_n else None
+            if ys is not None:
+                ax.plot(xs, ys, color=color, linewidth=1.4, alpha=0.9)
 
         if show_title:
             # Título enxuto — sem nome do dataset nem linha de total

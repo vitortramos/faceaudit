@@ -120,17 +120,12 @@ def draw_lr_distribution(figure: Figure, result: Any) -> None:
                 color="#2e7d32", edgecolor="#0d3a10", linewidth=0.5,
                 label=f"Genuínos  (n={gen.size:,})".replace(",", "."))
 
-    try:
-        from scipy.stats import gaussian_kde
-        xs = np.linspace(x_min, x_max, 400)
-        if imp.size > 1:
-            ax.plot(xs, gaussian_kde(imp)(xs), color="#7a0000",
-                    linewidth=1.4, alpha=0.9)
-        if gen.size > 1:
-            ax.plot(xs, gaussian_kde(gen)(xs), color="#0d3a10",
-                    linewidth=1.4, alpha=0.9)
-    except Exception:
-        pass
+    from faceaudit.models.similarity.kde_curve import kde_curve
+    xs = np.linspace(x_min, x_max, 400)
+    for series, color in ((imp, "#7a0000"), (gen, "#0d3a10")):
+        ys = kde_curve(series, xs)
+        if ys is not None:
+            ax.plot(xs, ys, color=color, linewidth=1.4, alpha=0.9)
 
     ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
                alpha=0.6, label="log-LR = 0")
