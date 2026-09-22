@@ -3871,18 +3871,14 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 label=f"Genuínos  (n={n_gen:,})".replace(",", "."),
             )
 
-        # Curva KDE leve via gaussian_kde (sem dependência adicional).
-        try:
-            from scipy.stats import gaussian_kde
-            xs = np.linspace(x_min, x_max, 400)
-            if n_imp > 1:
-                kde_i = gaussian_kde(imp_scores)
-                ax.plot(xs, kde_i(xs), color="#7a0000", linewidth=1.4, alpha=0.9)
-            if n_gen > 1:
-                kde_g = gaussian_kde(gen_scores)
-                ax.plot(xs, kde_g(xs), color="#0d3a10", linewidth=1.4, alpha=0.9)
-        except Exception:
-            pass  # Falta scipy ou amostras insuficientes: histograma ainda funciona.
+        # Curva KDE — `kde_curve` devolve None para série degenerada ou sem
+        # scipy; o histograma continua funcionando.
+        from faceaudit.models.similarity.kde_curve import kde_curve
+        xs = np.linspace(x_min, x_max, 400)
+        for series, color in ((imp_scores, "#7a0000"), (gen_scores, "#0d3a10")):
+            ys = kde_curve(series, xs)
+            if ys is not None:
+                ax.plot(xs, ys, color=color, linewidth=1.4, alpha=0.9)
 
         title_prefix = (
             "Distribuição de log-LR" if use_log_lr else "Distribuição de Scores"

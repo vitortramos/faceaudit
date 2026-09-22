@@ -38,7 +38,7 @@ def draw_casework_visualization(
     pre-refator — só extraída pra uma função pura aqui pra que o snapshot
     PNG persistido produza exatamente o mesmo gráfico.
     """
-    from scipy.stats import gaussian_kde
+    from faceaudit.models.similarity.kde_curve import kde_curve
 
     figure.clear()
     figure.set_layout_engine("constrained")
@@ -75,42 +75,27 @@ def draw_casework_visualization(
             imp, bins=50, density=True, color="#d62728", alpha=0.35,
             label=f"Impostores (n={imp.size:,})".replace(",", "."),
         )
-        if imp.size > 1:
-            try:
-                ax.plot(
-                    xs, gaussian_kde(imp)(xs),
-                    color="#8b0000", linewidth=1.4, alpha=0.9,
-                )
-            except Exception:
-                pass
+        kde_imp = kde_curve(imp, xs)
+        if kde_imp is not None:
+            ax.plot(xs, kde_imp, color="#8b0000", linewidth=1.4, alpha=0.9)
 
     if gen.size > 0:
         ax.hist(
             gen, bins=50, density=True, color="#2ca02c", alpha=0.35,
             label=f"Genuínos (n={gen.size:,})".replace(",", "."),
         )
-        if gen.size > 1:
-            try:
-                ax.plot(
-                    xs, gaussian_kde(gen)(xs),
-                    color="#1d4d1d", linewidth=1.4, alpha=0.9,
-                )
-            except Exception:
-                pass
+        kde_gen = kde_curve(gen, xs)
+        if kde_gen is not None:
+            ax.plot(xs, kde_gen, color="#1d4d1d", linewidth=1.4, alpha=0.9)
 
     if case.size >= _KDE_MIN_CASE_SAMPLES:
         ax.hist(
             case, bins=30, density=True, color="#1f77b4", alpha=0.35,
             label=f"Caso (n={case.size:,}, KDE)".replace(",", "."),
         )
-        if case.size > 1:
-            try:
-                ax.plot(
-                    xs, gaussian_kde(case)(xs),
-                    color="#0d3b66", linewidth=1.6, alpha=0.95,
-                )
-            except Exception:
-                pass
+        kde_case = kde_curve(case, xs)
+        if kde_case is not None:
+            ax.plot(xs, kde_case, color="#0d3b66", linewidth=1.6, alpha=0.95)
     else:
         y_top = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 1.0
         for i, val in enumerate(case):

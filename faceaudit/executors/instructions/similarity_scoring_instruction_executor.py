@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Optional
 
 from faceaudit.enums.strategy_resource_type import StrategyResourceType
@@ -68,6 +69,7 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
             probe_resource = context.get_resource(instruction.probe_dataset_resource_id)
             probe_dataset = probe_resource.payload
+            reference_dataset = None
 
             if instruction.uses_self_comparison:
                 score_dataset = self._score_self_comparison(
@@ -104,6 +106,25 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
             score_dataset.metadata["similarity_model_id"] = (
                 instruction.trained_similarity_model_resource_id
             )
+
+            # Pares que comparam a MESMA imagem (mesmo face_hash) têm escore
+            # trivial (1,0 no cosseno) e não são evidência de nada — em geral
+            # sinal de sobreposição entre os datasets de probe e referência.
+            # Só avisa: excluir mudaria silenciosamente o conjunto de pares.
+            n_identical = self._count_identical_image_pairs(
+                probe_dataset, reference_dataset,
+            )
+            score_dataset.metadata["n_identical_image_pairs"] = n_identical
+            if n_identical > 0:
+                self._log(
+                    context,
+                    f"⚠ ATENÇÃO: {n_identical:,} de {len(score_dataset):,} pares "
+                    "comparam a MESMA imagem consigo mesma (mesmo face_hash). "
+                    "Esses pares têm escore trivial e contaminam a distribuição "
+                    "de genuínos e qualquer calibração treinada sobre ela. "
+                    "Verifique se há imagens repetidas entre os datasets de "
+                    "probe e referência.".replace(",", "."),
+                )
 
             # Modo casework: marca o dataset como sem ground truth e zera
             # `same_person` em todos os samples (sobrescreve qualquer
@@ -149,6 +170,7 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
                     "n_samples": len(score_dataset),
                     "n_genuine": score_dataset.total_genuines,
                     "n_impostor": score_dataset.total_impostors,
+                    "n_identical_image_pairs": n_identical,
                     "is_casework": bool(instruction.is_casework),
                 },
             )
@@ -496,6 +518,23 @@ class SimilarityScoringInstructionExecutor(StrategyInstructionExecutorBase):
 
         self._log(context, f"✅ {emitted:,} pares empacotados.".replace(",", "."))
         return result
+    @staticmethod
+    def _count_identical_image_pairs(
+        probe_dataset: EmbeddingDataset,
+        reference_dataset: Optional[EmbeddingDataset] = None,
+    ) -> int:
+        """Nº de pares gerados cujas duas faces têm o mesmo `face_hash`.
+
+        Contado pelas multiplicidades dos hashes (não percorre os pares):
+        cross = Σ n_probe(h)·n_ref(h); auto-comparação = Σ C(n(h), 2).
+        Faces sem hash são ignoradas.
+        """
+        probe_counts = Counter(f.face_hash for f in probe_dataset if f.face_hash)
+        if reference_dataset is None:
+            return sum(c * (c - 1) // 2 for c in probe_counts.values())
+        ref_counts = Counter(f.face_hash for f in reference_dataset if f.face_hash)
+        return sum(c * ref_counts[h] for h, c in probe_counts.items() if h in ref_counts)
+
     # =========================================================================
     # HELPERS DE COMPATIBILIDADE DE DIMENSÕES
     # =========================================================================
