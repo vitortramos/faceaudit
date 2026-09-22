@@ -589,6 +589,7 @@ t = current_token_fn(); item.setForeground(QtGui.QColor(t("DANGER")))
 - **Cor quase-branca/quase-preta → surface neutro** (`SURFACE_RAISED`), NUNCA um token de status saturado (`SUCCESS_BG` etc.).
 - **Barra de accent precisa ser visível no escuro** — não usar `BORDER`/`HEADER_BG` como acento (somem); usar `TEXT_MUTED`/`PRIMARY`/cor semântica.
 - **Word-wrap + `QFormLayout` + `QScrollArea`** → reservar a barra de rolagem (`ScrollBarAlwaysOn`), senão a última linha corta quando a barra aparece.
+- **Rótulo com word-wrap nunca é `QtWidgets.QLabel` cru** — usar `WrappedLabel` (`strategy_editor/widget_helpers.py`), e `enable_height_for_width()` no container que o embrulha. `QLabel.sizeHint()` com wrap é heurística (estima a altura numa largura arbitrária) e `QWidgetItem.hasHeightForWidth()` lê a *size policy*, não o layout interno — então o layout do pai reserva a altura estimada. Numa coluna mais estreita que a estimada o texto quebra em mais linhas do que cabe e o `QFormLayout` comprime TODAS as linhas da seção: o sintoma é texto sobreposto/cortado em campos vizinhos que nada têm a ver com o rótulo. `WrappedLabel` fixa `minimumHeight = heightForWidth(largura)` (piso duro, recalculado a cada resize e `setText`); `enable_height_for_width` religa a cadeia para que o pai pergunte a altura PARA a largura real. Regressão coberta por `tests/test_config_panel_wrapped_label_height.py` (exercita a coluna estreita — em largura folgada o bug não aparece).
 
 ### Sempre passar `parent=` ao criar QWidgets — anti-flash de janela top-level
 
