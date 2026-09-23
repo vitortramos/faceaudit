@@ -607,6 +607,13 @@ class DatasetManagerController(QtCore.QObject):
         )
 
     def _get_initial_dir(self) -> str:
+        # Pasta sugerida por uma operação anterior (ex: as imagens acabaram
+        # de ser copiadas para a pasta própria do dataset — é lá que o
+        # parquet precisa ser gravado). Consumida uma vez.
+        sugerida = getattr(self, "_suggested_save_dir", None)
+        if sugerida and os.path.isdir(sugerida):
+            self._suggested_save_dir = None
+            return sugerida
         if self.pipeline and hasattr(self.pipeline, 'storage_path'):
             path = str(self.pipeline.storage_path)
             if os.path.isdir(path): return path
@@ -1146,49 +1153,30 @@ class DatasetManagerController(QtCore.QObject):
         origem = getattr(self.dataset, "_parquet_dir", None)
         return Path(origem).resolve() if origem else None
 
-    def _ask_save_as_portability(self, destination: str) -> Optional[bool]:
-        """Pergunta como levar as imagens ao salvar noutra pasta.
+    def _ask_save_as_options(
+        self, destination: str, *, ask_images: bool, ask_which_stays: bool,
+    ):
+        """Abre o diálogo de opções do Salvar Como.
 
-        `path_root` é relativo à pasta DO PARQUET: gravar noutra pasta sem
-        decidir isso reancora as imagens onde elas não estão. A pergunta é
-        feita em termos de consequência, não de "relativo vs absoluto".
-
-        Returns:
-            True (autocontido), False (referenciar onde estão) ou None
-            (usuário cancelou).
+        Retorna `(portatil, manter_origem)` ou None se o usuário cancelou.
+        `portatil` vem None quando a pergunta sobre imagens não se aplica
+        (salvando na mesma pasta).
         """
-        nome = Path(destination).stem
-        msg = QMessageBox(self.view)
-        msg.setWindowTitle("Como levar as imagens?")
-        msg.setIcon(QMessageBox.Icon.Question)
-        msg.setText(
-            "<b>Você está salvando numa pasta diferente da atual.</b>"
-        )
-        msg.setInformativeText(
-            "<p><b>Copiar as imagens (autocontido)</b> — as imagens vão para "
-            f"<i>{nome}_images/</i>, ao lado do novo arquivo. A pasta pode "
-            "ser movida, compactada ou levada para outra máquina inteira.</p>"
-            "<p><b>Referenciar onde estão</b> — grava os caminhos absolutos "
-            "das imagens originais. É rápido e não duplica disco, mas o "
-            "dataset só abre as imagens em máquinas que enxerguem esses "
-            "caminhos.</p>"
-        )
-        btn_portatil = msg.addButton(
-            "Copiar as imagens", QMessageBox.ButtonRole.AcceptRole,
-        )
-        btn_ref = msg.addButton(
-            "Referenciar onde estão", QMessageBox.ButtonRole.AcceptRole,
-        )
-        msg.addButton(QMessageBox.StandardButton.Cancel)
-        msg.setDefaultButton(btn_portatil)
-        msg.exec()
+        from .save_as_options_dialog import SaveAsOptionsDialog
 
-        clicado = msg.clickedButton()
-        if clicado is btn_portatil:
-            return True
-        if clicado is btn_ref:
-            return False
-        return None
+        origem = self.dataset_original if ask_which_stays else None
+        dlg = SaveAsOptionsDialog(
+            self.view,
+            ask_images=ask_images,
+            ask_which_stays=ask_which_stays,
+            nome_destino=Path(destination).stem,
+            nome_origem=getattr(origem, "name", "") or "dataset de origem",
+            n_salvar=len(self.dataset) if self.dataset else 0,
+            n_origem=len(origem) if origem else 0,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return dlg.portable(), dlg.keep_original()
 
     def fluxo_salvar_como(self):
         if not self.dataset: return
@@ -1198,36 +1186,61 @@ class DatasetManagerController(QtCore.QObject):
         init_path = os.path.join(self._get_initial_dir(), default_name)
 
         path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
-        if path:
-            origem = self._current_dataset_dir()
-            destino = Path(path).parent.resolve()
-            # Só há o que decidir quando as imagens ficam para trás. Salvar
-            # na mesma pasta preserva a âncora e não merece pergunta.
-            if origem is not None and destino != origem:
-                portatil = self._ask_save_as_portability(path)
-                if portatil is None:
-                    return
-                self.dataset.name = Path(path).stem
-                if portatil:
-                    # Cópia de imagens é pesada — vai para worker, e o
-                    # parquet é gravado quando ela termina.
-                    self._pending_save_as_path = path
-                    self._iniciar_worker_salvar_como_portatil(path)
-                    return
-                from faceaudit.services.dataset_localization_service import (
-                    prepare_dataset_for_destination,
-                )
-                self.dataset, _ = prepare_dataset_for_destination(
-                    self.dataset, path, portable=False,
-                )
+        if not path:
+            return
 
-            self._gravar_e_finalizar_salvar_como(path)
+        origem_dir = self._current_dataset_dir()
+        # Imagens: só há o que decidir quando elas ficam para trás. Salvar
+        # na mesma pasta preserva a âncora e não merece pergunta.
+        perguntar_imagens = (
+            origem_dir is not None and Path(path).parent.resolve() != origem_dir
+        )
+        # Dataset aberto: só há duas opções quando o que está na tela é
+        # recorte de um dataset maior (filtro ativo).
+        perguntar_qual_fica = self.dataset_original is not None
 
-    def _gravar_e_finalizar_salvar_como(self, path: str) -> None:
+        manter_origem = False
+        portatil = None
+        if perguntar_imagens or perguntar_qual_fica:
+            escolha = self._ask_save_as_options(
+                path,
+                ask_images=perguntar_imagens,
+                ask_which_stays=perguntar_qual_fica,
+            )
+            if escolha is None:
+                return
+            portatil, manter_origem = escolha
+
+        self.dataset.name = Path(path).stem
+        if portatil:
+            # Cópia de imagens é pesada — vai para worker, e o parquet é
+            # gravado quando ela termina.
+            self._pending_save_as_path = path
+            self._pending_save_as_keep_original = manter_origem
+            self._iniciar_worker_salvar_como_portatil(path)
+            return
+        if portatil is False:
+            from faceaudit.services.dataset_localization_service import (
+                prepare_dataset_for_destination,
+            )
+            self.dataset, _ = prepare_dataset_for_destination(
+                self.dataset, path, portable=False,
+            )
+
+        self._gravar_e_finalizar_salvar_como(path, manter_origem=manter_origem)
+
+    def _gravar_e_finalizar_salvar_como(
+        self, path: str, *, manter_origem: bool = False,
+    ) -> None:
         """Grava o parquet no destino e fecha o Save As (sidecar, audit, UI).
 
         Compartilhado pelos dois caminhos: o direto e o portátil (que chega
         aqui depois que o worker termina de copiar as imagens).
+
+        Com `manter_origem`, o recorte é gravado no disco mas quem continua
+        na tela é o dataset de origem — o fluxo típico é derivar vários
+        recortes do mesmo dataset grande, e trocar para o recém-salvo
+        obrigava a fechar e reabrir o grande a cada um.
         """
         old_path = self.current_path
         self.dataset.name = Path(path).stem
@@ -1241,16 +1254,37 @@ class DatasetManagerController(QtCore.QObject):
                 AuditLogService.migrate_sidecar(old_path, path)
             except Exception:
                 pass  # se a migração falhar, segue com chain nova
-        self.current_path = path
-        self.set_dirty(False)
-        self.carregar_dataset_na_tela(self.dataset, path)
+        salvo_nome = self.dataset.name
+        salvo_linhas = len(self.dataset)
+        salvo_ids = self.dataset.number_of_identities
+
+        if manter_origem and self.dataset_original is not None:
+            # Volta ao dataset de origem, no arquivo dele. O `current_path`
+            # tem de acompanhar: se ficasse apontando para o recorte, um
+            # "Salvar" seguinte gravaria o dataset grande por cima dele.
+            origem = self.dataset_original
+            self.dataset_original = None
+            self.set_dirty(False)
+            self.carregar_dataset_na_tela(origem, old_path)
+            texto, tooltip = self._build_dataset_status(filtered=False)
+            self.toolbar_ctrl.update_filter_status(
+                texto, is_filtered=False, tooltip=tooltip,
+            )
+        else:
+            self.current_path = path
+            self.set_dirty(False)
+            self.carregar_dataset_na_tela(self.dataset, path)
+
         self._audit(
             AuditOperation.SAVE_AS,
-            f"Dataset salvo em novo arquivo '{Path(path).name}'.",
+            f"Dataset salvo em novo arquivo '{Path(path).name}'."
+            + (" Origem permaneceu aberta." if manter_origem else ""),
             metadata={
                 "previous_path": old_path,
-                "rows": len(self.dataset),
-                "identities": self.dataset.number_of_identities,
+                "rows": salvo_linhas,
+                "identities": salvo_ids,
+                "dataset_saved": salvo_nome,
+                "kept_source_open": manter_origem,
             },
             path_override=path,
             hash_file=True,
@@ -1328,10 +1362,18 @@ class DatasetManagerController(QtCore.QObject):
         from faceaudit.services.dataset_localization_service import (
             adopt_identity_from,
         )
+        # O worker criou a pasta própria do dataset (`<escolhida>/<nome>/`)
+        # e copiou as imagens para `images/` dentro dela. O parquet vai
+        # para lá também — é o que mantém `path_root` válido.
+        destino = Path(result.target_dir) / Path(path).name
         self.dataset = adopt_identity_from(
-            result.dataset, self.dataset, Path(path).parent,
+            result.dataset, self.dataset, destino.parent,
         )
-        self._gravar_e_finalizar_salvar_como(path)
+        manter_origem = getattr(self, "_pending_save_as_keep_original", False)
+        self._pending_save_as_keep_original = False
+        self._gravar_e_finalizar_salvar_como(
+            str(destino), manter_origem=manter_origem,
+        )
 
     # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────
 
@@ -1960,6 +2002,11 @@ class DatasetManagerController(QtCore.QObject):
         self.dataset_original = None
         if not is_rebase:
             self.current_path = None
+            # O dataset autocontido só continua resolvendo se o parquet for
+            # gravado na pasta onde as imagens foram copiadas. Sugere essa
+            # pasta no Salvar como seguinte, em vez de deixar o perito
+            # adivinhar.
+            self._suggested_save_dir = str(result.target_dir)
         self.set_dirty(True)
         self.carregar_dataset_na_tela(self.dataset, path=self.current_path)
 

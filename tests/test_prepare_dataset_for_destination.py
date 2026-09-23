@@ -64,7 +64,7 @@ def test_portatil_copia_imagens_e_fica_relativo(tmp_path):
 
     assert result is not None and result.n_failed == 0
     assert prepared.path_mode == PathMode.RELATIVE
-    assert prepared.path_root == "ds_images"
+    assert prepared.path_root == "images"
     for face in prepared.faces:
         assert (dest.parent / prepared.path_root / face.image_path).exists()
 

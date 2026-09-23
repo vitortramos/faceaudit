@@ -26,7 +26,10 @@ from faceaudit.models.video.face_provenance import FaceProvenance  # noqa: E402
 from faceaudit.services.image_io import imwrite_unicode_safe  # noqa: E402
 from faceaudit.services.hash_service import HashService  # noqa: E402
 from faceaudit.services.video_run_importer import VideoRunImporter  # noqa: E402
-from faceaudit.services.dataset_localization_service import dataset_images_subdir  # noqa: E402
+from faceaudit.services.dataset_localization_service import (  # noqa: E402
+    SELF_CONTAINED_IMAGES_SUBDIR,
+    self_contained_dataset_dir,
+)
 from interface.tabs.dataset_manager.workers.video_import_worker import VideoImportWorker  # noqa: E402
 
 
@@ -71,25 +74,28 @@ def test_finalize_self_contained_copies_crops(app, tmp_path):
     w = VideoImportWorker(str(run_dir), enrich=False, dataset_dir=str(dataset_dir), self_contained=True)
     final = w._finalize_to_dataset_dir(ds)
 
-    assert (dataset_dir / f"{ds.name}.parquet").exists()
-    # Imagens vão para a subpasta POR dataset `<nome>_images/`, não para uma
-    # `images/` compartilhada.
-    assert final.path_root == dataset_images_subdir(ds.name)
+    # Autocontido é unidade: `<destino>/<nome>/` com parquet e `images/`.
+    own_dir = self_contained_dataset_dir(dataset_dir, ds.name)
+    assert (own_dir / f"{ds.name}.parquet").exists()
+    assert not (dataset_dir / f"{ds.name}.parquet").exists(), (
+        "o parquet fica DENTRO da pasta do dataset"
+    )
+    assert final.path_root == SELF_CONTAINED_IMAGES_SUBDIR
     assert not (dataset_dir / "images").exists()
-    copied = list((dataset_dir / dataset_images_subdir(ds.name)).glob("*.png"))
+    copied = list((own_dir / SELF_CONTAINED_IMAGES_SUBDIR).glob("*.png"))
     assert len(copied) == 2  # recortes copiados → autocontido
     assert all(not Path(f.image_path).is_absolute() for f in final.faces)
     assert final.provenance_metadata.get("dataset_origin_type") == "VIDEO_TARGET_EXTRACTION"
 
-    ds2 = FaceDataset.from_parquet(dataset_dir / f"{ds.name}.parquet")
+    ds2 = FaceDataset.from_parquet(own_dir / f"{ds.name}.parquet")
     assert len(ds2) == 2
     row = ds2.to_pandas().iloc[0]
     assert row["yaw"] == 5.0 and row["gender_est"] == "M"  # ff_info clonado
 
 
 def test_finalize_two_self_contained_no_image_collision(app, tmp_path):
-    # O caso que motivou a mudança: dois datasets autocontidos finalizados na
-    # MESMA pasta não misturam imagens — cada um na sua `<nome>_images/`.
+    # Dois datasets autocontidos finalizados na MESMA pasta não se
+    # misturam — cada um na sua própria pasta `<nome>/`.
     run_dir = _build_run(tmp_path)
     shared = tmp_path / "shared_datasets"
     names = ["rosto_alpha", "rosto_beta"]
@@ -99,15 +105,16 @@ def test_finalize_two_self_contained_no_image_collision(app, tmp_path):
         w = VideoImportWorker(str(run_dir), enrich=False, dataset_dir=str(shared),
                               self_contained=True)
         final = w._finalize_to_dataset_dir(ds)
-        assert final.path_root == dataset_images_subdir(nm)
+        assert final.path_root == SELF_CONTAINED_IMAGES_SUBDIR
 
     assert not (shared / "images").exists()           # nada na pasta compartilhada
     for nm in names:
-        imgs = list((shared / dataset_images_subdir(nm)).glob("*.png"))
+        own_dir = self_contained_dataset_dir(shared, nm)
+        imgs = list((own_dir / SELF_CONTAINED_IMAGES_SUBDIR).glob("*.png"))
         assert len(imgs) == 2                          # cada dataset com SEUS recortes
-        assert (shared / f"{nm}.parquet").exists()
-        # round-trip: as imagens resolvem na subpasta própria do dataset
-        ds2 = FaceDataset.from_parquet(shared / f"{nm}.parquet")
+        assert (own_dir / f"{nm}.parquet").exists()
+        # round-trip: as imagens resolvem na pasta própria do dataset
+        ds2 = FaceDataset.from_parquet(own_dir / f"{nm}.parquet")
         assert all(Path(ds2.resolve_image_path(f)).exists() for f in ds2.faces)
 
 

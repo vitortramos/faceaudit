@@ -119,6 +119,14 @@ class FeatureExtractionPipeline:
         # cai na biblioteca global — o default histórico.
         dataset_name = config.dataset_name
         dataset_dir = Path(config.dataset_dir) if config.dataset_dir else self.storage_path
+        if getattr(config, "self_contained", False):
+            # Autocontido é UNIDADE: o dataset ganha pasta própria, com o
+            # parquet e as imagens dentro. Assim a pasta inteira pode ser
+            # movida/compactada sem quebrar os caminhos relativos.
+            from faceaudit.services.dataset_localization_service import (
+                self_contained_dataset_dir,
+            )
+            dataset_dir = self_contained_dataset_dir(dataset_dir, dataset_name)
         dataset_dir.mkdir(parents=True, exist_ok=True)
         cache_file = dataset_dir / f"{dataset_name}.parquet"
 
@@ -217,9 +225,9 @@ class FeatureExtractionPipeline:
                 crops_dir = config.aligned_target_dir
                 if config.self_contained:
                     from faceaudit.services.dataset_localization_service import (
-                        dataset_images_subdir,
+                        SELF_CONTAINED_IMAGES_SUBDIR,
                     )
-                    crops_dir = dataset_dir / dataset_images_subdir(dataset_name)
+                    crops_dir = dataset_dir / SELF_CONTAINED_IMAGES_SUBDIR
                 if config.align_during_ingestion and crops_dir:
                     self._materialize_aligned_crops(
                         dataset, crops_dir, progress_callback,
@@ -928,7 +936,7 @@ class FeatureExtractionPipeline:
 
         from faceaudit.enums.localization_mode import LocalizationMode
         from faceaudit.services.dataset_localization_service import (
-            DatasetLocalizationService, dataset_images_subdir,
+            SELF_CONTAINED_IMAGES_SUBDIR, DatasetLocalizationService,
         )
 
         def _cb(idx, total, _msg):
@@ -940,7 +948,7 @@ class FeatureExtractionPipeline:
         res = DatasetLocalizationService().localize(
             dataset, Path(dataset_dir),
             mode=LocalizationMode.COPY_ORIGINALS,
-            copy_subdir=dataset_images_subdir(dataset.name),
+            copy_subdir=SELF_CONTAINED_IMAGES_SUBDIR,
             progress_callback=_cb,
         )
         final = res.dataset

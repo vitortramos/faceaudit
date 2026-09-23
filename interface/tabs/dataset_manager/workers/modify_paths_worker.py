@@ -22,8 +22,9 @@ from faceaudit.enums.localization_naming import NamingStrategy
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.localization_result import LocalizationResult
 from faceaudit.services.dataset_localization_service import (
+    SELF_CONTAINED_IMAGES_SUBDIR,
     DatasetLocalizationService,
-    dataset_images_subdir,
+    self_contained_dataset_dir,
 )
 
 
@@ -69,18 +70,23 @@ class ModifyPathsWorker(QtCore.QObject):
                 f"Iniciando {self.mode.value} para '{self.dataset.name}'…", 0,
             )
             service = DatasetLocalizationService()
+            target = self.target_dir
+            if self.mode == LocalizationMode.COPY_ORIGINALS:
+                # Copiar imagens produz um dataset autocontido, e ele ganha
+                # pasta própria: `<destino>/<nome>/` com `images/` dentro.
+                # O parquet precisa ser gravado NESSA pasta — o controller
+                # sugere isso no Salvar como seguinte.
+                target = self_contained_dataset_dir(target, self.dataset.name)
             result = service.localize(
                 self.dataset,
-                self.target_dir,
+                target,
                 mode=self.mode,
                 naming=self.naming,
                 skip_existing=self.skip_existing,
                 old_prefix=self.old_prefix,
-                # Subpasta de imagens POR dataset (`<nome>_images`):
-                # modificar caminhos de vários datasets para a mesma
-                # pasta não mistura as imagens. Só tem efeito em
-                # COPY_ORIGINALS.
-                copy_subdir=dataset_images_subdir(self.dataset.name),
+                # Subpasta fixa dentro da pasta do dataset. Só tem
+                # efeito em COPY_ORIGINALS.
+                copy_subdir=SELF_CONTAINED_IMAGES_SUBDIR,
                 progress_callback=self._on_progress,
             )
             if not self._is_running:

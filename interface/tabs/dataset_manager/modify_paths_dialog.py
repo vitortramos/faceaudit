@@ -79,11 +79,13 @@ _OP_HELP = {
         "pra outra estrutura de pastas). Clique <b>Validar</b> para "
         "confirmar que os arquivos existem no novo caminho.",
     PathOp.COPY_ORIGINALS:
-        "Copia as imagens pra &lt;pasta destino&gt;/&lt;nome do dataset&gt;"
-        "_images/. As imagens originais ficam intocadas. Como cada dataset "
-        "usa a sua própria subpasta, vários datasets podem ser modificados "
-        "na MESMA pasta sem misturar imagens. Resultado totalmente portátil "
-        "— pode ser movido/zipado e aberto em outra máquina sem quebrar.",
+        "Cria &lt;pasta destino&gt;/&lt;nome do dataset&gt;/ e copia as "
+        "imagens para <i>images/</i> dentro dela. As originais ficam "
+        "intocadas. Como cada dataset ganha a sua pasta, vários podem ser "
+        "modificados para a MESMA pasta destino sem se misturar. Grave o "
+        "parquet NESSA pasta (o Salvar como já abre nela) — é o que mantém "
+        "o resultado portátil: a pasta pode ser movida/zipada e aberta em "
+        "outra máquina sem quebrar.",
     PathOp.REWRITE_RELATIVE:
         "Apenas reescreve os caminhos no parquet como relativos à pasta "
         "destino. Nenhuma imagem é copiada. Requer que TODAS as imagens "

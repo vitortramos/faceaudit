@@ -602,10 +602,11 @@ def prepare_dataset_for_destination(
     imagens onde elas não estão. Em vez de deixar a decisão implícita,
     o caller declara a intenção:
 
-    - `portable=True` — **autocontido**: copia as imagens para junto do
-      parquet de destino e devolve um dataset RELATIVE ancorado lá. A
-      pasta resultante pode ser movida, zipada ou levada para outra
-      máquina inteira.
+    - `portable=True` — **autocontido**: copia as imagens para
+      `<pasta do destino>/images/` e devolve um dataset RELATIVE ancorado
+      lá. A pasta do destino passa a ser a unidade movível — quem quiser
+      que ela seja exclusiva do dataset deve derivá-la antes com
+      `self_contained_dataset_dir`.
     - `portable=False` — **referenciar**: resolve cada `image_path` para
       absoluto e devolve o dataset em modo ABSOLUTE. Não duplica disco,
       mas depende de a máquina enxergar aqueles caminhos.
@@ -635,7 +636,7 @@ def prepare_dataset_for_destination(
         dataset,
         destination.parent,
         mode=LocalizationMode.COPY_ORIGINALS,
-        copy_subdir=dataset_images_subdir(dataset.name),
+        copy_subdir=SELF_CONTAINED_IMAGES_SUBDIR,
         progress_callback=progress_callback,
     )
     prepared = adopt_identity_from(result.dataset, dataset, destination.parent)
@@ -666,3 +667,41 @@ def adopt_identity_from(
     )
     prepared._parquet_dir = Path(destination_dir).resolve()
     return prepared
+
+
+# ── Layout do dataset autocontido ────────────────────────────────────────────
+
+# Subpasta de imagens DENTRO da pasta própria do dataset. Fixa, porque a
+# pasta que a contém já carrega o nome do dataset — repetir o nome aqui
+# (`<nome>_images`) só acoplava o nome do arquivo ao da pasta de imagens.
+SELF_CONTAINED_IMAGES_SUBDIR = "images"
+
+# Caracteres proibidos em nome de pasta no Windows. Espaços e acentos
+# passam: o nome de pasta deve continuar parecido com o que o perito vê
+# na interface.
+_ILLEGAL_DIR_CHARS = r'<>:"/\|?*'
+
+
+def sanitize_dir_name(name: str) -> str:
+    """Nome de pasta seguro preservando espaços e acentos."""
+    limpo = "".join(
+        "_" if c in _ILLEGAL_DIR_CHARS else c for c in (name or "")
+    ).strip().rstrip(".")
+    return limpo or "dataset"
+
+
+def self_contained_dataset_dir(
+    base_dir: Union[str, Path], dataset_name: str,
+) -> Path:
+    """Pasta própria de um dataset autocontido: ``<base>/<nome>/``.
+
+    Um dataset autocontido é uma UNIDADE: parquet, imagens e sidecars
+    moram juntos, e `path_root` aponta para dentro dela. Assim a pasta
+    pode ser movida, compactada ou levada para outra máquina inteira sem
+    quebrar nada.
+
+    O layout antigo espalhava `<nome>.parquet` e `<nome>_images/` lado a
+    lado na pasta escolhida — mover só o parquet (ou renomeá-lo) quebrava
+    a relação implícita entre os dois, em silêncio.
+    """
+    return Path(base_dir) / sanitize_dir_name(dataset_name)
