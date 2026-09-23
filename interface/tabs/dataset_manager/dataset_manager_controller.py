@@ -720,8 +720,30 @@ class DatasetManagerController(QtCore.QObject):
 
         self.set_dirty(False)
 
-        text, tooltip = self._build_dataset_status(filtered=False)
-        self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
+        self._refresh_dataset_status()
+
+    def _is_filter_active(self) -> bool:
+        """Há filtro ativo? O que está na tela é recorte de um dataset maior."""
+        return (
+            self.dataset_original is not None
+            and self.dataset_original is not self.dataset
+        )
+
+    def _refresh_dataset_status(self) -> None:
+        """Reescreve a status bar a partir do estado REAL de filtro.
+
+        Antes o estado era fixado em `False` aqui e em `set_dirty`, então
+        qualquer recarga de tela com filtro ativo (salvar, editar célula)
+        apagava o indicador e DESABILITAVA o "Limpar filtro" — deixando o
+        recorte na tela sem como voltar ao dataset de origem.
+        """
+        if not self.dataset:
+            return
+        filtrado = self._is_filter_active()
+        text, tooltip = self._build_dataset_status(filtered=filtrado)
+        self.toolbar_ctrl.set_dataset_loaded_state(
+            True, text, tooltip, is_filtered=filtrado,
+        )
 
     def sync_changes_from_table(self):
         if not self.dataset: return
@@ -846,8 +868,7 @@ class DatasetManagerController(QtCore.QObject):
     def set_dirty(self, state: bool):
         self._is_dirty = state
         if self.dataset:
-            text, tooltip = self._build_dataset_status(filtered=False)
-            self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
+            self._refresh_dataset_status()
 
     # ── Status bar: linha principal + tooltip rico ───────────────────
     def _build_dataset_status(
@@ -1264,13 +1285,18 @@ class DatasetManagerController(QtCore.QObject):
             # "Salvar" seguinte gravaria o dataset grande por cima dele.
             origem = self.dataset_original
             self.dataset_original = None
+            self.current_filter_config = FilterConfig()
             self.set_dirty(False)
+            # `carregar_dataset_na_tela` já deriva o estado de filtro
+            # (agora sem origem: não filtrado) e atualiza a status bar.
             self.carregar_dataset_na_tela(origem, old_path)
-            texto, tooltip = self._build_dataset_status(filtered=False)
-            self.toolbar_ctrl.update_filter_status(
-                texto, is_filtered=False, tooltip=tooltip,
-            )
         else:
+            # O recorte salvo passa a ser um dataset por si — desligar o
+            # vínculo com a origem evita que um "Limpar filtro" depois
+            # traga o dataset grande de volta POR CIMA do arquivo do
+            # recorte (o `current_path` agora é o dele).
+            self.dataset_original = None
+            self.current_filter_config = FilterConfig()
             self.current_path = path
             self.set_dirty(False)
             self.carregar_dataset_na_tela(self.dataset, path)
