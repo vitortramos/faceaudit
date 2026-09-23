@@ -1139,6 +1139,57 @@ class DatasetManagerController(QtCore.QObject):
         else:
             self.fluxo_salvar_como()
 
+    def _current_dataset_dir(self) -> Optional[Path]:
+        """Pasta onde o dataset vive hoje — âncora dos caminhos relativos."""
+        if self.current_path:
+            return Path(self.current_path).parent.resolve()
+        origem = getattr(self.dataset, "_parquet_dir", None)
+        return Path(origem).resolve() if origem else None
+
+    def _ask_save_as_portability(self, destination: str) -> Optional[bool]:
+        """Pergunta como levar as imagens ao salvar noutra pasta.
+
+        `path_root` é relativo à pasta DO PARQUET: gravar noutra pasta sem
+        decidir isso reancora as imagens onde elas não estão. A pergunta é
+        feita em termos de consequência, não de "relativo vs absoluto".
+
+        Returns:
+            True (autocontido), False (referenciar onde estão) ou None
+            (usuário cancelou).
+        """
+        nome = Path(destination).stem
+        msg = QMessageBox(self.view)
+        msg.setWindowTitle("Como levar as imagens?")
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setText(
+            "<b>Você está salvando numa pasta diferente da atual.</b>"
+        )
+        msg.setInformativeText(
+            "<p><b>Copiar as imagens (autocontido)</b> — as imagens vão para "
+            f"<i>{nome}_images/</i>, ao lado do novo arquivo. A pasta pode "
+            "ser movida, compactada ou levada para outra máquina inteira.</p>"
+            "<p><b>Referenciar onde estão</b> — grava os caminhos absolutos "
+            "das imagens originais. É rápido e não duplica disco, mas o "
+            "dataset só abre as imagens em máquinas que enxerguem esses "
+            "caminhos.</p>"
+        )
+        btn_portatil = msg.addButton(
+            "Copiar as imagens", QMessageBox.ButtonRole.AcceptRole,
+        )
+        btn_ref = msg.addButton(
+            "Referenciar onde estão", QMessageBox.ButtonRole.AcceptRole,
+        )
+        msg.addButton(QMessageBox.StandardButton.Cancel)
+        msg.setDefaultButton(btn_portatil)
+        msg.exec()
+
+        clicado = msg.clickedButton()
+        if clicado is btn_portatil:
+            return True
+        if clicado is btn_ref:
+            return False
+        return None
+
     def fluxo_salvar_como(self):
         if not self.dataset: return
         self.sync_changes_from_table()
@@ -1148,32 +1199,139 @@ class DatasetManagerController(QtCore.QObject):
 
         path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
         if path:
-            old_path = self.current_path
-            self.dataset.name = Path(path).stem
-            self.dataset.to_parquet(path)
-            # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
-            # quando o usuário faz Save As: copia o `.audit.json` antigo
-            # para o novo path antes de adicionar a entrada SAVE_AS,
-            # mantendo a cadeia de custódia ininterrupta.
-            if old_path and old_path != path:
-                try:
-                    AuditLogService.migrate_sidecar(old_path, path)
-                except Exception:
-                    pass  # se a migração falhar, segue com chain nova
-            self.current_path = path
-            self.set_dirty(False)
-            self.carregar_dataset_na_tela(self.dataset, path)
-            self._audit(
-                AuditOperation.SAVE_AS,
-                f"Dataset salvo em novo arquivo '{Path(path).name}'.",
-                metadata={
-                    "previous_path": old_path,
-                    "rows": len(self.dataset),
-                    "identities": self.dataset.number_of_identities,
-                },
-                path_override=path,
-                hash_file=True,
+            origem = self._current_dataset_dir()
+            destino = Path(path).parent.resolve()
+            # Só há o que decidir quando as imagens ficam para trás. Salvar
+            # na mesma pasta preserva a âncora e não merece pergunta.
+            if origem is not None and destino != origem:
+                portatil = self._ask_save_as_portability(path)
+                if portatil is None:
+                    return
+                self.dataset.name = Path(path).stem
+                if portatil:
+                    # Cópia de imagens é pesada — vai para worker, e o
+                    # parquet é gravado quando ela termina.
+                    self._pending_save_as_path = path
+                    self._iniciar_worker_salvar_como_portatil(path)
+                    return
+                from faceaudit.services.dataset_localization_service import (
+                    prepare_dataset_for_destination,
+                )
+                self.dataset, _ = prepare_dataset_for_destination(
+                    self.dataset, path, portable=False,
+                )
+
+            self._gravar_e_finalizar_salvar_como(path)
+
+    def _gravar_e_finalizar_salvar_como(self, path: str) -> None:
+        """Grava o parquet no destino e fecha o Save As (sidecar, audit, UI).
+
+        Compartilhado pelos dois caminhos: o direto e o portátil (que chega
+        aqui depois que o worker termina de copiar as imagens).
+        """
+        old_path = self.current_path
+        self.dataset.name = Path(path).stem
+        self.dataset.to_parquet(path)
+        # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
+        # quando o usuário faz Save As: copia o `.audit.json` antigo
+        # para o novo path antes de adicionar a entrada SAVE_AS,
+        # mantendo a cadeia de custódia ininterrupta.
+        if old_path and old_path != path:
+            try:
+                AuditLogService.migrate_sidecar(old_path, path)
+            except Exception:
+                pass  # se a migração falhar, segue com chain nova
+        self.current_path = path
+        self.set_dirty(False)
+        self.carregar_dataset_na_tela(self.dataset, path)
+        self._audit(
+            AuditOperation.SAVE_AS,
+            f"Dataset salvo em novo arquivo '{Path(path).name}'.",
+            metadata={
+                "previous_path": old_path,
+                "rows": len(self.dataset),
+                "identities": self.dataset.number_of_identities,
+            },
+            path_override=path,
+            hash_file=True,
+        )
+
+    def _iniciar_worker_salvar_como_portatil(self, path: str) -> None:
+        """Copia as imagens para junto do destino, em worker.
+
+        Reusa o worker de "Modificar Caminhos" — é exatamente a mesma
+        operação (COPY_ORIGINALS com subpasta por dataset). O parquet é
+        gravado em `_on_salvar_como_portatil_concluido`.
+        """
+        from faceaudit.enums.localization_mode import LocalizationMode
+        from faceaudit.enums.localization_naming import NamingStrategy
+
+        worker = ModifyPathsWorker(
+            dataset=self.dataset,
+            target_dir=Path(path).parent,
+            mode=LocalizationMode.COPY_ORIGINALS,
+            naming=NamingStrategy.PRESERVE,
+            skip_existing=True,
+        )
+        self._run_worker(
+            worker,
+            label=f"Copiando imagens: {self.dataset.name}",
+            allow_cancel=True,
+            determinate=True,
+            use_log_dialog=True,
+            on_finished=self._on_salvar_como_portatil_concluido,
+        )
+
+    def _on_salvar_como_portatil_concluido(self, result) -> None:
+        """Fecha o Save As autocontido depois da cópia das imagens."""
+        path = getattr(self, "_pending_save_as_path", None)
+        self._pending_save_as_path = None
+        if path is None:
+            return
+        if result is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "A cópia das imagens foi cancelada — nada foi gravado.",
             )
+            return
+
+        # Faces cuja imagem não foi encontrada são DESCARTADAS pela
+        # localização. Gravar sem avisar produz um dataset menor (ou
+        # vazio) sem que ninguém perceba.
+        if not len(result.dataset):
+            falhas = "\n".join(
+                f"  • {caminho}: {motivo}"
+                for caminho, motivo in list(result.failures)[:5]
+            )
+            QMessageBox.critical(
+                self.view, "Nenhuma imagem encontrada",
+                f"Nenhuma das {result.n_processed} imagens foi encontrada — "
+                f"o arquivo NÃO foi gravado.\n\nPrimeiras falhas:\n{falhas}",
+            )
+            return
+        if result.n_failed:
+            falhas = "\n".join(
+                f"  • {caminho}" for caminho, _m in list(result.failures)[:5]
+            )
+            resposta = QMessageBox.warning(
+                self.view, "Imagens não encontradas",
+                f"{result.n_failed} de {result.n_processed} imagens não foram "
+                f"encontradas e ficarão DE FORA do dataset salvo.\n\n"
+                f"Primeiras:\n{falhas}\n\n"
+                f"Gravar assim mesmo, com {len(result.dataset)} face(s)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
+
+        from faceaudit.services.dataset_localization_service import (
+            adopt_identity_from,
+        )
+        self.dataset = adopt_identity_from(
+            result.dataset, self.dataset, Path(path).parent,
+        )
+        self._gravar_e_finalizar_salvar_como(path)
 
     # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────
 
