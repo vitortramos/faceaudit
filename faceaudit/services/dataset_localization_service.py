@@ -586,3 +586,122 @@ class DatasetLocalizationService:
         # (file_name preserva a legibilidade original; hash é do conteúdo,
         # cópia preserva bytes).
         return clone
+
+
+def prepare_dataset_for_destination(
+    dataset: FaceDataset,
+    destination_parquet: Union[str, Path],
+    *,
+    portable: bool,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+) -> Tuple[FaceDataset, Optional[LocalizationResult]]:
+    """Prepara um dataset para ser gravado em `destination_parquet`.
+
+    Existe porque `path_root` é relativo à pasta DO PARQUET: gravar um
+    dataset RELATIVE noutra pasta sem tratar os caminhos reancora as
+    imagens onde elas não estão. Em vez de deixar a decisão implícita,
+    o caller declara a intenção:
+
+    - `portable=True` — **autocontido**: copia as imagens para
+      `<pasta do destino>/images/` e devolve um dataset RELATIVE ancorado
+      lá. A pasta do destino passa a ser a unidade movível — quem quiser
+      que ela seja exclusiva do dataset deve derivá-la antes com
+      `self_contained_dataset_dir`.
+    - `portable=False` — **referenciar**: resolve cada `image_path` para
+      absoluto e devolve o dataset em modo ABSOLUTE. Não duplica disco,
+      mas depende de a máquina enxergar aqueles caminhos.
+
+    O dataset de entrada nunca é mutado.
+
+    Returns:
+        `(dataset_pronto, resultado_da_localizacao)`. O segundo item é
+        None quando `portable=False` (não houve cópia). Em modo portátil,
+        o caller DEVE inspecionar `n_failed`: faces cuja imagem não foi
+        encontrada são descartadas do dataset devolvido.
+    """
+    destination = Path(destination_parquet)
+    if not portable:
+        prepared = copy.deepcopy(dataset)
+        for face in prepared.faces:
+            try:
+                face.image_path = str(dataset.resolve_image_path(face))
+            except Exception:
+                continue  # irresolvível: preserva o que está lá
+        prepared.path_mode = PathMode.ABSOLUTE
+        prepared.path_root = None
+        prepared._parquet_dir = destination.parent.resolve()
+        return prepared, None
+
+    result = DatasetLocalizationService().localize(
+        dataset,
+        destination.parent,
+        mode=LocalizationMode.COPY_ORIGINALS,
+        copy_subdir=SELF_CONTAINED_IMAGES_SUBDIR,
+        progress_callback=progress_callback,
+    )
+    prepared = adopt_identity_from(result.dataset, dataset, destination.parent)
+    return prepared, result
+
+
+def adopt_identity_from(
+    prepared: FaceDataset,
+    original: FaceDataset,
+    destination_dir: Union[str, Path],
+) -> FaceDataset:
+    """Copia para `prepared` os campos de identidade que `localize` não traz.
+
+    `localize` monta um `FaceDataset` novo a partir das faces — nome,
+    descrição, specs de coluna, proveniência e o flag de alinhamento
+    ficam para trás. Gravar sem restaurá-los produz um parquet sem
+    catálogo de colunas, que a UI depois esconde dos dropdowns por não
+    conseguir determinar a coluna de embedding.
+
+    Muta e devolve `prepared`, por conveniência de encadeamento.
+    """
+    prepared.name = original.name
+    prepared.description = original.description
+    prepared.is_aligned = original.is_aligned
+    prepared.column_specs = dict(original.column_specs or {})
+    prepared.provenance_metadata = dict(
+        getattr(original, "provenance_metadata", {}) or {}
+    )
+    prepared._parquet_dir = Path(destination_dir).resolve()
+    return prepared
+
+
+# ── Layout do dataset autocontido ────────────────────────────────────────────
+
+# Subpasta de imagens DENTRO da pasta própria do dataset. Fixa, porque a
+# pasta que a contém já carrega o nome do dataset — repetir o nome aqui
+# (`<nome>_images`) só acoplava o nome do arquivo ao da pasta de imagens.
+SELF_CONTAINED_IMAGES_SUBDIR = "images"
+
+# Caracteres proibidos em nome de pasta no Windows. Espaços e acentos
+# passam: o nome de pasta deve continuar parecido com o que o perito vê
+# na interface.
+_ILLEGAL_DIR_CHARS = r'<>:"/\|?*'
+
+
+def sanitize_dir_name(name: str) -> str:
+    """Nome de pasta seguro preservando espaços e acentos."""
+    limpo = "".join(
+        "_" if c in _ILLEGAL_DIR_CHARS else c for c in (name or "")
+    ).strip().rstrip(".")
+    return limpo or "dataset"
+
+
+def self_contained_dataset_dir(
+    base_dir: Union[str, Path], dataset_name: str,
+) -> Path:
+    """Pasta própria de um dataset autocontido: ``<base>/<nome>/``.
+
+    Um dataset autocontido é uma UNIDADE: parquet, imagens e sidecars
+    moram juntos, e `path_root` aponta para dentro dela. Assim a pasta
+    pode ser movida, compactada ou levada para outra máquina inteira sem
+    quebrar nada.
+
+    O layout antigo espalhava `<nome>.parquet` e `<nome>_images/` lado a
+    lado na pasta escolhida — mover só o parquet (ou renomeá-lo) quebrava
+    a relação implícita entre os dois, em silêncio.
+    """
+    return Path(base_dir) / sanitize_dir_name(dataset_name)

@@ -9,7 +9,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from PyQt6 import QtWidgets, QtCore
 
 from interface.theme import current_token_fn
-from .widget_helpers import make_combo_shrinkable, make_lineedit_shrinkable
+from .widget_helpers import (
+    WrappedLabel,
+    enable_height_for_width,
+    make_combo_shrinkable,
+    make_lineedit_shrinkable,
+)
 
 
 def _btn_style() -> str:
@@ -68,6 +73,12 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
         header_tooltip: Optional[str] = None,
         intro_text: Optional[str] = None,
     ) -> None:
+        # A altura do bloco depende da largura da coluna: os rótulos de
+        # ajuda quebram em mais linhas quando a coluna estreita. Sem isto
+        # o layout do pai reserva a altura do sizeHint, estimado numa
+        # largura arbitrária, e comprime as linhas internas.
+        enable_height_for_width(self)
+
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -95,6 +106,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
 
         # Container de campos
         self._fields_container = QtWidgets.QWidget()
+        enable_height_for_width(self._fields_container)
         self._fields_layout = QtWidgets.QFormLayout(self._fields_container)
         self._fields_layout.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
         self._fields_layout.setContentsMargins(20, 4, 4, 4)
@@ -104,8 +116,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
         # expandido. Útil para explicar o propósito/contexto da config para
         # usuários casuais antes que precisem hover por cada tooltip.
         if intro_text:
-            intro_lbl = QtWidgets.QLabel(intro_text)
-            intro_lbl.setWordWrap(True)
+            intro_lbl = WrappedLabel(intro_text, parent=self._fields_container)
             intro_lbl.setStyleSheet(
                 "QLabel {"
                 "  background: " + t("ACCENT_BG") + "; border-left: 3px solid " + t("ACCENT") + ";"
@@ -200,10 +211,10 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
                 # (padrão dos enums "ricos" do projeto).
                 desc_label: Optional[QtWidgets.QLabel] = None
                 if member_desc:
-                    desc_label = QtWidgets.QLabel(
-                        member_desc.get(value.name, "")
+                    desc_label = WrappedLabel(
+                        member_desc.get(value.name, ""),
+                        parent=self._fields_container,
                     )
-                    desc_label.setWordWrap(True)
                     _t = current_token_fn()
                     desc_label.setStyleSheet(
                         "QLabel {"
@@ -369,8 +380,7 @@ class NestedDTOInlineWidget(QtWidgets.QWidget):
             self._fields_layout.removeRow(self._fields_layout.rowCount() - 1)
         # Re-adiciona o intro_text (foi removido no clear acima).
         if self._intro_text:
-            intro_lbl = QtWidgets.QLabel(self._intro_text)
-            intro_lbl.setWordWrap(True)
+            intro_lbl = WrappedLabel(self._intro_text, parent=self._fields_container)
             _t = current_token_fn()
             intro_lbl.setStyleSheet(
                 "QLabel {"
@@ -438,11 +448,10 @@ class NestedDTODialogTrigger(QtWidgets.QWidget):
         )
         layout.addWidget(title_lbl)
 
-        self._summary_lbl = QtWidgets.QLabel("(sem configuração)")
+        self._summary_lbl = WrappedLabel("(sem configuração)", parent=self)
         self._summary_lbl.setStyleSheet(
             "font-size: 10px; color: " + t("TEXT_MUTED") + "; padding-left: 4px;"
         )
-        self._summary_lbl.setWordWrap(True)
         layout.addWidget(self._summary_lbl)
 
         self._btn_edit = QtWidgets.QPushButton("⚙ Editar…")

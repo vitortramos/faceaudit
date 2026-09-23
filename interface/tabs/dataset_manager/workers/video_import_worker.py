@@ -84,9 +84,19 @@ class VideoImportWorker(QtCore.QObject):
 
         if self._self_contained:
             from faceaudit.services.dataset_localization_service import (
-                DatasetLocalizationService, dataset_images_subdir,
+                SELF_CONTAINED_IMAGES_SUBDIR,
+                DatasetLocalizationService,
+                adopt_identity_from,
+                self_contained_dataset_dir,
             )
             from faceaudit.enums.localization_mode import LocalizationMode
+
+            # Autocontido ganha pasta própria: `<destino>/<nome>/` com o
+            # parquet e `images/` dentro. A pasta inteira é a unidade
+            # movível — ver `self_contained_dataset_dir`.
+            dataset_dir = self_contained_dataset_dir(dataset_dir, name)
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+            parquet_path = dataset_dir / f"{name}.parquet"
 
             self.progress_update.emit("Copiando recortes para a pasta do dataset…", 90)
 
@@ -94,17 +104,12 @@ class VideoImportWorker(QtCore.QObject):
                 if total:
                     self.progress_update.emit(f"Copiando recortes… {idx + 1}/{total}", 90)
 
-            # Subpasta de imagens POR dataset (`<nome>_images`) — evita que vários
-            # datasets autocontidos na mesma pasta misturem suas imagens em `images/`.
             res = DatasetLocalizationService().localize(
                 ds, dataset_dir, mode=LocalizationMode.COPY_ORIGINALS,
-                copy_subdir=dataset_images_subdir(name), progress_callback=cb,
+                copy_subdir=SELF_CONTAINED_IMAGES_SUBDIR, progress_callback=cb,
             )
-            final = res.dataset
-            final.name = name
+            final = adopt_identity_from(res.dataset, ds, dataset_dir)
             final.provenance_metadata = prov            # localize não copia este campo
-            final.is_aligned = ds.is_aligned
-            final._parquet_dir = dataset_dir.resolve()
             final.to_parquet(parquet_path)
             return final
 

@@ -1035,6 +1035,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 ref = self._import_dataset_with_image_copy(
                     source_path, resource_id,
                 )
+                if ref is None:
+                    return  # usuário desistiu ao ver as imagens faltando
             elif artifact_type == StrategyArtifactType.GLOBAL_DATASET:
                 # Opção 1 — absolutiza paths (se RELATIVE) e copia o parquet
                 # pro projeto. Imagens continuam onde estavam; projeto não é
@@ -1111,6 +1113,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
 
         Reusa `DatasetLocalizationService` com mode=COPY_ORIGINALS e
         naming=PRESERVE (defaults sensatos do plano L1).
+
+        Retorna None quando o usuário desiste diante das imagens que não
+        foram encontradas. Levanta se NENHUMA imagem foi encontrada —
+        gravar aí produziria um dataset vazio.
         """
         from faceaudit.enums.localization_mode import LocalizationMode
         from faceaudit.enums.localization_naming import NamingStrategy
@@ -1140,14 +1146,43 @@ class StrategyManagerV2Controller(QtCore.QObject):
             skip_existing=True,
         )
 
-        if result.n_failed:
-            # Falhas de localização não abortam — perito vê na próxima tela
-            # que algumas imagens não foram copiadas. Mas o dataset
-            # importado contém só as que tiveram sucesso.
-            print(
-                f"⚠ Localização: {result.n_failed} de {result.n_processed} "
-                f"falharam. Veja `result.failures` no log."
+        # Faces cuja imagem não pôde ser copiada são DESCARTADAS. Se
+        # nenhuma sobrou, gravar produziria um parquet vazio (sem colunas)
+        # que a UI importa "com sucesso" e depois esconde dos dropdowns,
+        # porque não tem coluna de embedding. Aborta antes de gravar.
+        if len(ds) and not len(result.dataset):
+            motivos = "\n".join(
+                f"  • {caminho}\n    {motivo}"
+                for caminho, motivo in list(result.failures)[:5]
             )
+            raise RuntimeError(
+                f"Nenhuma das {result.n_processed} imagens do dataset pôde "
+                f"ser encontrada — o dataset não foi importado.\n\n"
+                f"Causa provável: o parquet declara caminhos relativos a uma "
+                f"pasta de imagens que não existe ao lado dele.\n\n"
+                f"Primeiras falhas:\n{motivos}"
+            )
+
+        if result.n_failed:
+            # Falhas parciais não abortam, mas o perito precisa DECIDIR —
+            # antes isso ia só para `print()`, invisível na interface.
+            motivos = "\n".join(
+                f"  • {caminho}" for caminho, _m in list(result.failures)[:5]
+            )
+            resposta = QtWidgets.QMessageBox.warning(
+                self._view,
+                "Imagens não copiadas",
+                f"<b>{result.n_failed} de {result.n_processed} imagens não "
+                f"foram encontradas</b> e ficarão de fora do dataset "
+                f"importado.<br><br>Primeiras:<br><pre>{motivos}</pre>"
+                f"<br>Importar assim mesmo, com "
+                f"{len(result.dataset)} face(s)?",
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            if resposta != QtWidgets.QMessageBox.StandardButton.Yes:
+                return None
 
         # 3. Ajusta path_root pro destino dentro do projeto. O service
         # cria a estrutura `<target_images_dir>/images/<file>` com

@@ -138,8 +138,10 @@ class NewDatasetView(QDialog):
         self.rb_absolute = QRadioButton("Caminho absoluto (referencia originais)", grp)
         self.rb_absolute.setChecked(True)
         self.rb_self_contained.setToolTip(
-            "<b>Autocontido</b>: copia as imagens para <i>&lt;Destino&gt;/&lt;nome&gt;_images/</i> "
-            "e grava caminhos relativos — portátil entre máquinas/drives. Custa "
+            "<b>Autocontido</b>: o dataset ganha pasta própria em "
+            "<i>&lt;Destino&gt;/&lt;nome&gt;/</i>, com o arquivo e as imagens "
+            "(<i>images/</i>) dentro. A pasta inteira pode ser movida, "
+            "compactada ou levada para outra máquina sem quebrar nada. Custa "
             "espaço em disco (duplica as imagens).")
         self.rb_absolute.setToolTip(
             "<b>Caminho absoluto</b>: referencia as imagens onde elas estão, sem "

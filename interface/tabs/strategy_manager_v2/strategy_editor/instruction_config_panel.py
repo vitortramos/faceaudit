@@ -72,6 +72,8 @@ _HEADER_TOOLTIPS: Dict[str, str] = {
 
 from .widget_helpers import (
     MIN_FIELD_WIDTH_PX as _MIN_FIELD_WIDTH_PX,
+    WrappedLabel as _WrappedLabel,
+    enable_height_for_width as _enable_height_for_width,
     make_combo_shrinkable as _make_combo_shrinkable,
     make_lineedit_shrinkable as _make_lineedit_shrinkable,
 )
@@ -259,6 +261,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._form_id.setSpacing(6)
         wrapper_id = QtWidgets.QWidget()
         wrapper_id.setLayout(self._form_id)
+        _enable_height_for_width(wrapper_id)
         scroll_layout.addWidget(wrapper_id)
 
         # ─── Seção 2: Configuração ────────────────────────────────────────
@@ -272,6 +275,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._form_cfg.setSpacing(6)
         wrapper_cfg = QtWidgets.QWidget()
         wrapper_cfg.setLayout(self._form_cfg)
+        _enable_height_for_width(wrapper_cfg)
         scroll_layout.addWidget(wrapper_cfg)
 
         # ─── Seção 3: Configurações de saída ──────────────────────────────
@@ -285,6 +289,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._outputs_layout.setSpacing(6)
         wrapper_out = QtWidgets.QWidget()
         wrapper_out.setLayout(self._outputs_layout)
+        _enable_height_for_width(wrapper_out)
         scroll_layout.addWidget(wrapper_out)
 
         # ─── Seção 4: Regras de Validação ─────────────────────────────────
@@ -804,6 +809,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         help_text = instr.get_configuration_help() if hasattr(instr, "get_configuration_help") else None
         if help_text:
             help_box = QtWidgets.QFrame()
+            _enable_height_for_width(help_box)
             apply_themed_stylesheet(
                 help_box,
                 lambda t: (
@@ -815,7 +821,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             )
             help_layout = QtWidgets.QHBoxLayout(help_box)
             help_layout.setContentsMargins(8, 6, 8, 6)
-            help_lbl = QtWidgets.QLabel(help_text)
+            help_lbl = _WrappedLabel(help_text, parent=help_box)
             apply_themed_stylesheet(
                 help_lbl,
                 lambda t: (
@@ -823,7 +829,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     " color: " + t("TEXT_MUTED") + "; font-size: 11px;"
                 ),
             )
-            help_lbl.setWordWrap(True)
             help_layout.addWidget(help_lbl, 1)
             self._form_cfg.addRow(help_box)
 
@@ -875,6 +880,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             # imediatamente conforme a seleção (antes do rebuild completo).
             if cspec.descriptions:
                 desc_box = QtWidgets.QFrame()
+                _enable_height_for_width(desc_box)
                 apply_themed_stylesheet(
                     desc_box,
                     lambda t: (
@@ -888,8 +894,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 desc_layout.setContentsMargins(8, 4, 8, 4)
                 desc_layout.setSpacing(4)
 
-                desc_lbl = QtWidgets.QLabel(
-                    cspec.descriptions.get(combo.currentText(), "")
+                desc_lbl = _WrappedLabel(
+                    cspec.descriptions.get(combo.currentText(), ""),
+                    parent=desc_box,
                 )
                 apply_themed_stylesheet(
                     desc_lbl,
@@ -898,7 +905,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                         " color: " + t("TEXT_MUTED") + "; font-size: 11px;"
                     ),
                 )
-                desc_lbl.setWordWrap(True)
                 desc_layout.addWidget(desc_lbl, 1)
 
                 # Spans both columns for full width — limpo e compacto.
@@ -1435,7 +1441,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     self._initialized = True
                     panel._update_dataset_info_label(self._target_combo, self._lbl)
 
-        info_lbl = QtWidgets.QLabel("")
+        # parent provisório = painel: widget sem pai vira top-level e pode
+        # piscar como janelinha antes do reparent (ver CLAUDE.md).
+        info_lbl = _WrappedLabel("", parent=self)
         apply_themed_stylesheet(
             info_lbl,
             lambda t: (
@@ -1443,7 +1451,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 " padding-left: 4px; }"
             ),
         )
-        info_lbl.setWordWrap(True)
         info_lbl.setVisible(False)
 
         container = _LazyInitContainer(info_lbl, combo)
@@ -1790,17 +1797,17 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         # Estado vazio só quando NÃO há nem configuráveis nem intrínsecas.
         if not configs and not dynamic_rules:
-            empty = QtWidgets.QLabel(
+            empty = _WrappedLabel(
                 "(nenhuma regra ativa) — defaults são populados conforme "
                 "você preenche os recursos da instrução. Clique em "
                 "<b>Restaurar padrões</b> se já preencheu mas não viu "
-                "regras aparecerem."
+                "regras aparecerem.",
+                parent=self,
             )
             apply_themed_stylesheet(
                 empty,
                 lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px; font-style: italic;",
             )
-            empty.setWordWrap(True)
             self._validation_layout.addWidget(empty)
             return
 
@@ -1849,7 +1856,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         v.addWidget(name_lbl)
 
         summary = self._summarize_rule_params(rule_type, cfg.params)
-        summary_lbl = QtWidgets.QLabel(summary)
+        summary_lbl = _WrappedLabel(summary, parent=self)
         apply_themed_stylesheet(
             summary_lbl,
             lambda t: (
@@ -1858,7 +1865,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
             ),
         )
         summary_lbl.setTextFormat(QtCore.Qt.TextFormat.RichText)
-        summary_lbl.setWordWrap(True)
         v.addWidget(summary_lbl)
 
         # Tooltip rico (descrição da regra) ajuda o usuário a entender o
@@ -1962,7 +1968,7 @@ class InstructionConfigPanel(QtWidgets.QWidget):
 
         desc = getattr(rule, "description", None) or ""
         if desc:
-            desc_lbl = QtWidgets.QLabel(desc)
+            desc_lbl = _WrappedLabel(desc, parent=self)
             apply_themed_stylesheet(
                 desc_lbl,
                 lambda t: (
@@ -1970,7 +1976,6 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                     " background: transparent; border: none;"
                 ),
             )
-            desc_lbl.setWordWrap(True)
             v.addWidget(desc_lbl)
 
         col_wrapper = QtWidgets.QWidget()

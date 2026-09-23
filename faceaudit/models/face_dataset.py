@@ -86,6 +86,12 @@ def _column_dtypes(df: pd.DataFrame) -> Dict[str, Any]:
     return dtypes
 
 
+# Quantos `image_path` testar em disco para decidir se uma âncora de
+# caminho relativo serve. Amostra pequena: a pergunta é "esta pasta é a
+# certa?", não "todas as imagens existem?".
+_ANCHOR_PROBE_SAMPLE = 20
+
+
 # Chaves de proveniência estruturada (sem o prefixo `faceaudit:`) que o
 # `to_parquet`/`from_parquet` aceita gravar/reler em `provenance_metadata`.
 # Allowlist deliberada — evita virar saco genérico de metadata. Ex.: aviso
@@ -684,6 +690,88 @@ class FaceDataset:
         ds._parquet_dir = path_obj.parent.resolve()
         return ds
 
+    def _anchor_has_images(self, anchor: Path, stored_paths: List[str]) -> bool:
+        """A âncora serve para estes `image_path`? Testa uma amostra em disco.
+
+        Basta UM arquivo existir para a âncora ser considerada válida —
+        imagem faltando é normal (face removida da pasta, erro de
+        extração) e não deve derrubar a âncora inteira.
+        """
+        checked = 0
+        for stored in stored_paths:
+            if not stored or not isinstance(stored, str):
+                continue
+            p = Path(stored)
+            if p.is_absolute():
+                # Dataset diz RELATIVE mas o path é absoluto (legado de
+                # migração). O resolver honra o absoluto, então a âncora
+                # é irrelevante para esta linha.
+                continue
+            if (anchor / stored).exists():
+                return True
+            checked += 1
+            if checked >= _ANCHOR_PROBE_SAMPLE:
+                break
+        # Nenhum candidato testável: não há como afirmar que a âncora é
+        # ruim, então preserva o que está declarado.
+        return checked == 0
+
+    def _resolve_paths_for_destination(
+        self, df: "pd.DataFrame", destination: Path,
+    ) -> Tuple["pd.DataFrame", PathMode, Optional[str]]:
+        """Impede que um `path_root` herdado viaje para outra pasta.
+
+        `path_root` é relativo à pasta DO PARQUET. Gravar o mesmo
+        `path_root` num diretório diferente reancora tudo num lugar onde
+        as imagens não estão — e o dataset resultante abre, lista as
+        faces e só falha na hora de ler a imagem, muito depois. Foi assim
+        que um "Salvar como" numa subpasta quebrou 300 faces em silêncio.
+
+        Regra: se o modo é RELATIVE e a âncora NÃO resolve a partir do
+        destino, mas resolve a partir da origem, os caminhos são
+        absolutizados contra a origem e o dataset passa a declarar
+        ABSOLUTE. Continua abrindo; deixa de ser portátil (para portátil,
+        use o modo autocontido, que copia as imagens e declara o próprio
+        `path_root`).
+
+        Quem já preparou o destino — os fluxos autocontidos, que copiam
+        as imagens para junto do parquet — passa direto: lá a âncora
+        nova resolve.
+        """
+        if self.path_mode != PathMode.RELATIVE:
+            return df, self.path_mode, None
+        if "image_path" not in df.columns:
+            return df, self.path_mode, self.path_root
+
+        from faceaudit.services.image_path_resolver import normalize_stored_path
+
+        root = normalize_stored_path(self.path_root) if self.path_root else "."
+        stored = [p for p in df["image_path"].tolist() if p]
+
+        dest_anchor = (destination.parent / root)
+        if self._anchor_has_images(dest_anchor, stored):
+            return df, self.path_mode, self.path_root
+
+        if self._parquet_dir is None:
+            # Dataset sem origem em disco (montado em memória). Não há
+            # âncora antiga para consultar — preserva o declarado.
+            return df, self.path_mode, self.path_root
+
+        source_anchor = (Path(self._parquet_dir) / root).resolve()
+        if not self._anchor_has_images(source_anchor, stored):
+            # Nem origem nem destino resolvem: o dataset já estava
+            # quebrado antes deste save. Absolutizar só trocaria um path
+            # errado por outro — preserva e deixa o diagnóstico para o
+            # caller (que checa os caminhos ao salvar).
+            return df, self.path_mode, self.path_root
+
+        df = df.copy()
+        df["image_path"] = [
+            p if (not p or Path(p).is_absolute()) else str(source_anchor / p)
+            for p in df["image_path"].tolist()
+        ]
+        return df, PathMode.ABSOLUTE, None
+
     def to_parquet(self, path: Union[str, Path]):
         """Persiste o dataset em parquet com metadata role-aware (novo formato).
 
@@ -709,20 +797,27 @@ class FaceDataset:
 
         df = self.to_pandas()
 
+        # Rede de proteção: `path_root` é relativo à pasta do parquet, então
+        # gravar num diretório diferente pode reancorá-lo onde as imagens
+        # não estão. Resolve isso ANTES de montar a metadata.
+        df, effective_path_mode, effective_path_root = (
+            self._resolve_paths_for_destination(df, path_obj)
+        )
+
         # Caso vazio — escreve apenas a metadata mínima e o schema vazio.
         if df.empty:
             empty_meta = {
                 "faceaudit:dataset_type": DatasetType.FACE.value,
                 "faceaudit:dataset_name": self.name,
                 "faceaudit:dataset_description": self.description or "",
-                "faceaudit:path_mode": self.path_mode.value,
+                "faceaudit:path_mode": effective_path_mode.value,
             }
             # PR L1a — `path_root` só é gravado em modo RELATIVE; em
             # ABSOLUTE não faz sentido (e mantém metadata enxuta).
             # PR L1c.1 — normaliza pra POSIX antes de gravar (cross-platform).
-            if self.path_mode == PathMode.RELATIVE and self.path_root:
+            if effective_path_mode == PathMode.RELATIVE and effective_path_root:
                 from faceaudit.services.image_path_resolver import normalize_stored_path
-                empty_meta["faceaudit:path_root"] = normalize_stored_path(self.path_root)
+                empty_meta["faceaudit:path_root"] = normalize_stored_path(effective_path_root)
             if self.is_aligned:
                 empty_meta["faceaudit:is_aligned"] = "true"
             for _k, _v in (self.provenance_metadata or {}).items():
@@ -784,7 +879,7 @@ class FaceDataset:
             "faceaudit:dataset_type": DatasetType.FACE.value,
             "faceaudit:dataset_name": self.name,
             "faceaudit:dataset_description": self.description or "",
-            "faceaudit:path_mode": self.path_mode.value,
+            "faceaudit:path_mode": effective_path_mode.value,
             "faceaudit:column_specs": specs_to_json(specs_to_persist),
             "faceaudit:column_coverage": json.dumps({
                 name: cs.to_dict() for name, cs in stats.column_coverage.items()
@@ -804,9 +899,9 @@ class FaceDataset:
 
         # PR L1a — `path_root` só entra na metadata em modo RELATIVE.
         # PR L1c.1 — normaliza pra POSIX antes de gravar (cross-platform).
-        if self.path_mode == PathMode.RELATIVE and self.path_root:
+        if effective_path_mode == PathMode.RELATIVE and effective_path_root:
             from faceaudit.services.image_path_resolver import normalize_stored_path
-            meta_payload["faceaudit:path_root"] = normalize_stored_path(self.path_root)
+            meta_payload["faceaudit:path_root"] = normalize_stored_path(effective_path_root)
 
         # is_aligned só entra na metadata quando True — enxuto pra
         # datasets de fotos originais (a maioria).

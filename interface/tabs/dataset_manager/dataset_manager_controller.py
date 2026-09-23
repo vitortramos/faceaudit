@@ -607,6 +607,13 @@ class DatasetManagerController(QtCore.QObject):
         )
 
     def _get_initial_dir(self) -> str:
+        # Pasta sugerida por uma operação anterior (ex: as imagens acabaram
+        # de ser copiadas para a pasta própria do dataset — é lá que o
+        # parquet precisa ser gravado). Consumida uma vez.
+        sugerida = getattr(self, "_suggested_save_dir", None)
+        if sugerida and os.path.isdir(sugerida):
+            self._suggested_save_dir = None
+            return sugerida
         if self.pipeline and hasattr(self.pipeline, 'storage_path'):
             path = str(self.pipeline.storage_path)
             if os.path.isdir(path): return path
@@ -713,8 +720,30 @@ class DatasetManagerController(QtCore.QObject):
 
         self.set_dirty(False)
 
-        text, tooltip = self._build_dataset_status(filtered=False)
-        self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
+        self._refresh_dataset_status()
+
+    def _is_filter_active(self) -> bool:
+        """Há filtro ativo? O que está na tela é recorte de um dataset maior."""
+        return (
+            self.dataset_original is not None
+            and self.dataset_original is not self.dataset
+        )
+
+    def _refresh_dataset_status(self) -> None:
+        """Reescreve a status bar a partir do estado REAL de filtro.
+
+        Antes o estado era fixado em `False` aqui e em `set_dirty`, então
+        qualquer recarga de tela com filtro ativo (salvar, editar célula)
+        apagava o indicador e DESABILITAVA o "Limpar filtro" — deixando o
+        recorte na tela sem como voltar ao dataset de origem.
+        """
+        if not self.dataset:
+            return
+        filtrado = self._is_filter_active()
+        text, tooltip = self._build_dataset_status(filtered=filtrado)
+        self.toolbar_ctrl.set_dataset_loaded_state(
+            True, text, tooltip, is_filtered=filtrado,
+        )
 
     def sync_changes_from_table(self):
         if not self.dataset: return
@@ -839,8 +868,7 @@ class DatasetManagerController(QtCore.QObject):
     def set_dirty(self, state: bool):
         self._is_dirty = state
         if self.dataset:
-            text, tooltip = self._build_dataset_status(filtered=False)
-            self.toolbar_ctrl.set_dataset_loaded_state(True, text, tooltip)
+            self._refresh_dataset_status()
 
     # ── Status bar: linha principal + tooltip rico ───────────────────
     def _build_dataset_status(
@@ -1139,6 +1167,38 @@ class DatasetManagerController(QtCore.QObject):
         else:
             self.fluxo_salvar_como()
 
+    def _current_dataset_dir(self) -> Optional[Path]:
+        """Pasta onde o dataset vive hoje — âncora dos caminhos relativos."""
+        if self.current_path:
+            return Path(self.current_path).parent.resolve()
+        origem = getattr(self.dataset, "_parquet_dir", None)
+        return Path(origem).resolve() if origem else None
+
+    def _ask_save_as_options(
+        self, destination: str, *, ask_images: bool, ask_which_stays: bool,
+    ):
+        """Abre o diálogo de opções do Salvar Como.
+
+        Retorna `(portatil, manter_origem)` ou None se o usuário cancelou.
+        `portatil` vem None quando a pergunta sobre imagens não se aplica
+        (salvando na mesma pasta).
+        """
+        from .save_as_options_dialog import SaveAsOptionsDialog
+
+        origem = self.dataset_original if ask_which_stays else None
+        dlg = SaveAsOptionsDialog(
+            self.view,
+            ask_images=ask_images,
+            ask_which_stays=ask_which_stays,
+            nome_destino=Path(destination).stem,
+            nome_origem=getattr(origem, "name", "") or "dataset de origem",
+            n_salvar=len(self.dataset) if self.dataset else 0,
+            n_origem=len(origem) if origem else 0,
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return None
+        return dlg.portable(), dlg.keep_original()
+
     def fluxo_salvar_como(self):
         if not self.dataset: return
         self.sync_changes_from_table()
@@ -1147,33 +1207,199 @@ class DatasetManagerController(QtCore.QObject):
         init_path = os.path.join(self._get_initial_dir(), default_name)
 
         path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
-        if path:
-            old_path = self.current_path
-            self.dataset.name = Path(path).stem
-            self.dataset.to_parquet(path)
-            # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
-            # quando o usuário faz Save As: copia o `.audit.json` antigo
-            # para o novo path antes de adicionar a entrada SAVE_AS,
-            # mantendo a cadeia de custódia ininterrupta.
-            if old_path and old_path != path:
-                try:
-                    AuditLogService.migrate_sidecar(old_path, path)
-                except Exception:
-                    pass  # se a migração falhar, segue com chain nova
+        if not path:
+            return
+
+        origem_dir = self._current_dataset_dir()
+        # Imagens: só há o que decidir quando elas ficam para trás. Salvar
+        # na mesma pasta preserva a âncora e não merece pergunta.
+        perguntar_imagens = (
+            origem_dir is not None and Path(path).parent.resolve() != origem_dir
+        )
+        # Dataset aberto: só há duas opções quando o que está na tela é
+        # recorte de um dataset maior (filtro ativo).
+        perguntar_qual_fica = self.dataset_original is not None
+
+        manter_origem = False
+        portatil = None
+        if perguntar_imagens or perguntar_qual_fica:
+            escolha = self._ask_save_as_options(
+                path,
+                ask_images=perguntar_imagens,
+                ask_which_stays=perguntar_qual_fica,
+            )
+            if escolha is None:
+                return
+            portatil, manter_origem = escolha
+
+        self.dataset.name = Path(path).stem
+        if portatil:
+            # Cópia de imagens é pesada — vai para worker, e o parquet é
+            # gravado quando ela termina.
+            self._pending_save_as_path = path
+            self._pending_save_as_keep_original = manter_origem
+            self._iniciar_worker_salvar_como_portatil(path)
+            return
+        if portatil is False:
+            from faceaudit.services.dataset_localization_service import (
+                prepare_dataset_for_destination,
+            )
+            self.dataset, _ = prepare_dataset_for_destination(
+                self.dataset, path, portable=False,
+            )
+
+        self._gravar_e_finalizar_salvar_como(path, manter_origem=manter_origem)
+
+    def _gravar_e_finalizar_salvar_como(
+        self, path: str, *, manter_origem: bool = False,
+    ) -> None:
+        """Grava o parquet no destino e fecha o Save As (sidecar, audit, UI).
+
+        Compartilhado pelos dois caminhos: o direto e o portátil (que chega
+        aqui depois que o worker termina de copiar as imagens).
+
+        Com `manter_origem`, o recorte é gravado no disco mas quem continua
+        na tela é o dataset de origem — o fluxo típico é derivar vários
+        recortes do mesmo dataset grande, e trocar para o recém-salvo
+        obrigava a fechar e reabrir o grande a cada um.
+        """
+        old_path = self.current_path
+        self.dataset.name = Path(path).stem
+        self.dataset.to_parquet(path)
+        # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
+        # quando o usuário faz Save As: copia o `.audit.json` antigo
+        # para o novo path antes de adicionar a entrada SAVE_AS,
+        # mantendo a cadeia de custódia ininterrupta.
+        if old_path and old_path != path:
+            try:
+                AuditLogService.migrate_sidecar(old_path, path)
+            except Exception:
+                pass  # se a migração falhar, segue com chain nova
+        salvo_nome = self.dataset.name
+        salvo_linhas = len(self.dataset)
+        salvo_ids = self.dataset.number_of_identities
+
+        if manter_origem and self.dataset_original is not None:
+            # Volta ao dataset de origem, no arquivo dele. O `current_path`
+            # tem de acompanhar: se ficasse apontando para o recorte, um
+            # "Salvar" seguinte gravaria o dataset grande por cima dele.
+            origem = self.dataset_original
+            self.dataset_original = None
+            self.current_filter_config = FilterConfig()
+            self.set_dirty(False)
+            # `carregar_dataset_na_tela` já deriva o estado de filtro
+            # (agora sem origem: não filtrado) e atualiza a status bar.
+            self.carregar_dataset_na_tela(origem, old_path)
+        else:
+            # O recorte salvo passa a ser um dataset por si — desligar o
+            # vínculo com a origem evita que um "Limpar filtro" depois
+            # traga o dataset grande de volta POR CIMA do arquivo do
+            # recorte (o `current_path` agora é o dele).
+            self.dataset_original = None
+            self.current_filter_config = FilterConfig()
             self.current_path = path
             self.set_dirty(False)
             self.carregar_dataset_na_tela(self.dataset, path)
-            self._audit(
-                AuditOperation.SAVE_AS,
-                f"Dataset salvo em novo arquivo '{Path(path).name}'.",
-                metadata={
-                    "previous_path": old_path,
-                    "rows": len(self.dataset),
-                    "identities": self.dataset.number_of_identities,
-                },
-                path_override=path,
-                hash_file=True,
+
+        self._audit(
+            AuditOperation.SAVE_AS,
+            f"Dataset salvo em novo arquivo '{Path(path).name}'."
+            + (" Origem permaneceu aberta." if manter_origem else ""),
+            metadata={
+                "previous_path": old_path,
+                "rows": salvo_linhas,
+                "identities": salvo_ids,
+                "dataset_saved": salvo_nome,
+                "kept_source_open": manter_origem,
+            },
+            path_override=path,
+            hash_file=True,
+        )
+
+    def _iniciar_worker_salvar_como_portatil(self, path: str) -> None:
+        """Copia as imagens para junto do destino, em worker.
+
+        Reusa o worker de "Modificar Caminhos" — é exatamente a mesma
+        operação (COPY_ORIGINALS com subpasta por dataset). O parquet é
+        gravado em `_on_salvar_como_portatil_concluido`.
+        """
+        from faceaudit.enums.localization_mode import LocalizationMode
+        from faceaudit.enums.localization_naming import NamingStrategy
+
+        worker = ModifyPathsWorker(
+            dataset=self.dataset,
+            target_dir=Path(path).parent,
+            mode=LocalizationMode.COPY_ORIGINALS,
+            naming=NamingStrategy.PRESERVE,
+            skip_existing=True,
+        )
+        self._run_worker(
+            worker,
+            label=f"Copiando imagens: {self.dataset.name}",
+            allow_cancel=True,
+            determinate=True,
+            use_log_dialog=True,
+            on_finished=self._on_salvar_como_portatil_concluido,
+        )
+
+    def _on_salvar_como_portatil_concluido(self, result) -> None:
+        """Fecha o Save As autocontido depois da cópia das imagens."""
+        path = getattr(self, "_pending_save_as_path", None)
+        self._pending_save_as_path = None
+        if path is None:
+            return
+        if result is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "A cópia das imagens foi cancelada — nada foi gravado.",
             )
+            return
+
+        # Faces cuja imagem não foi encontrada são DESCARTADAS pela
+        # localização. Gravar sem avisar produz um dataset menor (ou
+        # vazio) sem que ninguém perceba.
+        if not len(result.dataset):
+            falhas = "\n".join(
+                f"  • {caminho}: {motivo}"
+                for caminho, motivo in list(result.failures)[:5]
+            )
+            QMessageBox.critical(
+                self.view, "Nenhuma imagem encontrada",
+                f"Nenhuma das {result.n_processed} imagens foi encontrada — "
+                f"o arquivo NÃO foi gravado.\n\nPrimeiras falhas:\n{falhas}",
+            )
+            return
+        if result.n_failed:
+            falhas = "\n".join(
+                f"  • {caminho}" for caminho, _m in list(result.failures)[:5]
+            )
+            resposta = QMessageBox.warning(
+                self.view, "Imagens não encontradas",
+                f"{result.n_failed} de {result.n_processed} imagens não foram "
+                f"encontradas e ficarão DE FORA do dataset salvo.\n\n"
+                f"Primeiras:\n{falhas}\n\n"
+                f"Gravar assim mesmo, com {len(result.dataset)} face(s)?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
+
+        from faceaudit.services.dataset_localization_service import (
+            adopt_identity_from,
+        )
+        # O worker criou a pasta própria do dataset (`<escolhida>/<nome>/`)
+        # e copiou as imagens para `images/` dentro dela. O parquet vai
+        # para lá também — é o que mantém `path_root` válido.
+        destino = Path(result.target_dir) / Path(path).name
+        self.dataset = adopt_identity_from(
+            result.dataset, self.dataset, destino.parent,
+        )
+        manter_origem = getattr(self, "_pending_save_as_keep_original", False)
+        self._pending_save_as_keep_original = False
+        self._gravar_e_finalizar_salvar_como(
+            str(destino), manter_origem=manter_origem,
+        )
 
     # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────
 
@@ -1802,6 +2028,11 @@ class DatasetManagerController(QtCore.QObject):
         self.dataset_original = None
         if not is_rebase:
             self.current_path = None
+            # O dataset autocontido só continua resolvendo se o parquet for
+            # gravado na pasta onde as imagens foram copiadas. Sugere essa
+            # pasta no Salvar como seguinte, em vez de deixar o perito
+            # adivinhar.
+            self._suggested_save_dir = str(result.target_dir)
         self.set_dirty(True)
         self.carregar_dataset_na_tela(self.dataset, path=self.current_path)
 

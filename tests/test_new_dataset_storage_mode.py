@@ -77,9 +77,9 @@ def test_autocontido_copia_imagens_e_relativiza(tmp_path):
     )
 
     assert out.path_mode == PathMode.RELATIVE
-    assert out.path_root == "meu_ds_images"
+    assert out.path_root == "images"
     assert len(out.faces) == 3
-    copiadas = sorted(p.name for p in (dest / "meu_ds_images").iterdir())
+    copiadas = sorted(p.name for p in (dest / "images").iterdir())
     assert copiadas == ["id0.png", "id1.png", "id2.png"]
     # Paths viram relativos à subpasta de imagens.
     assert all(not Path(f.image_path).is_absolute() for f in out.faces)
@@ -96,7 +96,7 @@ def test_autocontido_nao_recopia_crops_ja_no_destino(tmp_path):
     "alinhar durante a criação".
     """
     dest = tmp_path / "destino"
-    imgs = dest / "meu_ds_images"; imgs.mkdir(parents=True)
+    imgs = dest / "images"; imgs.mkdir(parents=True)
     paths = [imgs / f"crop{i}.png" for i in range(3)]
     for i, p in enumerate(paths):
         _img(p, i * 40)
@@ -124,7 +124,7 @@ def test_autocontido_preserva_face_que_falhou_no_alinhamento(tmp_path):
     `COPY_ORIGINALS` traz a imagem pra dentro e mantém a linha `error=True`.
     """
     dest = tmp_path / "destino"
-    imgs = dest / "meu_ds_images"; imgs.mkdir(parents=True)
+    imgs = dest / "images"; imgs.mkdir(parents=True)
     ok = imgs / "crop0.png"; _img(ok, 10)
     fora = tmp_path / "originais"; fora.mkdir()
     falhou = fora / "falhou.png"; _img(falhou, 200)
