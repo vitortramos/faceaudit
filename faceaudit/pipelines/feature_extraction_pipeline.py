@@ -950,6 +950,21 @@ class FeatureExtractionPipeline:
         final.is_aligned = dataset.is_aligned
         final._parquet_dir = Path(dataset_dir).resolve()
 
+        # Nenhuma imagem copiada = dataset vazio. Gravar isso produz um
+        # parquet de poucas centenas de bytes, sem colunas, que a UI
+        # aceita, lista como recurso e some dos dropdowns depois — o
+        # perito só descobre muito adiante. Melhor falhar aqui.
+        if dataset.faces and not final.faces:
+            motivos = "; ".join(
+                f"{caminho}: {motivo}" for caminho, motivo in list(res.failures)[:3]
+            )
+            raise RuntimeError(
+                f"Nenhuma das {res.n_processed} imagens do dataset pôde ser "
+                f"copiada para a pasta do dataset — nada foi gravado. "
+                f"Confira se os caminhos das imagens ainda são válidos. "
+                f"Primeiras falhas: {motivos}"
+            )
+
         # `_copy_originals` DESCARTA a face cuja imagem não pôde ser copiada.
         # Num dataset pericial isso não pode passar silenciosamente.
         if res.n_failed:
