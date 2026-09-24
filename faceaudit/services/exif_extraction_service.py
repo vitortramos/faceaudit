@@ -352,3 +352,115 @@ class ExifExtractionService:
         e a comparação precisa ignorar isso e a caixa das letras.
         """
         return str(Path(caminho)).replace("\\", "/").lower()
+
+
+# ── Promoção para colunas de dataset ─────────────────────────────────────
+
+# Nome da coluna → tags que a alimentam, em ordem de preferência. Mais de
+# um sinônimo porque o mesmo dado aparece com nomes distintos conforme o
+# fabricante e o grupo (EXIF, XMP, QuickTime, Composite).
+_MAPA_COLUNAS = {
+    "capture_datetime_raw": ("DateTimeOriginal", "CreateDate", "DateTimeCreated"),
+    "capture_timezone_offset": ("OffsetTimeOriginal", "OffsetTime", "TimeZone"),
+    "camera_make": ("Make",),
+    "camera_model": ("Model",),
+    "camera_serial": ("SerialNumber", "BodySerialNumber", "InternalSerialNumber"),
+    "lens_model": ("LensModel", "Lens", "LensID"),
+    "iso": ("ISO", "ISOSpeedRatings", "PhotographicSensitivity"),
+    "f_number": ("FNumber", "ApertureValue"),
+    "exposure_time": ("ExposureTime", "ShutterSpeedValue"),
+    "focal_length_mm": ("FocalLength",),
+    "focal_length_35mm": ("FocalLengthIn35mmFormat", "FocalLength35efl"),
+    "orientation": ("Orientation",),
+    "image_width": ("ExifImageWidth", "ImageWidth"),
+    "image_height": ("ExifImageHeight", "ImageHeight"),
+    "software": ("Software", "ProcessingSoftware", "CreatorTool"),
+    "gps_latitude": ("GPSLatitude",),
+    "gps_longitude": ("GPSLongitude",),
+    "gps_altitude": ("GPSAltitude",),
+}
+
+_COLUNAS_INT = {"iso", "orientation", "image_width", "image_height"}
+_COLUNAS_FLOAT = {
+    "f_number", "focal_length_mm", "focal_length_35mm",
+    "gps_latitude", "gps_longitude", "gps_altitude",
+}
+
+
+def build_capture_columns(metadata: "ImageMetadata") -> Dict[str, Any]:
+    """Traduz as tags lidas nas colunas de captura do dataset.
+
+    Devolve só as colunas com valor — ausência vira coluna nula, não string
+    vazia. `exif_json` carrega o dump íntegro: as demais colunas são apenas
+    campos promovidos para consulta rápida, e nada é descartado.
+
+    `capture_datetime` (normalizada) só é preenchida quando o arquivo
+    declara o fuso EXPLICITAMENTE. Atribuir o fuso da máquina a uma foto de
+    origem desconhecida seria inventar informação — e data/hora costuma ser
+    exatamente o que está em disputa.
+    """
+    if not metadata.tags:
+        return {}
+
+    colunas: Dict[str, Any] = {}
+    for nome, sinonimos in _MAPA_COLUNAS.items():
+        valor = metadata.get_first(*sinonimos)
+        if valor is None or valor == "":
+            continue
+        colunas[nome] = _converter(nome, valor)
+
+    normalizada = _datetime_normalizado(
+        colunas.get("capture_datetime_raw"),
+        colunas.get("capture_timezone_offset"),
+    )
+    if normalizada:
+        colunas["capture_datetime"] = normalizada
+
+    colunas["exif_json"] = json.dumps(
+        metadata.tags, ensure_ascii=False, default=str, separators=(",", ":"),
+    )
+    return colunas
+
+
+def _converter(nome: str, valor: Any) -> Any:
+    """Converte para o dtype declarado no catálogo, sem estourar."""
+    if isinstance(valor, (list, tuple)):
+        valor = valor[0] if valor else None
+    if valor is None:
+        return None
+    try:
+        if nome in _COLUNAS_INT:
+            return int(float(valor))
+        if nome in _COLUNAS_FLOAT:
+            return float(valor)
+    except (TypeError, ValueError):
+        # Valor fora do formato esperado: preserva como texto em vez de
+        # descartar — é informação do arquivo, e sumir com ela é pior.
+        return str(valor)
+    return str(valor).strip()
+
+
+def _datetime_normalizado(bruto: Any, offset: Any) -> Optional[str]:
+    """ISO-8601 com fuso, ou None quando o offset não foi declarado."""
+    if not bruto or not offset:
+        return None
+    texto = str(bruto).strip()
+    deslocamento = str(offset).strip()
+    # EXIF grava "2026:09:24 10:30:00"; ISO quer "2026-09-24T10:30:00".
+    if len(texto) >= 19 and texto[4] == ":" and texto[7] == ":":
+        texto = texto[:4] + "-" + texto[5:7] + "-" + texto[8:]
+    texto = texto.replace(" ", "T", 1)
+    if deslocamento.upper() in {"Z", "UTC"}:
+        deslocamento = "+00:00"
+    if deslocamento and deslocamento[0] not in "+-":
+        return None            # offset em formato não reconhecido
+    if len(deslocamento) == 5 and ":" not in deslocamento:
+        deslocamento = deslocamento[:3] + ":" + deslocamento[3:]
+    candidato = f"{texto}{deslocamento}"
+    try:
+        from datetime import datetime
+
+        datetime.fromisoformat(candidato)
+    except ValueError:
+        return None            # não afirma o que não consegue validar
+    return candidato

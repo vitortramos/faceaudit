@@ -66,7 +66,8 @@ class FeatureExtractionPipeline:
                  ff_service: FFService,
                  ofiq_service: OFIQService,
                  serfiq_service: SERFIQService,
-                 storage_path: Path):
+                 storage_path: Path,
+                 exif_service=None):
         """
         Inicializa o pipeline injetando as dependências de serviço.
 
@@ -81,6 +82,9 @@ class FeatureExtractionPipeline:
         self.ff_service = ff_service
         self.ofiq_service = ofiq_service
         self.serfiq_service = serfiq_service
+        # Opcional: sem ele, o estágio de metadados é pulado com aviso, do
+        # mesmo modo que OFIQ/SER-FIQ ausentes.
+        self.exif_service = exif_service
         
         self.storage_path = Path(storage_path)
         self.logger = logging.getLogger("FeatureExtractionPipeline")
@@ -157,6 +161,12 @@ class FeatureExtractionPipeline:
         if len(dataset) == 0:
             print("⚠️ [Pipeline] Dataset vazio ou nenhuma face encontrada.")
             return dataset
+
+        # 2.b Metadados embutidos, ANTES de qualquer estágio: a partir daqui
+        # o `image_path` pode passar a apontar para o recorte/alinhada, e o
+        # metadado de captura não sobrevive a isso.
+        if config.extract_exif:
+            self._extract_embedded_metadata(dataset, config, progress_callback)
 
         # 3. Transform (Parte A): Aplicação de Metadados Manuais
         if config.default_gender:
@@ -478,6 +488,11 @@ class FeatureExtractionPipeline:
         # O flag persiste no `dataset` em memória e vai pra metadata no
         # próximo save.
         dataset.is_aligned = bool(getattr(config, "is_aligned", False))
+
+        # Metadados embutidos: primeiro estágio também no enriquecimento,
+        # e independente dos demais — é leitura de arquivo, não inferência.
+        if getattr(config, "extract_exif", False):
+            self._extract_embedded_metadata(dataset, config, progress_callback)
 
         active_stages = []
         if config.compute_ff: active_stages.append("Biometria (ForensicFace)")
@@ -994,6 +1009,73 @@ class FeatureExtractionPipeline:
             if progress_callback:
                 progress_callback(f"⚠️ {aviso}", 98)
         return final
+
+    def _extract_embedded_metadata(
+        self,
+        dataset: FaceDataset,
+        config: DatasetIngestionConfig,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        """Lê EXIF/XMP/IPTC de cada face e promove para colunas.
+
+        Os valores vão para `face.extra_data`, que o `to_flat_dict` emite
+        como coluna e o catálogo reconhece com `role=CAPTURE`. Não altera
+        nenhum campo canônico do `FaceInfo`.
+
+        Pulado quando a entrada já é face alinhada: nesse caso `image_path`
+        aponta para um crop, que não carrega metadado de captura — extrair
+        produziria apenas colunas vazias e a impressão falsa de que a foto
+        original não tinha metadado nenhum.
+        """
+        from faceaudit.services.exif_extraction_service import (
+            build_capture_columns,
+        )
+
+        if self.exif_service is None:
+            print(
+                "⚠️  [Pipeline] Extração de metadados pedida, mas o serviço não "
+                "está disponível (confira o caminho do ExifTool na configuração)."
+            )
+            return
+        if getattr(config, "is_aligned", False) or getattr(dataset, "is_aligned", False):
+            print(
+                "ℹ️  [Pipeline] Entrada já alinhada — metadados de captura não "
+                "existem em faces recortadas; estágio pulado."
+            )
+            return
+
+        faces = list(dataset.faces)
+        if not faces:
+            return
+        if progress_callback:
+            progress_callback("Lendo metadados das imagens…", 1)
+
+        def _tick(indice, total, _caminho):
+            if progress_callback and total and (indice % 50 == 0 or indice >= total):
+                progress_callback(
+                    f"Lendo metadados das imagens… ({min(indice + 1, total)}/{total})",
+                    1 + int(2 * indice / max(total, 1)),
+                )
+
+        caminhos = [dataset.resolve_image_path(f) for f in faces]
+        leituras = self.exif_service.extract_many(
+            caminhos, progress_callback=_tick,
+        )
+
+        n_com_dados = 0
+        for face, leitura in zip(faces, leituras):
+            colunas = build_capture_columns(leitura)
+            if not colunas:
+                continue
+            extras = dict(getattr(face, "extra_data", None) or {})
+            extras.update(colunas)
+            face.extra_data = extras
+            n_com_dados += 1
+
+        print(
+            f"🏷️  [Pipeline] Metadados lidos ({self.exif_service.backend_name}): "
+            f"{n_com_dados}/{len(faces)} imagem(ns) com metadado de captura."
+        )
 
     @staticmethod
     def _materialize_face_crops(

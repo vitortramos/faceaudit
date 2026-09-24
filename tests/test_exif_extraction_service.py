@@ -171,3 +171,93 @@ def test_lote_menor_que_o_conjunto(tmp_path):
     resultados = svc.extract_many(arquivos)
 
     assert [m.get_first("Model") for m in resultados] == ["M0", "M1", "M2", "M3", "M4"]
+
+
+# ── Promoção para colunas do dataset ──────────────────────────────────────
+
+def test_colunas_curadas_saem_das_tags():
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    md = ImageMetadata(source_path="x", tags={
+        "EXIF:Make": "ACME", "EXIF:Model": "Cam 9",
+        "EXIF:ISO": "400", "EXIF:FNumber": "2.8",
+        "EXIF:Orientation": 6,
+        "EXIF:DateTimeOriginal": "2026:09:24 10:30:00",
+    })
+
+    cols = build_capture_columns(md)
+
+    assert cols["camera_make"] == "ACME"
+    assert cols["iso"] == 400 and isinstance(cols["iso"], int)
+    assert cols["f_number"] == 2.8
+    assert cols["orientation"] == 6
+    assert cols["capture_datetime_raw"] == "2026:09:24 10:30:00"
+
+
+def test_datetime_normalizado_exige_offset_explicito():
+    """Sem fuso declarado, atribuir um seria inventar informação — e data
+    e hora costuma ser justamente o que está em disputa."""
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    sem_offset = ImageMetadata(source_path="x", tags={
+        "EXIF:DateTimeOriginal": "2026:09:24 10:30:00",
+    })
+    com_offset = ImageMetadata(source_path="x", tags={
+        "EXIF:DateTimeOriginal": "2026:09:24 10:30:00",
+        "EXIF:OffsetTimeOriginal": "-03:00",
+    })
+
+    assert "capture_datetime" not in build_capture_columns(sem_offset)
+    assert build_capture_columns(com_offset)["capture_datetime"] == (
+        "2026-09-24T10:30:00-03:00"
+    )
+
+
+def test_offset_sem_dois_pontos_e_aceito():
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    md = ImageMetadata(source_path="x", tags={
+        "EXIF:DateTimeOriginal": "2026:09:24 10:30:00",
+        "EXIF:OffsetTimeOriginal": "-0300",
+    })
+    assert build_capture_columns(md)["capture_datetime"] == "2026-09-24T10:30:00-03:00"
+
+
+def test_offset_ilegivel_nao_produz_data_normalizada():
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    md = ImageMetadata(source_path="x", tags={
+        "EXIF:DateTimeOriginal": "2026:09:24 10:30:00",
+        "EXIF:OffsetTimeOriginal": "horário de Brasília",
+    })
+    assert "capture_datetime" not in build_capture_columns(md)
+
+
+def test_dump_completo_vai_para_exif_json():
+    """Nada é descartado: as colunas são campos promovidos, não um filtro."""
+    import json as _json
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    md = ImageMetadata(source_path="x", tags={
+        "EXIF:Make": "ACME", "MakerNotes:CoisaExotica": "42",
+    })
+
+    cols = build_capture_columns(md)
+    dump = _json.loads(cols["exif_json"])
+
+    assert dump["MakerNotes:CoisaExotica"] == "42", (
+        "tag fora da lista curada precisa sobreviver no dump"
+    )
+
+
+def test_valor_fora_do_formato_vira_texto_em_vez_de_sumir():
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    md = ImageMetadata(source_path="x", tags={"EXIF:ISO": "desconhecido"})
+    assert build_capture_columns(md)["iso"] == "desconhecido"
+
+
+def test_sem_tags_nao_produz_coluna_nenhuma():
+    from faceaudit.services.exif_extraction_service import build_capture_columns
+
+    assert build_capture_columns(ImageMetadata(source_path="x")) == {}

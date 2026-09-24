@@ -266,6 +266,12 @@ CATEGORY_OFIQ_DIMENSIONS = "OFIQ — Dimensões"
 CATEGORY_OFIQ_DIMENSIONS_RAW = "OFIQ — Dimensões (raw)"
 CATEGORY_OFIQ_METADATA = "OFIQ — Metadados"
 CATEGORY_SERFIQ = "SER-FIQ"
+CATEGORY_CAPTURE_DATETIME = "Captura — Data e hora"
+CATEGORY_CAPTURE_DEVICE = "Captura — Equipamento"
+CATEGORY_CAPTURE_EXPOSURE = "Captura — Tomada"
+CATEGORY_CAPTURE_GEO = "Captura — Localização"
+CATEGORY_CAPTURE_SOFTWARE = "Captura — Software"
+CATEGORY_CAPTURE_RAW = "Captura — Metadados completos"
 CATEGORY_ERROR = "Erros (criação/enriquecimento)"
 CATEGORY_CUSTOM = "Customizado"
 
@@ -619,6 +625,139 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
     # planejar reanálise sem precisar de parquet separado. As 3 colunas
     # vêm visible_default=True só quando algum face tem error setado —
     # mas o spec aqui marca True (caso default não filtra "vazias").
+    # ── Captura (EXIF/XMP/IPTC da foto ORIGINAL) ──
+    # Todas nascem ocultas menos a data/hora crua: são ~20 colunas, e
+    # despejá-las na tabela afogaria o resto. Quem precisa de uma delas
+    # liga pelo menu Mostrar/Ocultar.
+    #
+    # `is_declared=True` em todas: o valor é declaração do ARQUIVO, não
+    # medida do sistema. Metadado embutido pode ser editado ou forjado — e
+    # num exame às vezes é exatamente isso que está sob suspeita.
+    #
+    # Só existem em dataset de fotos ORIGINAIS: recorte e alinhamento
+    # gravam pixel novo, sem metadado de captura, e não há de onde
+    # recuperar depois.
+    def _captura(
+        nome, rotulo, subtipo, dtype, categoria, *, visivel=False, descricao=None,
+    ):
+        specs[nome] = ColumnSpec(
+            name=nome, label=rotulo,
+            role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+            dtype=dtype, editable=False, visible_default=visivel,
+            category=categoria, capture_subtype=subtipo, is_declared=True,
+            description=descricao,
+        )
+
+    _captura(
+        "capture_datetime_raw", "Data/hora da captura (como gravada)",
+        CaptureSubtype.DATETIME, ColumnDType.STR, CATEGORY_CAPTURE_DATETIME,
+        visivel=True,
+        descricao=(
+            "Valor de DateTimeOriginal exatamente como está no arquivo. A "
+            "maioria das câmeras grava sem fuso horário."
+        ),
+    )
+    _captura(
+        "capture_datetime", "Data/hora da captura (normalizada)",
+        CaptureSubtype.DATETIME, ColumnDType.STR, CATEGORY_CAPTURE_DATETIME,
+        descricao=(
+            "ISO-8601 com fuso. Preenchida SÓ quando o arquivo declara o "
+            "offset explicitamente — sem isso, atribuir um fuso seria "
+            "inventar informação."
+        ),
+    )
+    _captura(
+        "capture_timezone_offset", "Fuso declarado",
+        CaptureSubtype.DATETIME, ColumnDType.STR, CATEGORY_CAPTURE_DATETIME,
+    )
+    _captura(
+        "camera_make", "Fabricante",
+        CaptureSubtype.DEVICE, ColumnDType.STR, CATEGORY_CAPTURE_DEVICE,
+    )
+    _captura(
+        "camera_model", "Modelo",
+        CaptureSubtype.DEVICE, ColumnDType.STR, CATEGORY_CAPTURE_DEVICE,
+    )
+    _captura(
+        "camera_serial", "Número de série do corpo",
+        CaptureSubtype.DEVICE, ColumnDType.STR, CATEGORY_CAPTURE_DEVICE,
+        descricao=(
+            "Quando presente, liga a imagem a um aparelho específico — não "
+            "só a um modelo."
+        ),
+    )
+    _captura(
+        "lens_model", "Lente",
+        CaptureSubtype.DEVICE, ColumnDType.STR, CATEGORY_CAPTURE_DEVICE,
+    )
+    _captura(
+        "iso", "ISO",
+        CaptureSubtype.EXPOSURE, ColumnDType.INT, CATEGORY_CAPTURE_EXPOSURE,
+    )
+    _captura(
+        "f_number", "Abertura (f)",
+        CaptureSubtype.EXPOSURE, ColumnDType.FLOAT, CATEGORY_CAPTURE_EXPOSURE,
+    )
+    _captura(
+        "exposure_time", "Tempo de exposição",
+        CaptureSubtype.EXPOSURE, ColumnDType.STR, CATEGORY_CAPTURE_EXPOSURE,
+        descricao="Como gravado (ex.: 1/125).",
+    )
+    _captura(
+        "focal_length_mm", "Distância focal (mm)",
+        CaptureSubtype.EXPOSURE, ColumnDType.FLOAT, CATEGORY_CAPTURE_EXPOSURE,
+    )
+    _captura(
+        "focal_length_35mm", "Distância focal equiv. 35mm",
+        CaptureSubtype.EXPOSURE, ColumnDType.FLOAT, CATEGORY_CAPTURE_EXPOSURE,
+        descricao="Comparável entre sensores de tamanhos diferentes.",
+    )
+    _captura(
+        "orientation", "Orientação",
+        CaptureSubtype.EXPOSURE, ColumnDType.INT, CATEGORY_CAPTURE_EXPOSURE,
+        descricao="Explica rotação aparente do rosto sem que a foto tenha sido girada.",
+    )
+    _captura(
+        "image_width", "Largura original (px)",
+        CaptureSubtype.EXPOSURE, ColumnDType.INT, CATEGORY_CAPTURE_EXPOSURE,
+        descricao="Dimensão do arquivo de origem, antes de qualquer recorte.",
+    )
+    _captura(
+        "image_height", "Altura original (px)",
+        CaptureSubtype.EXPOSURE, ColumnDType.INT, CATEGORY_CAPTURE_EXPOSURE,
+    )
+    _captura(
+        "software", "Software",
+        CaptureSubtype.SOFTWARE, ColumnDType.STR, CATEGORY_CAPTURE_SOFTWARE,
+        descricao=(
+            "O que gravou ou editou o arquivo. Sinal de reprocessamento: "
+            "uma imagem que passou por editor não é a captura original."
+        ),
+    )
+    _captura(
+        "gps_latitude", "Latitude",
+        CaptureSubtype.GEOLOCATION, ColumnDType.FLOAT, CATEGORY_CAPTURE_GEO,
+        descricao="Dado pessoal — atenção ao compartilhar o dataset.",
+    )
+    _captura(
+        "gps_longitude", "Longitude",
+        CaptureSubtype.GEOLOCATION, ColumnDType.FLOAT, CATEGORY_CAPTURE_GEO,
+        descricao="Dado pessoal — atenção ao compartilhar o dataset.",
+    )
+    _captura(
+        "gps_altitude", "Altitude (m)",
+        CaptureSubtype.GEOLOCATION, ColumnDType.FLOAT, CATEGORY_CAPTURE_GEO,
+    )
+    _captura(
+        "exif_json", "Metadados completos (JSON)",
+        CaptureSubtype.RAW, ColumnDType.STR, CATEGORY_CAPTURE_RAW,
+        descricao=(
+            "Dump íntegro do que foi lido do arquivo — EXIF, XMP, IPTC, "
+            "maker notes. É daqui que a aba de metadados lê; as colunas "
+            "acima são só os campos promovidos para consulta rápida."
+        ),
+    )
+
     specs["error"] = ColumnSpec(
         name="error", label="Erro",
         role=ColumnRole.METADATA, source=ColumnSource.DERIVED,

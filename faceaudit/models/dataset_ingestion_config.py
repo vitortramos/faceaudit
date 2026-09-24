@@ -38,6 +38,10 @@ class DatasetIngestionConfig:
     # 4. Flags de etapas (binárias — liga/desliga cada serviço)
     compute_ff: bool = True      # ForensicFace (embedding + detecção)
     compute_ofiq: bool = True    # Qualidade ISO
+    # Metadados embutidos (EXIF/XMP/IPTC) da foto ORIGINAL. Desligado por
+    # padrão: só faz sentido em dataset de fotos originais — recorte e
+    # alinhamento gravam pixel novo, sem metadado de captura.
+    extract_exif: bool = False
     compute_serfiq: bool = True  # Qualidade Estocástica
 
     # 5. Parâmetros operacionais do ForensicFace

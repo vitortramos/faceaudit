@@ -105,12 +105,23 @@ class MainGuiController:
         library = Path(self.app_config.paths.library)
         storage_path = library / "datasets"
 
+        # Serviço de metadados: construção barata (só resolve o caminho do
+        # executável), então não entra na dança de try/except dos serviços
+        # de IA. Sem ExifTool configurado ele cai no leitor do Pillow.
+        from faceaudit.services.exif_extraction_service import ExifExtractionService
+
+        exif_service = ExifExtractionService(
+            getattr(getattr(self.app_config, "exiftool", None),
+                    "exiftool_exe_path", "exiftool")
+        )
+
         pipeline_extracao = FeatureExtractionPipeline(
             hash_service=self.container.hash_service(),
             ff_service=ff_service,
             ofiq_service=ofiq_service,
             serfiq_service=serfiq_service,
             storage_path=storage_path,
+            exif_service=exif_service,
         )
 
         self.manager_view = DatasetManagerView()

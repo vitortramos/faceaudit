@@ -37,6 +37,26 @@ class DetailPanelController(QtCore.QObject):
         """
         self._dataset = dataset
 
+    def _carregar_metadados_embutidos(self, face_data) -> None:
+        """Preenche a aba de metadados a partir da coluna `exif_json`."""
+        import json
+
+        bruto = face_data.get("exif_json") if hasattr(face_data, "get") else None
+        if bruto is None or (isinstance(bruto, float) and pd.isna(bruto)):
+            self.view.clear_exif_metadata()
+            return
+        try:
+            tags = json.loads(bruto) if isinstance(bruto, str) else dict(bruto)
+        except (ValueError, TypeError):
+            # Conteúdo ilegível não pode virar "sem metadados": o registro
+            # TEM o campo, e o perito precisa saber que ele não abriu.
+            self.view.clear_exif_metadata(
+                "A coluna de metadados existe mas não pôde ser lida "
+                "(conteúdo inválido)."
+            )
+            return
+        self.view.set_exif_metadata(tags)
+
     def load_face_data(self, face_data: pd.Series):
         """
         Método principal: Recebe os dados de uma face e preenche a UI.
@@ -46,6 +66,7 @@ class DetailPanelController(QtCore.QObject):
             self.view.reset_image_placeholder()
             self.view.clear_general_info()
             self.view.clear_quality_metrics()
+            self.view.clear_exif_metadata("Nenhum registro selecionado.")
             return
 
         # 1. Lógica de Imagem (Verificação de Disco). Resolve via dataset
@@ -88,6 +109,11 @@ class DetailPanelController(QtCore.QObject):
         
         if pd.notna(face_data.get('det_score')):
             self.view.add_general_info("Detecção Score", f"{face_data.get('det_score'):.4f}")
+
+        # 2.b Metadados embutidos — o dump completo vive numa coluna só
+        # (`exif_json`); as colunas de captura promovidas são atalhos para
+        # consulta, não a fonte.
+        self._carregar_metadados_embutidos(face_data)
 
         # 3. Lógica de Qualidade (Filtro de Colunas OFIQ)
         self.view.clear_quality_metrics()
