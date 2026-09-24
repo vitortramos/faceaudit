@@ -134,12 +134,14 @@ class ManagerToolbarView(QFrame):
         self.btn_load = self.arquivo_ribbon.btn_load
         self.btn_save = self.arquivo_ribbon.btn_save
         self.btn_save_as = self.arquivo_ribbon.btn_save_as
+        self.btn_save_selected = self.arquivo_ribbon.btn_save_selected
         self.btn_close = self.arquivo_ribbon.btn_close
         self.btn_save_to_library = self.arquivo_ribbon.btn_save_to_library
         # Movido de Dataset → Arquivo
         self.btn_send_to_strategy = self.arquivo_ribbon.btn_send_to_strategy
 
         # Dataset
+        self.btn_remove_selected = self.dataset_ribbon.btn_remove_selected
         self.btn_enrich = self.dataset_ribbon.btn_enrich
         self.btn_balance = self.dataset_ribbon.btn_balance
         self.btn_merge = self.dataset_ribbon.btn_merge
@@ -172,8 +174,9 @@ class ManagerToolbarView(QFrame):
         buttons = [
             # Arquivo
             self.btn_close, self.btn_save, self.btn_save_as,
-            self.btn_save_to_library,
+            self.btn_save_selected, self.btn_save_to_library,
             # Dataset
+            self.btn_remove_selected,
             self.btn_enrich, self.btn_balance,
             self.btn_merge, self.btn_split, self.btn_compare,
             self.btn_stats, self.btn_analyze,

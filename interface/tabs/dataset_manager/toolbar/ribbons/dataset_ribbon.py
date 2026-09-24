@@ -42,6 +42,16 @@ class DatasetRibbon(ResponsiveRibbon):
         layout.addWidget(self.btn_clear_filter)
         layout.addWidget(ToolbarSeparator())
 
+        # ── Exclusão de registros selecionados ──
+        self.btn_remove_selected = ToolbarButton(
+            "Excluir Selecionados", "🗑️", style="danger",
+            tooltip="Remove do dataset os registros selecionados. Nenhum "
+                    "arquivo de imagem é apagado; a exclusão é registrada "
+                    "na cadeia de custódia e efetivada ao salvar.",
+        )
+        layout.addWidget(self.btn_remove_selected)
+        layout.addWidget(ToolbarSeparator())
+
         # ── Modificar Caminhos (corrige path_root / relativiza / copia) ──
         self.btn_modify_paths = ToolbarButton(
             "Modificar Caminhos", "🗂",

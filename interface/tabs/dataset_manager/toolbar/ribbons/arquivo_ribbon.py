@@ -43,9 +43,16 @@ class ArquivoRibbon(ResponsiveRibbon):
         # Persistência
         self.btn_save = ToolbarButton("Salvar", "💾")
         self.btn_save_as = ToolbarButton("Salvar Como...", "💾")
+        self.btn_save_selected = ToolbarButton(
+            "Salvar Selecionados", "🧩",
+            tooltip="Grava os registros selecionados como um dataset novo, "
+                    "sem trocar o que está aberto. Permite copiar as "
+                    "imagens junto (autocontido).",
+        )
 
         layout.addWidget(self.btn_save)
         layout.addWidget(self.btn_save_as)
+        layout.addWidget(self.btn_save_selected)
         layout.addWidget(ToolbarSeparator())
 
         # Exportação

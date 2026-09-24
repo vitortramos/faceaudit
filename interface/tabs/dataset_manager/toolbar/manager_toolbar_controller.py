@@ -14,6 +14,8 @@ class ManagerToolbarController(QtCore.QObject):
     action_close = QtCore.pyqtSignal()
     action_save = QtCore.pyqtSignal()
     action_save_as = QtCore.pyqtSignal()
+    action_save_selected = QtCore.pyqtSignal()
+    action_remove_selected = QtCore.pyqtSignal()
     
     # Sinais de Ferramentas
     action_enrich = QtCore.pyqtSignal()
@@ -67,6 +69,10 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_close.clicked.connect(self.action_close.emit)
         self.view.btn_save.clicked.connect(self.action_save.emit)
         self.view.btn_save_as.clicked.connect(self.action_save_as.emit)
+        self.view.btn_save_selected.clicked.connect(self.action_save_selected.emit)
+        self.view.btn_remove_selected.clicked.connect(
+            self.action_remove_selected.emit
+        )
         
         self.view.btn_enrich.clicked.connect(self.action_enrich.emit)
         self.view.btn_balance.clicked.connect(self.action_balance.emit)

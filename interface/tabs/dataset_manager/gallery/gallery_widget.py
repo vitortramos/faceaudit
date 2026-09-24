@@ -262,17 +262,25 @@ class GalleryWidget(QtWidgets.QWidget):
         self._populate_context_menu(menu)
         menu.exec(self.list_widget.viewport().mapToGlobal(position))
 
+    def selected_indexes(self) -> list:
+        """Índices (em `dataset.faces`) dos itens selecionados, ordenados.
+
+        Público porque a toolbar também precisa da seleção — antes só o
+        menu de contexto a conhecia, por dentro.
+        """
+        return sorted({
+            it.data(QtCore.Qt.ItemDataRole.UserRole)
+            for it in self.list_widget.selectedItems()
+            if isinstance(it.data(QtCore.Qt.ItemDataRole.UserRole), int)
+        })
+
     def _populate_context_menu(self, menu) -> None:
         """Popula o menu de contexto da galeria. Ações por seleção (N faces):
         comparar par (exatamente 2), remover, definir valor de coluna e criar
         dataset a partir da seleção. Cada ação emite um sinal; o controller faz
         a mutação sobre `dataset.faces` (cujo índice é o que cada item carrega).
         Separado do exec() para ser testável sem bloquear no event loop."""
-        selected_idxs = sorted({
-            it.data(QtCore.Qt.ItemDataRole.UserRole)
-            for it in self.list_widget.selectedItems()
-            if isinstance(it.data(QtCore.Qt.ItemDataRole.UserRole), int)
-        })
+        selected_idxs = self.selected_indexes()
         n = len(selected_idxs)
 
         # ── Comparar par (exatamente 2) ──

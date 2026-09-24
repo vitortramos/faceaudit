@@ -49,6 +49,12 @@ from faceaudit.services.audit_log_service import AuditLogService
 from faceaudit.services.hash_service import HashService
 
 
+# Quantos identificadores de face a entrada de auditoria lista antes de
+# truncar. O hash do conjunto completo continua gravado, então a prova
+# de pertinência não se perde com o truncamento.
+_MAX_AUDIT_IDENTIFIERS = 50
+
+
 class DatasetManagerController(QtCore.QObject):
     """
     Controlador Mestre do Gerenciamento de Datasets.
@@ -193,6 +199,20 @@ class DatasetManagerController(QtCore.QObject):
         self.gallery_widget.set_column_value_requested.connect(
             self._on_gallery_set_column_value)
 
+        # As MESMAS ações pela tabela (que emite caminhos, não índices) e
+        # pela toolbar (que lê a seleção da visão ativa). Um handler só por
+        # ação — implementações paralelas divergem, e a que divergir vai
+        # esquecer a cadeia de custódia.
+        if hasattr(self.table_ctrl, "remove_faces_requested"):
+            self.table_ctrl.remove_faces_requested.connect(self.excluir_selecionados)
+        if hasattr(self.table_ctrl, "save_selection_requested"):
+            self.table_ctrl.save_selection_requested.connect(
+                lambda _paths: self.fluxo_salvar_selecionados())
+        self.toolbar_ctrl.action_remove_selected.connect(
+            lambda: self.excluir_selecionados())
+        self.toolbar_ctrl.action_save_selected.connect(
+            self.fluxo_salvar_selecionados)
+
         # PR 16 — Adicionar à Biblioteca Global
         if hasattr(self.toolbar_ctrl, "action_save_to_library"):
             self.toolbar_ctrl.action_save_to_library.connect(self.fluxo_salvar_biblioteca)
@@ -312,6 +332,48 @@ class DatasetManagerController(QtCore.QObject):
                     out.append(p)
         return out
 
+    def _current_selection_paths(self) -> list:
+        """`image_path` do que está selecionado na visão ATIVA.
+
+        Tabela e galeria têm espaços de índice diferentes (a tabela pode
+        estar ordenada), então a moeda comum entre elas é o caminho da
+        imagem — que é também a chave usada para casar de volta com
+        `dataset.faces`. Sem este ponto único, cada botão precisaria saber
+        em qual visão o usuário está, e isso vazaria para os handlers.
+        """
+        if self._view_stack.currentIndex() == 1:
+            return self._gallery_target_paths(self.gallery_widget.selected_indexes())
+        return self.table_ctrl.selected_image_paths()
+
+    def _faces_from_paths(self, paths, action_label: str):
+        """Faces de `dataset.faces` correspondentes a `paths`, ou None.
+
+        Mesma proteção do caminho da galeria: se um `image_path` casar com
+        MAIS faces do que as selecionadas (imagens de conteúdo idêntico
+        apontando para o mesmo arquivo), aborta em vez de afetar faces que
+        o usuário não escolheu.
+        """
+        if not paths:
+            QMessageBox.information(
+                self.view, action_label,
+                "Selecione ao menos um registro.",
+            )
+            return None
+        n_selected = len(paths)
+        self.sync_changes_from_table()          # não perder edições da tabela
+        path_set = set(paths)
+        matched = [f for f in self.dataset.faces
+                   if getattr(f, "image_path", None) in path_set]
+        if len(matched) > n_selected:
+            QMessageBox.warning(
+                self.view, action_label,
+                "Algumas faces selecionadas compartilham o caminho de imagem com "
+                "faces NÃO selecionadas (imagens de conteúdo idêntico podem "
+                "apontar para o mesmo arquivo). Para não afetar faces que você "
+                "não escolheu, a operação foi cancelada.")
+            return None
+        return matched
+
     def _gallery_match_after_sync(self, idxs, action_label: str):
         """Captura os caminhos da seleção, sincroniza a tabela e devolve as
         faces correspondentes em self.dataset.faces. Aborta (devolve None) se um
@@ -347,25 +409,95 @@ class DatasetManagerController(QtCore.QObject):
         self.set_dirty(True)
 
     def _on_gallery_remove_faces(self, idxs) -> None:
-        matched = self._gallery_match_after_sync(idxs, "Remover do dataset")
+        """Entrada vinda do menu de contexto da galeria (índices da galeria)."""
+        self.excluir_selecionados(self._gallery_target_paths(idxs))
+
+    def excluir_selecionados(self, paths=None) -> None:
+        """Exclui do dataset os registros selecionados.
+
+        `paths` vem do menu de contexto que disparou a ação; sem ele, lê a
+        seleção da visão ativa (é o caminho do botão da toolbar).
+        """
+        if not self.dataset:
+            return
+        rotulo = "Excluir registros"
+        matched = self._faces_from_paths(
+            paths if paths is not None else self._current_selection_paths(), rotulo,
+        )
         if not matched:
             return
-        n = len(matched)
-        res = QMessageBox.question(
-            self.view, "Remover do dataset",
-            f"Remover {n} face(s) do dataset?\n\n"
-            "Só remove do dataset — os arquivos de imagem NÃO são apagados. "
-            "Efetivado ao Salvar.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No)
-        if res != QMessageBox.StandardButton.Yes:
+
+        from .remove_faces_dialog import RemoveFacesDialog
+
+        dlg = RemoveFacesDialog(
+            self.view, n_faces=len(matched), nome_dataset=self.dataset.name or "",
+        )
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
+        justificativa = dlg.justificativa()
+
+        n = len(matched)
         matched_ids = {id(f) for f in matched}      # remove EXATAMENTE as faces casadas
         self.dataset.faces = [f for f in self.dataset.faces if id(f) not in matched_ids]
+        # Com filtro ativo, o recorte na tela e o dataset de origem
+        # compartilham os MESMOS objetos FaceInfo. Remover só da lista do
+        # recorte deixava as faces vivas no original — e "Limpar filtro"
+        # as trazia de volta, desfazendo a exclusão sem avisar.
+        if self.dataset_original is not None and self.dataset_original is not self.dataset:
+            self.dataset_original.faces = [
+                f for f in self.dataset_original.faces if id(f) not in matched_ids
+            ]
+
+        self._audit_remocao_de_faces(matched, justificativa)
         self._refresh_after_structural_change()
         QMessageBox.information(
-            self.view, "Removido",
-            f"{n} face(s) removida(s) do dataset. Salve para efetivar.")
+            self.view, "Registros excluídos",
+            f"{n} registro(s) excluído(s) do dataset. Salve para efetivar.")
+
+    def _audit_remocao_de_faces(self, faces, justificativa: str) -> None:
+        """Registra a exclusão na cadeia de custódia.
+
+        Grava no ATO da exclusão — é o momento e o autor da decisão. Como
+        a remoção só vai para o arquivo no save seguinte, a entrada nasce
+        marcada como pendente; o save posterior grava o hash do arquivo
+        resultante e fecha o elo.
+
+        Identificar o que saiu importa, mas listar 5 mil linhas não serve a
+        ninguém: guarda os primeiros hashes e um hash do conjunto inteiro,
+        que permite provar depois se um registro específico estava ou não
+        entre os excluídos.
+        """
+        import hashlib
+
+        def _ident(face) -> str:
+            return (
+                getattr(face, "hash", None)
+                or getattr(face, "image_path", None)
+                or "(sem identificação)"
+            )
+
+        identificadores = [_ident(f) for f in faces]
+        conjunto = hashlib.sha256(
+            "\n".join(sorted(identificadores)).encode("utf-8")
+        ).hexdigest()
+        try:
+            self._audit(
+                AuditOperation.REMOVE_FACES,
+                f"{len(faces)} registro(s) excluído(s) do dataset."
+                + (f" Justificativa: {justificativa}" if justificativa else ""),
+                metadata={
+                    "removed_count": len(faces),
+                    "justification": justificativa or None,
+                    "removed_identifiers": identificadores[:_MAX_AUDIT_IDENTIFIERS],
+                    "removed_identifiers_truncated": (
+                        len(identificadores) > _MAX_AUDIT_IDENTIFIERS
+                    ),
+                    "removed_set_sha256": conjunto,
+                    "pending_until_save": True,
+                },
+            )
+        except Exception:
+            pass  # audit é best-effort — nunca impede a operação do perito
 
     def _on_gallery_create_dataset_from_selection(self, idxs) -> None:
         import copy as _copy
@@ -1176,6 +1308,7 @@ class DatasetManagerController(QtCore.QObject):
 
     def _ask_save_as_options(
         self, destination: str, *, ask_images: bool, ask_which_stays: bool,
+        a_gravar=None, origem=None,
     ):
         """Abre o diálogo de opções do Salvar Como.
 
@@ -1185,14 +1318,13 @@ class DatasetManagerController(QtCore.QObject):
         """
         from .save_as_options_dialog import SaveAsOptionsDialog
 
-        origem = self.dataset_original if ask_which_stays else None
         dlg = SaveAsOptionsDialog(
             self.view,
             ask_images=ask_images,
             ask_which_stays=ask_which_stays,
             nome_destino=Path(destination).stem,
             nome_origem=getattr(origem, "name", "") or "dataset de origem",
-            n_salvar=len(self.dataset) if self.dataset else 0,
+            n_salvar=len(a_gravar) if a_gravar else 0,
             n_origem=len(origem) if origem else 0,
         )
         if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
@@ -1200,13 +1332,75 @@ class DatasetManagerController(QtCore.QObject):
         return dlg.portable(), dlg.keep_original()
 
     def fluxo_salvar_como(self):
-        if not self.dataset: return
-        self.sync_changes_from_table()
+        """Salvar Como do dataset aberto.
 
-        default_name = f"{self.dataset.name}.parquet"
+        Com filtro ativo, a origem é o dataset de onde o recorte veio — é
+        ela que pode continuar na tela depois de gravar.
+        """
+        if not self.dataset:
+            return
+        self.sync_changes_from_table()
+        self._executar_salvar_como(
+            self.dataset, origem=self.dataset_original, titulo="Salvar Como",
+        )
+
+    def fluxo_salvar_selecionados(self):
+        """Grava a seleção como um dataset novo, sem sair do que está aberto.
+
+        É o mesmo Salvar Como com a seleção no lugar do filtro: mesmo
+        diálogo de opções (autocontido × referenciar, e qual dataset fica
+        aberto), mesma cópia de imagens em worker, mesma finalização com
+        audit e sidecar. O padrão continua sendo permanecer no dataset de
+        origem — deriva-se vários recortes do mesmo dataset grande.
+        """
+        subset = self._montar_subset_da_selecao()
+        if subset is None:
+            return
+        self._executar_salvar_como(
+            subset, origem=self.dataset, titulo="Salvar Selecionados",
+        )
+
+    def _montar_subset_da_selecao(self):
+        """FaceDataset com as faces selecionadas, ou None se desistir.
+
+        Não toca na tela: quem decide o que fica aberto é o fluxo de
+        gravação, depois de perguntar.
+        """
+        import copy as _copy
+        from PyQt6.QtWidgets import QInputDialog
+
+        if not self.dataset:
+            return None
+        matched = self._faces_from_paths(
+            self._current_selection_paths(), "Salvar Selecionados",
+        )
+        if not matched:
+            return None
+
+        sugerido = f"{self.dataset.name}_sel"
+        nome, ok = QInputDialog.getText(
+            self.view, "Salvar Selecionados",
+            f"Nome do novo dataset ({len(matched)} registro(s)):", text=sugerido)
+        if not ok or not nome.strip():
+            return None
+
+        subset = FaceDataset(
+            name=nome.strip(),
+            description=getattr(self.dataset, "description", "") or "",
+            faces=[_copy.copy(f) for f in matched],
+            column_specs=dict(self.dataset.column_specs) if self.dataset.column_specs else {},
+            path_mode=self.dataset.path_mode, path_root=self.dataset.path_root,
+            is_aligned=self.dataset.is_aligned,
+        )
+        subset._parquet_dir = self.dataset._parquet_dir
+        subset.hash = None
+        return subset
+
+    def _executar_salvar_como(self, a_gravar, origem, *, titulo: str):
+        default_name = f"{a_gravar.name}.parquet"
         init_path = os.path.join(self._get_initial_dir(), default_name)
 
-        path, _ = QFileDialog.getSaveFileName(self.view, "Salvar Como", init_path, "Parquet (*.parquet)")
+        path, _ = QFileDialog.getSaveFileName(self.view, titulo, init_path, "Parquet (*.parquet)")
         if not path:
             return
 
@@ -1216,9 +1410,9 @@ class DatasetManagerController(QtCore.QObject):
         perguntar_imagens = (
             origem_dir is not None and Path(path).parent.resolve() != origem_dir
         )
-        # Dataset aberto: só há duas opções quando o que está na tela é
-        # recorte de um dataset maior (filtro ativo).
-        perguntar_qual_fica = self.dataset_original is not None
+        # Dataset aberto: só há duas opções quando existe um dataset de
+        # origem por trás do que será gravado (filtro ativo, ou seleção).
+        perguntar_qual_fica = origem is not None
 
         manter_origem = False
         portatil = None
@@ -1227,26 +1421,29 @@ class DatasetManagerController(QtCore.QObject):
                 path,
                 ask_images=perguntar_imagens,
                 ask_which_stays=perguntar_qual_fica,
+                a_gravar=a_gravar, origem=origem,
             )
             if escolha is None:
                 return
             portatil, manter_origem = escolha
 
-        self.dataset.name = Path(path).stem
+        a_gravar.name = Path(path).stem
         if portatil:
             # Cópia de imagens é pesada — vai para worker, e o parquet é
             # gravado quando ela termina.
             self._pending_save_as_path = path
             self._pending_save_as_keep_original = manter_origem
-            self._iniciar_worker_salvar_como_portatil(path)
+            self._pending_save_as_dataset = a_gravar
+            self._pending_save_as_origin = origem
+            self._iniciar_worker_salvar_como_portatil(path, a_gravar)
             return
         self._last_path_rebase = None
         if portatil is False:
             from faceaudit.services.dataset_localization_service import (
                 prepare_dataset_for_destination,
             )
-            self.dataset, relatorio = prepare_dataset_for_destination(
-                self.dataset, path, portable=False,
+            a_gravar, relatorio = prepare_dataset_for_destination(
+                a_gravar, path, portable=False,
             )
             # Referenciar não é só "absolutizar": o serviço tenta primeiro
             # reapontar o path_root para a MESMA pasta de imagens, o que
@@ -1254,26 +1451,33 @@ class DatasetManagerController(QtCore.QObject):
             # inteira para outra máquina.
             self._last_path_rebase = relatorio.rebase
 
-        self._gravar_e_finalizar_salvar_como(path, manter_origem=manter_origem)
+        self._gravar_e_finalizar_salvar_como(
+            path, a_gravar, origem, manter_origem=manter_origem,
+        )
 
     def _gravar_e_finalizar_salvar_como(
-        self, path: str, *, manter_origem: bool = False,
+        self, path: str, a_gravar=None, origem=None, *,
+        manter_origem: bool = False,
     ) -> None:
         """Grava o parquet no destino e fecha o Save As (sidecar, audit, UI).
 
-        Compartilhado pelos dois caminhos: o direto e o portátil (que chega
-        aqui depois que o worker termina de copiar as imagens).
+        Compartilhado pelos dois caminhos (direto e portátil, que chega aqui
+        depois que o worker copia as imagens) e pelas duas origens de
+        conteúdo: o dataset aberto e um recorte da seleção.
 
-        Com `manter_origem`, o recorte é gravado no disco mas quem continua
-        na tela é o dataset de origem — o fluxo típico é derivar vários
-        recortes do mesmo dataset grande, e trocar para o recém-salvo
-        obrigava a fechar e reabrir o grande a cada um.
+        `a_gravar` é o que vai para o disco; `origem` é o dataset que pode
+        continuar na tela. Com `manter_origem`, o recorte é gravado mas quem
+        fica é a origem — o fluxo típico é derivar vários recortes do mesmo
+        dataset grande, e trocar para o recém-salvo obrigava a fechar e
+        reabrir o grande a cada um.
         """
+        if a_gravar is None:
+            a_gravar = self.dataset
         old_path = self.current_path
         rebase = getattr(self, "_last_path_rebase", None)
         self._last_path_rebase = None
-        self.dataset.name = Path(path).stem
-        self.dataset.to_parquet(path)
+        a_gravar.name = Path(path).stem
+        a_gravar.to_parquet(path)
         # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
         # quando o usuário faz Save As: copia o `.audit.json` antigo
         # para o novo path antes de adicionar a entrada SAVE_AS,
@@ -1283,20 +1487,23 @@ class DatasetManagerController(QtCore.QObject):
                 AuditLogService.migrate_sidecar(old_path, path)
             except Exception:
                 pass  # se a migração falhar, segue com chain nova
-        salvo_nome = self.dataset.name
-        salvo_linhas = len(self.dataset)
-        salvo_ids = self.dataset.number_of_identities
+        salvo_nome = a_gravar.name
+        salvo_linhas = len(a_gravar)
+        salvo_ids = a_gravar.number_of_identities
 
-        if manter_origem and self.dataset_original is not None:
-            # Volta ao dataset de origem, no arquivo dele. O `current_path`
+        if manter_origem and origem is not None:
+            # A origem continua na tela, no arquivo DELA. O `current_path`
             # tem de acompanhar: se ficasse apontando para o recorte, um
-            # "Salvar" seguinte gravaria o dataset grande por cima dele.
-            origem = self.dataset_original
-            self.dataset_original = None
-            self.current_filter_config = FilterConfig()
+            # "Salvar" seguinte gravaria a origem por cima dele.
+            if origem is self.dataset_original:
+                # Era um recorte de filtro: a origem volta inteira, então o
+                # estado de filtro se desfaz.
+                self.dataset_original = None
+                self.current_filter_config = FilterConfig()
             self.set_dirty(False)
-            # `carregar_dataset_na_tela` já deriva o estado de filtro
-            # (agora sem origem: não filtrado) e atualiza a status bar.
+            # `carregar_dataset_na_tela` deriva o estado de filtro e
+            # atualiza a status bar — preserva o filtro quando o que foi
+            # gravado era uma seleção e a origem já era um recorte.
             self.carregar_dataset_na_tela(origem, old_path)
         else:
             # O recorte salvo passa a ser um dataset por si — desligar o
@@ -1307,7 +1514,7 @@ class DatasetManagerController(QtCore.QObject):
             self.current_filter_config = FilterConfig()
             self.current_path = path
             self.set_dirty(False)
-            self.carregar_dataset_na_tela(self.dataset, path)
+            self.carregar_dataset_na_tela(a_gravar, path)
 
         self._audit(
             AuditOperation.SAVE_AS,
@@ -1336,7 +1543,7 @@ class DatasetManagerController(QtCore.QObject):
                 self.view, "Caminhos das imagens", rebase.message,
             )
 
-    def _iniciar_worker_salvar_como_portatil(self, path: str) -> None:
+    def _iniciar_worker_salvar_como_portatil(self, path: str, a_gravar=None) -> None:
         """Copia as imagens para junto do destino, em worker.
 
         Reusa o worker de "Modificar Caminhos" — é exatamente a mesma
@@ -1347,7 +1554,7 @@ class DatasetManagerController(QtCore.QObject):
         from faceaudit.enums.localization_naming import NamingStrategy
 
         worker = ModifyPathsWorker(
-            dataset=self.dataset,
+            dataset=a_gravar if a_gravar is not None else self.dataset,
             target_dir=Path(path).parent,
             mode=LocalizationMode.COPY_ORIGINALS,
             naming=NamingStrategy.PRESERVE,
@@ -1355,7 +1562,7 @@ class DatasetManagerController(QtCore.QObject):
         )
         self._run_worker(
             worker,
-            label=f"Copiando imagens: {self.dataset.name}",
+            label=f"Copiando imagens: {worker.dataset.name}",
             allow_cancel=True,
             determinate=True,
             use_log_dialog=True,
@@ -1412,13 +1619,15 @@ class DatasetManagerController(QtCore.QObject):
         # e copiou as imagens para `images/` dentro dela. O parquet vai
         # para lá também — é o que mantém `path_root` válido.
         destino = Path(result.target_dir) / Path(path).name
-        self.dataset = adopt_identity_from(
-            result.dataset, self.dataset, destino.parent,
-        )
+        original = getattr(self, "_pending_save_as_dataset", None) or self.dataset
+        a_gravar = adopt_identity_from(result.dataset, original, destino.parent)
+        origem = getattr(self, "_pending_save_as_origin", None)
         manter_origem = getattr(self, "_pending_save_as_keep_original", False)
         self._pending_save_as_keep_original = False
+        self._pending_save_as_dataset = None
+        self._pending_save_as_origin = None
         self._gravar_e_finalizar_salvar_como(
-            str(destino), manter_origem=manter_origem,
+            str(destino), a_gravar, origem, manter_origem=manter_origem,
         )
 
     # ── PR 16: Adicionar dataset à Biblioteca Global ──────────────────────

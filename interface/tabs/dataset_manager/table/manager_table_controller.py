@@ -18,6 +18,11 @@ class ManagerTableController(QtCore.QObject):
     """
 
     face_selected = QtCore.pyqtSignal(object)
+    # Ações sobre os REGISTROS selecionados. Carregam `image_path` — a
+    # tabela pode estar ordenada, então o índice de linha não corresponde
+    # à posição em `dataset.faces`; o caminho é a chave estável.
+    remove_faces_requested = QtCore.pyqtSignal(list)
+    save_selection_requested = QtCore.pyqtSignal(list)
     # Sinal emitido quando o schema do dataset muda em runtime (visibilidade
     # de coluna, adição de coluna custom, etc.). O controller pai escuta
     # para marcar dirty + atualizar `FaceDataset.column_specs`.
@@ -101,6 +106,28 @@ class ManagerTableController(QtCore.QObject):
 
     def get_current_dataframe(self):
         return self.model.get_dataframe()
+
+    def selected_image_paths(self) -> list:
+        """`image_path` das linhas com alguma célula selecionada.
+
+        A tabela seleciona CÉLULAS (para permitir edição), então "registro
+        selecionado" é toda linha que tenha ao menos uma célula na seleção
+        — a mesma regra que o painel de detalhes já usa para saber qual
+        face mostrar. Devolve na ordem das linhas, sem repetir.
+        """
+        modelo_sel = self.view.selectionModel()
+        if modelo_sel is None:
+            return []
+        linhas = sorted({idx.row() for idx in modelo_sel.selectedIndexes()})
+        caminhos = []
+        for linha in linhas:
+            dados = self.model.get_row_data(linha)
+            if dados is None:
+                continue
+            caminho = dados.get("image_path") if hasattr(dados, "get") else None
+            if caminho:
+                caminhos.append(str(caminho))
+        return caminhos
 
     def _on_selection_changed(self, selected=None, deselected=None):
         """
@@ -350,6 +377,28 @@ class ManagerTableController(QtCore.QObject):
         # Ação de selecionar coluna inteira
         action_sel_col = menu.addAction(f"Selecionar Toda Coluna '{col_label}'")
         action_sel_col.triggered.connect(lambda: self._action_select_whole_column(col_idx))
+
+        # ── Ações sobre os REGISTROS selecionados ──
+        # As mesmas da galeria: antes só existiam lá, então quem trabalha na
+        # tabela (a visão padrão) precisava trocar de modo para excluir ou
+        # derivar um dataset da seleção.
+        caminhos = self.selected_image_paths()
+        n_reg = len(caminhos)
+
+        menu.addSeparator()
+        act_save_sel = menu.addAction(f"🧩 Salvar seleção como novo dataset… ({n_reg})")
+        act_save_sel.setEnabled(n_reg >= 1)
+        act_save_sel.triggered.connect(
+            lambda _checked=False, c=list(caminhos):
+                self.save_selection_requested.emit(c)
+        )
+
+        act_remove_rows = menu.addAction(f"🗑️ Excluir registros selecionados ({n_reg})")
+        act_remove_rows.setEnabled(n_reg >= 1)
+        act_remove_rows.triggered.connect(
+            lambda _checked=False, c=list(caminhos):
+                self.remove_faces_requested.emit(c)
+        )
 
         menu.addSeparator()
 

@@ -32,6 +32,11 @@ class AuditOperation(str, Enum):
     ADD_COLUMN = "add_column"
     REMOVE_COLUMN = "remove_column"
     RENAME_COLUMN = "rename_column"
+    # Exclusão de REGISTROS (faces) do dataset — distinta de REMOVE_COLUMN,
+    # que mexe no schema. Registrada no ato da exclusão, com a justificativa
+    # do perito; efetiva-se no save seguinte, que grava o hash do arquivo
+    # resultante e fecha o elo da cadeia.
+    REMOVE_FACES = "remove_faces"
 
     # Pipelines de processamento
     ENRICH = "enrich"
