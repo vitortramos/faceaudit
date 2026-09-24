@@ -79,6 +79,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._project: Optional[FaceAuditProject] = None
         self._current_definition: Optional[LRStrategyDefinition] = None
         self._definitions: List[LRStrategyDefinition] = []
+        # (resource_id, coluna exigida) dos datasets primários que o filtro
+        # de embedding tirou dos dropdowns — preenchido por
+        # `_collect_editor_resources`, mostrado desabilitado nos combos.
+        self._hidden_primary_datasets: List[tuple] = []
         self._global_storage = global_storage
         self._app_config = app_config
 
@@ -1159,8 +1163,12 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 f"Nenhuma das {result.n_processed} imagens do dataset pôde "
                 f"ser encontrada — o dataset não foi importado.\n\n"
                 f"Causa provável: o parquet declara caminhos relativos a uma "
-                f"pasta de imagens que não existe ao lado dele.\n\n"
-                f"Primeiras falhas:\n{motivos}"
+                f"pasta de imagens que não existe ao lado dele (veja a "
+                f"subpasta em path_root).\n\n"
+                f"Primeiras falhas:\n{motivos}\n\n"
+                f"Saídas: corrigir a subpasta no Gerenciador de Datasets "
+                f"(Modificar caminhos), ou importar respondendo NÃO a "
+                f"'Copiar imagens pro projeto?'."
             )
 
         if result.n_failed:
@@ -1169,6 +1177,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
             motivos = "\n".join(
                 f"  • {caminho}" for caminho, _m in list(result.failures)[:5]
             )
+            if result.n_failed > 5:
+                motivos += f"\n  • (… e mais {result.n_failed - 5})"
             resposta = QtWidgets.QMessageBox.warning(
                 self._view,
                 "Imagens não copiadas",
@@ -1597,7 +1607,9 @@ class StrategyManagerV2Controller(QtCore.QObject):
         self._left_panel.populate_resources(all_resources, resource_to_strategy=resource_to_strategy)
 
         editor_resources = self._collect_editor_resources(self._current_definition)
-        self._strategy_editor.update_available_resources(editor_resources)
+        self._strategy_editor.update_available_resources(
+            editor_resources, hidden_datasets=self._hidden_primary_datasets,
+        )
 
         # Combo de embedding precisa refletir adições/remoções de datasets
         # primários (importação, bulk add, remoção de strategy). Sem
@@ -1626,11 +1638,16 @@ class StrategyManagerV2Controller(QtCore.QObject):
         Sem `current_definition` (nenhuma estratégia aberta) retorna lista vazia.
         """
         if current_definition is None:
+            self._hidden_primary_datasets = []
             return []
 
         embedding_col = getattr(current_definition, "embedding_column", None)
         seen_ids: set = set()
         resources: List[StrategyResource] = []
+        # Datasets primários descartados pelo filtro de embedding. Vão pros
+        # dropdowns como item desabilitado com o motivo — sumir calado fazia
+        # o usuário procurar o dataset que ele acabara de importar.
+        hidden: List[tuple] = []
 
         # 1. PRIMÁRIOS — qualquer estratégia ou disk-scan. DATASETS primários
         # são filtrados pela coluna de embedding selecionada.
@@ -1644,6 +1661,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 and r.resource_type == StrategyResourceType.DATASET
             ):
                 if embedding_col not in self._resource_embedding_columns(r):
+                    hidden.append((r.resource_id, embedding_col))
                     continue
             seen_ids.add(r.resource_id)
             resources.append(r)
@@ -1657,6 +1675,7 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 seen_ids.add(r.resource_id)
                 resources.append(r)
 
+        self._hidden_primary_datasets = hidden
         return resources
 
     def _build_resource_to_strategy_map(self) -> dict:
@@ -1900,7 +1919,10 @@ class StrategyManagerV2Controller(QtCore.QObject):
             # globais + produzidos pela própria estratégia. Produzidos por
             # outras estratégias não aparecem nos dropdowns.
             editor_resources = self._collect_editor_resources(definition)
-            self._strategy_editor.load_strategy(definition, available_resources=editor_resources)
+            self._strategy_editor.load_strategy(
+                definition, available_resources=editor_resources,
+                hidden_datasets=self._hidden_primary_datasets,
+            )
             self._reset_execution_state()
             self._refresh_produced_resources()
 

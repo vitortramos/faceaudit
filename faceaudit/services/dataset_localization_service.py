@@ -31,12 +31,15 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Callable, List, Optional, Tuple, Union
 
+from dataclasses import dataclass
+
 from faceaudit.enums.localization_mode import LocalizationMode
 from faceaudit.enums.localization_naming import NamingStrategy
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
 from faceaudit.models.localization_result import LocalizationResult
+from faceaudit.services.dataset_path_rebase_service import PathRebaseResult
 from faceaudit.services.image_path_resolver import resolve_image_path
 
 
@@ -588,13 +591,26 @@ class DatasetLocalizationService:
         return clone
 
 
+@dataclass(frozen=True)
+class DestinationPrepareReport:
+    """O que foi feito para o dataset caber no destino.
+
+    Exatamente um dos dois é preenchido: `localization` quando as imagens
+    foram copiadas (modo portátil), `rebase` quando elas ficaram onde
+    estavam e só os ponteiros foram ajustados.
+    """
+
+    localization: Optional[LocalizationResult] = None
+    rebase: Optional["PathRebaseResult"] = None
+
+
 def prepare_dataset_for_destination(
     dataset: FaceDataset,
     destination_parquet: Union[str, Path],
     *,
     portable: bool,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
-) -> Tuple[FaceDataset, Optional[LocalizationResult]]:
+) -> Tuple[FaceDataset, "DestinationPrepareReport"]:
     """Prepara um dataset para ser gravado em `destination_parquet`.
 
     Existe porque `path_root` é relativo à pasta DO PARQUET: gravar um
@@ -607,30 +623,36 @@ def prepare_dataset_for_destination(
       lá. A pasta do destino passa a ser a unidade movível — quem quiser
       que ela seja exclusiva do dataset deve derivá-la antes com
       `self_contained_dataset_dir`.
-    - `portable=False` — **referenciar**: resolve cada `image_path` para
-      absoluto e devolve o dataset em modo ABSOLUTE. Não duplica disco,
-      mas depende de a máquina enxergar aqueles caminhos.
+    - `portable=False` — **referenciar**: as imagens ficam onde estão.
+      Delega ao `dataset_path_rebase_service`, que prefere REAPONTAR o
+      `path_root` para a mesma pasta de imagens (o dataset segue relativo
+      e sobrevive a mover a árvore inteira) e só absolutiza quando não há
+      caminho relativo possível — outro drive, ou reapontamento que não
+      resolve.
 
     O dataset de entrada nunca é mutado.
 
     Returns:
-        `(dataset_pronto, resultado_da_localizacao)`. O segundo item é
-        None quando `portable=False` (não houve cópia). Em modo portátil,
-        o caller DEVE inspecionar `n_failed`: faces cuja imagem não foi
-        encontrada são descartadas do dataset devolvido.
+        `(dataset_pronto, relatório)`. Em modo portátil o caller DEVE
+        inspecionar `relatorio.localization.n_failed`: faces cuja imagem
+        não foi encontrada são descartadas do dataset devolvido. Em modo
+        referenciar, `relatorio.rebase` descreve o que foi feito com os
+        caminhos — vale mostrar ao usuário e registrar no audit.
     """
+    from faceaudit.services.dataset_path_rebase_service import (
+        rebase_dataset_paths,
+    )
+
     destination = Path(destination_parquet)
     if not portable:
         prepared = copy.deepcopy(dataset)
-        for face in prepared.faces:
-            try:
-                face.image_path = str(dataset.resolve_image_path(face))
-            except Exception:
-                continue  # irresolvível: preserva o que está lá
-        prepared.path_mode = PathMode.ABSOLUTE
-        prepared.path_root = None
+        rebase = rebase_dataset_paths(
+            prepared,
+            source_parquet_dir=getattr(dataset, "_parquet_dir", None),
+            target_parquet_dir=destination.parent,
+        )
         prepared._parquet_dir = destination.parent.resolve()
-        return prepared, None
+        return prepared, DestinationPrepareReport(rebase=rebase)
 
     result = DatasetLocalizationService().localize(
         dataset,
@@ -640,7 +662,7 @@ def prepare_dataset_for_destination(
         progress_callback=progress_callback,
     )
     prepared = adopt_identity_from(result.dataset, dataset, destination.parent)
-    return prepared, result
+    return prepared, DestinationPrepareReport(localization=result)
 
 
 def adopt_identity_from(

@@ -1240,13 +1240,19 @@ class DatasetManagerController(QtCore.QObject):
             self._pending_save_as_keep_original = manter_origem
             self._iniciar_worker_salvar_como_portatil(path)
             return
+        self._last_path_rebase = None
         if portatil is False:
             from faceaudit.services.dataset_localization_service import (
                 prepare_dataset_for_destination,
             )
-            self.dataset, _ = prepare_dataset_for_destination(
+            self.dataset, relatorio = prepare_dataset_for_destination(
                 self.dataset, path, portable=False,
             )
+            # Referenciar não é só "absolutizar": o serviço tenta primeiro
+            # reapontar o path_root para a MESMA pasta de imagens, o que
+            # mantém o dataset relativo e sobrevive a mover a árvore
+            # inteira para outra máquina.
+            self._last_path_rebase = relatorio.rebase
 
         self._gravar_e_finalizar_salvar_como(path, manter_origem=manter_origem)
 
@@ -1264,6 +1270,8 @@ class DatasetManagerController(QtCore.QObject):
         obrigava a fechar e reabrir o grande a cada um.
         """
         old_path = self.current_path
+        rebase = getattr(self, "_last_path_rebase", None)
+        self._last_path_rebase = None
         self.dataset.name = Path(path).stem
         self.dataset.to_parquet(path)
         # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
@@ -1311,10 +1319,22 @@ class DatasetManagerController(QtCore.QObject):
                 "identities": salvo_ids,
                 "dataset_saved": salvo_nome,
                 "kept_source_open": manter_origem,
+                # O que aconteceu com os caminhos das imagens faz parte da
+                # cadeia de custódia: o mesmo dataset gravado noutra pasta
+                # pode ter mudado de ponteiro sem mudar de conteúdo.
+                "path_rebase": (
+                    rebase.action.value if rebase is not None else "not_needed"
+                ),
+                "path_root": rebase.path_root if rebase is not None else None,
             },
             path_override=path,
             hash_file=True,
         )
+
+        if rebase is not None and rebase.changed:
+            QMessageBox.information(
+                self.view, "Caminhos das imagens", rebase.message,
+            )
 
     def _iniciar_worker_salvar_como_portatil(self, path: str) -> None:
         """Copia as imagens para junto do destino, em worker.

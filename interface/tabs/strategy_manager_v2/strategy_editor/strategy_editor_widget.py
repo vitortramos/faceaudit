@@ -275,12 +275,14 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         self,
         definition: LRStrategyDefinition,
         available_resources: Optional[List[StrategyResource]] = None,
+        hidden_datasets: Optional[List[tuple]] = None,
     ) -> None:
         self._definition = definition
         self._refresh_header_label()
 
         for phase_key, _ in _PHASES:
             instr_list, config_panel, results_panel = self._phase_widgets[phase_key]
+            config_panel.set_hidden_datasets(hidden_datasets or [])
             # Propaga a definition pro panel pra que os dropdowns de input
             # possam filtrar derivados por ordem de execução. Setar ANTES
             # de set_available_resources evita um rebuild redundante (sem
@@ -323,8 +325,13 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             f"({self._definition.strategy_id})"
         )
 
-    def update_available_resources(self, resources: List[StrategyResource]) -> None:
+    def update_available_resources(
+        self,
+        resources: List[StrategyResource],
+        hidden_datasets: Optional[List[tuple]] = None,
+    ) -> None:
         for _, (_, config_panel, _) in self._phase_widgets.items():
+            config_panel.set_hidden_datasets(hidden_datasets or [])
             # Re-sincroniza a definition em cada refresh — instruções
             # podem ter sido adicionadas/removidas no editor desde o
             # load_strategy inicial, o que muda a ordem de execução

@@ -43,14 +43,15 @@ def test_referenciar_absolutiza_sem_copiar(tmp_path):
     ds, images_dir = _dataset(tmp_path)
     dest = tmp_path / "outra" / "ds.parquet"
 
-    prepared, result = prepare_dataset_for_destination(ds, dest, portable=False)
+    prepared, relatorio = prepare_dataset_for_destination(ds, dest, portable=False)
 
-    assert result is None, "modo referenciar não copia nada"
-    assert prepared.path_mode == PathMode.ABSOLUTE
-    assert prepared.path_root is None
+    assert relatorio.localization is None, "modo referenciar não copia nada"
+    assert relatorio.rebase is not None and relatorio.rebase.changed
+    # Reaponta o path_root para a MESMA pasta de imagens, em vez de
+    # absolutizar: o dataset segue relativo e sobrevive a mover a árvore.
     for face in prepared.faces:
-        assert Path(face.image_path).exists()
-        assert Path(face.image_path).parent == images_dir.resolve()
+        assert prepared.resolve_image_path(face).exists()
+        assert prepared.resolve_image_path(face).parent == images_dir.resolve()
     # entrada intocada
     assert ds.path_mode == PathMode.RELATIVE
     assert ds.faces[0].image_path == "face_0.png"
@@ -60,7 +61,8 @@ def test_portatil_copia_imagens_e_fica_relativo(tmp_path):
     ds, _ = _dataset(tmp_path)
     dest = tmp_path / "outra" / "ds.parquet"
 
-    prepared, result = prepare_dataset_for_destination(ds, dest, portable=True)
+    prepared, relatorio = prepare_dataset_for_destination(ds, dest, portable=True)
+    result = relatorio.localization
 
     assert result is not None and result.n_failed == 0
     assert prepared.path_mode == PathMode.RELATIVE
@@ -102,9 +104,9 @@ def test_portatil_reporta_imagem_faltando(tmp_path):
     ds, images_dir = _dataset(tmp_path)
     (images_dir / "face_1.png").unlink()
 
-    prepared, result = prepare_dataset_for_destination(
+    prepared, relatorio = prepare_dataset_for_destination(
         ds, tmp_path / "outra" / "ds.parquet", portable=True,
     )
 
-    assert result.n_failed == 1
+    assert relatorio.localization.n_failed == 1
     assert len(prepared) == 2, "face sem imagem é descartada — e reportada"

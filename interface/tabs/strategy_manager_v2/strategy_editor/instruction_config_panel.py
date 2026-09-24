@@ -152,6 +152,10 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._instruction: Optional[StrategyInstructionDefinition] = None
         self._instruction_snapshot: Optional[dict] = None
         self._available_resources: List[StrategyResource] = []
+        # (resource_id, coluna de embedding exigida) dos datasets primários
+        # que o filtro de embedding da estratégia tirou da lista. Entram nos
+        # combos de DATASET como item desabilitado, com o motivo visível.
+        self._hidden_datasets: List[tuple] = []
         # Definition usada pra filtrar os dropdowns de input por ordem de
         # execução das instruções (recursos produzidos por instruções
         # posteriores não aparecem). Setada via `set_strategy_definition`
@@ -482,6 +486,15 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         self._available_resources = list(resources)
         if self._instruction is not None:
             self._rebuild_form()
+
+    def set_hidden_datasets(self, hidden: List[tuple]) -> None:
+        """Datasets primários escondidos pelo filtro de embedding.
+
+        Cada item é `(resource_id, coluna_exigida)`. Não dispara rebuild —
+        o editor chama isto imediatamente antes de `set_available_resources`,
+        que já reconstrói o formulário.
+        """
+        self._hidden_datasets = list(hidden or [])
 
     def set_strategy_definition(
         self, definition: Optional[LRStrategyDefinition]
@@ -1322,6 +1335,27 @@ class InstructionConfigPanel(QtWidgets.QWidget):
                 f"ID: {res.resource_id}\nTipo: {res.resource_type.value}",
                 QtCore.Qt.ItemDataRole.ToolTipRole,
             )
+
+        # Datasets primários que o filtro de embedding da estratégia tirou
+        # da lista: aparecem desabilitados, com o motivo. Sumir calado fazia
+        # o usuário procurar em vão o dataset que acabara de importar — em
+        # geral um parquet sem a coluna escolhida (ou vazio).
+        if any(t in spec.accepted_types for t in self._DATASET_INFO_TYPES):
+            for resource_id, needed_col in self._hidden_datasets:
+                combo.addItem(f"⚠ {resource_id}", userData=None)
+                idx = combo.count() - 1
+                combo.setItemData(
+                    idx,
+                    f"Indisponível: o dataset '{resource_id}' não tem a coluna "
+                    f"de embedding '{needed_col}' escolhida na estratégia.",
+                    QtCore.Qt.ItemDataRole.ToolTipRole,
+                )
+                # QComboBox usa QStandardItemModel por padrão; se algum
+                # caller trocar o model, o item fica só como aviso legível.
+                model = combo.model()
+                item = model.item(idx) if hasattr(model, "item") else None
+                if item is not None:
+                    item.setEnabled(False)
 
         current_val = getattr(instr, spec.field_name, None)
         if current_val:
