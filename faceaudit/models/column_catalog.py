@@ -49,6 +49,7 @@ class ColumnRole(str, Enum):
     DEMOGRAPHIC = "demographic"    # multi (gender, ethnicity); is_estimate=True para FF
     DISPLAY = "display"            # multi — informativas, sem semântica de código
     METADATA = "metadata"          # multi — parâmetros de algoritmo, telemetria
+    CAPTURE = "capture"            # multi (com capture_subtype) — ver abaixo
     CUSTOM = "custom"              # multi — colunas adicionadas pelo usuário
 
 
@@ -59,6 +60,7 @@ class ColumnSource(str, Enum):
     OFIQ = "ofiq"          # OFIQ
     SERFIQ = "serfiq"      # SER-FIQ
     DERIVED = "derived"    # recomputado em runtime (ex: file_name de image_path)
+    EXIF = "exif"          # metadados embutidos no arquivo (EXIF/XMP/IPTC)
     CUSTOM = "custom"      # criado pelo usuário
 
 
@@ -70,6 +72,23 @@ class ColumnDType(str, Enum):
     BOOL = "bool"
     VECTOR = "vector"  # list[float] de tamanho fixo (embeddings)
     LIST = "list"      # list de tamanho variável
+
+
+class CaptureSubtype(str, Enum):
+    """Que aspecto da CAPTURA a coluna descreve.
+
+    Mesmo padrão de `quality_subtype` e `axis`: um role só (`CAPTURE`) com
+    subtipo, em vez de um role por grupo. Multiplicar roles multiplicaria o
+    branching do código sem ganho — o que o código precisa distinguir é
+    "descreve a captura da foto original" contra "descreve a face".
+    """
+
+    DATETIME = "datetime"        # quando a foto foi tirada
+    DEVICE = "device"            # câmera/celular que a produziu
+    EXPOSURE = "exposure"        # parâmetros óticos da tomada
+    GEOLOCATION = "geolocation"  # onde — dado pessoal, oculto por padrão
+    SOFTWARE = "software"        # o que gravou/editou o arquivo
+    RAW = "raw"                  # o dump completo, em JSON
 
 
 class QualityDirection(str, Enum):
@@ -147,6 +166,14 @@ class ColumnSpec:
     # --- role=demographic ---
     is_estimate: bool = False
     vocabulary: Optional[Tuple[str, ...]] = None
+
+    # --- role=capture ---
+    capture_subtype: Optional["CaptureSubtype"] = None
+    # O valor é DECLARADO pelo arquivo, não medido pelo sistema. Metadado
+    # embutido pode ser editado ou forjado — e num exame às vezes é
+    # exatamente isso que está sob suspeita. A UI mostra a ressalva, do
+    # mesmo modo que `is_estimate` marca a demografia estimada pelo FF.
+    is_declared: bool = False
 
     # --- role=custom ---
     default_value: Optional[Any] = None

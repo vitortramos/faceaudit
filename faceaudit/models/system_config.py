@@ -27,6 +27,29 @@ class OFIQConfig(JSONSerializableMixin):
 
 
 @dataclass
+class ExifToolConfig(JSONSerializableMixin):
+    """Caminho do executável do ExifTool.
+
+    O default `"exiftool"` resolve pelo PATH. Um caminho absoluto permite
+    usar o binário onde ele estiver instalado — na máquina do perito ele
+    costuma vir de um zip solto (ex.: `C:/Exiftool/exiftool.exe`), sem
+    instalador e sem entrar no PATH.
+
+    Vazio desliga a extração via ExifTool; o serviço então cai no leitor
+    do Pillow, que lê bem menos (só EXIF, sem XMP/IPTC/maker notes).
+    """
+
+    exiftool_exe_path: str = "exiftool"
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExifToolConfig":
+        if not data:
+            return cls()
+        valid = {k: v for k, v in data.items() if k in cls.__annotations__}
+        return cls(**valid)
+
+
+@dataclass
 class FFConfig(JSONSerializableMixin):
     """Capability de hardware do ForensicFace + preferência de modelo.
 
@@ -251,10 +274,11 @@ class SystemConfig(JSONSerializableMixin):
     para os DTOs de instrução da nova arquitetura. Aqui só sobra:
     - paths globais (library, dir_templates)
     - capability de hardware (ff.use_gpu)
-    - paths para executáveis externos (ofiq.exe_path, ofiq.data_path)
+    - paths para executáveis externos (ofiq.*, exiftool.exiftool_exe_path)
     """
     paths: PathsConfig = field(default_factory=PathsConfig)
     ofiq: OFIQConfig = field(default_factory=OFIQConfig)
+    exiftool: ExifToolConfig = field(default_factory=ExifToolConfig)
     ff: FFConfig = field(default_factory=FFConfig)
     theme: ThemeConfig = field(default_factory=ThemeConfig)
 
@@ -265,6 +289,7 @@ class SystemConfig(JSONSerializableMixin):
         return cls(
             paths=PathsConfig.from_dict(data.get("paths", {})),
             ofiq=OFIQConfig.from_dict(data.get("ofiq", {})),
+            exiftool=ExifToolConfig.from_dict(data.get("exiftool", {})),
             ff=FFConfig.from_dict(data.get("ff", {})),
             theme=ThemeConfig.from_dict(data.get("theme", {})),
         )
