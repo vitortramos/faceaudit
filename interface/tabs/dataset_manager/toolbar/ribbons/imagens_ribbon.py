@@ -8,7 +8,7 @@ PR I5 — botão Processar (batch) habilitado.
 
 from PyQt6.QtWidgets import QHBoxLayout
 
-from ..toolbar_widgets import ToolbarButton
+from ..toolbar_widgets import ToolbarButton, ToolbarSeparator
 from .responsive_ribbon import ResponsiveRibbon
 
 
@@ -22,6 +22,16 @@ class ImagensRibbon(ResponsiveRibbon):
         layout.setSpacing(8)
 
         # ── PR I2 — Editor habilitado (preview-only; salvar em I4) ──
+        self.btn_extract_face_images = ToolbarButton(
+            "Gerar Imagens", "✂️",
+            tooltip="Gera, numa pasta nova, a face de cada imagem de uma "
+                    "pasta escolhida — recortada com margem ou alinhada. "
+                    "Não cria dataset: só as imagens e um manifesto com a "
+                    "procedência.",
+        )
+        layout.addWidget(self.btn_extract_face_images)
+        layout.addWidget(ToolbarSeparator())
+
         self.btn_image_pipeline_editor = ToolbarButton(
             "Editor", "🎨",
             tooltip="Janela de edição interativa do pipeline de "

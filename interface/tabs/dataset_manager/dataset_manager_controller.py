@@ -212,6 +212,8 @@ class DatasetManagerController(QtCore.QObject):
             lambda: self.excluir_selecionados())
         self.toolbar_ctrl.action_save_selected.connect(
             self.fluxo_salvar_selecionados)
+        self.toolbar_ctrl.action_extract_face_images.connect(
+            self.fluxo_gerar_imagens_de_face)
 
         # PR 16 — Adicionar à Biblioteca Global
         if hasattr(self.toolbar_ctrl, "action_save_to_library"):
@@ -1298,6 +1300,74 @@ class DatasetManagerController(QtCore.QObject):
                 QMessageBox.critical(self.view, "Erro", f"Falha ao salvar: {e}")
         else:
             self.fluxo_salvar_como()
+
+    def fluxo_gerar_imagens_de_face(self) -> None:
+        """Gera, numa pasta nova, a face de cada imagem de uma pasta.
+
+        Independe de haver dataset aberto: a entrada é a pasta escolhida
+        no diálogo. Não cria dataset — só imagens e o manifesto.
+        """
+        from .extract_face_images_dialog import ExtractFaceImagesDialog
+
+        ff_svc = getattr(self.pipeline, "ff_service", None) if self.pipeline else None
+        if ff_svc is None:
+            QMessageBox.warning(
+                self.view, "Serviço indisponível",
+                "A detecção facial não está disponível nesta sessão, então "
+                "não há como localizar as faces para recortar ou alinhar.",
+            )
+            return
+
+        dlg = ExtractFaceImagesDialog(self.view, initial_dir=self._get_initial_dir())
+        if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+
+        from .workers.materialize_images_worker import MaterializeImagesWorker
+
+        kind = dlg.image_kind()
+        worker = MaterializeImagesWorker(
+            dlg.source_dir(), dlg.target_dir(),
+            kind=kind,
+            margin_factor=dlg.margin_factor(),
+            recursive=dlg.recursive(),
+            ff_service=ff_svc,
+        )
+        self._run_worker(
+            worker,
+            label=f"Gerando imagens ({kind.label_pt})",
+            allow_cancel=True,
+            determinate=True,
+            use_log_dialog=True,
+            on_finished=self._on_gerar_imagens_concluido,
+        )
+
+    def _on_gerar_imagens_concluido(self, resultado) -> None:
+        """Relata o saldo. As falhas precisam ser ditas, não só contadas."""
+        if resultado is None:
+            QMessageBox.warning(
+                self.view, "Cancelado",
+                "A geração de imagens foi cancelada ou terminou sem resultado.",
+            )
+            return
+
+        detalhe = ""
+        if resultado.n_failed:
+            primeiras = "\n".join(
+                f"  • {caminho}" for caminho, _motivo in resultado.failures[:5]
+            )
+            if resultado.n_failed > 5:
+                primeiras += f"\n  • (… e mais {resultado.n_failed - 5})"
+            detalhe = (
+                f"\n\n{resultado.n_failed} imagem(ns) ficaram de fora por não "
+                f"ter face detectada:\n{primeiras}"
+            )
+
+        QMessageBox.information(
+            self.view, "Imagens geradas",
+            f"{resultado.summary_pt()}\n\nPasta: {resultado.target_dir}\n"
+            f"Manifesto: {resultado.manifest_path.name if resultado.manifest_path else '—'}"
+            f"{detalhe}",
+        )
 
     def _current_dataset_dir(self) -> Optional[Path]:
         """Pasta onde o dataset vive hoje — âncora dos caminhos relativos."""

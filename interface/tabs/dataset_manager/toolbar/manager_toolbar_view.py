@@ -161,6 +161,7 @@ class ManagerToolbarView(QFrame):
         self.btn_schema_report = self.exibir_ribbon.btn_schema_report
 
         # Imagens (placeholder — desabilitados)
+        self.btn_extract_face_images = self.imagens_ribbon.btn_extract_face_images
         self.btn_image_pipeline_editor = self.imagens_ribbon.btn_image_pipeline_editor
         self.btn_image_pipeline_apply = self.imagens_ribbon.btn_image_pipeline_apply
 

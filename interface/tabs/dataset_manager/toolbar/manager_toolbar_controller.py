@@ -15,6 +15,9 @@ class ManagerToolbarController(QtCore.QObject):
     action_save = QtCore.pyqtSignal()
     action_save_as = QtCore.pyqtSignal()
     action_save_selected = QtCore.pyqtSignal()
+    # Gerar imagens de face pasta → pasta. Independe de haver dataset
+    # aberto: a entrada é uma pasta escolhida na hora.
+    action_extract_face_images = QtCore.pyqtSignal()
     action_remove_selected = QtCore.pyqtSignal()
     
     # Sinais de Ferramentas
@@ -70,6 +73,9 @@ class ManagerToolbarController(QtCore.QObject):
         self.view.btn_save.clicked.connect(self.action_save.emit)
         self.view.btn_save_as.clicked.connect(self.action_save_as.emit)
         self.view.btn_save_selected.clicked.connect(self.action_save_selected.emit)
+        self.view.btn_extract_face_images.clicked.connect(
+            self.action_extract_face_images.emit
+        )
         self.view.btn_remove_selected.clicked.connect(
             self.action_remove_selected.emit
         )
