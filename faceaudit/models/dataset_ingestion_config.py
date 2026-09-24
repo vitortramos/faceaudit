@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import List, Optional
 from pathlib import Path
+
+from faceaudit.enums.dataset_image_kind import DatasetImageKind
 from faceaudit.models.dir_template import DirTemplate
 
 
@@ -113,10 +115,21 @@ class DatasetIngestionConfig:
     # que é o default e preserva o comportamento histórico.
     dataset_dir: Optional[Path] = None
     # Quando True, as imagens passam a viver junto do parquet em
-    # `<dataset_dir>/<dataset_name>_images/` e os paths ficam RELATIVOS —
+    # `<dataset_dir>/<dataset_name>/images/` e os paths ficam RELATIVOS —
     # dataset portátil entre máquinas/drives. Quando False, o dataset
     # referencia as imagens onde elas estão, em PathMode.ABSOLUTE.
     self_contained: bool = False
+    # Qual FORMA da imagem o dataset autocontido guarda. Só tem efeito com
+    # `self_contained=True`; sem ele não há imagem copiada para escolher.
+    #   ORIGINAL — a foto como veio.
+    #   CROP     — recorte da face com margem, sem rotação. Preserva a
+    #              geometria real; é a forma útil para laudo e comparação
+    #              visual. NÃO marca `is_aligned` (ver o enum).
+    #   ALIGNED  — face 112×112, o que o modelo enxerga.
+    image_kind: DatasetImageKind = DatasetImageKind.ORIGINAL
+    # Fator de expansão da caixa da face no modo CROP (1.0 = caixa exata,
+    # 2.0 = o dobro). Mesma unidade da extração de faces de vídeo.
+    crop_margin_factor: float = 2.0
 
     def __post_init__(self):
         # Garante que o path seja Path object
@@ -124,6 +137,19 @@ class DatasetIngestionConfig:
             self.input_path = Path(self.input_path)
         if isinstance(self.dataset_dir, str):
             self.dataset_dir = Path(self.dataset_dir) if self.dataset_dir else None
+        self.image_kind = DatasetImageKind.from_str(
+            self.image_kind, default=DatasetImageKind.ORIGINAL,
+        )
+        try:
+            self.crop_margin_factor = max(1.0, float(self.crop_margin_factor))
+        except (TypeError, ValueError):
+            self.crop_margin_factor = 2.0
+        # `align_during_ingestion` é a forma antiga de dizer
+        # `image_kind=ALIGNED`. Mantida porque há chamadores que ainda a
+        # passam; as duas convergem aqui para não divergirem em runtime.
+        if self.align_during_ingestion and self.image_kind is DatasetImageKind.ORIGINAL:
+            self.image_kind = DatasetImageKind.ALIGNED
+        self.align_during_ingestion = self.image_kind is DatasetImageKind.ALIGNED
         # Garante que ff_models não fique vazio — sem modelo, FF não roda.
         if not self.ff_models:
             self.ff_models = [_default_ff_model_name()]

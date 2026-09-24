@@ -33,6 +33,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from faceaudit.enums.dataset_image_kind import DatasetImageKind
+from faceaudit.enums.path_mode import PathMode
 from faceaudit.protocols.face_geometry_protocol import FaceGeometryProviderProtocol
 
 _MANIFEST_NAME = "manifest.json"
@@ -284,3 +285,124 @@ class FaceImageMaterializationService:
             json.dumps(manifesto, indent=2, ensure_ascii=False), encoding="utf-8",
         )
         return caminho
+
+    # ── Segunda porta de entrada: a partir de um dataset ──────────────────
+
+    def materialize_dataset(
+        self,
+        dataset,
+        target_dir: Path,
+        *,
+        kind: DatasetImageKind,
+        margin_factor: float = 2.0,
+        images_subdir: str = "images",
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    ):
+        """Produz a forma `kind` de cada face e devolve um dataset novo.
+
+        Irmã de `materialize_directory`, para quando a entrada já é um
+        `FaceDataset` — as faces podem apontar para pastas diferentes, então
+        varrer um diretório não serviria. O dataset devolvido é autocontido:
+        imagens em `<target_dir>/<images_subdir>/` e caminhos RELATIVOS
+        ancorados ali, prontos para o parquet ser gravado em `target_dir`.
+
+        A entrada não é mutada. Faces cuja imagem não pôde ser produzida
+        ficam DE FORA do dataset devolvido e são registradas em `failures` —
+        mesma regra do caminho de pasta, e o caller precisa mostrá-las.
+
+        `ALIGNED` marca `is_aligned=True` no dataset resultante; `CROP` NÃO
+        — um recorte não é face alinhada, e declarar que é faria o
+        `FFService` pular detect+align depois.
+        """
+        import copy as _copy
+
+        if not kind.requires_face_detection:
+            raise ValueError(
+                "Materializar exige recorte ou alinhamento; para a foto "
+                "original use a cópia simples de imagens."
+            )
+        destino = Path(target_dir)
+        pasta_imagens = destino / images_subdir
+        pasta_imagens.mkdir(parents=True, exist_ok=True)
+
+        resultado = MaterializationResult(
+            target_dir=destino, kind=kind, margin_factor=float(margin_factor),
+        )
+        entradas = []
+        faces_novas = []
+        usados: set = set()
+        faces = list(getattr(dataset, "faces", []) or [])
+
+        for indice, face in enumerate(faces):
+            if progress_callback:
+                progress_callback(indice, len(faces), getattr(face, "image_path", "") or "")
+            resultado.n_processed += 1
+
+            try:
+                origem = Path(dataset.resolve_image_path(face))
+                imagem = self._read_image(origem)
+            except Exception as exc:
+                resultado.failures.append((str(getattr(face, "image_path", "")), f"leitura: {exc}"))
+                continue
+            if imagem is None:
+                resultado.failures.append((str(origem), "arquivo ilegível"))
+                continue
+
+            try:
+                produzida = self._materialize_one(imagem, kind, float(margin_factor))
+            except Exception as exc:
+                resultado.failures.append((str(origem), f"processamento: {exc}"))
+                continue
+            if produzida is None:
+                resultado.failures.append((str(origem), "nenhuma face detectada"))
+                continue
+
+            nome = self._unique_png_name(origem, usados)
+            saida = pasta_imagens / nome
+            try:
+                self._write_image(saida, produzida)
+            except Exception as exc:
+                resultado.failures.append((str(origem), f"gravação: {exc}"))
+                continue
+
+            nova = _copy.copy(face)
+            nova.image_path = nome          # relativo à pasta de imagens
+            nova.file_name = nome
+            nova.hash = self._sha256(saida)
+            if getattr(nova, "ff_info", None) is not None:
+                nova.ff_info.aligned_face = None
+            faces_novas.append(nova)
+
+            resultado.n_written += 1
+            resultado.written_paths.append(saida)
+            entradas.append({
+                "source": str(origem), "output": nome, "sha256": nova.hash,
+            })
+
+        if progress_callback:
+            progress_callback(len(faces), len(faces), "")
+
+        resultado.manifest_path = self._write_manifest(
+            destino, destino, resultado, entradas,
+        )
+
+        novo = _copy.copy(dataset)
+        novo.faces = faces_novas
+        novo.path_mode = PathMode.RELATIVE
+        novo.path_root = images_subdir
+        novo.is_aligned = kind.implies_aligned_dataset
+        novo.hash = None
+        novo._parquet_dir = destino.resolve()
+        return novo, resultado
+
+    @staticmethod
+    def _unique_png_name(origem: Path, usados: set) -> str:
+        """Nome PNG único no destino, derivado do arquivo de origem."""
+        stem = origem.stem or "face"
+        nome = f"{stem}.png"
+        i = 1
+        while nome in usados:
+            nome = f"{stem}_{i}.png"
+            i += 1
+        usados.add(nome)
+        return nome

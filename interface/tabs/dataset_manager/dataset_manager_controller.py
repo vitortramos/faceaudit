@@ -2119,6 +2119,8 @@ class DatasetManagerController(QtCore.QObject):
             naming=result["naming"],
             skip_existing=result["skip_existing"],
             old_prefix=result.get("old_prefix"),
+            image_kind=result.get("image_kind"),
+            crop_margin_factor=result.get("crop_margin_factor", 2.0),
         )
 
     # ── Correção de path_root (só-metadados, sem mover arquivos) ─────────
@@ -2245,7 +2247,12 @@ class DatasetManagerController(QtCore.QObject):
         naming,
         skip_existing: bool,
         old_prefix: Optional[str] = None,
+        image_kind=None,
+        crop_margin_factor: float = 2.0,
     ):
+        # Recortar/alinhar exige detecção — o worker só materializa quando
+        # o FFService está disponível (senão copia as imagens como estão).
+        ff_svc = getattr(self.pipeline, "ff_service", None) if self.pipeline else None
         worker = ModifyPathsWorker(
             dataset=self.dataset,
             target_dir=target_dir,
@@ -2253,6 +2260,9 @@ class DatasetManagerController(QtCore.QObject):
             naming=naming,
             skip_existing=skip_existing,
             old_prefix=old_prefix,
+            image_kind=image_kind,
+            crop_margin_factor=crop_margin_factor,
+            ff_service=ff_svc,
         )
         # Guarda contexto pra usar no on_finished
         self._localize_target_dir = target_dir

@@ -20,7 +20,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit,
     QCheckBox, QRadioButton, QButtonGroup, QPushButton, QDialogButtonBox,
-    QPlainTextEdit, QComboBox, QGroupBox, QWidget, QSpinBox,
+    QPlainTextEdit, QComboBox, QGroupBox, QWidget, QSpinBox, QDoubleSpinBox,
     QFrame,
 )
 
@@ -157,19 +157,52 @@ class NewDatasetView(QDialog):
         g.addWidget(self._lbl_imgtype, 3, 0)
         self.row_imgtype = QWidget(grp)
         img_h = QHBoxLayout(self.row_imgtype); img_h.setContentsMargins(0, 0, 0, 0)
-        self.rb_img_original = QRadioButton("Face original", grp)
+        self.rb_img_original = QRadioButton("Foto original", grp)
+        self.rb_img_crop = QRadioButton("Face recortada", grp)
         self.rb_img_aligned = QRadioButton("Face alinhada", grp)
         self.rb_img_aligned.setChecked(True)
+        self.rb_img_original.setToolTip(
+            "<b>Foto original</b>: copia a foto como veio, com a cena "
+            "inteira. Preserva o registro íntegro da captura.")
+        self.rb_img_crop.setToolTip(
+            "<b>Face recortada</b>: recorte da face com margem, <b>sem "
+            "rotação</b> — preserva a geometria e as proporções reais do "
+            "rosto. É a forma útil para ilustrar laudo e para comparação "
+            "visual. O dataset <b>não</b> é marcado como alinhado: um "
+            "enriquecimento posterior continua detectando e alinhando "
+            "normalmente a partir do recorte.")
+        self.rb_img_aligned.setToolTip(
+            "<b>Face alinhada</b>: face 112×112, que é o que o modelo "
+            "enxerga. Deforma o rosto (rotação, escala e reamostragem), "
+            "então não serve para avaliar semelhança a olho nu.")
         self.grp_imgtype = QButtonGroup(self)
         self.grp_imgtype.addButton(self.rb_img_original, 0)
         self.grp_imgtype.addButton(self.rb_img_aligned, 1)
-        img_h.addWidget(self.rb_img_original); img_h.addWidget(self.rb_img_aligned)
+        self.grp_imgtype.addButton(self.rb_img_crop, 2)
+        img_h.addWidget(self.rb_img_original)
+        img_h.addWidget(self.rb_img_crop)
+        img_h.addWidget(self.rb_img_aligned)
+
+        # Margem — só faz sentido no recorte.
+        self.lbl_crop_margin = QLabel("Margem:", grp)
+        self.spn_crop_margin = QDoubleSpinBox(grp)
+        self.spn_crop_margin.setRange(1.0, 5.0)
+        self.spn_crop_margin.setSingleStep(0.5)
+        self.spn_crop_margin.setValue(2.0)
+        self.spn_crop_margin.setToolTip(
+            "Fator de expansão da caixa da face: 1,0 = caixa exata, 2,0 = o "
+            "dobro em cada dimensão. Mesma unidade da extração de faces de "
+            "vídeo.")
+        img_h.addWidget(self.lbl_crop_margin)
+        img_h.addWidget(self.spn_crop_margin)
+        self.rb_img_crop.toggled.connect(self._atualizar_margem_recorte)
         self._lbl_imgtype_hint = QLabel("(o que copiar)", grp)
         apply_themed_stylesheet(
             self._lbl_imgtype_hint, lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;"
         )
         img_h.addWidget(self._lbl_imgtype_hint); img_h.addStretch()
         g.addWidget(self.row_imgtype, 3, 1)
+        self._atualizar_margem_recorte()
         v.addLayout(g)
 
         # Descrição do dataset (metadado do dataset como um todo, NÃO é coluna —
@@ -515,10 +548,30 @@ class NewDatasetView(QDialog):
     def get_self_contained(self) -> bool:
         return self.rb_self_contained.isChecked()
 
+    def _atualizar_margem_recorte(self) -> None:
+        """A margem só existe no recorte — o alinhamento é canônico."""
+        recorte = self.rb_img_crop.isChecked()
+        self.lbl_crop_margin.setVisible(recorte)
+        self.spn_crop_margin.setVisible(recorte)
+
     def get_image_type(self) -> str:
-        """'aligned' ou 'original' — relevante só no autocontido."""
-        return "original" if (self.rb_self_contained.isChecked()
-                              and self.rb_img_original.isChecked()) else "aligned"
+        """Forma da imagem guardada — relevante só no autocontido.
+
+        Devolve o valor de `DatasetImageKind`: 'original', 'crop' ou
+        'aligned'. Fora do autocontido não há imagem copiada para
+        escolher, e o dataset referencia as fotos onde elas estão.
+        """
+        if not self.rb_self_contained.isChecked():
+            return "aligned"
+        if self.rb_img_original.isChecked():
+            return "original"
+        if self.rb_img_crop.isChecked():
+            return "crop"
+        return "aligned"
+
+    def get_crop_margin_factor(self) -> float:
+        """Fator de expansão da bbox no modo recorte."""
+        return float(self.spn_crop_margin.value())
 
     def is_input_aligned(self) -> bool:
         return self.rb_input_aligned.isChecked()

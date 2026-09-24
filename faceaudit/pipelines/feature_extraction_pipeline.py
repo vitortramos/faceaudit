@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable
 
 # Imports do Domínio
+from faceaudit.enums.dataset_image_kind import DatasetImageKind
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models import FaceDataset
@@ -228,9 +229,16 @@ class FeatureExtractionPipeline:
                         SELF_CONTAINED_IMAGES_SUBDIR,
                     )
                     crops_dir = dataset_dir / SELF_CONTAINED_IMAGES_SUBDIR
-                if config.align_during_ingestion and crops_dir:
+                if crops_dir and config.image_kind is DatasetImageKind.ALIGNED:
                     self._materialize_aligned_crops(
                         dataset, crops_dir, progress_callback,
+                    )
+                elif crops_dir and config.image_kind is DatasetImageKind.CROP:
+                    # Recorte com margem sai da bbox que o FF já devolveu ao
+                    # extrair o embedding — sem segunda passada de detecção.
+                    self._materialize_face_crops(
+                        dataset, crops_dir, config.crop_margin_factor,
+                        progress_callback,
                     )
                 current_stage_idx += 1
 
@@ -986,6 +994,115 @@ class FeatureExtractionPipeline:
             if progress_callback:
                 progress_callback(f"⚠️ {aviso}", 98)
         return final
+
+    @staticmethod
+    def _materialize_face_crops(
+        dataset: FaceDataset,
+        target_dir: Path,
+        margin_factor: float,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        """Grava o recorte da face COM MARGEM, sem rotação, como PNG.
+
+        Irmão de `_materialize_aligned_crops`, com três diferenças que
+        importam:
+
+        - parte da imagem ORIGINAL e da `ff_info.bbox` que o FF já
+          devolveu ao extrair o embedding — não há segunda passada de
+          detecção, só leitura e gravação de arquivo;
+        - não aplica transformação de similaridade, então a geometria e as
+          proporções do rosto são preservadas (é o que serve para laudo e
+          comparação visual);
+        - **não marca `is_aligned`**. Um recorte não é face alinhada; se o
+          dataset se declarasse alinhado, o `FFService` pularia
+          detect+align num enriquecimento futuro e produziria embeddings
+          errados em silêncio.
+
+        Face sem bbox (detecção falhou) mantém o path original e é marcada
+        como erro pelo caller — igual ao caminho do alinhamento.
+        """
+        import numpy as _np
+        from forensicface.geometry import extend_bbox
+
+        from faceaudit.services.hash_service import HashService
+        from faceaudit.services.image_io import imread_unicode_safe
+
+        target_dir = Path(target_dir).resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        hash_service = HashService()
+        used_names: set = set()
+        n_materialized = 0
+
+        n = len(dataset.faces)
+        print(
+            f"✂️  [Pipeline] Materializando {n} recorte(s) com margem "
+            f"{margin_factor:g}× em {target_dir}"
+        )
+        for idx, face in enumerate(dataset.faces):
+            bbox = getattr(face.ff_info, "bbox", None) if face.ff_info else None
+            if bbox is None:
+                continue
+
+            try:
+                origem = dataset.resolve_image_path(face)
+                imagem = imread_unicode_safe(str(origem))
+            except Exception:
+                imagem = None
+            if imagem is None:
+                print(f"⚠️  [Pipeline] imagem ilegível para recorte: {face.image_path}")
+                continue
+
+            x1, y1, x2, y2 = extend_bbox(
+                _np.asarray(bbox, dtype="float32"), imagem.shape,
+                margin_factor=float(margin_factor),
+            )
+            altura, largura = imagem.shape[:2]
+            x1 = max(0, min(largura - 1, int(x1)))
+            y1 = max(0, min(altura - 1, int(y1)))
+            x2 = max(x1 + 1, min(largura, int(x2)))
+            y2 = max(y1 + 1, min(altura, int(y2)))
+            recorte = imagem[y1:y2, x1:x2].copy()
+
+            base = face.file_name or Path(face.image_path).name or f"face_{idx}"
+            stem = Path(base).stem
+            rel_name = f"{stem}.png"
+            i = 1
+            while rel_name in used_names:
+                rel_name = f"{stem}_{i}.png"
+                i += 1
+            used_names.add(rel_name)
+            dst = target_dir / rel_name
+
+            if not imwrite_unicode_safe(dst, recorte):
+                print(f"⚠️  [Pipeline] gravação do recorte falhou: {dst}")
+                continue
+
+            face.image_path = dst.resolve().as_posix()
+            face.file_name = rel_name
+            face.hash = hash_service.calculate_file_hash(dst)
+            if face.ff_info is not None:
+                face.ff_info.aligned_face = None   # já extraído; libera memória
+            n_materialized += 1
+
+            if progress_callback and (idx % 50 == 0 or idx + 1 == n):
+                progress_callback(
+                    f"Materializando recortes ({idx + 1}/{n})…",
+                    95 + int((idx + 1) / n * 4),
+                )
+
+        if n_materialized == 0:
+            print(
+                "⚠️  [Pipeline] Nenhum recorte materializado (FF não devolveu "
+                "bbox). Dataset preservado em modo ABSOLUTE original."
+            )
+            return
+
+        dataset.path_mode = PathMode.ABSOLUTE
+        dataset.path_root = None
+        # is_aligned permanece False DE PROPÓSITO — ver docstring.
+        print(
+            f"✂️  [Pipeline] {n_materialized} recorte(s) gravado(s) em {target_dir}"
+        )
 
     @staticmethod
     def _apply_ff_column_selection(dataset: FaceDataset, kept_attributes) -> None:

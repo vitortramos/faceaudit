@@ -2,6 +2,7 @@ from pathlib import Path
 from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtWidgets import QFileDialog, QDialogButtonBox
 
+from faceaudit.enums.dataset_image_kind import DatasetImageKind
 from faceaudit.models.dataset_ingestion_config import DatasetIngestionConfig
 from faceaudit.models.dir_template import DirTemplate
 from faceaudit.enums.sepael_model import SepaelModel
@@ -146,7 +147,13 @@ class NewDatasetController(QtCore.QObject):
         v = self.view
         entrada = "já alinhadas" if v.is_input_aligned() else "originais"
         if v.get_self_contained():
-            armaz = f"autocontido ({'alinhada' if v.get_image_type() == 'aligned' else 'original'})"
+            armaz = (
+                "autocontido ("
+                + DatasetImageKind.from_str(
+                    v.get_image_type(), default=DatasetImageKind.ALIGNED,
+                ).label_pt
+                + ")"
+            )
         else:
             armaz = "caminho absoluto"
         if v.use_template():
@@ -202,7 +209,15 @@ class NewDatasetController(QtCore.QObject):
         input_aligned = v.is_input_aligned()
         self_contained = v.get_self_contained()
         dest = v.get_dataset_dir()
-        align_now = (not input_aligned) and self_contained and v.get_image_type() == "aligned"
+        forma = DatasetImageKind.from_str(
+            v.get_image_type(), default=DatasetImageKind.ALIGNED,
+        )
+        # Materializar (alinhar ou recortar) só faz sentido no autocontido e
+        # quando a entrada ainda não é face alinhada.
+        materializa = (not input_aligned) and self_contained
+        if not materializa:
+            forma = DatasetImageKind.ORIGINAL
+        align_now = forma is DatasetImageKind.ALIGNED
 
         # Toggles granulares de atributo → coluna. O engine computa gênero/idade/
         # pose EM BLOCO (`ff_extended`), então extended liga se QUALQUER atributo
@@ -236,6 +251,8 @@ class NewDatasetController(QtCore.QObject):
             batch_size=v.get_batch_size(),
             is_aligned=input_aligned,
             align_during_ingestion=align_now,
+            image_kind=forma,
+            crop_margin_factor=v.get_crop_margin_factor(),
             aligned_target_dir=(Path(dest) if align_now and dest else None),
             dataset_dir=(Path(dest) if dest else None),
             self_contained=self_contained,
@@ -247,6 +264,9 @@ class NewDatasetController(QtCore.QObject):
 
     def get_self_contained(self) -> bool:
         return self.view.get_self_contained()
+
+    def get_crop_margin_factor(self) -> float:
+        return self.view.get_crop_margin_factor()
 
     def get_image_type(self) -> str:
         return self.view.get_image_type()

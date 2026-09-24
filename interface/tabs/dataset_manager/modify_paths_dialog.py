@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 from PyQt6 import QtCore, QtWidgets
 
+from faceaudit.enums.dataset_image_kind import DatasetImageKind
 from faceaudit.enums.localization_mode import LocalizationMode
 from faceaudit.enums.localization_naming import NamingStrategy
 from faceaudit.enums.path_mode import PathMode
@@ -286,6 +287,46 @@ class ModifyPathsDialog(QtWidgets.QDialog):
         layout.addWidget(self.rebase_box)
 
         # ── Naming (só em COPY) ──
+        # ── Forma da imagem copiada ──
+        # Copiar as imagens é a oportunidade natural de escolher O QUE
+        # copiar: a foto como está, o recorte da face com margem, ou a face
+        # alinhada. Nos outros modos não há cópia, então não há escolha.
+        self.imgkind_box = QtWidgets.QGroupBox(
+            "Forma da imagem", parent=self,
+        )
+        imgkind_layout = QtWidgets.QFormLayout(self.imgkind_box)
+        self.cmb_image_kind = QtWidgets.QComboBox(parent=self.imgkind_box)
+        for kind in (
+            DatasetImageKind.ORIGINAL,
+            DatasetImageKind.CROP,
+            DatasetImageKind.ALIGNED,
+        ):
+            self.cmb_image_kind.addItem(kind.label_pt, userData=kind)
+        self.cmb_image_kind.currentIndexChanged.connect(
+            self._on_image_kind_changed
+        )
+        imgkind_layout.addRow("Copiar como:", self.cmb_image_kind)
+
+        self.spn_crop_margin = QtWidgets.QDoubleSpinBox(parent=self.imgkind_box)
+        self.spn_crop_margin.setRange(1.0, 5.0)
+        self.spn_crop_margin.setSingleStep(0.5)
+        self.spn_crop_margin.setValue(2.0)
+        self.spn_crop_margin.setToolTip(
+            "Fator de expansão da caixa da face: 1,0 = caixa exata, 2,0 = o "
+            "dobro em cada dimensão. Mesma unidade da extração de faces de "
+            "vídeo."
+        )
+        imgkind_layout.addRow("Margem do recorte:", self.spn_crop_margin)
+
+        self.lbl_image_kind_help = QtWidgets.QLabel(parent=self.imgkind_box)
+        self.lbl_image_kind_help.setWordWrap(True)
+        apply_themed_stylesheet(
+            self.lbl_image_kind_help,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 11px;",
+        )
+        imgkind_layout.addRow(self.lbl_image_kind_help)
+        layout.addWidget(self.imgkind_box)
+
         self.naming_box = QtWidgets.QGroupBox(
             "Estratégia de nome", parent=self,
         )
@@ -389,6 +430,26 @@ class ModifyPathsDialog(QtWidgets.QDialog):
 
     # ── Slots ──────────────────────────────────────────────────────────────
 
+    def _on_image_kind_changed(self, *_args) -> None:
+        """Margem só no recorte; ajuda explica a consequência da escolha."""
+        kind = self.cmb_image_kind.currentData()
+        if kind is None:
+            return
+        recorte = kind is DatasetImageKind.CROP
+        self.spn_crop_margin.setVisible(recorte)
+        self.lbl_image_kind_help.setText(
+            kind.description_pt
+            + (
+                " As imagens em que nenhuma face for detectada ficam DE FORA "
+                "do dataset resultante."
+                if kind.requires_face_detection else ""
+            )
+        )
+        # O QFormLayout esconde o label junto com o campo só se pedirmos.
+        rotulo = self.imgkind_box.layout().labelForField(self.spn_crop_margin)
+        if rotulo is not None:
+            rotulo.setVisible(recorte)
+
     def _on_op_changed(self, idx: int):
         op = self.cmb_op.currentData()
         if op is None:
@@ -398,6 +459,11 @@ class ModifyPathsDialog(QtWidgets.QDialog):
         is_fix = op == PathOp.FIX_PATH_ROOT
         is_copy = op == PathOp.COPY_ORIGINALS
         is_rebase = op == PathOp.REBASE_PREFIX
+
+        # Forma da imagem só existe quando as imagens são copiadas — nos
+        # outros modos o dataset continua apontando para os arquivos atuais.
+        self.imgkind_box.setVisible(is_copy)
+        self._on_image_kind_changed()
 
         # FIX_PATH_ROOT é só-metadados → esconde tudo que é migração.
         self.pathroot_box.setVisible(is_fix)
@@ -556,6 +622,8 @@ class ModifyPathsDialog(QtWidgets.QDialog):
             "target_dir": Path(target),
             "skip_existing": self.chk_skip_existing.isChecked(),
             "old_prefix": old_prefix,
+            "image_kind": self.cmb_image_kind.currentData(),
+            "crop_margin_factor": float(self.spn_crop_margin.value()),
         }
 
     # Alias de compat — callers antigos chamavam `get_options()`.

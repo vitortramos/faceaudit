@@ -51,8 +51,17 @@ class ModifyPathsWorker(QtCore.QObject):
         naming: NamingStrategy = NamingStrategy.PRESERVE,
         skip_existing: bool = True,
         old_prefix: Optional[str] = None,
+        image_kind=None,
+        crop_margin_factor: float = 2.0,
+        ff_service=None,
     ):
         super().__init__()
+        # Forma da imagem a gravar no destino. `None`/ORIGINAL preserva o
+        # comportamento histórico (copiar as imagens como estão); CROP e
+        # ALIGNED produzem a face a partir de cada original.
+        self.image_kind = image_kind
+        self.crop_margin_factor = float(crop_margin_factor)
+        self.ff_service = ff_service
         self.dataset = dataset
         self.target_dir = target_dir
         self.mode = mode
@@ -69,6 +78,10 @@ class ModifyPathsWorker(QtCore.QObject):
             self.progress_update.emit(
                 f"Iniciando {self.mode.value} para '{self.dataset.name}'…", 0,
             )
+            if self._should_materialize():
+                self._run_materialization()
+                return
+
             service = DatasetLocalizationService()
             target = self.target_dir
             if self.mode == LocalizationMode.COPY_ORIGINALS:
@@ -102,6 +115,71 @@ class ModifyPathsWorker(QtCore.QObject):
             traceback.print_exc()
             self.error.emit(str(e))
             self.finished.emit(None)
+
+    def _should_materialize(self) -> bool:
+        """Copiar imagens + forma diferente da original = materializar."""
+        from faceaudit.enums.dataset_image_kind import DatasetImageKind
+
+        return (
+            self.mode == LocalizationMode.COPY_ORIGINALS
+            and self.image_kind is not None
+            and DatasetImageKind.from_str(self.image_kind).requires_face_detection
+            and self.ff_service is not None
+        )
+
+    def _run_materialization(self) -> None:
+        """Produz recortes/alinhadas na pasta do dataset e emite o resultado.
+
+        Reusa o mesmo serviço do botão "Gerar Imagens" — a diferença é a
+        porta de entrada: aqui o conjunto de imagens vem do dataset aberto,
+        cujas faces podem apontar para pastas diferentes.
+        """
+        from faceaudit.enums.dataset_image_kind import DatasetImageKind
+        from faceaudit.services.dataset_localization_service import (
+            SELF_CONTAINED_IMAGES_SUBDIR,
+            self_contained_dataset_dir,
+        )
+        from faceaudit.services.face_image_materialization_service import (
+            FaceImageMaterializationService,
+        )
+        from faceaudit.services.ff_geometry_adapter import FFServiceGeometryAdapter
+
+        kind = DatasetImageKind.from_str(self.image_kind)
+        destino = self_contained_dataset_dir(self.target_dir, self.dataset.name)
+        self.progress_update.emit(
+            f"Gerando imagens ({kind.label_pt}) em {destino}…", 0,
+        )
+        servico = FaceImageMaterializationService(
+            FFServiceGeometryAdapter(self.ff_service)
+        )
+        novo_dataset, resultado = servico.materialize_dataset(
+            self.dataset, destino,
+            kind=kind,
+            margin_factor=self.crop_margin_factor,
+            images_subdir=SELF_CONTAINED_IMAGES_SUBDIR,
+            progress_callback=self._on_progress,
+        )
+        if not self._is_running:
+            self.finished.emit(None)
+            return
+
+        # A UI a jusante consome `LocalizationResult`; empacotar aqui evita
+        # um segundo contrato só para este caminho.
+        from faceaudit.models.localization_result import LocalizationResult
+
+        self.progress_update.emit(resultado.summary_pt(), 100)
+        self.finished.emit(LocalizationResult(
+            dataset=novo_dataset,
+            target_dir=destino,
+            mode=self.mode,
+            naming=self.naming,
+            n_processed=resultado.n_processed,
+            n_copied=resultado.n_written,
+            n_skipped=resultado.n_skipped,
+            n_failed=resultado.n_failed,
+            failures=tuple(resultado.failures),
+            duration_seconds=0.0,
+        ))
 
     def stop(self):
         """Sinaliza cancelamento cooperativo. O service não tem ponto
