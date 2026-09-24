@@ -103,22 +103,25 @@ class CropProcessor:
         face = select_best_face(image.shape, faces, criterion="size")
         x1, y1, x2, y2 = self._extract_bbox(face)
 
-        # Aplica padding (fração da bbox em cada lado)
-        bw = x2 - x1
-        bh = y2 - y1
-        pad = float(self._config.face_padding)
-        if pad > 0:
-            x1 = int(x1 - bw * pad)
-            x2 = int(x2 + bw * pad)
-            y1 = int(y1 - bh * pad)
-            y2 = int(y2 + bh * pad)
+        # Expande a bbox pelo fator configurado. Usa a MESMA primitiva da
+        # extração de faces de vídeo — o mesmo número tem de produzir o
+        # mesmo enquadramento nos dois fluxos.
+        import numpy as _np
+        from forensicface.geometry import extend_bbox
 
-        # Clamp pra dentro da imagem
+        x1, y1, x2, y2 = extend_bbox(
+            _np.asarray([x1, y1, x2, y2]),
+            image.shape,
+            margin_factor=float(self._config.margin_factor),
+        )
+
+        # `extend_bbox` já corta ao quadro; resta garantir área não-nula
+        # (bbox degenerada na borda viraria fatia vazia em silêncio).
         h, w = image.shape[:2]
-        x1 = max(0, min(w - 1, x1))
-        y1 = max(0, min(h - 1, y1))
-        x2 = max(x1 + 1, min(w, x2))
-        y2 = max(y1 + 1, min(h, y2))
+        x1 = max(0, min(w - 1, int(x1)))
+        y1 = max(0, min(h - 1, int(y1)))
+        x2 = max(x1 + 1, min(w, int(x2)))
+        y2 = max(y1 + 1, min(h, int(y2)))
 
         return image[y1:y2, x1:x2].copy()
 
