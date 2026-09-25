@@ -23,12 +23,19 @@ class FinalizeDatasetWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(object)
     error = QtCore.pyqtSignal(str)
 
-    def __init__(self, pipeline, dataset, config, *, recovered_faces=None) -> None:
+    def __init__(
+        self, pipeline, dataset, config, *,
+        recovered_faces=None, enrichment: bool = False,
+    ) -> None:
         super().__init__()
         self._pipeline = pipeline
         self._dataset = dataset
         self._config = config
         self._recovered = list(recovered_faces or [])
+        # O enriquecimento grava por outro caminho: reescreve o parquet onde
+        # ele já está, sem materializar modo de armazenamento — nada foi
+        # copiado nem relativizado, o dataset já existia em disco.
+        self._enrichment = bool(enrichment)
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
@@ -46,7 +53,11 @@ class FinalizeDatasetWorker(QtCore.QObject):
                     ),
                 )
 
-            resultado = self._pipeline.finalize_storage_and_save(
+            gravar = (
+                self._pipeline.finalize_enrichment_and_save if self._enrichment
+                else self._pipeline.finalize_storage_and_save
+            )
+            resultado = gravar(
                 self._dataset,
                 self._config,
                 progress_callback=lambda msg, pct: self.progress_update.emit(msg, pct),

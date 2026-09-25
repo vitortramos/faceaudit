@@ -20,6 +20,10 @@ from faceaudit.services import (
 )
 from faceaudit.services.image_io import imwrite_unicode_safe
 from faceaudit.services.image_rotation_service import ROTACOES_PADRAO
+from faceaudit.services.oriented_alignment_service import (
+    alinhar_tentando_rotacoes,
+    rotacao_registrada,
+)
 
 # Mapeia a chave de `DatasetIngestionConfig.ff_kept_attributes` (UI) para o
 # campo correspondente no `FFInfo`. Usado só no fluxo de criação para zerar os
@@ -475,6 +479,42 @@ class FeatureExtractionPipeline:
             )
         return sem_deteccao
 
+    def finalize_enrichment_and_save(
+        self,
+        dataset: FaceDataset,
+        config: DatasetIngestionConfig,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> FaceDataset:
+        """Grava o dataset enriquecido depois da revisão.
+
+        Separado de `finalize_storage_and_save` porque o destino é outro: o
+        enriquecimento reescreve o parquet onde ele já está
+        (`_parquet_dir`), sem materializar modo de armazenamento — nada foi
+        copiado nem relativizado, o dataset já existia em disco.
+
+        Não recusa dataset vazio como a criação: aqui não há como esvaziar,
+        porque a revisão do enriquecimento não remove face nenhuma.
+        """
+        if not dataset.name:
+            return dataset
+
+        base_dir = dataset._parquet_dir or self.storage_path
+        cache_file = Path(base_dir) / f"{dataset.name}.parquet"
+        if progress_callback:
+            progress_callback("Salvando alterações...", 95)
+        try:
+            print(f"💾 [Pipeline] Salvando dataset enriquecido em: {cache_file}")
+            dataset.to_parquet(cache_file)
+        except Exception as e:
+            self.logger.error(f"Erro ao salvar pós-enriquecimento: {e}")
+            raise
+
+        dataset._save_deferred = False
+        dataset._undetected_faces = []
+        if progress_callback:
+            progress_callback("Enriquecimento Concluído!", 100)
+        return dataset
+
     def complete_stages_for_recovered(
         self,
         dataset: FaceDataset,
@@ -765,6 +805,9 @@ class FeatureExtractionPipeline:
         # Sinaliza cancellation pelo usuário — relançado depois do save
         # parcial pra que o Worker trate corretamente como cancelado.
         interrupted = False
+        # Faces que continuaram sem biometria. Elas permanecem no dataset —
+        # a lista existe para a revisão, não para exclusão.
+        undetected: List[Any] = []
 
         try:
             if config.compute_ff:
@@ -818,6 +861,10 @@ class FeatureExtractionPipeline:
                                     scaled = _b + int((internal_pct / 100) * (_n - _b))
                                     progress_callback(f"[{_m}] {msg}", scaled)
 
+                            # Sem rotações aqui: este caminho só roda em
+                            # dataset de faces já alinhadas, onde o recorte
+                            # 112×112 está de pé por construção e não há
+                            # orientação a corrigir.
                             ff_svc = self._build_single_model_ff_service(config, model)
                             try:
                                 ff_svc.process_dataset(
@@ -830,7 +877,12 @@ class FeatureExtractionPipeline:
                                     gc.collect()
                     else:
                         self._resolve_ff_service(config).process_dataset(
-                            target, progress_callback=ff_callback, models=wanted_models)
+                            target, progress_callback=ff_callback,
+                            models=wanted_models,
+                            rotation_attempts=(
+                                ROTACOES_PADRAO if config.try_rotated_detection else ()
+                            ),
+                        )
                     self._log_stage_summary(
                         "FF", target, lambda f: f.ff_info is not None,
                     )
@@ -844,6 +896,19 @@ class FeatureExtractionPipeline:
                                  "(face não detectada ou imagem ilegível)"),
                             )
 
+                    # Diferente da criação, aqui NADA é retirado do dataset: o
+                    # enriquecimento é aditivo, e remover uma face de um
+                    # artefato existente seria edição destrutiva que o usuário
+                    # não pediu. A lista serve só para a revisão — onde ele
+                    # pode inspecionar e tentar numa resolução maior.
+                    if config.review_undetected:
+                        sem_biometria = [
+                            f for f in target.faces
+                            if not _tem_algum_embedding(f.ff_info)
+                        ]
+                        if sem_biometria:
+                            undetected.extend(sem_biometria)
+
                 # Caminho "atributos-só": adiciona pose/gênero/idade/det/ipd a
                 # faces que JÁ têm embedding, rodando só o detector na original —
                 # sem recomputar o embedding (pula o modelo de reconhecimento).
@@ -852,7 +917,11 @@ class FeatureExtractionPipeline:
                         touched_face_ids.add(id(f))
                     ff_svc_da = self._resolve_ff_service(config)
                     n_ok = self._enrich_attributes_only(
-                        faces_attrs_only, dataset, ff_svc_da, wanted_da, ff_callback)
+                        faces_attrs_only, dataset, ff_svc_da, wanted_da, ff_callback,
+                        rotation_attempts=(
+                            ROTACOES_PADRAO if config.try_rotated_detection else ()
+                        ),
+                    )
                     print(
                         f"🧭 [Pipeline] Atributos-só: {n_ok}/{len(faces_attrs_only)} "
                         "face(s) atualizada(s) sem recomputar embedding."
@@ -937,6 +1006,24 @@ class FeatureExtractionPipeline:
         self._apply_error_marks_to_dataset(
             dataset, touched_face_ids, per_face_failures,
         )
+
+        # Há faces sem biometria e alguém para revisar: para antes de
+        # gravar. Gravar agora e gravar de novo depois da revisão custaria
+        # duas escritas do parquet inteiro — em dataset de milhões de
+        # linhas, minutos a mais sem nenhum ganho.
+        if undetected and not interrupted:
+            dataset._undetected_faces = undetected
+            dataset._save_deferred = True
+            print(
+                f"⏸️  [Pipeline] {len(undetected)} face(s) sem biometria — "
+                f"gravação adiada até a revisão."
+            )
+            if progress_callback:
+                progress_callback(
+                    f"{len(undetected)} face(s) sem biometria — aguardando "
+                    "revisão.", 97,
+                )
+            return dataset
 
         # Persistência. Prefere o diretório original do dataset
         # (`_parquet_dir`, set por `from_parquet`) — sem isso, datasets
@@ -1625,11 +1712,17 @@ class FeatureExtractionPipeline:
 
     @staticmethod
     def _enrich_attributes_only(faces, dataset, ff_svc, wanted_da,
-                                progress_callback=None) -> int:
+                                progress_callback=None,
+                                rotation_attempts=()) -> int:
         """Adiciona atributos de detect_and_align a faces que JÁ têm embedding —
         roda só o detector na imagem original, sem recomputar o embedding (pula o
         modelo de reconhecimento, o mais pesado). Só os atributos PEDIDOS são
-        mesclados. Retorna quantas faces foram atualizadas."""
+        mesclados. Retorna quantas faces foram atualizadas.
+
+        Percorre as orientações como os demais caminhos, começando pela que
+        já estiver registrada na face. Sem isso, uma face que só existe
+        girada (dataset criado com a retentativa de giro) nunca ganharia
+        pose nem demografia, e o motivo não apareceria em lugar nenhum."""
         from faceaudit.services.image_io import imread_unicode_safe
         from faceaudit.models.ff_info import FFInfo
         engine = getattr(ff_svc, "app", None)
@@ -1645,13 +1738,15 @@ class FeatureExtractionPipeline:
             img = imread_unicode_safe(str(src)) if src else None
             if img is None:
                 continue
-            try:
-                res = engine.detect_and_align(img, single_face=True)
-            except Exception:
-                res = None
+            res, graus = alinhar_tentando_rotacoes(
+                engine, img, rotation_attempts, str(src),
+                rotacao_conhecida=rotacao_registrada(face),
+            )
             if not res:
                 continue
             ff = face.ff_info or FFInfo()
+            if graus:
+                ff.detection_rotation = graus
             FeatureExtractionPipeline._merge_detect_attrs(ff, res, wanted_da)
             face.ff_info = ff
             n_ok += 1

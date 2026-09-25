@@ -3103,6 +3103,9 @@ class DatasetManagerController(QtCore.QObject):
             QMessageBox.critical(self.view, "Erro", f"Erro ao abrir janela de enriquecimento: {e}")
 
     def _iniciar_worker_enrich(self, config: DatasetIngestionConfig):
+        # A gravação pode acontecer numa segunda etapa, depois da revisão
+        # das faces que ficaram sem biometria.
+        self._enrich_config = config
         self._run_worker(
             EnrichWorker(self.pipeline, self.dataset, config),
             label="Enriquecendo Dataset",
@@ -3113,6 +3116,60 @@ class DatasetManagerController(QtCore.QObject):
         )
 
     def _on_enrich_concluido(self, dataset):
+        # Enriquecimento parado antes de gravar porque há faces sem
+        # biometria a revisar. A tela de progresso já fechou.
+        if dataset is not None and getattr(dataset, "_save_deferred", False):
+            self._revisar_sem_biometria_e_gravar(dataset)
+            return
+        self._concluir_enriquecimento(dataset)
+
+    def _revisar_sem_biometria_e_gravar(self, dataset):
+        """Mostra as faces sem biometria e grava depois.
+
+        Aqui a revisão NÃO decide inclusão: as faces já estão no dataset, e
+        removê-las seria edição destrutiva com caminho próprio no aplicativo
+        (Excluir selecionados, que registra justificativa). O que esta
+        janela oferece é inspecionar e tentar numa resolução maior.
+        """
+        from faceaudit.enums.undetected_review_mode import UndetectedReviewMode
+
+        from .undetected_review_dialog import UndetectedReviewController
+
+        pendentes = list(getattr(dataset, "_undetected_faces", []) or [])
+        config = getattr(self, "_enrich_config", None)
+        if not pendentes or config is None:
+            self._finalizar_enriquecimento_e_gravar(dataset, [])
+            return
+
+        ctrl = UndetectedReviewController(
+            self.view,
+            faces=pendentes,
+            config=config,
+            dataset=dataset,
+            n_total=len(dataset),
+            ff_service_factory=self._fabrica_de_ff_service(config),
+            modo=UndetectedReviewMode.ENRICHMENT,
+        )
+        ctrl.exec()
+        self._finalizar_enriquecimento_e_gravar(dataset, ctrl.recovered_faces())
+
+    def _finalizar_enriquecimento_e_gravar(self, dataset, recuperadas):
+        from .workers.finalize_dataset_worker import FinalizeDatasetWorker
+
+        self._revisao_recuperadas = list(recuperadas or [])
+        self._run_worker(
+            FinalizeDatasetWorker(
+                self.pipeline, dataset, self._enrich_config,
+                recovered_faces=self._revisao_recuperadas,
+                enrichment=True,
+            ),
+            label="Gravando Enriquecimento",
+            determinate=True,
+            use_log_dialog=True,
+            on_finished=self._concluir_enriquecimento,
+        )
+
+    def _concluir_enriquecimento(self, dataset):
         if dataset:
             # Reusa `carregar_dataset_na_tela` pra refresh completo:
             # propaga column_specs atualizados (que agora incluem
@@ -3125,14 +3182,33 @@ class DatasetManagerController(QtCore.QObject):
             # PR 25 (Tema 5.4) — registra ENRICH (sem hash; o parquet
             # já foi resalvo pelo enrich_existing_dataset, mas a próxima
             # save manual rehasha).
-            self._audit(
-                AuditOperation.ENRICH,
-                f"Enriquecimento aplicado em '{dataset.name}'.",
-                metadata={
-                    "rows": len(self.dataset),
-                    "identities": self.dataset.number_of_identities,
-                },
-            )
+            recuperadas = getattr(self, "_revisao_recuperadas", None) or []
+            descricao = f"Enriquecimento aplicado em '{dataset.name}'."
+            meta = {
+                "rows": len(self.dataset),
+                "identities": self.dataset.number_of_identities,
+            }
+            if recuperadas:
+                tamanhos = sorted({
+                    int(getattr(
+                        getattr(f, "ff_info", None), "detection_det_size", 0,
+                    ) or 0)
+                    for f in recuperadas
+                })
+                descricao += (
+                    f" {len(recuperadas)} face(s) sem biometria foram "
+                    f"recuperadas numa segunda tentativa, com o detector em "
+                    f"{', '.join(str(t) for t in tamanhos if t)} px."
+                )
+                meta["recovered_on_retry"] = len(recuperadas)
+                meta["recovered_files"] = self._nomes_de_arquivo(recuperadas)
+                meta["recovered_det_sizes"] = tamanhos
+            n_giradas = self._contar_giradas(dataset)
+            if n_giradas:
+                meta["faces_detected_after_rotation"] = n_giradas
+            self._audit(AuditOperation.ENRICH, descricao, metadata=meta)
+            # Consumido: não pode vazar para a próxima operação.
+            self._revisao_recuperadas = []
             # `enrich_existing_dataset` SOBRESCREVE o parquet em disco
             # diretamente — não passa por `fluxo_salvar`. Pra que o
             # Strategy Manager V2 (cross-tab) detecte a mudança e

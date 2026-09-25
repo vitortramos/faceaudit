@@ -126,4 +126,9 @@ class EnrichDatasetController:
             batch_size=v.get_batch_size(),
             is_aligned=aligned,
             force_reprocess=v.chk_force_reprocess.isChecked(),
+            # A interface tem como apresentar a revisão das faces que ficarem
+            # sem biometria — e, nela, tentar numa resolução maior. Em dataset
+            # de faces já alinhadas não há detecção a refazer (o recorte
+            # 112×112 vai direto ao encoder), então a revisão não se aplica.
+            review_undetected=not aligned,
         )

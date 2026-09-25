@@ -16,6 +16,8 @@ from typing import List, Optional
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from faceaudit.enums.undetected_review_mode import UndetectedReviewMode
+
 from interface.theme import apply_themed_stylesheet, current_token_fn
 
 _LADO_MINIATURA = 150
@@ -42,9 +44,15 @@ class UndetectedReviewView(QtWidgets.QDialog):
         motivo: str = "",
         det_size_atual: int = 320,
         resolucoes: tuple = (),
+        modo: UndetectedReviewMode = UndetectedReviewMode.CREATION,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Imagens sem face detectada")
+        self._modo = modo
+        self.setWindowTitle(
+            "Imagens sem face detectada"
+            if modo.permite_decidir_inclusao
+            else "Faces sem biometria neste enriquecimento"
+        )
         self.resize(1040, 700)
         self._inclusao_permitida = bool(inclusao_permitida)
         self._det_size_atual = int(det_size_atual)
@@ -85,7 +93,10 @@ class UndetectedReviewView(QtWidgets.QDialog):
         layout.setSpacing(2)
 
         titulo = QtWidgets.QLabel(
-            f"<b>{n_imagens} imagem(ns) sem face detectada</b>", parent=caixa,
+            f"<b>{n_imagens} imagem(ns) sem face detectada</b>"
+            if self._modo.permite_decidir_inclusao else
+            f"<b>{n_imagens} face(s) do dataset sem biometria</b>",
+            parent=caixa,
         )
         apply_themed_stylesheet(
             titulo, lambda t: "color: " + t("ACCENT_TEXT") + "; font-size: 13px;",
@@ -93,9 +104,17 @@ class UndetectedReviewView(QtWidgets.QDialog):
         layout.addWidget(titulo)
 
         detalhe = QtWidgets.QLabel(
-            "O detector foi tentado nas quatro orientações (como está, 90°, "
-            "270° e 180°) e não encontrou face em nenhuma delas. "
-            f"As outras {max(n_total - n_imagens, 0)} imagens já estão no dataset.",
+            (
+                "O detector foi tentado nas quatro orientações (como está, "
+                "90°, 270° e 180°) e não encontrou face em nenhuma delas. "
+                f"As outras {max(n_total - n_imagens, 0)} imagens já estão "
+                "no dataset."
+            ) if self._modo.permite_decidir_inclusao else (
+                "O detector foi tentado nas quatro orientações e não "
+                "encontrou face em nenhuma delas. Estas faces continuam no "
+                f"dataset; as outras {max(n_total - n_imagens, 0)} receberam "
+                "o que foi pedido."
+            ),
             parent=caixa,
         )
         detalhe.setWordWrap(True)
@@ -236,7 +255,9 @@ class UndetectedReviewView(QtWidgets.QDialog):
         )
         # Recuperada tem caixa da face, logo tem recorte a gerar: a inclusão
         # deixa de estar bloqueada para ELA, mesmo em dataset de recortes.
-        item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+        # No enriquecimento não há inclusão a liberar — a face já está lá.
+        if self._modo.permite_decidir_inclusao:
+            item.setFlags(item.flags() | QtCore.Qt.ItemFlag.ItemIsUserCheckable)
 
     def habilitar_caixa_do_painel(self, habilitada: bool) -> None:
         self.chk_incluir.setEnabled(bool(habilitada))
@@ -315,6 +336,10 @@ class UndetectedReviewView(QtWidgets.QDialog):
             self.chk_incluir.setToolTip(self.lbl_motivo.text())
         self.chk_incluir.toggled.connect(self._ao_marcar_no_painel)
         layout.addWidget(self.chk_incluir)
+        if not self._modo.permite_decidir_inclusao:
+            # No enriquecimento a face já está no dataset: uma caixa
+            # "incluir" desabilitada sugeriria uma decisão que não existe.
+            self.chk_incluir.setVisible(False)
         return caixa
 
     # ── Rodapé ───────────────────────────────────────────────────────────
@@ -338,6 +363,10 @@ class UndetectedReviewView(QtWidgets.QDialog):
             self.lbl_contador, lambda t: "color: " + t("TEXT_MUTED") + ";",
         )
         linha.addWidget(self.lbl_contador)
+
+        if not self._modo.permite_decidir_inclusao:
+            for w in (self.btn_todas, self.btn_nenhuma, self.lbl_contador):
+                w.setVisible(False)
 
         self.botoes = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.StandardButton.Ok, parent=self,
@@ -364,6 +393,9 @@ class UndetectedReviewView(QtWidgets.QDialog):
                 # Visível e legível, mas não marcável — esconder a caixa
                 # deixaria a impressão de que a escolha nem existe.
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsUserCheckable)
+            if not self._modo.permite_decidir_inclusao:
+                # Aqui nem a marca deve aparecer: não há inclusão a decidir.
+                item.setData(QtCore.Qt.ItemDataRole.CheckStateRole, None)
             item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
             self.lista.addItem(item)
         self.lista.blockSignals(False)

@@ -36,7 +36,7 @@ def _wire(pipe, monkeypatch):
     """Monkeypatcha os builders + a seleção de alvo; devolve o registrador."""
     rec = {"single": [], "resolve": [], "models_per_call": []}
 
-    def fake_process(target, progress_callback=None, models=None):
+    def fake_process(target, progress_callback=None, models=None, rotation_attempts=()):
         rec["models_per_call"].append(list(models or []))
         for f in target.faces:
             f.ff_info = FFInfo()   # sem falhas

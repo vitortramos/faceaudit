@@ -8,6 +8,10 @@ from tqdm.auto import tqdm
 # Import absoluto baseada na estrutura do pacote
 from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models import FaceInfo, FFInfo, FaceDataset
+from faceaudit.services.oriented_alignment_service import (
+    alinhar_tentando_rotacoes,
+    rotacao_registrada,
+)
 from faceaudit.services.image_rotation_service import (
     caixa_girada_para_original,
     descrever_rotacao,
@@ -1324,6 +1328,7 @@ class FFService:
             )
             self._process_dataset_align_then_batch(
                 dataset, total_faces, model, models, progress_callback,
+                rotation_attempts=rotation_attempts,
             )
         else:
             # Adapter: erros por modelo dentro do process_face viram
@@ -1470,6 +1475,7 @@ class FFService:
         model: Optional[str],
         models: Optional[List[str]],
         progress_callback: Optional[Callable[[str, int], None]],
+        rotation_attempts: Sequence[int] = (),
     ) -> None:
         """Caminho enrichment: alinha per-face, extrai embedding em batch.
 
@@ -1578,15 +1584,15 @@ class FFService:
             img_array = self._safe_read_image(image_path)
             if img_array is None:
                 continue
-            try:
-                item = align_engine.detect_and_align(
-                    img_array, single_face=True,
-                )
-            except Exception as e:
-                _err_cb(f"detect_and_align falhou pra {image_path}: {e}")
-                continue
+            item, graus = alinhar_tentando_rotacoes(
+                align_engine, img_array, rotation_attempts, image_path,
+                rotacao_conhecida=rotacao_registrada(face),
+                error_callback=_err_cb,
+            )
             if not item:
                 continue
+            if graus and face.ff_info is not None:
+                face.ff_info.detection_rotation = graus
             rgb_aligned = item.get("aligned_face")
             if rgb_aligned is None or rgb_aligned.shape != (112, 112, 3):
                 continue

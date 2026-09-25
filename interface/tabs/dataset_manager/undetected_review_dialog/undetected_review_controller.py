@@ -17,6 +17,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from faceaudit.enums.undetected_review_mode import UndetectedReviewMode
 from faceaudit.services.undetected_review_policy import (
     UndetectedInclusionPolicy,
     resolve_inclusion_policy,
@@ -44,12 +45,16 @@ class UndetectedReviewController(QtCore.QObject):
         dataset=None,
         n_total: int = 0,
         ff_service_factory=None,
+        modo: UndetectedReviewMode = UndetectedReviewMode.CREATION,
     ) -> None:
         super().__init__(parent_view)
         self._faces = list(faces)
         self._dataset = dataset
         self._config = config
-        self._politica: UndetectedInclusionPolicy = resolve_inclusion_policy(config)
+        self._modo = modo
+        self._politica: UndetectedInclusionPolicy = resolve_inclusion_policy(
+            config, modo,
+        )
 
         # Inclusão bloqueada: ninguém entra, e a view não deixa marcar.
         self._marcadas: List[bool] = [False] * len(self._faces)
@@ -78,6 +83,7 @@ class UndetectedReviewController(QtCore.QObject):
             motivo=self._politica.reason,
             det_size_atual=self._baseline_det_size,
             resolucoes=self._resolucoes,
+            modo=modo,
         )
         self.view.popular([self._rotulo(c) for c in self._caminhos])
         self.view.atualizar_contador(0, len(self._faces))
@@ -128,10 +134,14 @@ class UndetectedReviewController(QtCore.QObject):
         """
         return [
             self._faces[i] for i in sorted(self._recuperadas)
-            if self._marcadas[i]
+            if self._marcadas[i] or not self._modo.permite_decidir_inclusao
         ]
 
     def _pode_incluir(self, indice: int) -> bool:
+        if not self._modo.permite_decidir_inclusao:
+            # A face já está no dataset; não há inclusão a decidir. O que a
+            # retentativa muda aqui é a BIOMETRIA dela, não a presença.
+            return False
         return self._politica.allowed or indice in self._recuperadas
 
     @property
@@ -298,9 +308,12 @@ class UndetectedReviewController(QtCore.QObject):
             self.view.definir_aviso_de_retentativa(
                 f"{n_novas} face(s) encontrada(s) a {det_size} px. "
                 f"{restantes} continua(m) sem face."
-                + ("" if not self._politica.blocked else
-                   " As recuperadas já podem ser incluídas — agora existe "
-                   "recorte a gerar para elas.")
+                + (
+                    " As recuperadas já podem ser incluídas — agora existe "
+                    "recorte a gerar para elas."
+                    if self._politica.blocked
+                    and self._modo.permite_decidir_inclusao else ""
+                )
             )
         else:
             self.view.definir_aviso_de_retentativa(

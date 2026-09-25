@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from faceaudit.enums.dataset_image_kind import DatasetImageKind
+from faceaudit.enums.undetected_review_mode import UndetectedReviewMode
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,13 @@ _MOTIVO_RECORTES = (
     "quebrando a premissa de que todo arquivo do dataset é um recorte."
 )
 
+_MOTIVO_ENRIQUECIMENTO = (
+    "Estas faces já estão no dataset — elas apenas não ganharam a biometria "
+    "pedida neste enriquecimento. Não há o que incluir. Tentar numa resolução "
+    "maior pode recuperá-las; para remover alguma do dataset, use Excluir "
+    "selecionados, que registra a justificativa na cadeia de custódia."
+)
+
 _MOTIVO_FONTE_ALINHADA = (
     "Este dataset foi declarado como contendo faces já alinhadas. A imagem "
     "que falhou não é uma face alinhada legível, e incluí-la contaminaria o "
@@ -66,12 +74,19 @@ _MOTIVO_FONTE_ALINHADA = (
 )
 
 
-def resolve_inclusion_policy(config) -> UndetectedInclusionPolicy:
-    """Decide a partir do `DatasetIngestionConfig` da criação.
+def resolve_inclusion_policy(
+    config,
+    mode: UndetectedReviewMode = UndetectedReviewMode.CREATION,
+) -> UndetectedInclusionPolicy:
+    """Decide a partir do `DatasetIngestionConfig` e do contexto da revisão.
 
     Recebe o config por duck-typing (via `getattr`) para não obrigar quem
     chama a montar o DTO inteiro — a política depende de quatro campos.
     """
+    if mode is UndetectedReviewMode.ENRICHMENT:
+        # A face já está no dataset; incluir não é uma decisão a tomar.
+        return UndetectedInclusionPolicy(False, _MOTIVO_ENRIQUECIMENTO)
+
     if getattr(config, "is_aligned", False):
         return UndetectedInclusionPolicy(False, _MOTIVO_FONTE_ALINHADA)
 
