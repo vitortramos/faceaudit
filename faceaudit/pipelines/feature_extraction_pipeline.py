@@ -475,6 +475,85 @@ class FeatureExtractionPipeline:
             )
         return sem_deteccao
 
+    def complete_stages_for_recovered(
+        self,
+        dataset: FaceDataset,
+        faces: List[Any],
+        config: DatasetIngestionConfig,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> None:
+        """Roda nas faces recuperadas os estágios que já haviam passado.
+
+        Uma face recuperada na revisão chega tarde: a qualidade (OFIQ,
+        SER-FIQ) e a materialização do recorte já rodaram, sobre o dataset
+        de onde ela havia sido retirada. Sem isto ela entraria com embedding
+        e sem métrica de qualidade — e, num dataset de recortes, sem arquivo
+        de recorte. O dataset ficaria heterogêneo por dentro, e nada na
+        interface mostraria isso.
+
+        Opera sobre um subconjunto com só essas faces; os objetos são os
+        mesmos do dataset (não há cópia), então o enriquecimento aparece
+        onde precisa.
+        """
+        if not faces:
+            return
+
+        sub = FaceDataset(
+            name=f"{dataset.name}_recuperadas",
+            faces=list(faces),
+            path_mode=dataset.path_mode,
+            path_root=dataset.path_root,
+        )
+        sub._parquet_dir = dataset._parquet_dir
+        sub.is_aligned = dataset.is_aligned
+
+        # Recorte/alinhamento primeiro: os estágios de qualidade leem
+        # `image_path`, e a partir daqui ele pode passar a apontar para o
+        # arquivo recortado.
+        crops_dir = config.aligned_target_dir
+        if config.self_contained:
+            from faceaudit.services.dataset_localization_service import (
+                SELF_CONTAINED_IMAGES_SUBDIR,
+            )
+            dataset_dir, _ = self._resolve_destination(config)
+            crops_dir = dataset_dir / SELF_CONTAINED_IMAGES_SUBDIR
+        if crops_dir and config.image_kind is DatasetImageKind.ALIGNED:
+            self._materialize_aligned_crops(sub, crops_dir, progress_callback)
+        elif crops_dir and config.image_kind is DatasetImageKind.CROP:
+            self._materialize_face_crops(
+                sub, crops_dir, config.crop_margin_factor, progress_callback,
+            )
+
+        if config.compute_ofiq:
+            if progress_callback:
+                progress_callback(
+                    f"Qualidade ISO nas {len(faces)} face(s) recuperada(s)...", 20,
+                )
+            self.ofiq_service.process_dataset(sub)
+
+        if config.compute_serfiq:
+            if progress_callback:
+                progress_callback(
+                    f"Robustez nas {len(faces)} face(s) recuperada(s)...", 40,
+                )
+            self._resolve_serfiq_service(config).process_dataset(
+                sub, t=config.serfiq_t, alpha=config.serfiq_alpha,
+            )
+
+        # Sobre caminhos: `_materialize_*` reescreve o `image_path` de cada
+        # face para o PNG recém-gravado, em absoluto, e mexe no path_mode do
+        # que recebe — aqui o subconjunto, não o dataset. Isso é seguro
+        # porque as faces recuperadas voltam ao dataset ANTES de
+        # `finalize_storage_and_save`, e é lá que a localização normaliza os
+        # caminhos de todo o dataset de uma vez (o autocontido relativiza).
+        # Chamar este método depois da gravação deixaria caminhos absolutos
+        # num dataset relativo — e o dataset abriria, listaria as faces e só
+        # falharia ao abrir a imagem, muito depois.
+        print(
+            f"✅ [Pipeline] {len(faces)} face(s) recuperada(s) passaram pelos "
+            f"estágios restantes."
+        )
+
     def finalize_storage_and_save(
         self,
         dataset: FaceDataset,

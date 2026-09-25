@@ -20,7 +20,7 @@ from .embedding_info import EmbeddingInfo
 # datasets legados e novos).
 _FF_ATTR_COLUMNS = (
     "ipd", "fiqa_score", "det_score", "gender", "age", "yaw", "pitch", "roll",
-    "detection_rotation",
+    "detection_rotation", "detection_det_size",
 )
 
 

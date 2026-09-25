@@ -60,6 +60,7 @@ _METODOS = (
     "_on_criacao_concluida", "_revisar_nao_detectadas_e_gravar",
     "_finalizar_e_gravar", "_concluir_criacao", "_descricao_da_criacao",
     "_metadados_da_deteccao", "_contar_giradas", "_nomes_de_arquivo",
+    "_fabrica_de_ff_service",
 )
 
 
@@ -89,6 +90,12 @@ def _controller(app, tmp_path):
     )
     ctrl._revisao_incluidas = []
     ctrl._revisao_descartadas = []
+    ctrl._revisao_recuperadas = []
+    # A fábrica de FFService lê o singleton do pipeline para herdar
+    # GPU/lote; um duplo basta, nada é construído nestes testes.
+    from unittest.mock import MagicMock
+
+    ctrl.pipeline = MagicMock()
     return ctrl
 
 
@@ -213,7 +220,7 @@ def test_decisao_de_incluir_devolve_a_face_ao_dataset(app, tmp_path, monkeypatch
     gravados = []
     monkeypatch.setattr(
         type(ctrl), "_finalizar_e_gravar",
-        lambda self, d, inc, desc: gravados.append((d, inc, desc)),
+        lambda self, d, inc, desc, rec=None: gravados.append((d, inc, desc)),
     )
 
     ctrl._revisar_nao_detectadas_e_gravar(ds)
@@ -234,7 +241,7 @@ def test_decisao_de_descartar_nao_devolve_a_face(app, tmp_path, monkeypatch):
     gravados = []
     monkeypatch.setattr(
         type(ctrl), "_finalizar_e_gravar",
-        lambda self, d, inc, desc: gravados.append((d, inc, desc)),
+        lambda self, d, inc, desc, rec=None: gravados.append((d, inc, desc)),
     )
 
     ctrl._revisar_nao_detectadas_e_gravar(ds)
@@ -254,7 +261,9 @@ def test_descartar_tudo_nao_grava_e_avisa(app, tmp_path, monkeypatch):
     _fingir_revisao(monkeypatch, incluir=[], descartar=[pendente])
     monkeypatch.setattr(
         type(ctrl), "_finalizar_e_gravar",
-        lambda self, d, inc, desc: pytest.fail("não pode gravar dataset vazio"),
+        lambda self, d, inc, desc, rec=None: pytest.fail(
+            "não pode gravar dataset vazio"
+        ),
     )
     avisos = []
     import interface.tabs.dataset_manager.dataset_manager_controller as mod
@@ -284,6 +293,9 @@ def _fingir_revisao(monkeypatch, *, incluir, descartar):
 
         def decision(self):
             return list(incluir), list(descartar)
+
+        def recovered_faces(self):
+            return []
 
     monkeypatch.setattr(pkg, "UndetectedReviewController", _Falso)
 

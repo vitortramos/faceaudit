@@ -23,15 +23,29 @@ class FinalizeDatasetWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(object)
     error = QtCore.pyqtSignal(str)
 
-    def __init__(self, pipeline, dataset, config) -> None:
+    def __init__(self, pipeline, dataset, config, *, recovered_faces=None) -> None:
         super().__init__()
         self._pipeline = pipeline
         self._dataset = dataset
         self._config = config
+        self._recovered = list(recovered_faces or [])
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
+            # As faces recuperadas na revisão chegaram DEPOIS dos estágios de
+            # qualidade e da materialização do recorte. Sem completá-las
+            # aqui, entrariam com embedding e sem métrica de qualidade — e,
+            # num dataset de recortes, sem arquivo de recorte. Tem de ser
+            # antes da gravação: é a gravação que normaliza os caminhos.
+            if self._recovered:
+                self._pipeline.complete_stages_for_recovered(
+                    self._dataset, self._recovered, self._config,
+                    progress_callback=lambda msg, pct: self.progress_update.emit(
+                        msg, pct,
+                    ),
+                )
+
             resultado = self._pipeline.finalize_storage_and_save(
                 self._dataset,
                 self._config,

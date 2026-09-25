@@ -1971,9 +1971,11 @@ class DatasetManagerController(QtCore.QObject):
             config=config,
             dataset=dataset,
             n_total=len(dataset) + len(pendentes),
+            ff_service_factory=self._fabrica_de_ff_service(config),
         )
         ctrl.exec()
         incluidas, descartadas = ctrl.decision()
+        recuperadas = ctrl.recovered_faces()
 
         for face in incluidas:
             dataset.add(face)
@@ -1991,17 +1993,53 @@ class DatasetManagerController(QtCore.QObject):
             )
             return
 
-        self._finalizar_e_gravar(dataset, incluidas, descartadas)
+        self._finalizar_e_gravar(dataset, incluidas, descartadas, recuperadas)
 
-    def _finalizar_e_gravar(self, dataset, incluidas, descartadas):
+    def _fabrica_de_ff_service(self, config):
+        """Devolve uma função que constrói um FFService na resolução pedida.
+
+        Injetada na revisão para que ela possa repetir a detecção em
+        resolução maior sem saber como um FFService é construído — e para
+        que, nos testes, a fábrica seja um duplo.
+        """
+        from faceaudit.services.ff_service import FFService
+        from faceaudit.enums.sepael_model import SepaelModel
+
+        modelos = list(
+            getattr(config, "ff_models", None) or [SepaelModel.default().ff_name]
+        )
+        singleton = getattr(self.pipeline, "ff_service", None)
+        usar_gpu = config.use_gpu
+        if usar_gpu is None:
+            usar_gpu = bool(getattr(singleton, "_use_gpu", False))
+        lote = config.batch_size or int(getattr(singleton, "_batch_size", 32) or 32)
+
+        def _construir(det_size: int):
+            # Sempre uma instância nova: os modelos ONNX são compilados para
+            # a resolução pedida, então o singleton (em outra resolução) não
+            # serve. Quem chama guarda em cache — a carga é paga uma vez por
+            # resolução, não por imagem.
+            return FFService(
+                models=modelos,
+                det_size=int(det_size),
+                use_gpu=usar_gpu,
+                extended=bool(config.ff_extended),
+                batch_size=lote,
+            )
+
+        return _construir
+
+    def _finalizar_e_gravar(self, dataset, incluidas, descartadas, recuperadas=None):
         """Segunda etapa: copiar imagens e gravar, em worker."""
         from .workers.finalize_dataset_worker import FinalizeDatasetWorker
 
         self._revisao_incluidas = list(incluidas)
         self._revisao_descartadas = list(descartadas)
+        self._revisao_recuperadas = list(recuperadas or [])
         self._run_worker(
             FinalizeDatasetWorker(
                 self.pipeline, dataset, self._ingestion_config,
+                recovered_faces=self._revisao_recuperadas,
             ),
             label="Gravando Dataset",
             determinate=True,
@@ -2053,11 +2091,22 @@ class DatasetManagerController(QtCore.QObject):
             )
         incluidas = getattr(self, "_revisao_incluidas", None) or []
         descartadas = getattr(self, "_revisao_descartadas", None) or []
+        recuperadas = getattr(self, "_revisao_recuperadas", None) or []
         if incluidas or descartadas:
             partes.append(
                 f"Revisão de imagens sem face detectada: {len(incluidas)} "
                 f"incluída(s) por decisão do operador, {len(descartadas)} "
                 f"descartada(s)."
+            )
+        if recuperadas:
+            tamanhos = sorted({
+                int(getattr(getattr(f, "ff_info", None), "detection_det_size", 0) or 0)
+                for f in recuperadas
+            })
+            partes.append(
+                f"{len(recuperadas)} dessas face(s) foram encontradas numa "
+                f"segunda tentativa, com o detector em "
+                f"{', '.join(str(t) for t in tamanhos if t)} px."
             )
         return " ".join(partes)
 
@@ -2065,7 +2114,18 @@ class DatasetManagerController(QtCore.QObject):
         """Contagens e nomes de arquivo da revisão, para a custódia."""
         incluidas = getattr(self, "_revisao_incluidas", None) or []
         descartadas = getattr(self, "_revisao_descartadas", None) or []
+        recuperadas = getattr(self, "_revisao_recuperadas", None) or []
         meta: dict = {}
+        if recuperadas:
+            # Recuperada é caso diferente de incluída-sem-biometria: esta
+            # TEM embedding, obtido numa segunda tentativa em resolução
+            # maior. Registrar as duas juntas apagaria a distinção.
+            meta["recovered_on_retry"] = len(recuperadas)
+            meta["recovered_files"] = self._nomes_de_arquivo(recuperadas)
+            meta["recovered_det_sizes"] = sorted({
+                int(getattr(getattr(f, "ff_info", None), "detection_det_size", 0) or 0)
+                for f in recuperadas
+            })
         n_giradas = self._contar_giradas(dataset)
         if n_giradas:
             meta["faces_detected_after_rotation"] = n_giradas

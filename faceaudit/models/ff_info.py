@@ -45,6 +45,12 @@ class FFInfo:
     # arquivo como ele é exibido.
     detection_rotation: Optional[int] = None
 
+    # Resolução do detector que encontrou a face, quando diferente da
+    # usada na ingestão. Vazio = encontrada na resolução configurada (o
+    # caso normal). Preenchido indica face pequena no quadro, recuperada
+    # numa segunda tentativa em resolução maior pedida na revisão.
+    detection_det_size: Optional[int] = None
+
     # Imagem Processada
     aligned_face: Optional[np.ndarray] = field(default=None, repr=False)
 

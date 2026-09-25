@@ -472,6 +472,20 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
             "corrigido."
         ),
     )
+    specs["detection_det_size"] = ColumnSpec(
+        name="detection_det_size", label="Resolução p/ detectar",
+        role=ColumnRole.METADATA, source=ColumnSource.FF,
+        dtype=ColumnDType.INT,
+        editable=False, visible_default=False, category=CATEGORY_FF_IDENT,
+        unit="pixels",
+        description=(
+            "Resolução do detector que encontrou a face, quando diferente "
+            "da usada na ingestão. Vazio significa que a face apareceu na "
+            "resolução configurada — o caso normal. Preenchido indica face "
+            "pequena no quadro, recuperada numa segunda tentativa em "
+            "resolução maior pedida durante a revisão."
+        ),
+    )
     specs["gender_est"] = ColumnSpec(
         name="gender_est", label="Gênero (FF)",
         role=ColumnRole.DEMOGRAPHIC, source=ColumnSource.FF,
