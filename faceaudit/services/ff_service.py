@@ -2,12 +2,19 @@ import json
 import numpy as np
 import cv2
 from pathlib import Path
-from typing import Dict, List, Optional, Callable, Union, Tuple
+from typing import Dict, List, Optional, Callable, Sequence, Union, Tuple
 from tqdm.auto import tqdm
 
 # Import absoluto baseada na estrutura do pacote
 from faceaudit.enums.sepael_model import SepaelModel
 from faceaudit.models import FaceInfo, FFInfo, FaceDataset
+from faceaudit.services.image_rotation_service import (
+    caixa_girada_para_original,
+    descrever_rotacao,
+    girar_imagem,
+    normalizar_graus,
+    pontos_girados_para_originais,
+)
 
 try:
     from forensicface.app import ForensicFace
@@ -1028,6 +1035,59 @@ class FFService:
                 setattr(existing, key, val)
         return face_info
 
+    def _detectar_tentando_rotacoes(
+        self,
+        engine,
+        img_array: np.ndarray,
+        rotacoes: Sequence[int],
+        image_path: str,
+        error_callback: Optional[Callable[[str], None]] = None,
+    ) -> Tuple[Optional[dict], int]:
+        """Detecta na orientação em que a imagem está; se falhar, gira e tenta.
+
+        Foto tirada com a câmera de lado não tem face detectável na
+        orientação gravada e tem depois de girar 90°. Sem isso, a imagem era
+        classificada como "sem face" quando o problema era só a orientação.
+
+        Devolve `(resultado, graus)`; `graus` é a rotação horária que fez a
+        detecção funcionar (0 = a imagem como está). `(None, 0)` quando
+        nenhuma orientação produziu face.
+
+        Cada tentativa é uma passada completa do detector, então a ordem
+        importa: a imagem como está vem primeiro e o custo extra só é pago
+        pelas imagens que de fato falharam.
+        """
+        tentativas = [0]
+        for graus in rotacoes or ():
+            g = normalizar_graus(graus)
+            if g and g not in tentativas:
+                tentativas.append(g)
+
+        for graus in tentativas:
+            imagem = girar_imagem(img_array, graus) if graus else img_array
+            try:
+                resultado = self._normalize_process_image_result(
+                    engine.process_image(imagem)
+                )
+            except Exception as e:
+                # Falha numa orientação não condena as outras — o detector
+                # pode estourar num shape específico e ir bem no girado.
+                msg = (
+                    f"Falha ao detectar em {image_path} "
+                    f"({descrever_rotacao(graus)}): {e}"
+                )
+                (error_callback or print)(msg)
+                continue
+            if resultado:
+                if graus:
+                    print(
+                        f"🔄 [FFService] Face encontrada só com a imagem "
+                        f"{descrever_rotacao(graus)}: {image_path}"
+                    )
+                return resultado, graus
+
+        return None, 0
+
     def process_face(
         self,
         face_info: FaceInfo,
@@ -1036,6 +1096,7 @@ class FFService:
         *,
         dataset: Optional[FaceDataset] = None,
         error_callback: Optional[Callable[[str], None]] = None,
+        rotation_attempts: Sequence[int] = (),
     ) -> FaceInfo:
         """
         Processa uma face, preenchendo `face_info.ff_info` com bbox,
@@ -1056,6 +1117,19 @@ class FFService:
                 relativos pós-localização). Quando None, usa
                 `face_info.image_path` direto (compat 100% com chamadas
                 pré-L1b).
+            rotation_attempts: rotações horárias (múltiplos de 90°) a tentar
+                quando a detecção falha na orientação gravada — tipicamente
+                `ROTACOES_PADRAO`. Vazio (default) preserva o comportamento
+                de uma única tentativa.
+
+        Coordenadas: quando a detecção só funciona com a imagem girada,
+        `bbox` e `keypoints` são convertidos de volta para o sistema da
+        imagem ORIGINAL antes de serem gravados, e a rotação vai em
+        `ff_info.detection_rotation`. A caixa tem de casar com o arquivo
+        que `image_path` aponta — guardá-la no frame girado faria o recorte
+        sair da região errada sem nada no dado denunciar a troca.
+        `aligned_face` fica como veio: é o recorte de pé, e é justamente
+        isso que o encoder deve ver.
         """
         image_path = (
             str(dataset.resolve_image_path(face_info))
@@ -1082,12 +1156,29 @@ class FFService:
         # (linha final) substituía o objeto inteiro.
         ff_data: Optional[FFInfo] = face_info.ff_info
 
+        # A orientação é decidida UMA vez, na primeira passada, e vale para
+        # todos os modelos da chamada: embeddings de modelos diferentes têm
+        # de sair do mesmo recorte alinhado, senão não são comparáveis entre
+        # si nem com o resto do dataset.
+        imagem_para_modelos = img_array
+        rotacao_usada = 0
+        primeira_passada = True
+
         for m in target_models:
             try:
                 model_name, engine = self._resolve_engine(m)
-                resultado = self._normalize_process_image_result(
-                    engine.process_image(img_array)
-                )
+                if primeira_passada:
+                    primeira_passada = False
+                    resultado, rotacao_usada = self._detectar_tentando_rotacoes(
+                        engine, img_array, rotation_attempts,
+                        image_path, error_callback,
+                    )
+                    if rotacao_usada:
+                        imagem_para_modelos = girar_imagem(img_array, rotacao_usada)
+                else:
+                    resultado = self._normalize_process_image_result(
+                        engine.process_image(imagem_para_modelos)
+                    )
                 if not resultado:
                     continue
 
@@ -1099,14 +1190,31 @@ class FFService:
                 # valor anterior. Isso preserva FIQA/yaw/etc. quando o
                 # usuário roda o enrich com `ff_extended=False` (que faz
                 # o ForensicFace omitir esses campos no `_assemble_result`).
+                forma_usada = imagem_para_modelos.shape[:2]
                 for key in (
                     "ipd", "fiqa_score", "det_score", "gender", "age",
                     "yaw", "pitch", "roll", "bbox", "keypoints",
                     "aligned_face",
                 ):
                     val = resultado.get(key)
-                    if val is not None:
-                        setattr(ff_data, key, val)
+                    if val is None:
+                        continue
+                    if rotacao_usada:
+                        # Volta ao sistema de coordenadas do arquivo.
+                        if key == "bbox":
+                            val = caixa_girada_para_original(
+                                val, forma_usada, rotacao_usada,
+                            )
+                        elif key == "keypoints":
+                            val = pontos_girados_para_originais(
+                                val, forma_usada, rotacao_usada,
+                            )
+                    setattr(ff_data, key, val)
+
+                # `or None` limpa a marca quando uma nova passada detectou
+                # na orientação gravada — sem isso o valor de um run anterior
+                # sobreviveria ao merge e mentiria sobre esta extração.
+                ff_data.detection_rotation = rotacao_usada or None
 
                 emb = resultado.get("embedding")
                 if emb is not None:
@@ -1127,6 +1235,7 @@ class FFService:
         progress_callback: Optional[Callable[[str, int], None]] = None,
         model: Optional[str] = None,
         models: Optional[List[str]] = None,
+        rotation_attempts: Sequence[int] = (),
     ) -> FaceDataset:
         """
         Processa um dataset completo, gerando biometria para todas as faces
@@ -1139,6 +1248,11 @@ class FFService:
                 `models` for fornecido.
             models: lista de modelos a extrair em uma só passada por face.
                 Cada face termina com um embedding em cada slot pedido.
+            rotation_attempts: rotações a tentar quando a detecção falha na
+                orientação gravada. Só tem efeito no caminho per-face
+                (extração crua) — os caminhos em lote partem de faces já
+                alinhadas ou de um `aligned_face` em cache, onde não há
+                orientação a corrigir.
         """
         total_faces = len(dataset)
         if total_faces == 0:
@@ -1228,6 +1342,7 @@ class FFService:
                 self.process_face(
                     face, model=model, models=models, dataset=dataset,
                     error_callback=_err_cb,
+                    rotation_attempts=rotation_attempts,
                 )
                 if progress_callback:
                     pct = int(((idx + 1) / total_faces) * 95)

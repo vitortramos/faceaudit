@@ -456,6 +456,22 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         metric_name="detection", direction=QualityDirection.HIGHER_IS_BETTER,
         scale=(0.0, 1.0), quality_subtype=QualitySubtype.AUX,
     )
+    specs["detection_rotation"] = ColumnSpec(
+        name="detection_rotation", label="Rotação p/ detectar",
+        role=ColumnRole.METADATA, source=ColumnSource.FF,
+        dtype=ColumnDType.INT,
+        editable=False, visible_default=False, category=CATEGORY_FF_IDENT,
+        unit="degrees",
+        description=(
+            "Rotação horária aplicada à imagem para que a face fosse "
+            "detectada. Vazio significa que a face foi encontrada na "
+            "orientação em que o arquivo está gravado — o caso normal. "
+            "Preenchido (90, 180 ou 270) indica foto gravada de lado: a "
+            "caixa e os pontos da face estão em coordenadas do arquivo "
+            "original, mas a pose e o recorte alinhado vêm do quadro "
+            "corrigido."
+        ),
+    )
     specs["gender_est"] = ColumnSpec(
         name="gender_est", label="Gênero (FF)",
         role=ColumnRole.DEMOGRAPHIC, source=ColumnSource.FF,

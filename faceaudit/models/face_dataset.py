@@ -159,6 +159,20 @@ class FaceDataset:
     _parquet_dir: Optional[Path] = field(
         default=None, repr=False, compare=False,
     )
+    # Runtime — imagens em que nenhuma face foi detectada, retiradas do
+    # dataset pela ingestão e à espera de decisão humana (incluir ou
+    # descartar). Declaradas como campo, e não penduradas em runtime, para
+    # que fiquem fora do repr e das comparações como `_parquet_dir`.
+    _undetected_faces: List[Any] = field(
+        default_factory=list, repr=False, compare=False,
+    )
+    # Runtime — True quando a ingestão parou antes de gravar porque há
+    # imagens esperando revisão. Quem recebe o dataset assim TEM de chamar
+    # `FeatureExtractionPipeline.finalize_storage_and_save` depois de
+    # aplicar a decisão; senão nada vai para o disco.
+    _save_deferred: bool = field(
+        default=False, repr=False, compare=False,
+    )
 
     def resolve_image_path(self, face_or_path: Any) -> Path:
         """Atalho que delega à free-function

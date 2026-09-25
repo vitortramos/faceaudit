@@ -257,6 +257,11 @@ class NewDatasetController(QtCore.QObject):
             aligned_target_dir=(Path(dest) if align_now and dest else None),
             dataset_dir=(Path(dest) if dest else None),
             self_contained=self_contained,
+            # A interface tem como apresentar a revisão das imagens sem face
+            # detectada, então liga o adiamento da gravação. Chamadores sem
+            # tela (testes, uso programático) deixam no default False, senão
+            # o dataset esperaria por uma decisão que nunca vem.
+            review_undetected=True,
         )
 
     # ── Getters novos (consumidos pela Etapa 2 — gravar-no-destino/autocontido) ──

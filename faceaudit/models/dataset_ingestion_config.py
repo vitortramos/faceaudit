@@ -135,6 +135,22 @@ class DatasetIngestionConfig:
     # 2.0 = o dobro). Mesma unidade da extração de faces de vídeo.
     crop_margin_factor: float = 2.0
 
+    # 11. Detecção sem face na primeira tentativa.
+    # Quando True (default), uma imagem em que o detector não achou face é
+    # tentada de novo girada 90°, 270° e 180° antes de ser dada como perdida.
+    # Foto tirada com a câmera de lado é o caso comum: não há face detectável
+    # na orientação gravada e há depois de girar. O custo extra é pago só
+    # pelas imagens que falharam.
+    try_rotated_detection: bool = True
+
+    # Quando True, as imagens que ficaram sem face em TODAS as orientações
+    # são separadas do dataset e devolvidas a quem chamou para decisão
+    # humana, e a gravação do parquet é adiada até essa decisão. Default
+    # False de propósito: só quem tem como mostrar a revisão (a interface)
+    # pode ligar isto — ligado sem ninguém para decidir, o dataset nunca
+    # seria gravado.
+    review_undetected: bool = False
+
     def __post_init__(self):
         # Garante que o path seja Path object
         if isinstance(self.input_path, str):

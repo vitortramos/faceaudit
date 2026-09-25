@@ -19,6 +19,7 @@ from faceaudit.services import (
     SERFIQService
 )
 from faceaudit.services.image_io import imwrite_unicode_safe
+from faceaudit.services.image_rotation_service import ROTACOES_PADRAO
 
 # Mapeia a chave de `DatasetIngestionConfig.ff_kept_attributes` (UI) para o
 # campo correspondente no `FFInfo`. Usado só no fluxo de criação para zerar os
@@ -38,6 +39,21 @@ _FF_KEPT_ATTR_TO_FIELD = {
 # SEM o embedding. `fiqa` NÃO está aqui — é calculado pelo runner de reconhecimento
 # (acoplado ao embedding). Base do caminho de enriquecimento "atributos-só".
 _FF_DETECT_ATTRS = frozenset({"yaw", "pitch", "roll", "gender", "age", "det_score", "ipd"})
+
+
+def _tem_algum_embedding(ff_info) -> bool:
+    """True se o FFInfo carrega embedding em ALGUM slot de modelo.
+
+    `ff_info is not None` não basta: uma passada pode popular atributos
+    (pose, qualidade) e falhar no encoder, deixando um FFInfo sem vetor
+    nenhum — que é uma face sem biometria, ainda que o objeto exista.
+    """
+    if ff_info is None:
+        return False
+    return any(
+        getattr(ff_info, member.ffinfo_slot, None) is not None
+        for member in SepaelModel
+    )
 
 
 class FeatureExtractionPipeline:
@@ -123,17 +139,8 @@ class FeatureExtractionPipeline:
         # `config.dataset_dir` (campo "Destino" do diálogo) manda; sem ele,
         # cai na biblioteca global — o default histórico.
         dataset_name = config.dataset_name
-        dataset_dir = Path(config.dataset_dir) if config.dataset_dir else self.storage_path
-        if getattr(config, "self_contained", False):
-            # Autocontido é UNIDADE: o dataset ganha pasta própria, com o
-            # parquet e as imagens dentro. Assim a pasta inteira pode ser
-            # movida/compactada sem quebrar os caminhos relativos.
-            from faceaudit.services.dataset_localization_service import (
-                self_contained_dataset_dir,
-            )
-            dataset_dir = self_contained_dataset_dir(dataset_dir, dataset_name)
+        dataset_dir, cache_file = self._resolve_destination(config)
         dataset_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = dataset_dir / f"{dataset_name}.parquet"
 
         # 2. Extract: Ingestão de Dados
         if progress_callback: 
@@ -169,13 +176,19 @@ class FeatureExtractionPipeline:
             self._extract_embedded_metadata(dataset, config, progress_callback)
 
         # 3. Transform (Parte A): Aplicação de Metadados Manuais
+        # Escreve em cada FaceInfo, que é a representação autoritativa.
+        # A versão anterior atribuía a `dataset._df`, atributo que o
+        # FaceDataset não tem — escolher gênero ou etnia fixos no diálogo
+        # derrubava a ingestão inteira com AttributeError.
         if config.default_gender:
             print(f" ℹ️ [Pipeline] Aplicando Gênero Fixo: {config.default_gender}")
-            dataset._df['gender'] = config.default_gender
-            
+            for face in dataset.faces:
+                face.gender = config.default_gender
+
         if config.default_ethnicity:
-             print(f" ℹ️ [Pipeline] Aplicando Etnia Fixa: {config.default_ethnicity}")
-             dataset._df['ethnicity'] = config.default_ethnicity
+            print(f" ℹ️ [Pipeline] Aplicando Etnia Fixa: {config.default_ethnicity}")
+            for face in dataset.faces:
+                face.ethnicity = config.default_ethnicity
 
         # 4. Transform (Parte B): Processamento Biométrico e de Qualidade
         active_stages = []
@@ -194,6 +207,9 @@ class FeatureExtractionPipeline:
         # Sinaliza cancellation pelo usuário — relançado depois do save
         # parcial pra que o Worker trate corretamente como cancelado.
         interrupted = False
+        # Faces sem face detectada em orientação alguma, retiradas do
+        # dataset e devolvidas a quem chamou para decisão humana.
+        undetected: List[Any] = []
 
         try:
             # A. ForensicFace (Embeddings, Detecção, Pose, Idade)
@@ -215,6 +231,9 @@ class FeatureExtractionPipeline:
                     dataset,
                     progress_callback=ff_callback,
                     models=wanted_models,
+                    rotation_attempts=(
+                        ROTACOES_PADRAO if config.try_rotated_detection else ()
+                    ),
                 )
                 for f in dataset.faces:
                     if f.ff_info is None:
@@ -222,6 +241,15 @@ class FeatureExtractionPipeline:
                             (f, "ff", "nenhum embedding gerado "
                              "(face não detectada ou imagem ilegível)"),
                         )
+
+                # Tira as não detectadas de circulação ANTES dos estágios
+                # seguintes. Elas não rendem qualidade, não rendem recorte e
+                # — o que importa — não podem entrar no parquet antes de
+                # alguém olhar e decidir.
+                if config.review_undetected:
+                    undetected = self._set_aside_undetected(
+                        dataset, per_face_failures, progress_callback,
+                    )
 
                 # ── Modo "alinhar durante criação" ──
                 # Após FF rodar nos originais, salva os crops alinhados
@@ -320,6 +348,27 @@ class FeatureExtractionPipeline:
         # passa por aqui.
         self._apply_ff_column_selection(dataset, config.ff_kept_attributes)
 
+        # 4.c Há imagens esperando decisão humana: para aqui. Finalizar o
+        # modo de armazenamento agora copiaria imagens que talvez sejam
+        # descartadas, e gravar o parquet criaria um arquivo que a decisão
+        # logo invalidaria. Quem chamou revisa e chama
+        # `finalize_storage_and_save`.
+        # Cancelamento tem precedência: aí o estado parcial vai para o disco
+        # como sempre, porque não haverá revisão nenhuma.
+        if undetected and not interrupted:
+            dataset._undetected_faces = undetected
+            dataset._save_deferred = True
+            print(
+                f"⏸️  [Pipeline] {len(undetected)} imagem(ns) sem face detectada "
+                f"— gravação adiada até a revisão."
+            )
+            if progress_callback:
+                progress_callback(
+                    f"{len(undetected)} imagem(ns) sem face detectada — "
+                    "aguardando revisão.", 97,
+                )
+            return dataset
+
         # 5. Load: Persistência (Sobrescreve se existir).
         # O parquet vai pra `config.dataset_dir` quando informado; senão pra
         # `storage_path` da biblioteca global. Antes de salvar, o modo de
@@ -349,6 +398,124 @@ class FeatureExtractionPipeline:
         if progress_callback:
             progress_callback("Processamento Concluído!", 100)
 
+        return dataset
+
+    # =====================================================================
+    # Imagens sem face detectada — separação, revisão e gravação adiada
+    # =====================================================================
+
+    def _resolve_destination(self, config: DatasetIngestionConfig):
+        """(pasta, arquivo parquet) do destino. Uma só fonte de verdade.
+
+        Precisa ser reusável porque a gravação pode acontecer numa segunda
+        chamada (`finalize_storage_and_save`), depois da revisão humana —
+        e recalcular isso por fora arriscaria gravar noutro lugar.
+        """
+        dataset_dir = (
+            Path(config.dataset_dir) if config.dataset_dir else self.storage_path
+        )
+        if getattr(config, "self_contained", False):
+            # Autocontido é UNIDADE: o dataset ganha pasta própria, com o
+            # parquet e as imagens dentro. Assim a pasta inteira pode ser
+            # movida/compactada sem quebrar os caminhos relativos.
+            from faceaudit.services.dataset_localization_service import (
+                self_contained_dataset_dir,
+            )
+            dataset_dir = self_contained_dataset_dir(dataset_dir, config.dataset_name)
+        return dataset_dir, dataset_dir / f"{config.dataset_name}.parquet"
+
+    @staticmethod
+    def _set_aside_undetected(
+        dataset: FaceDataset,
+        per_face_failures: List[tuple],
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> List[Any]:
+        """Retira do dataset as faces que ficaram sem detecção e devolve-as.
+
+        Antes disso, a imagem sem face entrava no dataset carregando a
+        mensagem de erro — virava uma linha sem embedding no meio dos dados,
+        e descobrir isso dependia de ir olhar a coluna de erro.
+
+        As faces saem com a marca de erro JÁ aplicada: elas não passam mais
+        pelo `_apply_error_marks_to_dataset` do fim do fluxo, e se voltarem
+        (o usuário decidiu incluir) precisam chegar marcadas.
+        """
+        sem_deteccao = [
+            f for f in dataset.faces
+            if f.ff_info is None or not _tem_algum_embedding(f.ff_info)
+        ]
+        if not sem_deteccao:
+            return []
+
+        ids = {id(f) for f in sem_deteccao}
+        dataset.faces = [f for f in dataset.faces if id(f) not in ids]
+
+        # As entradas destas faces saem da lista de falhas: a consolidação
+        # do fim do fluxo só varre `dataset.faces`, e deixá-las ali daria a
+        # impressão de que foram tratadas.
+        motivo = (
+            "nenhuma face detectada (tentadas as quatro orientações)"
+        )
+        per_face_failures[:] = [
+            entrada for entrada in per_face_failures if id(entrada[0]) not in ids
+        ]
+        for face in sem_deteccao:
+            face.error = True
+            face.error_stage = "ff"
+            face.error_message = f"[ff] {motivo}"
+
+        print(
+            f"🔍 [Pipeline] {len(sem_deteccao)} imagem(ns) sem face detectada "
+            f"— separadas para revisão."
+        )
+        if progress_callback:
+            progress_callback(
+                f"{len(sem_deteccao)} imagem(ns) sem face detectada — "
+                "serão apresentadas para revisão.", 0,
+            )
+        return sem_deteccao
+
+    def finalize_storage_and_save(
+        self,
+        dataset: FaceDataset,
+        config: DatasetIngestionConfig,
+        progress_callback: Optional[Callable[[str, int], None]] = None,
+    ) -> FaceDataset:
+        """Materializa o modo de armazenamento e grava o parquet.
+
+        Segunda metade do `execute` quando a gravação foi adiada para depois
+        da revisão das imagens sem detecção. Só roda depois de a decisão
+        estar aplicada no dataset — é por isso que copiar imagens e gravar
+        ficaram aqui, e não antes da pergunta.
+
+        Recusa gravar dataset vazio: um parquet de zero linhas é aceito pela
+        interface, listado como recurso e desaparece dos seletores sem
+        explicação — o jeito mais eficiente de perder um dataset em silêncio.
+        """
+        if len(dataset) == 0:
+            raise ValueError(
+                "Nenhuma face restou para gravar: todas as imagens ficaram "
+                "sem face detectada e foram descartadas na revisão. Nada foi "
+                "gravado — um dataset vazio passaria por dataset válido."
+            )
+
+        dataset_dir, cache_file = self._resolve_destination(config)
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+
+        dataset = self._finalize_storage_mode(
+            dataset, config, dataset_dir, progress_callback,
+        )
+
+        if progress_callback:
+            progress_callback("Salvando arquivo Parquet...", 90)
+        print(f"💾 [Pipeline] Salvando dataset em: {cache_file}")
+        dataset.to_parquet(cache_file)
+
+        # A marca de adiamento morre aqui — o dataset já está no disco.
+        dataset._save_deferred = False
+        dataset._undetected_faces = []
+        if progress_callback:
+            progress_callback("Processamento Concluído!", 100)
         return dataset
 
     def _calc_pct(self, current_stage: int, total_stages: int) -> int:

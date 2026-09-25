@@ -37,6 +37,14 @@ class FFInfo:
     embedding_sepaelv5: Optional[np.ndarray] = field(default=None, repr=False)
     embedding_sepaelv6: Optional[np.ndarray] = field(default=None, repr=False)
     
+    # Orientação em que a face foi encontrada — rotação HORÁRIA em graus
+    # aplicada à imagem antes de detectar. None/ausente = a imagem como
+    # está gravada (o caso normal). Existe porque foto tirada com a câmera
+    # de lado só tem face detectável depois de girar, e o leitor precisa
+    # saber que a pose e o recorte vieram do frame corrigido, não do
+    # arquivo como ele é exibido.
+    detection_rotation: Optional[int] = None
+
     # Imagem Processada
     aligned_face: Optional[np.ndarray] = field(default=None, repr=False)
 

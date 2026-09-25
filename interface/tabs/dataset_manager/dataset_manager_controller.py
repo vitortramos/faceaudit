@@ -1930,6 +1930,10 @@ class DatasetManagerController(QtCore.QObject):
             self._iniciar_worker_criacao(ingestion_config)
 
     def _iniciar_worker_criacao(self, config):
+        # A gravação pode acontecer numa segunda etapa (após a revisão das
+        # imagens sem face detectada), e ali o config é indispensável para
+        # gravar no mesmo destino.
+        self._ingestion_config = config
         self._run_worker(
             NewDatasetWorker(self.pipeline, config),
             label="Criando Dataset",
@@ -1940,6 +1944,72 @@ class DatasetManagerController(QtCore.QObject):
         )
 
     def _on_criacao_concluida(self, dataset):
+        # Ingestão parada antes de gravar porque há imagens sem face
+        # detectada esperando decisão. A tela de progresso já fechou
+        # (o runner desmonta a UI antes de chamar este retorno), então a
+        # revisão pode ser modal sem risco de prender sinais do worker.
+        if dataset is not None and getattr(dataset, "_save_deferred", False):
+            self._revisar_nao_detectadas_e_gravar(dataset)
+            return
+        self._concluir_criacao(dataset)
+
+    def _revisar_nao_detectadas_e_gravar(self, dataset):
+        """Abre a revisão, aplica a decisão e dispara a gravação."""
+        from .undetected_review_dialog import UndetectedReviewController
+
+        pendentes = list(getattr(dataset, "_undetected_faces", []) or [])
+        config = getattr(self, "_ingestion_config", None)
+        if not pendentes or config is None:
+            # Não deveria acontecer; gravar é melhor que abandonar o
+            # dataset processado em memória.
+            self._finalizar_e_gravar(dataset, incluidas=[], descartadas=[])
+            return
+
+        ctrl = UndetectedReviewController(
+            self.view,
+            faces=pendentes,
+            config=config,
+            dataset=dataset,
+            n_total=len(dataset) + len(pendentes),
+        )
+        ctrl.exec()
+        incluidas, descartadas = ctrl.decision()
+
+        for face in incluidas:
+            dataset.add(face)
+
+        if len(dataset) == 0:
+            # Nada sobrou. Gravar aqui produziria um parquet de zero linhas,
+            # que a interface aceita, lista como recurso e some dos
+            # seletores sem explicação.
+            QMessageBox.warning(
+                self.view, "Nada a gravar",
+                f"Nenhuma das {len(descartadas)} imagens rendeu face detectada "
+                "e todas foram descartadas na revisão.\n\n"
+                "O dataset não foi criado — um arquivo vazio passaria por "
+                "dataset válido e desapareceria dos seletores sem explicação.",
+            )
+            return
+
+        self._finalizar_e_gravar(dataset, incluidas, descartadas)
+
+    def _finalizar_e_gravar(self, dataset, incluidas, descartadas):
+        """Segunda etapa: copiar imagens e gravar, em worker."""
+        from .workers.finalize_dataset_worker import FinalizeDatasetWorker
+
+        self._revisao_incluidas = list(incluidas)
+        self._revisao_descartadas = list(descartadas)
+        self._run_worker(
+            FinalizeDatasetWorker(
+                self.pipeline, dataset, self._ingestion_config,
+            ),
+            label="Gravando Dataset",
+            determinate=True,
+            use_log_dialog=True,
+            on_finished=self._concluir_criacao,
+        )
+
+    def _concluir_criacao(self, dataset):
         if dataset and len(dataset) > 0:
             # `_parquet_dir` é populado pelo pipeline com o destino efetivo
             # (mesmo padrão do fluxo de vídeo); storage_path é só o fallback.
@@ -1951,16 +2021,78 @@ class DatasetManagerController(QtCore.QObject):
             # parquet recém-ingerido.
             self._audit(
                 AuditOperation.CREATE,
-                f"Dataset '{dataset.name}' criado a partir de ingestão.",
+                self._descricao_da_criacao(dataset),
                 metadata={
                     "rows": len(dataset),
                     "identities": dataset.number_of_identities,
+                    **self._metadados_da_deteccao(dataset),
                 },
                 hash_file=True,
             )
             QMessageBox.information(self.view, "Sucesso", "Dataset Criado!")
         else:
             QMessageBox.warning(self.view, "Aviso", "Processo finalizado sem dados.")
+
+    # -----------------------------------------------------------------
+    # Proveniência da detecção (vai para a cadeia de custódia)
+    # -----------------------------------------------------------------
+
+    def _descricao_da_criacao(self, dataset) -> str:
+        """Texto da entrada CREATE, citando o que a detecção exigiu.
+
+        Quantas imagens só renderam face depois de girar, e quantas ficaram
+        sem face nenhuma, é informação de proveniência: sem ela, ninguém
+        reconstrói depois por que o dataset tem menos linhas que a pasta de
+        origem tinha arquivos.
+        """
+        partes = [f"Dataset '{dataset.name}' criado a partir de ingestão."]
+        n_giradas = self._contar_giradas(dataset)
+        if n_giradas:
+            partes.append(
+                f"{n_giradas} face(s) só foram detectadas com a imagem girada."
+            )
+        incluidas = getattr(self, "_revisao_incluidas", None) or []
+        descartadas = getattr(self, "_revisao_descartadas", None) or []
+        if incluidas or descartadas:
+            partes.append(
+                f"Revisão de imagens sem face detectada: {len(incluidas)} "
+                f"incluída(s) por decisão do operador, {len(descartadas)} "
+                f"descartada(s)."
+            )
+        return " ".join(partes)
+
+    def _metadados_da_deteccao(self, dataset) -> dict:
+        """Contagens e nomes de arquivo da revisão, para a custódia."""
+        incluidas = getattr(self, "_revisao_incluidas", None) or []
+        descartadas = getattr(self, "_revisao_descartadas", None) or []
+        meta: dict = {}
+        n_giradas = self._contar_giradas(dataset)
+        if n_giradas:
+            meta["faces_detected_after_rotation"] = n_giradas
+        if not (incluidas or descartadas):
+            return meta
+        meta["undetected_total"] = len(incluidas) + len(descartadas)
+        meta["undetected_included"] = len(incluidas)
+        meta["undetected_discarded"] = len(descartadas)
+        # Os nomes importam mais que a contagem para quem confere depois;
+        # limitados pelo mesmo teto das outras entradas de custódia.
+        meta["undetected_included_files"] = self._nomes_de_arquivo(incluidas)
+        meta["undetected_discarded_files"] = self._nomes_de_arquivo(descartadas)
+        return meta
+
+    @staticmethod
+    def _contar_giradas(dataset) -> int:
+        return sum(
+            1 for f in getattr(dataset, "faces", []) or []
+            if getattr(getattr(f, "ff_info", None), "detection_rotation", None)
+        )
+
+    @staticmethod
+    def _nomes_de_arquivo(faces) -> list:
+        nomes = [
+            Path(str(getattr(f, "image_path", "") or "")).name for f in faces
+        ]
+        return nomes[:_MAX_AUDIT_IDENTIFIERS]
 
     def fluxo_stats(self): pass 
 
