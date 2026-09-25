@@ -124,8 +124,20 @@ class ConfigDialog(QDialog):
         form_ofiq = QFormLayout(gb_ofiq)
         self.input_ofiq_exe = QLineEdit(self.config.ofiq.ofiq_exe_path or "")
         self.input_ofiq_data = QLineEdit(self.config.ofiq.ofiq_data_path or "")
+        self.input_ofiq_exe.setPlaceholderText(
+            "vazio = procurar automaticamente (PATH e locais padrão)"
+        )
+        self.input_ofiq_data.setPlaceholderText(
+            "vazio = procurar automaticamente (OFIQ_DATA e locais padrão)"
+        )
         form_ofiq.addRow("Executável:", self.input_ofiq_exe)
         form_ofiq.addRow("Pasta de dados:", self.input_ofiq_data)
+        self.lbl_ofiq_status = QLabel()
+        self.lbl_ofiq_status.setWordWrap(True)
+        form_ofiq.addRow("", self.lbl_ofiq_status)
+        self.input_ofiq_exe.textChanged.connect(self._atualizar_status_ofiq)
+        self.input_ofiq_data.textChanged.connect(self._atualizar_status_ofiq)
+        self._atualizar_status_ofiq()
         layout.addWidget(gb_ofiq)
 
         # ─── ExifTool (metadados embutidos) ─────────────────────────────
@@ -197,6 +209,45 @@ class ConfigDialog(QDialog):
     # ──────────────────────────────────────────────────────────────────
     # Persistência
     # ──────────────────────────────────────────────────────────────────
+
+    def _atualizar_status_ofiq(self, *_args) -> None:
+        """Mostra ONDE o OFIQ será procurado, e se foi achado.
+
+        Campo vazio não é defeito: significa "resolver automaticamente"
+        (PATH, variável de ambiente e locais padrão). Sem dizer isso, dois
+        campos em branco pareciam configuração faltando, quando o OFIQ
+        podia estar funcionando o tempo todo.
+
+        A resolução é PERGUNTADA ao serviço, não reimplementada aqui — do
+        contrário a tela e o comportamento real divergiriam.
+        """
+        import os
+
+        from faceaudit.services.ofiq_service import OFIQService
+
+        exe_digitado = self.input_ofiq_exe.text().strip()
+        data_digitado = self.input_ofiq_data.text().strip()
+        exe = OFIQService.resolve_exe_path(exe_digitado)
+        data = OFIQService.resolve_data_path(data_digitado)
+
+        partes = []
+        if os.path.exists(exe):
+            origem = "" if exe_digitado else " (encontrado automaticamente)"
+            partes.append(f"✅ Executável: {exe}{origem}")
+        else:
+            partes.append(f"⚠️ Executável não encontrado em: {exe}")
+        if os.path.isdir(data):
+            origem = "" if data_digitado else " (encontrada automaticamente)"
+            partes.append(f"✅ Pasta de dados: {data}{origem}")
+        else:
+            partes.append(f"⚠️ Pasta de dados não encontrada em: {data}")
+
+        if any(p.startswith("⚠️") for p in partes):
+            partes.append(
+                "Sem os dois, a qualidade ISO (OFIQ) fica indisponível na "
+                "criação e no enriquecimento."
+            )
+        self.lbl_ofiq_status.setText("<br>".join(partes))
 
     def _atualizar_status_exiftool(self, *_args) -> None:
         """Diz se o caminho informado resolve, sem esperar o próximo uso.

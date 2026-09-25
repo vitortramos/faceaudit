@@ -142,3 +142,73 @@ def test_config_grava_o_caminho(app, tmp_path, monkeypatch):
         assert d.config.exiftool.exiftool_exe_path == "D:/ferramentas/exiftool.exe"
     finally:
         d.deleteLater()
+
+
+# ── OFIQ: mesma validação ao vivo ─────────────────────────────────────────
+
+def _config_ofiq(app, exe: str = "", data: str = ""):
+    from interface.config_dialog import ConfigDialog
+
+    return ConfigDialog(SystemConfig.from_dict(
+        {"ofiq": {"ofiq_exe_path": exe, "ofiq_data_path": data}}
+    ))
+
+
+def test_ofiq_campo_vazio_nao_e_defeito(app):
+    """Vazio significa 'procurar automaticamente' — e a tela precisa dizer
+    isso, senão dois campos em branco parecem configuração faltando."""
+    d = _config_ofiq(app)
+    try:
+        texto = d.lbl_ofiq_status.text().lower()
+        assert "automaticamente" in texto or "não encontrado" in texto, (
+            "a tela precisa informar onde o OFIQ será procurado"
+        )
+        assert d.input_ofiq_exe.placeholderText(), (
+            "o campo vazio precisa explicar o que acontece"
+        )
+    finally:
+        d.deleteLater()
+
+
+def test_ofiq_caminho_invalido_e_apontado(app):
+    d = _config_ofiq(app, exe="X:/nao/existe.exe")
+    try:
+        texto = d.lbl_ofiq_status.text()
+        assert "não encontrado" in texto.lower()
+        assert "X:/nao/existe.exe" in texto, (
+            "dizer QUAL caminho falhou é o que torna o aviso acionável"
+        )
+        assert "indisponível" in texto.lower()
+    finally:
+        d.deleteLater()
+
+
+def test_ofiq_caminho_valido_e_confirmado(app, tmp_path):
+    exe = tmp_path / "OFIQSampleApp.exe"
+    exe.write_text("", encoding="utf-8")
+    dados = tmp_path / "data"
+    dados.mkdir()
+    d = _config_ofiq(app, exe=str(exe), data=str(dados))
+    try:
+        texto = d.lbl_ofiq_status.text()
+        assert texto.count("✅") == 2
+        assert "automaticamente" not in texto, (
+            "caminho informado à mão não é resolução automática"
+        )
+    finally:
+        d.deleteLater()
+
+
+def test_resolucao_vem_do_servico_nao_da_tela():
+    """A regra mora no backend; a tela só pergunta.
+
+    Reimplementar a busca na UI faria a tela e o comportamento real
+    divergirem no primeiro ajuste de qualquer um dos dois.
+    """
+    from faceaudit.services.ofiq_service import OFIQService
+
+    assert OFIQService.resolve_exe_path("X:/dado.exe") == "X:/dado.exe"
+    assert OFIQService.resolve_data_path("X:/dados") == "X:/dados"
+    # Sem caminho, decide sozinho — e devolve algo, nunca vazio.
+    assert OFIQService.resolve_exe_path("")
+    assert OFIQService.resolve_data_path("")

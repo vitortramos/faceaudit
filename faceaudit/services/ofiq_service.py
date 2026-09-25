@@ -43,8 +43,8 @@ class OFIQService:
         Raises:
             FileNotFoundError: Se o executável ou a pasta de dados não forem encontrados.
         """
-        self.exe_path = self._resolve_exe(ofiq_exe_path)
-        self.config_path = self._resolve_data(ofiq_data_path)
+        self.exe_path = self.resolve_exe_path(ofiq_exe_path)
+        self.config_path = self.resolve_data_path(ofiq_data_path)
         
         if not os.path.exists(self.exe_path):
             raise FileNotFoundError(f"Executável OFIQ não encontrado em: {self.exe_path}")
@@ -234,7 +234,13 @@ class OFIQService:
         return dataset
 
     # --- Helpers de Resolução de Caminho (Cross-Platform) ---
-    def _resolve_exe(self, path):
+    #
+    # Públicos e estáticos de propósito: a tela de configuração precisa
+    # mostrar ONDE o OFIQ será procurado quando o campo está vazio. Sem
+    # isso, "campo vazio" parecia defeito, quando significa "resolver
+    # automaticamente" — e a UI teria de duplicar a regra para informar.
+    @staticmethod
+    def resolve_exe_path(path):
         """Tenta localizar o binário OFIQSampleApp no sistema (Windows/Linux)."""
         if path: return path
         
@@ -261,7 +267,8 @@ class OFIQService:
             
         return exe_name
 
-    def _resolve_data(self, path):
+    @staticmethod
+    def resolve_data_path(path):
         """Tenta localizar a pasta de dados do OFIQ (Windows/Linux)."""
         if path: return path
         env = os.environ.get("OFIQ_DATA")
@@ -285,3 +292,7 @@ class OFIQService:
             if os.path.exists(d): return d
             
         return "data"
+
+    # Aliases mantidos para chamadores antigos (o nome privado circulou).
+    _resolve_exe = resolve_exe_path
+    _resolve_data = resolve_data_path
