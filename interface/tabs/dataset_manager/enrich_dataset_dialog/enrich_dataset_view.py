@@ -191,6 +191,20 @@ class EnrichDatasetView(QDialog):
         qual_h.addStretch()
         cg.addWidget(qual_w, 1, 1)
 
+        # Metadados embutidos — só existem na foto original.
+        self._exif_lbl = QLabel("Metadados:", grp)
+        cg.addWidget(self._exif_lbl, 5, 0)
+        self._exif_w = QWidget(grp)
+        exif_h = QHBoxLayout(self._exif_w); exif_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_exif = QCheckBox("Extrair EXIF/XMP da imagem", self._exif_w)
+        self.chk_exif.setToolTip(
+            "Lê os metadados embutidos no arquivo (EXIF/XMP/IPTC). Exige a "
+            "foto ORIGINAL — faces recortadas ou alinhadas não os carregam."
+        )
+        exif_h.addWidget(self.chk_exif)
+        exif_h.addStretch()
+        cg.addWidget(self._exif_w, 5, 1)
+
         # Pose — yaw/pitch/roll (só originais), status POR item.
         self._pose_lbl = QLabel("Pose:", grp)
         cg.addWidget(self._pose_lbl, 2, 0)
@@ -312,6 +326,9 @@ class EnrichDatasetView(QDialog):
 
     def any_model_checked(self) -> bool:
         return any(c.isChecked() for c in self._ff_model_checks.values())
+
+    def get_extract_exif(self) -> bool:
+        return self.chk_exif.isChecked() and self.chk_exif.isEnabled()
 
     def get_ff_det_size(self) -> int:
         return int(self._ff_det_size_spin.value())

@@ -25,6 +25,11 @@ from PyQt6.QtWidgets import (
 )
 
 from faceaudit.enums.sepael_model import SepaelModel
+
+# Usado nas duas telas que ligam a extração (criação e enriquecimento).
+TIP_EXIF = (
+    'Lê os metadados embutidos no arquivo (EXIF/XMP/IPTC): data da captura, câmera, exposição, GPS. Exige a foto ORIGINAL — recorte e alinhamento gravam pixel novo, sem metadado de captura. As colunas nascem ocultas; o conteúdo completo aparece na aba Metadados.'
+)
 from interface.theme import apply_themed_stylesheet
 
 
@@ -279,6 +284,19 @@ class NewDatasetView(QDialog):
         qual_h.addStretch()
         cg.addWidget(qual_w, 1, 1)
 
+        # Metadados embutidos — leitura de arquivo, não inferência: não
+        # entra no grupo de qualidade nem carrega selo de lentidão.
+        self._exif_lbl = QLabel("Metadados:", grp)
+        cg.addWidget(self._exif_lbl, 5, 0)
+        self._exif_w = QWidget(grp)
+        exif_h = QHBoxLayout(self._exif_w); exif_h.setContentsMargins(0, 0, 0, 0)
+        self.chk_exif = QCheckBox("Extrair EXIF/XMP da imagem", self._exif_w)
+        self.chk_exif.setChecked(False)
+        self.chk_exif.setToolTip(TIP_EXIF)
+        exif_h.addWidget(self.chk_exif)
+        exif_h.addStretch()
+        cg.addWidget(self._exif_w, 5, 1)
+
         # Pose (yaw/pitch/roll) — estimada na imagem ORIGINAL durante o
         # alinhamento; NÃO existe para faces já alinhadas.
         self._pose_lbl = QLabel("Pose:", grp)
@@ -506,6 +524,11 @@ class NewDatasetView(QDialog):
             self.rb_img_aligned.setEnabled(False)
             self.rb_input_original.setToolTip(ff_tip)
         if not ofiq_available:
+            self.chk_exif.setChecked(False); self.chk_exif.setEnabled(False)
+            self.chk_exif.setToolTip(
+                "Faces já alinhadas não carregam metadado de captura — o "
+                "recorte é pixel novo, gravado sem EXIF."
+            )
             self.chk_ofiq.setChecked(False); self.chk_ofiq.setEnabled(False)
             self.chk_ofiq.setToolTip(ofiq_tip)
         self._update_conditional()
@@ -568,6 +591,9 @@ class NewDatasetView(QDialog):
         if self.rb_img_crop.isChecked():
             return "crop"
         return "aligned"
+
+    def get_extract_exif(self) -> bool:
+        return self.chk_exif.isChecked() and self.chk_exif.isEnabled()
 
     def get_crop_margin_factor(self) -> float:
         """Fator de expansão da bbox no modo recorte."""

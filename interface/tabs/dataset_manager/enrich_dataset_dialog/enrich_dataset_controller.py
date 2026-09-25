@@ -115,6 +115,8 @@ class EnrichDatasetController:
             dataset_name=self.dataset.name,
             compute_ff=compute_ff,
             compute_ofiq=(v.chk_ofiq.isChecked() and not aligned),   # OFIQ exige a original
+            # Idem: metadado de captura só existe na foto original.
+            extract_exif=(v.get_extract_exif() and not aligned),
             compute_serfiq=False,                     # SER-FIQ fora da UI
             ff_models=ff_models,
             ff_det_size=v.get_ff_det_size(),

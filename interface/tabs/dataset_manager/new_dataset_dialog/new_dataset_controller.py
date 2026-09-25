@@ -242,6 +242,7 @@ class NewDatasetController(QtCore.QObject):
             compute_ff=v.any_model_checked(),
             # OFIQ exige a foto original — desabilitado para entrada alinhada.
             compute_ofiq=(v.chk_ofiq.isChecked() and not input_aligned),
+            extract_exif=(v.get_extract_exif() and not input_aligned),
             compute_serfiq=False,     # SER-FIQ removido da UI (backend mantido)
             ff_models=(v.get_ff_models() or [SepaelModel.default().ff_name]),
             ff_det_size=v.get_ff_det_size(),

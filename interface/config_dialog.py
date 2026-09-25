@@ -128,6 +128,29 @@ class ConfigDialog(QDialog):
         form_ofiq.addRow("Pasta de dados:", self.input_ofiq_data)
         layout.addWidget(gb_ofiq)
 
+        # ─── ExifTool (metadados embutidos) ─────────────────────────────
+        gb_exif = QGroupBox("🏷️ ExifTool (executável externo)")
+        form_exif = QFormLayout(gb_exif)
+        self.input_exiftool = QLineEdit(
+            getattr(getattr(self.config, "exiftool", None), "exiftool_exe_path", "")
+            or ""
+        )
+        self.input_exiftool.setPlaceholderText("exiftool (resolve pelo PATH)")
+        self.input_exiftool.setToolTip(
+            "Caminho do executável do ExifTool. Deixe 'exiftool' para "
+            "resolver pelo PATH, ou informe o caminho completo quando o "
+            "binário vier de um zip solto (ex.: C:/Exiftool/exiftool.exe). "
+            "Vazio desliga a leitura pelo ExifTool — a extração cai no "
+            "leitor do Pillow, que lê bem menos."
+        )
+        form_exif.addRow("Executável:", self.input_exiftool)
+        self.lbl_exiftool_status = QLabel()
+        self.lbl_exiftool_status.setWordWrap(True)
+        form_exif.addRow("", self.lbl_exiftool_status)
+        self.input_exiftool.textChanged.connect(self._atualizar_status_exiftool)
+        self._atualizar_status_exiftool()
+        layout.addWidget(gb_exif)
+
         # ─── Aparência (tema claro/escuro) ──────────────────────────────
         gb_theme = QGroupBox("🎨 Aparência")
         form_theme = QFormLayout(gb_theme)
@@ -175,6 +198,27 @@ class ConfigDialog(QDialog):
     # Persistência
     # ──────────────────────────────────────────────────────────────────
 
+    def _atualizar_status_exiftool(self, *_args) -> None:
+        """Diz se o caminho informado resolve, sem esperar o próximo uso.
+
+        Descobrir que o ExifTool não está no lugar só na hora de criar o
+        dataset custa uma ingestão inteira.
+        """
+        from faceaudit.services.exif_extraction_service import ExifExtractionService
+
+        servico = ExifExtractionService(self.input_exiftool.text().strip())
+        if servico.exiftool_available:
+            versao = servico.exiftool_version()
+            self.lbl_exiftool_status.setText(
+                f"✅ ExifTool encontrado (versão {versao})" if versao
+                else "✅ ExifTool encontrado"
+            )
+        else:
+            self.lbl_exiftool_status.setText(
+                "⚠️ Não encontrado — a extração usará o Pillow, que lê só o "
+                "EXIF básico (sem XMP, IPTC ou maker notes)."
+            )
+
     def _save_and_close(self):
         self.config.paths.library = self.input_library.text()
         self.config.paths.dir_templates = self.input_dir_templates.text()
@@ -187,6 +231,8 @@ class ConfigDialog(QDialog):
 
         self.config.ofiq.ofiq_exe_path = self.input_ofiq_exe.text() or ""
         self.config.ofiq.ofiq_data_path = self.input_ofiq_data.text() or ""
+
+        self.config.exiftool.exiftool_exe_path = self.input_exiftool.text() or ""
 
         self.config.theme.mode = self.combo_theme.currentData() or "light"
 
