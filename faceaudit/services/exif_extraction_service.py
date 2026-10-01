@@ -442,6 +442,17 @@ def build_capture_columns(metadata: "ImageMetadata") -> Dict[str, Any]:
 
     colunas.update(_colunas_de_compressao(colunas))
 
+    # Qualidade JPEG: lida da tabela de quantização, que NÃO depende do
+    # conteúdo. Bits por pixel depende: o mesmo ajuste de qualidade rende
+    # 0,26 bits/pixel numa imagem lisa e 6 bits/pixel numa ruidosa, então
+    # comparar duas imagens diferentes por bits/pixel diz qual tinha mais
+    # detalhe, não qual foi mais comprimida.
+    if metadata.source_path:
+        from faceaudit.services.jpeg_compression_service import (
+            build_compression_columns,
+        )
+        colunas.update(build_compression_columns(metadata.source_path))
+
     colunas["exif_json"] = json.dumps(
         metadata.tags, ensure_ascii=False, default=str, separators=(",", ":"),
     )

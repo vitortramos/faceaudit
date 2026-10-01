@@ -507,6 +507,67 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
             "usual."
         ),
     )
+    specs["jpeg_quality_estimate"] = ColumnSpec(
+        name="jpeg_quality_estimate", label="Qualidade JPEG (estimada)",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.FLOAT,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        scale=(1.0, 100.0),
+        description=(
+            "Fator de qualidade da ÚLTIMA gravação JPEG, obtido invertendo "
+            "a fórmula do IJG sobre a tabela de quantização do arquivo. "
+            "Diferente de `image_bits_per_pixel`, NÃO depende do conteúdo: "
+            "o mesmo ajuste rende bits/pixel muito diferentes numa imagem "
+            "lisa e numa ruidosa. É uma ESTIMATIVA — codificador com "
+            "tabelas próprias (alguns celulares, Photoshop na escala 0–12) "
+            "não casa exatamente com a escala do IJG, e aí o número indica "
+            "a ordem de grandeza. Vazio em formato sem perdas, que não tem "
+            "tabela de quantização."
+        ),
+    )
+    specs["jpeg_quality_is_saturated"] = ColumnSpec(
+        name="jpeg_quality_is_saturated", label="Qualidade JPEG saturada",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.BOOL,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        description=(
+            "Verdadeiro quando a tabela de quantização tem coeficientes no "
+            "teto (255), o que acontece no fundo da escala de qualidade. "
+            "Ali a inversão perde resolução e a estimativa é menos precisa "
+            "— sinalizar isso evita que o número seja lido como exato."
+        ),
+    )
+    specs["jpeg_chroma_subsampling"] = ColumnSpec(
+        name="jpeg_chroma_subsampling", label="Subamostragem de croma",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        vocabulary=("4:4:4", "4:2:2", "4:2:0"),
+        description=(
+            "Quanto de crominância o JPEG descartou. Informação de "
+            "procedência: foto de câmera costuma vir 4:2:0, e um reencode "
+            "em 4:4:4 denuncia passagem por outro programa."
+        ),
+    )
+    specs["jpeg_progressive"] = ColumnSpec(
+        name="jpeg_progressive", label="JPEG progressivo",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.BOOL,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        description=(
+            "Se o JPEG é progressivo em vez de sequencial. Câmera grava "
+            "sequencial; progressivo costuma indicar reencode por "
+            "ferramenta de otimização ou plataforma web."
+        ),
+    )
     specs["file_size_bytes"] = ColumnSpec(
         name="file_size_bytes", label="Tamanho do arquivo",
         role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
