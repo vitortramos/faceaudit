@@ -96,15 +96,19 @@ def test_fora_do_windows_e_no_op(monkeypatch):
 
 # ── Nunca impedir o programa de abrir ────────────────────────────────────
 
-def test_sem_pacotes_nvidia_apenas_nao_acelera(monkeypatch):
+def test_sem_nenhuma_fonte_apenas_nao_acelera(monkeypatch):
+    """Precisa zerar as DUAS fontes: sem os pacotes pip o preparo cai para a
+    instalação do sistema, então só a ausência de ambas significa "sem
+    aceleração"."""
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(boot, "_raiz_dos_pacotes_nvidia", lambda: None)
+    monkeypatch.setattr(boot, "_PADROES_DO_SISTEMA", ())
     boot.reset_for_tests()
 
     r = boot.ensure_cuda_dlls_loaded()
 
     assert r.applied is False
-    assert "nvidia" in r.skipped_reason
+    assert "CUDA não encontrado" in r.skipped_reason
     assert r.loaded_dlls == 0
 
 
@@ -222,4 +226,83 @@ def test_escala_do_fiqa_cobre_os_valores_reais():
     assert 2.6 <= maximo <= 5.0, (
         f"o teto {maximo} tem de cobrir os valores observados (até ~2,6) sem "
         f"exagerar — (0, 100) comprimia tudo no começo da escala"
+    )
+
+
+# ── As duas fontes de CUDA ───────────────────────────────────────────────
+
+def test_prefere_os_pacotes_pip(monkeypatch, tmp_path):
+    """O ambiente virtual tem um conjunto coerente entre si; o sistema pode
+    ter outro. Misturar deixaria a combinação de versões à mercê de quem
+    chega primeiro na memória."""
+    raiz = tmp_path / "nvidia"
+    (raiz / "cudnn" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(boot, "_raiz_dos_pacotes_nvidia", lambda: str(raiz))
+
+    origem, dirs = boot._escolher_fonte()
+
+    assert origem == "pacotes pip"
+    assert len(dirs) == 1
+
+
+def test_cai_para_o_sistema_sem_os_pacotes_pip(monkeypatch):
+    """Máquina que instalou o toolkit do CUDA e não tem os pacotes pip —
+    caminho verificado nesta máquina: isolado, faz o provider carregar."""
+    monkeypatch.setattr(boot, "_raiz_dos_pacotes_nvidia", lambda: None)
+    monkeypatch.setattr(
+        boot, "_PADROES_DO_SISTEMA", (r"C:\Program Files\NVIDIA*\**\bin",),
+    )
+
+    origem, _ = boot._escolher_fonte()
+
+    assert origem in (None, "instalação do sistema")
+
+
+def test_nenhuma_fonte_e_motivo_explicito(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(boot, "_raiz_dos_pacotes_nvidia", lambda: None)
+    monkeypatch.setattr(boot, "_PADROES_DO_SISTEMA", ())
+    boot.reset_for_tests()
+
+    r = boot.ensure_cuda_dlls_loaded()
+
+    assert r.applied is False
+    assert "nem" in r.skipped_reason, (
+        "o motivo tem de dizer que as DUAS fontes foram procuradas"
+    )
+
+
+def test_padroes_do_sistema_so_pegam_cuda_12():
+    """onnxruntime-gpu atual exige CUDA 12.x. Carregar as DLLs de um toolkit
+    11 instalado ao lado levaria ao erro oposto do que corrigimos."""
+    toolkit = [p for p in boot._PADROES_DO_SISTEMA if "Toolkit" in p]
+    assert toolkit and all("v12" in p for p in toolkit)
+
+
+def test_cudnn_por_ultimo_mesmo_vindo_de_um_diretorio_unico(tmp_path):
+    """Na instalação do sistema tudo vem de dois diretórios, não de um por
+    componente — a ordenação tem de funcionar pelo nome do arquivo."""
+    d = tmp_path / "bin"
+    d.mkdir()
+    for nome in ("cudnn64_9.dll", "cublas64_12.dll", "cudart64_12.dll"):
+        (d / nome).write_bytes(b"")
+
+    ordem = [p.lower() for p in boot._dlls_em_ordem([str(d)])]
+
+    assert "cudnn" in ordem[-1], f"o cuDNN tem de ser o último: {ordem}"
+
+
+def test_origem_aparece_no_resumo(monkeypatch, tmp_path):
+    raiz = tmp_path / "nvidia"
+    (raiz / "cudnn" / "bin").mkdir(parents=True)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(boot, "_raiz_dos_pacotes_nvidia", lambda: str(raiz))
+    boot.reset_for_tests()
+
+    r = boot.ensure_cuda_dlls_loaded()
+
+    assert r.source == "pacotes pip"
+    assert "pacotes pip" in r.resumo, (
+        "saber de QUAL fonte veio é a primeira coisa a olhar quando funciona "
+        "numa máquina e não noutra"
     )

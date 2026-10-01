@@ -62,6 +62,10 @@ class CudaBootstrapReport:
 
     applied: bool = False
     skipped_reason: Optional[str] = None
+    # "pacotes pip" ou "instalação do sistema" — entra no log porque é a
+    # primeira coisa a saber quando o preparo funciona numa máquina e não
+    # noutra.
+    source: Optional[str] = None
     dll_directories: List[str] = field(default_factory=list)
     loaded_dlls: int = 0
     failed_dlls: List[str] = field(default_factory=list)
@@ -72,9 +76,25 @@ class CudaBootstrapReport:
             return f"preparo do CUDA não aplicado ({self.skipped_reason})"
         return (
             f"{self.loaded_dlls} DLL(s) do CUDA pré-carregadas de "
-            f"{len(self.dll_directories)} diretório(s)"
+            f"{len(self.dll_directories)} diretório(s) ({self.source})"
         )
 
+
+# Onde o CUDA pode estar, em ordem de preferência. Os dois caminhos foram
+# verificados nesta máquina: cada um, isolado, faz o provider carregar.
+#
+# Preferir os pacotes pip e NÃO misturar com o sistema é deliberado: o
+# ambiente virtual tem um conjunto coerente entre si (cublas 12.9 + cuDNN
+# 9.21, instalados juntos), enquanto o sistema pode ter outro (toolkit 12.2 +
+# cuDNN 9.8). Carregar metade de cada deixaria a combinação à mercê de quem
+# chega primeiro na memória — e um desencontro de versão dentro do CUDA
+# falha de formas difíceis de diagnosticar.
+_PADROES_DO_SISTEMA: Tuple[str, ...] = (
+    # Só a série 12: o onnxruntime-gpu atual exige CUDA 12.x, e carregar as
+    # DLLs de um toolkit 11 instalado ao lado levaria ao erro oposto.
+    r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12*\bin",
+    r"C:\Program Files\NVIDIA\CUDNN\v*\bin\12*",
+)
 
 _relatorio: Optional[CudaBootstrapReport] = None
 
@@ -110,17 +130,20 @@ def _aplicar(verbose: bool) -> CudaBootstrapReport:
         # CUDA — em nenhum dos dois o problema existe.
         return CudaBootstrapReport(skipped_reason="não é Windows")
 
-    raiz = _raiz_dos_pacotes_nvidia()
-    if raiz is None:
+    origem, diretorios = _escolher_fonte()
+    if not diretorios:
         return CudaBootstrapReport(
-            skipped_reason="pacotes nvidia-*-cu* não encontrados no ambiente",
+            skipped_reason=(
+                "CUDA não encontrado — nem nos pacotes nvidia-*-cu* do "
+                "ambiente, nem na instalação do sistema"
+            ),
         )
 
-    relatorio = CudaBootstrapReport(applied=True)
+    relatorio = CudaBootstrapReport(applied=True, source=origem)
 
     # 1. Registra os diretórios. Não basta sozinho (ver o cabeçalho), mas
     #    ajuda nas dependências que o pré-carregamento não cobre.
-    for diretorio in sorted(glob.glob(os.path.join(raiz, "*", "bin"))):
+    for diretorio in diretorios:
         try:
             os.add_dll_directory(diretorio)
             relatorio.dll_directories.append(diretorio)
@@ -128,20 +151,20 @@ def _aplicar(verbose: bool) -> CudaBootstrapReport:
             # Diretório sumiu entre o glob e a chamada; segue.
             pass
 
-    # 2. Pré-carrega, na ordem de dependência.
+    # 2. Pré-carrega, na ordem de dependência: o cuDNN depende do runtime do
+    #    CUDA e das bibliotecas de álgebra, então vai por último em qualquer
+    #    uma das fontes.
     import ctypes
 
-    for componente in _ORDEM_COMPONENTES:
-        padrao = os.path.join(raiz, componente, "bin", "*.dll")
-        for caminho in sorted(glob.glob(padrao)):
-            try:
-                ctypes.WinDLL(caminho)
-                relatorio.loaded_dlls += 1
-            except OSError:
-                # DLL que não carrega isolada é comum (variantes ".alt",
-                # módulos que exigem um contexto que ainda não existe) e não
-                # impede o conjunto de funcionar.
-                relatorio.failed_dlls.append(os.path.basename(caminho))
+    for caminho in _dlls_em_ordem(diretorios):
+        try:
+            ctypes.WinDLL(caminho)
+            relatorio.loaded_dlls += 1
+        except OSError:
+            # DLL que não carrega isolada é comum (variantes ".alt", módulos
+            # que exigem um contexto que ainda não existe) e não impede o
+            # conjunto de funcionar.
+            relatorio.failed_dlls.append(os.path.basename(caminho))
 
     if verbose:
         print(f"⚙️  [CUDA] {relatorio.resumo}")
@@ -151,6 +174,51 @@ def _aplicar(verbose: bool) -> CudaBootstrapReport:
                 f"{', '.join(relatorio.failed_dlls[:5])})"
             )
     return relatorio
+
+
+def _escolher_fonte() -> Tuple[Optional[str], List[str]]:
+    """(origem, diretórios) da PRIMEIRA fonte completa encontrada.
+
+    Uma só fonte, nunca as duas: ver a nota em `_PADROES_DO_SISTEMA`.
+    """
+    raiz = _raiz_dos_pacotes_nvidia()
+    if raiz is not None:
+        dirs = sorted(glob.glob(os.path.join(raiz, "*", "bin")))
+        if dirs:
+            return "pacotes pip", dirs
+
+    dirs = []
+    for padrao in _PADROES_DO_SISTEMA:
+        dirs.extend(sorted(glob.glob(padrao)))
+    if dirs:
+        return "instalação do sistema", dirs
+
+    return None, []
+
+
+def _dlls_em_ordem(diretorios: List[str]) -> List[str]:
+    """Caminhos das DLLs, com as do cuDNN no fim.
+
+    Nos pacotes pip cada componente tem o seu diretório, e a ordem sai de
+    `_ORDEM_COMPONENTES`. Na instalação do sistema tudo vem de dois
+    diretórios (toolkit e cuDNN), e aí o que importa é só o cuDNN vir
+    depois — ele depende do resto.
+    """
+    def eh_cudnn(caminho: str) -> bool:
+        return "cudnn" in caminho.lower()
+
+    def peso(caminho: str) -> int:
+        if eh_cudnn(caminho):
+            return len(_ORDEM_COMPONENTES)        # sempre por último
+        for i, comp in enumerate(_ORDEM_COMPONENTES):
+            if f"{os.sep}{comp}{os.sep}" in caminho.lower():
+                return i
+        return len(_ORDEM_COMPONENTES) - 1        # desconhecido: antes do cuDNN
+
+    caminhos: List[str] = []
+    for diretorio in diretorios:
+        caminhos.extend(sorted(glob.glob(os.path.join(diretorio, "*.dll"))))
+    return sorted(caminhos, key=peso)
 
 
 def _raiz_dos_pacotes_nvidia() -> Optional[str]:
