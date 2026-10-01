@@ -387,6 +387,13 @@ _MAPA_COLUNAS = {
     "image_format": ("FileType", "FileTypeExtension", "MIMEType"),
     # Vídeo: o equivalente da taxa de compressão é a taxa de bits.
     "video_avg_bitrate": ("AvgBitrate", "AvgBitrateKbps", "BitRate"),
+    # O valor de qualidade que o PROGRAMA registrou, quando registrou. O
+    # JPEG em si não guarda isso — gravar em "qualidade 78" não deixa o 78
+    # em etiqueta alguma, só a tabela de quantização que ele produziu. Mas
+    # o Photoshop escreve o seu (escala 1–12) no bloco próprio, e makernotes
+    # de câmera trazem rótulos ("Fine", "Normal"). Texto porque as escalas
+    # são incomparáveis entre si.
+    "jpeg_quality_declared": ("Quality", "JPEGQuality", "CompressionQuality"),
 }
 
 _COLUNAS_INT = {

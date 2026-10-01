@@ -527,6 +527,24 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
             "tabela de quantização."
         ),
     )
+    specs["jpeg_quality_declared"] = ColumnSpec(
+        name="jpeg_quality_declared", label="Qualidade JPEG (declarada)",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE, is_declared=True,
+        description=(
+            "Valor de qualidade que o PROGRAMA registrou em metadado, "
+            "quando registrou. Quase sempre vazio: o JPEG não guarda o "
+            "número escolhido no momento de salvar — guarda a tabela de "
+            "quantização que esse número produziu. Preenchido, vem do "
+            "Photoshop (escala 1–12) ou de makernote de câmera (\"Fine\", "
+            "\"Normal\"), escalas que NÃO são comparáveis entre si nem com "
+            "`jpeg_quality_estimate` (1–100, recuperada da tabela). Texto, "
+            "e não número, por isso."
+        ),
+    )
     specs["jpeg_quality_is_saturated"] = ColumnSpec(
         name="jpeg_quality_is_saturated", label="Qualidade JPEG saturada",
         role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,

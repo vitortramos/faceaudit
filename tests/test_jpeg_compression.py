@@ -215,3 +215,83 @@ def test_estimativa_nao_e_declarada_pelo_arquivo():
     assert spec.is_declared is False
     assert spec.source.name == "DERIVED"
     assert "ESTIMATIVA" in spec.description
+
+
+# ── O número escolhido ao salvar ─────────────────────────────────────────
+
+def test_o_jpeg_nao_guarda_o_numero_escolhido(tmp_path):
+    """Fato que justifica a estimativa existir.
+
+    Gravar em "qualidade 78" não deixa o 78 em etiqueta nenhuma: o formato
+    guarda a TABELA que esse número produziu. Recuperar da tabela é o único
+    caminho — e é por isso que a coluna se chama "estimada".
+    """
+    from faceaudit.services.exif_extraction_service import ExifExtractionService
+
+    destino = _gravar(tmp_path, _ruidoso(), 78)
+    tags = ExifExtractionService("exiftool").extract(destino).tags
+
+    menciona = [
+        k for k, v in tags.items()
+        if "ualit" in k or str(v).strip() == "78"
+    ]
+    assert menciona == [], (
+        f"o arquivo não deveria registrar a qualidade, mas trouxe: {menciona}"
+    )
+
+
+def test_estimativa_recupera_o_numero_escolhido(tmp_path):
+    """O par do teste acima: o número não está gravado, mas é recuperável."""
+    for q in (55, 78, 92):
+        info = probe_jpeg_compression(_gravar(tmp_path, _ruidoso(), q))
+        assert abs(info.quality_estimate - q) <= _TOLERANCIA
+
+
+def test_valor_declarado_quando_o_programa_registra():
+    """Photoshop e makernotes de câmera registram o seu próprio valor."""
+    from faceaudit.services.exif_extraction_service import (
+        ImageMetadata, build_capture_columns,
+    )
+
+    photoshop = build_capture_columns(
+        ImageMetadata(source_path="", tags={"Photoshop:Quality": 10}),
+    )
+    camera = build_capture_columns(
+        ImageMetadata(source_path="", tags={"Canon:Quality": "Fine"}),
+    )
+
+    assert photoshop["jpeg_quality_declared"] == "10"
+    assert camera["jpeg_quality_declared"] == "Fine"
+
+
+def test_declarado_e_estimado_sao_colunas_distintas():
+    """As escalas não são comparáveis — Photoshop vai de 1 a 12, a
+    estimativa de 1 a 100, e makernote traz rótulo. Fundi-las numa coluna
+    produziria números que ninguém pode comparar entre linhas."""
+    from faceaudit.models.column_catalog import DatasetType, get_default_specs
+
+    specs = get_default_specs(DatasetType.FACE)
+    declarada = specs["jpeg_quality_declared"]
+    estimada = specs["jpeg_quality_estimate"]
+
+    assert declarada.dtype.name == "STR", "escalas incomparáveis não são número"
+    assert estimada.dtype.name == "FLOAT"
+    assert declarada.is_declared is True
+    assert estimada.is_declared is False
+
+
+def test_arquivo_comum_nao_tem_valor_declarado(tmp_path):
+    """O caso normal: vazio, porque o formato não guarda."""
+    from faceaudit.services.exif_extraction_service import (
+        ExifExtractionService, build_capture_columns,
+    )
+
+    destino = _gravar(tmp_path, _ruidoso(), 78)
+    colunas = build_capture_columns(
+        ExifExtractionService("exiftool").extract(destino),
+    )
+
+    assert "jpeg_quality_declared" not in colunas
+    assert abs(colunas["jpeg_quality_estimate"] - 78) <= _TOLERANCIA, (
+        "a estimada preenche justamente onde a declarada falta"
+    )
