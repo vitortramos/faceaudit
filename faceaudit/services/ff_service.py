@@ -346,6 +346,14 @@ class FFService:
         # idempotente, mas o `batch_size` é atualizado a cada chamada
         # (sessões criadas DEPOIS veem o novo valor).
         if use_gpu:
+            # No Windows, as DLLs do CUDA/cuDNN instaladas por pip não são
+            # encontradas pelo carregador (o Python 3.8+ tirou o PATH da
+            # busca de dependências) e TODA sessão caía para CPU em
+            # silêncio. Tem de rodar ANTES da primeira sessão.
+            from faceaudit.services.cuda_runtime_bootstrap import (
+                ensure_cuda_dlls_loaded,
+            )
+            ensure_cuda_dlls_loaded(verbose=True)
             _patch_onnxruntime_for_coreml_static_shapes(
                 batch_size=self._batch_size,
             )

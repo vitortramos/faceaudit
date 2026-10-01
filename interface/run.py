@@ -27,6 +27,28 @@ if sys.platform == "win32":
         # Falha aqui é puramente cosmética — não impede a app de subir.
         pass
 
+# ─── Windows: DLLs do CUDA/cuDNN visíveis ao ONNX Runtime ─────────────────
+#
+# Com `onnxruntime-gpu` instalado e as bibliotecas da NVIDIA presentes como
+# pacotes pip, a criação de sessão falhava com "cudnn64_9.dll is missing" e
+# caía para CPU — em silêncio para quem não lesse o terminal. Causa: o
+# Python 3.8+ chama `SetDefaultDllDirectories` no Windows, o que retira o
+# `PATH` da ordem de busca das DLLs dependentes, e os pacotes pip da NVIDIA
+# ficam em `site-packages/nvidia/*/bin`, fora de qualquer lista consultada.
+#
+# Aqui, e não só no FFService, porque qualquer caminho que crie sessão de
+# inferência (OFIQ, SER-FIQ, uniface) sofre o mesmo. Idempotente: o
+# FFService chama de novo sem custo.
+if sys.platform == "win32":
+    try:
+        from faceaudit.services.cuda_runtime_bootstrap import (
+            ensure_cuda_dlls_loaded,
+        )
+        ensure_cuda_dlls_loaded(verbose=True)
+    except Exception:
+        # Sem aceleração é degradação, não impedimento — a app abre.
+        pass
+
 # ─── macOS: injeta CFBundleIdentifier antes do Qt subir ─────────────────────
 #
 # QTBUG-135882: macOS Sequoia/Tahoe + Qt 6.9.x recusa-se a mostrar

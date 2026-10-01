@@ -446,7 +446,14 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         dtype=ColumnDType.FLOAT,
         editable=False, visible_default=True, category=CATEGORY_FF_QUALITY,
         metric_name="fiqa", direction=QualityDirection.HIGHER_IS_BETTER,
-        scale=(0.0, 100.0), quality_subtype=QualitySubtype.PRIMARY,
+        # Faixa do CR-FIQA, que é o que o ForensicFace usa (`cr_fiqa_l`).
+        # Estava declarada como (0, 100), faixa que o modelo nunca produz:
+        # medido em 599 faces reais, os valores vão de 1,46 a 2,56. A
+        # declaração errada não causava dano porque nada consome `scale`
+        # hoje — mas qualquer normalização futura mostraria todas as faces
+        # comprimidas em 2% da barra. O teto é generoso de propósito: o
+        # CR-FIQA não tem limite superior formal.
+        scale=(0.0, 3.0), quality_subtype=QualitySubtype.PRIMARY,
     )
     specs["det_score"] = ColumnSpec(
         name="det_score", label="Det. Confidence",
