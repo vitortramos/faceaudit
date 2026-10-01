@@ -456,6 +456,111 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         metric_name="detection", direction=QualityDirection.HIGHER_IS_BETTER,
         scale=(0.0, 1.0), quality_subtype=QualitySubtype.AUX,
     )
+    # Compressão: a declarada pela câmera e a calculada do arquivo atual.
+    # Coexistem de propósito — a divergência entre elas é sinal de
+    # recompressão depois da captura.
+    specs["declared_bits_per_pixel"] = ColumnSpec(
+        name="declared_bits_per_pixel", label="Bits/pixel (declarado)",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.FLOAT,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE, is_declared=True,
+        unit="bits/pixel",
+        description=(
+            "`CompressedBitsPerPixel` do EXIF — a taxa que a CÂMERA gravou "
+            "no momento da captura. NÃO acompanha recompressão posterior: "
+            "se a foto foi reencodada depois, este valor continua o da "
+            "origem. Compare com `image_bits_per_pixel` (calculado do "
+            "arquivo atual) — divergência indica recompressão."
+        ),
+    )
+    specs["image_bits_per_pixel"] = ColumnSpec(
+        name="image_bits_per_pixel", label="Bits/pixel (calculado)",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.FLOAT,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        unit="bits/pixel",
+        description=(
+            "Bits por pixel efetivamente gastos pelo arquivo como ele está "
+            "HOJE: tamanho × 8 ÷ (largura × altura). Reflete a ÚLTIMA "
+            "compressão que o arquivo sofreu. Calculado, não declarado — "
+            "não depende de a câmera ter gravado a etiqueta. Em formato sem "
+            "perdas (PNG, TIFF) continua válido como ocupação, mas ali a "
+            "compressão não descarta informação e o valor não indica "
+            "qualidade."
+        ),
+    )
+    specs["image_compression_ratio"] = ColumnSpec(
+        name="image_compression_ratio", label="Razão de compressão",
+        role=ColumnRole.CAPTURE, source=ColumnSource.DERIVED,
+        dtype=ColumnDType.FLOAT,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE,
+        description=(
+            "Quantas vezes o arquivo é menor que o RGB sem compressão "
+            "(24 ÷ bits por pixel calculado). Um valor de 12 significa "
+            "\"12:1\". Mesma base de `image_bits_per_pixel`, em unidade mais "
+            "usual."
+        ),
+    )
+    specs["file_size_bytes"] = ColumnSpec(
+        name="file_size_bytes", label="Tamanho do arquivo",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.INT,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_DEVICE,
+        capture_subtype=CaptureSubtype.DEVICE, is_declared=True,
+        unit="bytes",
+        description=(
+            "Tamanho do arquivo de imagem original em bytes. Base do "
+            "cálculo de bits por pixel."
+        ),
+    )
+    specs["image_format"] = ColumnSpec(
+        name="image_format", label="Formato do arquivo",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_DEVICE,
+        capture_subtype=CaptureSubtype.DEVICE, is_declared=True,
+        description=(
+            "Formato do arquivo original (JPEG, PNG, HEIC…). Necessário "
+            "para ler a taxa de compressão: em formato sem perdas ela mede "
+            "ocupação, não qualidade."
+        ),
+    )
+    specs["video_avg_bitrate"] = ColumnSpec(
+        name="video_avg_bitrate", label="Taxa de bits do vídeo",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_EXPOSURE,
+        capture_subtype=CaptureSubtype.EXPOSURE, is_declared=True,
+        description=(
+            "Taxa de bits média do vídeo de origem — o equivalente da taxa "
+            "de compressão para dataset extraído de vídeo. Texto porque o "
+            "ExifTool emite com unidade (ex.: \"4.5 Mbps\")."
+        ),
+    )
+    specs["capture_datetime_origin"] = ColumnSpec(
+        name="capture_datetime_origin", label="Origem da data",
+        role=ColumnRole.CAPTURE, source=ColumnSource.EXIF,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False,
+        category=CATEGORY_CAPTURE_DATETIME,
+        capture_subtype=CaptureSubtype.DATETIME, is_declared=True,
+        description=(
+            "Como a data de captura foi obtida. `FILE_TAG` = lida da "
+            "etiqueta do próprio arquivo. `VIDEO_START_PLUS_FRAME` = "
+            "calculada a partir do início da gravação somado ao instante do "
+            "quadro de onde a face saiu. Sem esta coluna, dois valores de "
+            "aparência idêntica significariam coisas diferentes."
+        ),
+    )
     specs["detection_rotation"] = ColumnSpec(
         name="detection_rotation", label="Rotação p/ detectar",
         role=ColumnRole.METADATA, source=ColumnSource.FF,

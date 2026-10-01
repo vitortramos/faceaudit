@@ -24,6 +24,25 @@ class VideoInfo:
     resolution: Tuple[int, int]          # (largura, altura)
     opencv_version: str
     decoder_backend: Optional[str] = None
+    # Rotação declarada no contêiner, em graus horários. O OpenCV a ignora
+    # ao decodificar — vídeo de celular em retrato vem deitado —, então o
+    # FaceAudit a aplica a cada quadro lido. Registrada aqui porque vai ao
+    # manifesto do run: sem isso ninguém reconstrói depois por que os
+    # recortes estão de pé e o arquivo, aberto num player, aparece deitado.
+    container_rotation: int = 0
+
+    @property
+    def resolution_effective(self) -> Tuple[int, int]:
+        """(largura, altura) dos quadros COMO O SISTEMA OS VÊ.
+
+        Girar 90° ou 270° troca os dois. `resolution` continua sendo o que o
+        decodificador reporta — as duas convivem porque confundi-las é que
+        geraria engano: uma descreve o arquivo, a outra o que foi detectado.
+        """
+        largura, altura = self.resolution
+        if self.container_rotation in (90, 270):
+            return (altura, largura)
+        return (largura, altura)
 
     def to_manifest_dict(self) -> dict:
         return {
@@ -34,6 +53,8 @@ class VideoInfo:
             "frame_count_reported": self.frame_count_reported,
             "duration_reported_s": self.duration_reported_s,
             "resolution": list(self.resolution),
+            "container_rotation": self.container_rotation,
+            "resolution_effective": list(self.resolution_effective),
             "opencv_version": self.opencv_version,
             "decoder_backend": self.decoder_backend,
         }

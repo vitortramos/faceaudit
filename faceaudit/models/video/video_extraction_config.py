@@ -72,6 +72,16 @@ class VideoExtractionConfig(JSONSerializableMixin):
     # run_id).
     reference_images: List[str] = field(default_factory=list)
 
+    # Metadados embutidos do ARQUIVO DE VÍDEO (EXIF/XMP/QuickTime): data de
+    # início da gravação, câmera, taxa de bits, localização. Desligado por
+    # padrão, como nos outros fluxos — custa uma leitura por vídeo e só faz
+    # sentido quando o arquivo é o original da câmera.
+    #
+    # Independente da ROTAÇÃO declarada no contêiner, que é lida e aplicada
+    # sempre: ela não é informação opcional, é a diferença entre detectar a
+    # face e perdê-la num vídeo gravado em retrato.
+    extract_exif: bool = False
+
     def resolved_video_paths(self) -> List[str]:
         """Lista efetiva de vídeos a percorrer (multivídeo); cai no `video_path`
         único quando `video_paths` está vazio (compat)."""

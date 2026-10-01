@@ -166,10 +166,22 @@ def _library_versions() -> Dict[str, Optional[str]]:
 
 
 class VideoFrameFaceExtractionService:
-    def __init__(self, ff_service, hash_service: Optional[HashService] = None):
+    def __init__(
+        self,
+        ff_service,
+        hash_service: Optional[HashService] = None,
+        exif_service=None,
+    ):
         self._ff = ff_service
         self._engine = ff_service.app
         self._hash = hash_service or HashService()
+        # Opcional: sem ele, a rotação declarada no contêiner não é lida e o
+        # comportamento é o histórico (quadro como o OpenCV entrega).
+        self._exif = exif_service
+        # Rotação por caminho de vídeo, resolvida uma vez. TEM de ser cache:
+        # ela é consultada a cada quadro lido, e uma chamada de ExifTool por
+        # quadro tornaria a extração inviável.
+        self._meta_container: Dict[str, Any] = {}
 
     # ─────────────────────────── probe / leitura ───────────────────────────
 
@@ -210,7 +222,86 @@ class VideoFrameFaceExtractionService:
             resolution=(width, height),
             opencv_version=cv2.__version__,
             decoder_backend=backend,
+            container_rotation=self.rotacao_do_container(p),
         )
+
+    # ─────────────────────── rotação do contêiner ───────────────────────
+
+    def _capture_metadata_manifest(
+        self, video_paths, infos, incluir_tags: bool,
+    ) -> Dict[str, Any]:
+        """Metadados de captura por vídeo, indexados pelo SHA-256.
+
+        O SHA-256 é a chave porque é por ele que cada face sabe de qual
+        vídeo saiu (`source_video_sha256` no sidecar). Nome de arquivo não
+        serviria: dois vídeos podem ter o mesmo nome em pastas diferentes.
+
+        `incluir_tags=False` grava apenas o que a extração USOU (rotação e
+        início), sem o dump completo — a rotação é sempre lida, mas o dump
+        só interessa a quem pediu os metadados.
+        """
+        saida: Dict[str, Any] = {}
+        for caminho, info in zip(video_paths, infos):
+            chave = info.sha256 or str(caminho)
+            meta = self.metadados_do_container(caminho)
+            saida[chave] = meta.to_manifest_entry(incluir_tags=incluir_tags)
+        return saida
+
+    def metadados_do_container(self, video_path):
+        """Metadados do arquivo de vídeo, lidos UMA vez por caminho.
+
+        Guardados porque a rotação é consultada a cada quadro lido: uma
+        chamada de ExifTool por quadro inviabilizaria a extração.
+
+        Sem serviço de metadados, devolve um objeto vazio — o comportamento
+        histórico (quadro como o OpenCV entrega, sem metadado de captura).
+        """
+        from faceaudit.services.video_capture_metadata_service import (
+            VideoCaptureMetadata,
+            probe_video_capture_metadata,
+        )
+
+        chave = str(video_path)
+        if chave in self._meta_container:
+            return self._meta_container[chave]
+        if self._exif is None:
+            meta = VideoCaptureMetadata()
+        else:
+            meta = probe_video_capture_metadata(self._exif, chave)
+            if meta.rotation_degrees:
+                print(
+                    f"🔄 [Vídeo] {Path(chave).name} declara rotação de "
+                    f"{meta.rotation_degrees}°; os quadros serão girados "
+                    f"antes de detectar."
+                )
+        self._meta_container[chave] = meta
+        return meta
+
+    def rotacao_do_container(self, video_path) -> int:
+        """Rotação declarada pelo arquivo, em graus horários. 0 se não há.
+
+        Vídeo de celular gravado em retrato traz essa etiqueta, e o OpenCV a
+        IGNORA: entrega o quadro deitado. Sem aplicar, o detector perde a
+        face ou a acha torta, e o recorte alinhado sai de um quadro deitado.
+        """
+        return self.metadados_do_container(video_path).rotation_degrees
+
+    def _aplicar_rotacao(self, frame, video_path):
+        """Ponto ÚNICO de aplicação. Todos os caminhos que leem quadro
+        passam por aqui.
+
+        Se a prévia do scrubber e a extração discordassem na orientação, o
+        usuário escolheria o recorte olhando uma imagem e o sistema
+        extrairia de outra — e nada no resultado denunciaria a diferença.
+        """
+        if frame is None:
+            return None
+        graus = self.rotacao_do_container(video_path)
+        if not graus:
+            return frame
+        from faceaudit.services.image_rotation_service import girar_imagem
+
+        return girar_imagem(frame, graus)
 
     def read_frame(self, video_path, index: int) -> Optional[np.ndarray]:
         """Lê um quadro específico — uso EXCLUSIVO da thread da UI (scrubber).
@@ -229,7 +320,7 @@ class VideoFrameFaceExtractionService:
             # Capture corrompido: descarta para a próxima leitura reabrir limpo.
             self.close_preview_cap()
             return None
-        return frame if ret else None
+        return self._aplicar_rotacao(frame, video_path) if ret else None
 
     def _read_frame_uncached(self, video_path, index: int) -> Optional[np.ndarray]:
         """Leitura pontual com capture LOCAL (aberto e liberado na hora). Para
@@ -244,7 +335,7 @@ class VideoFrameFaceExtractionService:
             ret, frame = cap.read()
         finally:
             cap.release()
-        return frame if ret else None
+        return self._aplicar_rotacao(frame, video_path) if ret else None
 
     def _preview_cap(self, path: str):
         """Capture de prévia cacheado (um por caminho). Recria ao trocar de
@@ -623,6 +714,16 @@ class VideoFrameFaceExtractionService:
                     "extraction_duration_s": duration_s,
                     "source_video": infos[0].to_manifest_dict(),
                     "source_videos": [i.to_manifest_dict() for i in infos],
+                    # Metadados de captura lidos AQUI, com o arquivo em mão.
+                    # O manifesto não guarda o caminho do vídeo (o run é
+                    # portátil), então ler no momento da importação
+                    # dependeria de o arquivo ainda estar no mesmo lugar.
+                    # Capturar junto com o hash é também a semântica de
+                    # custódia correta: é o estado do arquivo no momento da
+                    # extração.
+                    "capture_metadata": self._capture_metadata_manifest(
+                        video_paths, infos, getattr(config, "extract_exif", False),
+                    ),
                     "versions": _library_versions(),
                     "parameters": config.to_manifest_dict(),
                     "reference_images": reference_images_manifest,
@@ -754,6 +855,7 @@ class VideoFrameFaceExtractionService:
                 ret, frame = cap.read()
                 if not ret:
                     break
+                frame = self._aplicar_rotacao(frame, video_path)
                 if end_frame is not None and native > end_frame:
                     break
                 if (native - start_frame) % every_n != 0:

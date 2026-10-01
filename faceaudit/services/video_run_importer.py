@@ -73,6 +73,20 @@ def build_video_column_specs() -> Dict[str, ColumnSpec]:
         "video_min_fiqa_score": meta_num("video_min_fiqa_score", "Min FIQA (vídeo)", ColumnDType.FLOAT),
         "anchor_embedding_fingerprint": meta_str("anchor_embedding_fingerprint", "Fingerprint da âncora"),
     }
+    # Colunas de captura do vídeo de origem: as mesmas do caminho de fotos,
+    # vindas do catálogo em vez de redefinidas aqui. Sem isto elas nasceriam
+    # como CUSTOM no dataset de vídeo e teriam rótulo e categoria diferentes
+    # das mesmas colunas num dataset de fotos — e as duas se encontram num
+    # merge.
+    from faceaudit.models.column_catalog import (
+        ColumnRole as _Role,
+        DatasetType as _Tipo,
+        get_default_specs as _padrao,
+    )
+
+    for nome, spec in _padrao(_Tipo.FACE).items():
+        if spec.role is _Role.CAPTURE and nome not in specs:
+            specs[nome] = spec
     return specs
 
 
@@ -111,9 +125,15 @@ class VideoRunImporter:
                     f"Conclua a revisão (ou marque skipped como override) antes do dataset final."
                 )
 
+        # Colunas de captura por vídeo, calculadas UMA vez. Todas as faces
+        # do mesmo arquivo compartilham a mesma instância de cada string
+        # (inclusive o dump completo), em vez de uma cópia por face.
+        captura_por_video = self._capture_columns_by_video(manifest)
+
         faces: List[FaceInfo] = []
         n_skipped_status = n_hash_mismatch = n_missing = 0
         any_aligned = False
+        n_com_captura = 0
         for sidecar in sorted(meta_dir.glob("*.json")):
             nm = sidecar.name
             if nm.startswith("_run_") or nm.startswith("_decisions_") or nm.startswith("_frames_"):
@@ -193,9 +213,29 @@ class VideoRunImporter:
             fi = FaceInfo(image_path=rel_path, identity=label, hash=expected, ff_info=ff)
             # Origem = vídeo de origem (análogo ao campo "Origem" do caminho de
             # imagens, que registra a proveniência da face).
-            vid = (d.get("source_video") or {}).get("filename")
+            src = d.get("source_video") or {}
+            vid = src.get("filename")
             if vid:
                 fi.origin = f"Vídeo: {vid}"
+
+            # Casa pelo SHA-256 do vídeo, não pelo nome: um run pode ter
+            # vários vídeos, e dois arquivos podem ter o mesmo nome em
+            # pastas diferentes.
+            base_captura = captura_por_video.get(src.get("sha256"))
+            if base_captura is not None:
+                from faceaudit.services.video_capture_metadata_service import (
+                    columns_for_frame,
+                )
+                meta_video, colunas_base = base_captura
+                extra.update(
+                    columns_for_frame(
+                        meta_video,
+                        extra.get("timestamp_s_from_fps"),
+                        colunas_base,
+                    )
+                )
+                n_com_captura += 1
+
             fi.extra_data = extra
             faces.append(fi)
             if used_aligned:
@@ -207,6 +247,12 @@ class VideoRunImporter:
         ds.is_aligned = any_aligned
         ds.column_specs = build_video_column_specs()
         ds.provenance_metadata = self._build_provenance_metadata(manifest)
+
+        if n_com_captura and logger:
+            logger(
+                f"metadados de captura em {n_com_captura} face(s) "
+                f"(data calculada do instante de cada quadro)"
+            )
 
         if logger:
             logger(f"importadas {len(faces)} face(s) | status-pulados={n_skipped_status} "
@@ -297,6 +343,44 @@ class VideoRunImporter:
             return {}
 
     @staticmethod
+    def _capture_columns_by_video(manifest: Dict[str, Any]) -> Dict[str, Any]:
+        """SHA-256 do vídeo → (metadados, colunas base). Nunca levanta.
+
+        Lê do manifesto, não do arquivo: o run é portátil e o vídeo pode já
+        não estar no caminho original. O que está aqui foi capturado na
+        extração, junto com o hash — é o estado do arquivo naquele momento.
+
+        As colunas base são idênticas para todas as faces do mesmo vídeo;
+        calculá-las uma vez faz todas compartilharem as mesmas strings.
+        """
+        bruto = manifest.get("capture_metadata") or {}
+        if not isinstance(bruto, dict) or not bruto:
+            return {}
+
+        from faceaudit.services.exif_extraction_service import (
+            ImageMetadata,
+            build_capture_columns,
+        )
+        from faceaudit.services.video_capture_metadata_service import (
+            VideoCaptureMetadata,
+        )
+
+        saida: Dict[str, Any] = {}
+        for chave, entrada in bruto.items():
+            if not isinstance(entrada, dict):
+                continue
+            tags = entrada.get("tags") or {}
+            meta = VideoCaptureMetadata.from_manifest_entry(entrada)
+            # Sem o dump, não há colunas a promover — mas a data por quadro
+            # ainda pode ser calculada, porque o início vem do manifesto.
+            colunas = (
+                build_capture_columns(ImageMetadata(source_path="", tags=tags))
+                if tags else {}
+            )
+            saida[chave] = (meta, colunas)
+        return saida
+
+    @staticmethod
     def _build_provenance_metadata(manifest: Dict[str, Any]) -> Dict[str, str]:
         targets = manifest.get("targets") or []
         model = manifest.get("recognition_model")
@@ -313,4 +397,17 @@ class VideoRunImporter:
             meta["selection_threshold"] = str(threshold)
         if run_id:
             meta["source_run_id"] = str(run_id)
+
+        # Rotação aplicada aos quadros. Sem isto, ninguém reconstrói depois
+        # por que os recortes estão de pé e o vídeo, aberto num player,
+        # aparece deitado.
+        rotacoes = {
+            int((e or {}).get("container_rotation") or 0)
+            for e in (manifest.get("capture_metadata") or {}).values()
+            if isinstance(e, dict)
+        } - {0}
+        if rotacoes:
+            meta["container_rotation_applied"] = ",".join(
+                str(r) for r in sorted(rotacoes)
+            )
         return meta

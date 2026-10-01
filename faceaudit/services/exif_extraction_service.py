@@ -378,13 +378,29 @@ _MAPA_COLUNAS = {
     "gps_latitude": ("GPSLatitude",),
     "gps_longitude": ("GPSLongitude",),
     "gps_altitude": ("GPSAltitude",),
+    # Compressão. `CompressedBitsPerPixel` (EXIF 0x9102) é o que a CÂMERA
+    # declarou no momento da captura — não acompanha recompressão posterior.
+    # `file_size_bytes` alimenta a medida calculada, que reflete o arquivo
+    # como ele está hoje.
+    "declared_bits_per_pixel": ("CompressedBitsPerPixel",),
+    "file_size_bytes": ("FileSize", "FileSizeBytes"),
+    "image_format": ("FileType", "FileTypeExtension", "MIMEType"),
+    # Vídeo: o equivalente da taxa de compressão é a taxa de bits.
+    "video_avg_bitrate": ("AvgBitrate", "AvgBitrateKbps", "BitRate"),
 }
 
-_COLUNAS_INT = {"iso", "orientation", "image_width", "image_height"}
+_COLUNAS_INT = {
+    "iso", "orientation", "image_width", "image_height", "file_size_bytes",
+}
 _COLUNAS_FLOAT = {
     "f_number", "focal_length_mm", "focal_length_35mm",
     "gps_latitude", "gps_longitude", "gps_altitude",
+    "declared_bits_per_pixel",
 }
+
+# Um pixel RGB sem compressão ocupa 24 bits — a referência contra a qual a
+# razão de compressão é expressa ("12:1" = doze vezes menor que o cru).
+_BITS_POR_PIXEL_SEM_COMPRESSAO = 24.0
 
 
 def build_capture_columns(metadata: "ImageMetadata") -> Dict[str, Any]:
@@ -415,11 +431,61 @@ def build_capture_columns(metadata: "ImageMetadata") -> Dict[str, Any]:
     )
     if normalizada:
         colunas["capture_datetime"] = normalizada
+        # Declara COMO a data foi obtida. Sem isto, dois valores ISO de
+        # aparência idêntica significariam coisas diferentes entre datasets
+        # — lido da etiqueta do arquivo (aqui) ou calculado a partir do
+        # início do vídeo mais o instante do quadro (dataset de vídeo).
+        from faceaudit.services.video_capture_metadata_service import (
+            ORIGEM_ETIQUETA_DO_ARQUIVO,
+        )
+        colunas["capture_datetime_origin"] = ORIGEM_ETIQUETA_DO_ARQUIVO
+
+    colunas.update(_colunas_de_compressao(colunas))
 
     colunas["exif_json"] = json.dumps(
         metadata.tags, ensure_ascii=False, default=str, separators=(",", ":"),
     )
     return colunas
+
+
+def _colunas_de_compressao(colunas: Dict[str, Any]) -> Dict[str, Any]:
+    """Taxa de compressão do arquivo **como ele está hoje**.
+
+    Calculada, não declarada: `tamanho × 8 / (largura × altura)` dá os bits
+    por pixel efetivamente gastos, e `24 / bpp` a razão contra o RGB cru.
+    Isso reflete a ÚLTIMA compressão que o arquivo sofreu — diferente de
+    `declared_bits_per_pixel`, que a câmera gravou na captura e que não
+    acompanha recompressão posterior.
+
+    A divergência entre as duas é informação, não inconsistência: arquivo
+    cujo bpp calculado está bem abaixo do declarado foi recomprimido depois
+    de sair da câmera. Por isso as duas colunas coexistem em vez de uma
+    sobrescrever a outra.
+
+    Ressalva que o rótulo da coluna carrega: em formato SEM perdas (PNG,
+    TIFF) a medida continua válida como ocupação, mas não é "qualidade" —
+    ali a compressão não descarta informação.
+    """
+    largura = colunas.get("image_width")
+    altura = colunas.get("image_height")
+    tamanho = colunas.get("file_size_bytes")
+    if not largura or not altura or not tamanho:
+        return {}
+    try:
+        pixels = float(largura) * float(altura)
+        bits = float(tamanho) * 8.0
+    except (TypeError, ValueError):
+        return {}
+    if pixels <= 0 or bits <= 0:
+        return {}
+
+    bpp = bits / pixels
+    saida: Dict[str, Any] = {"image_bits_per_pixel": round(bpp, 4)}
+    if bpp > 0:
+        saida["image_compression_ratio"] = round(
+            _BITS_POR_PIXEL_SEM_COMPRESSAO / bpp, 2,
+        )
+    return saida
 
 
 def _converter(nome: str, valor: Any) -> Any:

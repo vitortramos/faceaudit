@@ -877,6 +877,21 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         det_row.addWidget(QtWidgets.QLabel("Confiança:", self))
         det_row.addWidget(self.spn_det_thresh)
         det_row.addSpacing(16)
+        self.chk_exif = QtWidgets.QCheckBox("Metadados do vídeo", self)
+        self.chk_exif.setChecked(False)
+        self.chk_exif.setToolTip(
+            "Lê os metadados embutidos no arquivo de vídeo (EXIF/XMP/"
+            "QuickTime): início da gravação, câmera, taxa de bits, "
+            "localização.<br><br>"
+            "A data de captura de <b>cada face</b> é calculada como "
+            "<i>início da gravação + o instante do quadro</i> — e só quando "
+            "o arquivo declara o fuso explicitamente. Sem fuso declarado, a "
+            "etiqueta crua é preservada e a data normalizada fica vazia.<br><br>"
+            "Independente disto, a <b>rotação</b> declarada pelo vídeo é "
+            "sempre lida e aplicada aos quadros."
+        )
+        det_row.addWidget(self.chk_exif)
+        det_row.addSpacing(16)
         # "Re-detectar": aplica a Resolução/Confiança atuais ao quadro exibido
         # (reconstrói o detector se mudaram) sem recarregar o vídeo. Fica coladinho
         # nos controles que ele aplica (relação causa-efeito).
@@ -1464,6 +1479,32 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._refresh_targets_count()
         self._refresh_extract_enabled()
 
+    def _build_exif_service(self):
+        """Leitor de metadados, com o caminho do ExifTool das Configurações.
+
+        Devolve None quando o ExifTool não resolve: aí a rotação não é lida
+        e o comportamento é o histórico, em vez de a extração falhar por
+        causa de uma ferramenta externa ausente.
+        """
+        try:
+            from faceaudit.models.system_config import SystemConfig
+            from faceaudit.services.exif_extraction_service import (
+                ExifExtractionService,
+            )
+
+            caminho = ""
+            cfg = getattr(self, "_app_config", None) or SystemConfig.load_from_file()
+            exif_cfg = getattr(cfg, "exiftool", None)
+            if exif_cfg is not None:
+                caminho = getattr(exif_cfg, "exiftool_exe_path", "") or ""
+            return ExifExtractionService(caminho)
+        except Exception as e:                       # noqa: BLE001
+            print(
+                f"⚠️  [Vídeo] Leitor de metadados indisponível ({e}); a "
+                f"rotação declarada pelo vídeo não será lida."
+            )
+            return None
+
     def _det_size(self) -> int:
         return int(self.spn_det_size.value())
 
@@ -1488,7 +1529,13 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         ff = FFService(models=[model_ff] if model_ff else None,
                        use_gpu=self._use_gpu, det_size=self._det_size(),
                        det_thresh=float(self.spn_det_thresh.value()))
-        self._service = VideoFrameFaceExtractionService(ff)
+        # O serviço de metadados entra sempre, não só quando a caixa está
+        # marcada: a ROTAÇÃO declarada pelo vídeo é lida por ele, e ela não é
+        # opcional — é a diferença entre detectar a face e perdê-la num
+        # vídeo gravado em retrato.
+        self._service = VideoFrameFaceExtractionService(
+            ff, exif_service=self._build_exif_service(),
+        )
         self._service_sig = self._detector_signature()
 
     def _ensure_service_current(self):
@@ -2079,6 +2126,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
             det_size=self._det_size(), det_thresh=float(self.spn_det_thresh.value()),
             recognition_model=self._selected_model(),
             compute_ff=True,
+            extract_exif=bool(self.chk_exif.isChecked()),
             # Proveniência: lista COMPLETA das imagens de referência carregadas
             # (mesmo as não usadas como âncora) para o manifesto de reprodutibilidade.
             reference_images=self._ref_image_paths(),
