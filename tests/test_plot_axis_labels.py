@@ -130,7 +130,143 @@ def test_legenda_informa_o_n_de_cada_grupo():
     ax = _desenhar()
     rotulos = [t.get_text() for t in ax.get_legend().get_texts()]
 
-    for grupo in ("Impostores", "Genuínos", "Caso"):
+    # Vocabulário do LEITOR DO LAUDO, não do perito: "genuíno" e "impostor"
+    # são termos do campo e exigiriam glossário na peça.
+    for grupo in ("Pessoas diferentes", "Mesma pessoa", "Caso"):
         casou = [r for r in rotulos if grupo in r]
         assert casou, f"{grupo} ausente da legenda: {rotulos}"
         assert "n=" in casou[0], f"sem n na legenda de {grupo}: {casou[0]}"
+
+    texto = " ".join(rotulos)
+    for termo in ("Impostor", "Genuíno", "Genuínos", "threshold", "EER ="):
+        assert termo not in texto, (
+            f"termo de uso interno ou em inglês na legenda: {termo!r}"
+        )
+
+
+# ── Números em convenção brasileira ──────────────────────────────────────
+
+def test_decimal_com_virgula():
+    from faceaudit.models.plot_number_format import formatar_numero
+
+    assert formatar_numero(0.35, 4) == "0,3500"
+    assert formatar_numero(0.5292, 2) == "0,53"
+    assert formatar_numero(-1.5, 1) == "-1,5"
+
+
+def test_milhar_com_ponto_e_decimal_com_virgula_ao_mesmo_tempo():
+    """A troca ingênua de ponto por vírgula corromperia isto: "1,234.50"
+    viraria "1,234,50". Daí os dois passos com marcador intermediário."""
+    from faceaudit.models.plot_number_format import formatar_numero
+
+    assert formatar_numero(1234.5, 2) == "1.234,50"
+    assert formatar_numero(364742, 0) == "364.742"
+
+
+def test_tick_sem_zeros_a_direita():
+    """Precisão fixa polui marca de eixo: "0,2000" em vez de "0,2"."""
+    from faceaudit.models.plot_number_format import formatar_tick
+
+    assert formatar_tick(0.2) == "0,2"
+    assert formatar_tick(0.0) == "0"
+    assert formatar_tick(-0.5) == "-0,5"
+    assert formatar_tick(3.0) == "3"
+
+
+def test_tick_nao_produz_menos_zero():
+    """-0,0 numa marca de eixo é artefato de arredondamento, não valor."""
+    from faceaudit.models.plot_number_format import formatar_tick
+
+    assert formatar_tick(-0.00001) == "0"
+
+
+def test_valor_invalido_nao_estoura():
+    from faceaudit.models.plot_number_format import formatar_numero, formatar_tick
+
+    assert formatar_numero(None) == "None"
+    assert formatar_tick("x") == "x"
+
+
+def test_a_figura_toda_usa_virgula():
+    """Legenda com vírgula e eixo com ponto seria pior que ponto uniforme:
+    a mesma figura exibiria as duas convenções."""
+    fig = Figure(figsize=(7, 4.5))
+    draw_casework_visualization(fig, _ResultadoFalso())
+    fig.canvas.draw()
+    ax = fig.axes[0]
+
+    textos = (
+        [t.get_text() for t in ax.get_xticklabels()]
+        + [t.get_text() for t in ax.get_yticklabels()]
+        + [t.get_text() for t in ax.get_legend().get_texts()]
+        + [a.get_text() for a in ax.texts]
+    )
+    com_ponto_decimal = [
+        t for t in textos
+        # Ponto seguido de dígito é decimal; ponto de milhar vem seguido de
+        # três dígitos e precedido de dígito, e esse é legítimo.
+        if any(
+            t[i] == "." and i + 1 < len(t) and t[i + 1].isdigit()
+            and not (i + 4 <= len(t) and t[i + 1:i + 4].isdigit()
+                     and (i + 4 == len(t) or not t[i + 4].isdigit()))
+            for i in range(len(t))
+        )
+    ]
+    assert not com_ponto_decimal, (
+        f"textos com ponto decimal na figura: {com_ponto_decimal}"
+    )
+
+
+# ── Padrões da figura de laudo ───────────────────────────────────────────
+
+def test_padrao_e_sem_curva_suavizada():
+    """A curva é um MODELO: a largura de banda não aparece na figura e
+    inventa cauda onde não há observação, justamente na faixa por onde
+    passam os escores do caso. O padrão mostra o dado."""
+    import inspect
+
+    from faceaudit.models.casework_visualization_plot import (
+        draw_casework_visualization as f,
+    )
+
+    assert inspect.signature(f).parameters["show_kde"].default is False
+
+
+def test_padrao_e_legenda_embaixo():
+    """Embaixo e fora: não cobre os valores do caso nem a distribuição, e o
+    desenho fica com a largura inteira."""
+    import inspect
+
+    from faceaudit.models.casework_visualization_plot import (
+        draw_casework_visualization as f,
+    )
+
+    assert inspect.signature(f).parameters["legend_below"].default is True
+
+
+def test_concordancia_de_numero_na_legenda_do_caso():
+    """"1 marcas" numa figura de laudo salta aos olhos."""
+    import numpy as np
+
+    for n, esperado in ((1, "marca)"), (2, "marcas)"), (3, "marcas)")):
+        fig = Figure()
+        draw_casework_visualization(
+            fig, _ResultadoFalso(case_scores=np.linspace(0.5, 0.6, n), n_case=n),
+        )
+        caso = [
+            t.get_text() for t in fig.axes[0].get_legend().get_texts()
+            if t.get_text().startswith("Caso")
+        ]
+        assert caso and caso[0].endswith(esperado), f"n={n}: {caso}"
+
+
+def test_faixas_do_histograma_acompanham_o_tamanho_do_grupo():
+    """50 faixas servem para centenas de milhares e deixam ~9 observações
+    por faixa em grupos de poucas centenas, produzindo serrilhado que é
+    ruído amostral e que num laudo pode ser lido como estrutura."""
+    from faceaudit.models.casework_visualization_plot import _faixas_para
+
+    assert _faixas_para(364742) == 50
+    assert _faixas_para(468) == 22
+    assert _faixas_para(5) == 10, "piso evita histograma de três barras"
+    assert _faixas_para(0) == 10
