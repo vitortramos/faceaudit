@@ -270,3 +270,34 @@ def test_faixas_do_histograma_acompanham_o_tamanho_do_grupo():
     assert _faixas_para(468) == 22
     assert _faixas_para(5) == 10, "piso evita histograma de três barras"
     assert _faixas_para(0) == 10
+
+
+def test_limiar_de_eer_fica_fora_por_padrao():
+    """É critério de DECISÃO derivado da referência. Numa figura de
+    contextualização, convida o leitor a raciocinar por corte, que é a
+    leitura binária que a contextualização existe para substituir."""
+    ax = _desenhar(score_type="RAW")
+    rotulos = [t.get_text() for t in ax.get_legend().get_texts()]
+
+    assert not any("EER" in r for r in rotulos), rotulos
+    assert len(rotulos) == 3
+
+
+def test_limiar_de_eer_continua_disponivel():
+    """Desligado por padrão, não removido: há quem queira a linha."""
+    fig = Figure()
+    draw_casework_visualization(
+        fig, _ResultadoFalso(score_type="RAW"), show_eer_threshold=True,
+    )
+    rotulos = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+
+    assert any("igual taxa de erro (EER)" in r for r in rotulos), rotulos
+
+
+def test_linha_de_evidencia_neutra_permanece_no_modo_calibrado():
+    """log-LR igual a zero marca evidência neutra, não critério de decisão —
+    é coisa diferente do limiar de EER e continua na figura."""
+    ax = _desenhar(score_type="CALIBRATED")
+    rotulos = [t.get_text() for t in ax.get_legend().get_texts()]
+
+    assert any("log-LR = 0" in r for r in rotulos), rotulos

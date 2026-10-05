@@ -80,6 +80,7 @@ def draw_casework_visualization(
     show_title: bool = True,
     show_kde: bool = False,
     legend_below: bool = True,
+    show_eer_threshold: bool = False,
 ) -> None:
     """Desenha distribuição forense (caso sobreposto à referência).
 
@@ -88,6 +89,15 @@ def draw_casework_visualization(
     "impostor", que são termos do campo e exigiriam glossário, e nenhuma
     palavra em inglês nos rótulos. Ao alterar qualquer texto daqui, vale
     lembrar que o destinatário é o leitor do laudo, não o perito.
+
+    `show_eer_threshold=False` (padrão) omite a linha do limiar de igual
+    taxa de erro. Ela é um critério de DECISÃO derivado das distribuições de
+    referência, e numa figura de contextualização convida o leitor a
+    raciocinar por corte — "o escore está acima da linha, logo é a mesma
+    pessoa" —, que é a leitura binária que a contextualização existe para
+    substituir. O valor continua em `result.eer_threshold` para quem quiser
+    citá-lo no texto. A linha de log-LR igual a zero, no modo calibrado,
+    permanece: ela marca evidência neutra, não um critério de decisão.
 
     `show_kde=False` (padrão) desenha só os histogramas. A curva suavizada é um
     MODELO da distribuição: a largura de banda não aparece na figura e
@@ -208,7 +218,11 @@ def draw_casework_visualization(
             0.0, color="#444", linestyle=":", linewidth=1.0,
             alpha=0.7, label="log-LR = 0 (limiar neutro)",
         )
-    elif result.score_type == "RAW" and result.eer_threshold is not None:
+    elif (
+        result.score_type == "RAW"
+        and result.eer_threshold is not None
+        and show_eer_threshold
+    ):
         ax.axvline(
             result.eer_threshold, color="#444", linestyle=":", linewidth=1.0,
             alpha=0.7,
@@ -245,9 +259,13 @@ def draw_casework_visualization(
         # Fora da área do gráfico: não cobre nada, e o desenho fica com a
         # largura toda. Em duas colunas porque a entrada do limiar é longa e
         # numa linha só espremeria as demais.
+        # Colunas conforme o número de entradas: com três, cabe numa
+        # linha; com quatro, duas linhas ficam mais legíveis que uma
+        # apertada.
+        n_entradas = len(ax.get_legend_handles_labels()[0])
         ax.legend(
             loc="upper center", bbox_to_anchor=(0.5, -0.13),
-            ncol=2, fontsize=9, frameon=False,
+            ncol=min(n_entradas, 3), fontsize=9, frameon=False,
         )
     else:
         # Faixa livre no topo. Sem ela, a legenda à direita cobre os valores
