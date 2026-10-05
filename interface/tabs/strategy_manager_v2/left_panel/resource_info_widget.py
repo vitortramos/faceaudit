@@ -1902,7 +1902,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(2)
 
-        title_text = "raw_score" if scale == "raw" else "log-LR (calibrado)"
+        title_text = "Escore de similaridade" if scale == "raw" else "log-LR (calibrado)"
         title = QtWidgets.QLabel(
             f"<b>Em {title_text}</b>", parent=container,
         )

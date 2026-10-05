@@ -3945,8 +3945,8 @@ class StrategyManagerV2Controller(QtCore.QObject):
             f"Total: {n_gen + n_imp:,} pares".replace(",", "."),
             fontsize=11,
         )
-        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Score bruto")
-        ax.set_ylabel("Densidade")
+        ax.set_xlabel("log-LR calibrado" if use_log_lr else "Escore de similaridade")
+        ax.set_ylabel("Densidade de frequência")
         if use_log_lr:
             ax.axvline(0.0, color="#444", linestyle=":", linewidth=1.0,
                        alpha=0.6, label="log-LR = 0")

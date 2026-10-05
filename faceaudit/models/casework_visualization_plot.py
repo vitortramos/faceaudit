@@ -134,12 +134,19 @@ def draw_casework_visualization(
             label=f"EER threshold = {result.eer_threshold:.4f}",
         )
 
+    # "Escore de similaridade" e não "raw_score": o rótulo vai para figura
+    # de laudo, lida por quem não conhece o nome interno da coluna. O eixo
+    # muda de significado com o tipo de escore, daí a alternativa.
     x_label = (
         "log-LR calibrado"
-        if result.score_type == "CALIBRATED" else "raw_score"
+        if result.score_type == "CALIBRATED" else "Escore de similaridade"
     )
     ax.set_xlabel(x_label)
-    ax.set_ylabel("Densidade")
+    # "Densidade de frequência" e não "Densidade": as três curvas usam
+    # `density=True`, ou seja, frequência relativa dividida pela amplitude
+    # da classe, que é a definição do termo. Nomear a grandeza evita que o
+    # leitor tente ler a altura como contagem.
+    ax.set_ylabel("Densidade de frequência")
     ax.set_xlim(x_min, x_max)
     if show_title:
         ax.set_title("Distribuição forense — Caso sobreposto à referência")

@@ -264,7 +264,7 @@ def draw_calibration_curve_from_summary(
 
     if show_title:
         ax.set_title("Curva de Calibração", fontsize=11)
-    ax.set_xlabel("Escore Bruto")
+    ax.set_xlabel("Escore de similaridade")
     ax.set_ylabel("log-LR calibrado")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="best", fontsize=9)

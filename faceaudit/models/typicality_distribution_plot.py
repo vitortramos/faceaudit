@@ -230,7 +230,7 @@ def _draw_spec(ax: Axes, spec: _DistributionSpec, *, show_title: bool) -> None:
     if show_title:
         ax.set_title(spec.title, fontsize=11)
     ax.set_xlabel(spec.score_label)
-    ax.set_ylabel("Densidade")
+    ax.set_ylabel("Densidade de frequência")
     ax.grid(True, linestyle="--", alpha=0.4)
 
     info_text = "\n".join(spec.info_lines)

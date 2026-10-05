@@ -131,7 +131,7 @@ def draw_lr_distribution(figure: Figure, result: Any) -> None:
                alpha=0.6, label="log-LR = 0")
     ax.set_title("Distribuição de log-LRs", fontsize=11)
     ax.set_xlabel("log-LR calibrado")
-    ax.set_ylabel("Densidade")
+    ax.set_ylabel("Densidade de frequência")
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(loc="best", fontsize=9)
 
@@ -582,7 +582,7 @@ def draw_calibration_curve(figure: Figure, result: Any) -> None:
         ax_bot.axhline(
             0.0, color="#444", linestyle=":", linewidth=1.0, alpha=0.6,
         )
-        ax_bot.set_xlabel("Escore Bruto")
+        ax_bot.set_xlabel("Escore de similaridade")
         ax_bot.set_ylabel("Δ log-LR", fontsize=9)
         ax_bot.grid(True, linestyle="--", alpha=0.4)
         ax_bot.tick_params(labelsize=8)

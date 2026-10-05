@@ -37,7 +37,7 @@ class SimilarityScoreSample(JSONSerializableMixin):
     )
 
     raw_score: float = field(
-        metadata={"help": "Score bruto de similaridade produzido pelo modelo."}
+        metadata={"help": "Escore de similaridade produzido pelo modelo, antes da calibração."}
     )
 
     same_person: Optional[bool] = field(
