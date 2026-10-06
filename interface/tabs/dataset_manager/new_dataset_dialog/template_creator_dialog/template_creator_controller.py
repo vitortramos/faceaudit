@@ -109,9 +109,44 @@ class TemplateCreatorController(QtCore.QObject):
             )
             return
 
-        self.view.add_custom_column_item(key)
+        # O tipo é perguntado DEPOIS do nome e só quando o nome é válido:
+        # perguntar antes faria o usuário escolher o tipo de uma coluna que
+        # pode ser recusada por nome duplicado ou reservado.
+        from .template_creator_view import TIPOS_DE_COLUNA
+
+        rotulos = list(TIPOS_DE_COLUNA.values())
+        chaves = list(TIPOS_DE_COLUNA.keys())
+        sugerido = self._tipo_sugerido(key)
+        rotulo, ok = QInputDialog.getItem(
+            self.view,
+            f"Tipo da coluna '{key}'",
+            "Como os valores dessa coluna devem ser gravados?",
+            rotulos, chaves.index(sugerido), False,
+        )
+        if not ok:
+            return
+        dtype = chaves[rotulos.index(rotulo)]
+
+        self.view.add_custom_column_item(key, dtype)
         self._refresh_attribute_combos()
         self._update_preview()
+
+    # Nomes que quase sempre são numéricos. Serve só de sugestão inicial no
+    # diálogo: poupa o clique no caso comum sem decidir pelo usuário.
+    _NOMES_NUMERICOS = (
+        "idade", "age", "ano", "year", "numero", "number", "indice", "index",
+        "ordem", "sequencia", "id_numerico", "contagem",
+    )
+    _NOMES_DECIMAIS = ("peso", "altura", "score", "escore", "nota", "valor")
+
+    @classmethod
+    def _tipo_sugerido(cls, key: str) -> str:
+        nome = (key or "").lower()
+        if any(t in nome for t in cls._NOMES_DECIMAIS):
+            return "float"
+        if any(t in nome for t in cls._NOMES_NUMERICOS):
+            return "int"
+        return "str"
 
     def _on_remove_custom_column(self) -> None:
         key = self.view.selected_column_key()
@@ -215,6 +250,7 @@ class TemplateCreatorController(QtCore.QObject):
             filename_split_from_right=filename_last,
             filename_max_splits=1 if filename_last else 0,
             custom_columns=self.view.get_custom_column_keys(),
+            custom_column_types=self.view.get_custom_column_types(),
             folder_map=self._parse_folder_list(),
             filename_map=self._parse_file_list(),
             identity_from_parent=self.view.chk_parent.isChecked(),

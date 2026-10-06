@@ -56,9 +56,39 @@ class FaceDatasetAdapter:
             if callback: callback("Calculando integridade (Hashes)...", 95)
             dataset = HashService().compute_dataset_hash(dataset)
         
+        FaceDatasetAdapter._relatar_falhas_de_conversao(callback)
+
         if callback: callback(f"Concluído: {total_images} imagens carregadas.", 100)
             
         return dataset
+
+    # Falhas de conversão da ingestão corrente, por coluna. Um valor que
+    # não casa com o tipo declarado é sinal de que o template não descreve
+    # aqueles arquivos, e some sem rastro se ninguém contar.
+    _falhas_de_conversao: dict = {}
+
+    @classmethod
+    def _registrar_falha_de_conversao(cls, coluna: str, valor, tipo: str) -> None:
+        registro = cls._falhas_de_conversao.setdefault(
+            coluna, {"tipo": tipo, "n": 0, "exemplos": []},
+        )
+        registro["n"] += 1
+        if len(registro["exemplos"]) < 3:
+            registro["exemplos"].append(str(valor))
+
+    @classmethod
+    def _relatar_falhas_de_conversao(cls, callback=None) -> None:
+        """Reporta e zera. Chamado ao fim de cada ingestão."""
+        for coluna, r in sorted(cls._falhas_de_conversao.items()):
+            msg = (
+                f"⚠️  Coluna '{coluna}' declarada como {r['tipo']}: "
+                f"{r['n']} valor(es) não convertido(s) e gravado(s) como "
+                f"vazio. Exemplos: {', '.join(r['exemplos'])}"
+            )
+            print(msg)
+            if callback:
+                callback(msg, 0)
+        cls._falhas_de_conversao = {}
 
     @staticmethod
     def _assign_column(face: FaceInfo, attr: str, val: str, template: DirTemplate) -> None:
@@ -78,7 +108,15 @@ class FaceDatasetAdapter:
             return
 
         if attr_clean in template.custom_columns:
-            face.extra_data[attr_clean] = val
+            # Converte para o tipo declarado no template. Sem isto toda
+            # coluna de template nascia texto, e uma coluna "idade" saía
+            # ordenando 10 antes de 9.
+            convertido = template.convert_custom_value(attr_clean, val)
+            if convertido is None and val not in (None, ""):
+                FaceDatasetAdapter._registrar_falha_de_conversao(
+                    attr_clean, val, template.dtype_for(attr_clean),
+                )
+            face.extra_data[attr_clean] = convertido
             return
 
         # Coluna referenciada no map mas que não existe no universo

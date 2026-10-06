@@ -89,6 +89,54 @@ class DirTemplate(JSONSerializableMixin):
     # não são serializados aqui.
     custom_columns: List[str] = field(default_factory=list)
 
+    # Tipo de dado de cada coluna custom, por nome. Ausente significa
+    # texto, que preserva os templates gravados antes deste campo existir.
+    #
+    # Existe porque sem ele TODA coluna de template nascia como texto: uma
+    # coluna "idade" extraída do nome do arquivo virava "12" em vez de 12,
+    # e ordenar por ela saía em ordem alfabética, com 10 antes de 9. O
+    # usuário tinha de converter o dataset depois, a cada ingestão.
+    custom_column_types: Dict[str, str] = field(default_factory=dict)
+
+    def dtype_for(self, column: str) -> str:
+        """Tipo declarado da coluna custom. Texto quando não declarado."""
+        return (self.custom_column_types or {}).get(
+            (column or "").strip().lower(), "str",
+        )
+
+    def convert_custom_value(self, column: str, value):
+        """Converte o trecho extraído do caminho para o tipo declarado.
+
+        Devolve `None` quando o valor não casa com o tipo. É deliberado não
+        cair de volta para texto: uma coluna que mistura 12 e "doze" é
+        tipada como texto pelo pandas, e o usuário voltaria exatamente ao
+        problema que esta função existe para resolver, agora sem perceber.
+        Quem chama contabiliza as falhas e reporta.
+        """
+        tipo = self.dtype_for(column)
+        if value is None or tipo == "str":
+            return value if value is None else str(value)
+        texto = str(value).strip()
+        if not texto:
+            return None
+        try:
+            if tipo == "int":
+                # Aceita "012" e "12.0"; recusa "12,5" de propósito, porque
+                # truncar silenciosamente perderia informação.
+                return int(texto) if texto.lstrip("+-").isdigit() else int(float(texto))
+            if tipo == "float":
+                return float(texto.replace(",", "."))
+            if tipo == "bool":
+                baixo = texto.lower()
+                if baixo in ("1", "true", "verdadeiro", "sim", "s", "v", "y", "yes"):
+                    return True
+                if baixo in ("0", "false", "falso", "nao", "não", "n", "f", "no"):
+                    return False
+                return None
+        except (TypeError, ValueError):
+            return None
+        return texto
+
     # Mapeamento por nível de pasta. Nível 0 é a primeira subpasta.
     folder_map: Dict[int, List[str]] = field(default_factory=dict)
     filename_map: Dict[int, str] = field(default_factory=dict)

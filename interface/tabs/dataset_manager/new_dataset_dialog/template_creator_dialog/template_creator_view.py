@@ -23,6 +23,16 @@ from PyQt6.QtWidgets import (
 
 from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN
 
+# Tipos oferecidos para coluna de template, com rótulo legível. Só os que
+# fazem sentido num trecho de caminho de arquivo: vetor e lista não saem de
+# um pedaço de nome de pasta.
+TIPOS_DE_COLUNA = {
+    "str": "Texto",
+    "int": "Número inteiro",
+    "float": "Número decimal",
+    "bool": "Sim/Não",
+}
+
 
 class TemplateCreatorView(QDialog):
     """View do Criador de Templates de Estrutura.
@@ -41,6 +51,7 @@ class TemplateCreatorView(QDialog):
     # (inglês). O label visível pode ser PT-BR (built-in) ou igual à
     # chave (custom).
     COLUMN_KEY_ROLE = int(QtCore.Qt.ItemDataRole.UserRole)
+    COLUMN_TYPE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 1
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -295,11 +306,27 @@ class TemplateCreatorView(QDialog):
             return ""
         return items[0].data(self.COLUMN_KEY_ROLE) or ""
 
-    def add_custom_column_item(self, key: str) -> None:
-        """Adiciona uma custom column visualmente (sem 🔒)."""
-        item = QListWidgetItem(f"📝 {key}")
+    def add_custom_column_item(self, key: str, dtype: str = "str") -> None:
+        """Adiciona uma custom column visualmente (sem 🔒).
+
+        O tipo aparece ao lado do nome porque é escolha que não dá para
+        inferir olhando a lista depois, e errá-la só se descobre quando a
+        coluna chega ao dataset como texto.
+        """
+        item = QListWidgetItem(f"📝 {key}  ·  {TIPOS_DE_COLUNA.get(dtype, dtype)}")
         item.setData(self.COLUMN_KEY_ROLE, key)
+        item.setData(self.COLUMN_TYPE_ROLE, dtype)
         self.list_columns.addItem(item)
+
+    def get_custom_column_types(self) -> dict:
+        """`{nome: tipo}` das colunas custom, na ordem em que aparecem."""
+        tipos = {}
+        for i in range(self.list_columns.count()):
+            item = self.list_columns.item(i)
+            key = item.data(self.COLUMN_KEY_ROLE)
+            if key and key not in BUILTIN_COLUMNS:
+                tipos[key] = item.data(self.COLUMN_TYPE_ROLE) or "str"
+        return tipos
 
     def remove_selected_custom_column(self) -> None:
         items = self.list_columns.selectedItems()
