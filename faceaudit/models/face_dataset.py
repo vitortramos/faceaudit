@@ -279,15 +279,106 @@ class FaceDataset:
     # MÉTODOS DE CONCATENAÇÃO E ESTATÍSTICAS
     # =========================================================================
 
-    def concat(self, other: 'FaceDataset', new_name: Optional[str] = None) -> 'FaceDataset':
+    def _anchor_dir(self) -> Optional[Path]:
+        """Pasta à qual os caminhos RELATIVE deste dataset estão ancorados.
+
+        None quando o dataset não é relativo (não há âncora a comparar) ou
+        quando ela não pode ser determinada por falta do diretório do
+        parquet de origem.
         """
-        Une dois datasets em um novo.
+        if self.path_mode is not PathMode.RELATIVE:
+            return None
+        if self._parquet_dir is None:
+            return None
+        raiz = (self.path_root or "").strip()
+        base = Path(self._parquet_dir)
+        return (base / raiz).resolve() if raiz else base.resolve()
+
+    def concat(self, other: 'FaceDataset', new_name: Optional[str] = None) -> 'FaceDataset':
+        """Une dois datasets em um novo, PRESERVANDO a resolução das imagens.
+
+        O ponto delicado é o ancoramento. Um dataset relativo guarda em
+        `image_path` apenas o trecho final (muitas vezes só o nome do
+        arquivo) e depende de `path_root` para encontrar a imagem. O
+        resultado da união tem UM `path_root` só, então dois datasets
+        ancorados em pastas diferentes não podem ambos continuar relativos:
+        metade das faces apontaria para a pasta errada.
+
+        A versão anterior construía `FaceDataset(name=..., faces=...)` e
+        perdia TODA a ancoragem — `path_mode`, `path_root`, `column_specs`,
+        `is_aligned` voltavam ao default. O dataset unido abria, listava as
+        faces e não achava imagem nenhuma.
+
+        Agora: quando os dois lados compartilham o mesmo ancoramento, ele é
+        preservado; quando não, os caminhos dos dois são resolvidos para
+        absolutos antes da união, e o resultado nasce ABSOLUTE. Absoluto é
+        sempre resolvível, ao custo da portabilidade — que pode ser
+        recuperada depois com "Modificar Caminhos" ou ao salvar como
+        autocontido.
+
+        As faces NÃO são mutadas: quando é preciso reescrever o caminho, a
+        face entra no resultado como cópia rasa. Sem isso, unir dois
+        datasets corromperia os caminhos dos datasets de origem, que
+        continuam abertos na tela.
         """
         if not isinstance(other, FaceDataset):
             raise TypeError(f"Não é possível concatenar FaceDataset com {type(other)}")
-        new_faces = self.faces + other.faces
+
+        import copy as _copy
+
+        mesma_ancoragem = (
+            self.path_mode == other.path_mode
+            and (
+                self.path_mode is not PathMode.RELATIVE
+                or self._anchor_dir() == other._anchor_dir() is not None
+            )
+        )
+
+        if mesma_ancoragem:
+            novas_faces = self.faces + other.faces
+            modo, raiz, parquet_dir = (
+                self.path_mode, self.path_root, self._parquet_dir,
+            )
+        else:
+            novas_faces = []
+            for origem in (self, other):
+                for face in origem.faces:
+                    copia = _copy.copy(face)
+                    try:
+                        copia.image_path = str(origem.resolve_image_path(face))
+                    except Exception:
+                        # Caminho irresolúvel já era irresolúvel antes da
+                        # união; preserva o que havia em vez de descartar a
+                        # face, e quem chama avisa o usuário.
+                        pass
+                    novas_faces.append(copia)
+            modo, raiz, parquet_dir = PathMode.ABSOLUTE, None, None
+
         final_name = new_name if new_name else f"{self.name}_{other.name}_Merged"
-        return FaceDataset(name=final_name, faces=new_faces)
+        resultado = FaceDataset(
+            name=final_name,
+            faces=novas_faces,
+            path_mode=modo,
+            path_root=raiz,
+        )
+        resultado._parquet_dir = parquet_dir
+        # Só é alinhado se os DOIS forem. Misturar recorte 112×112 com foto
+        # original num dataset marcado como alinhado faz o enriquecimento
+        # seguinte mandar a foto inteira ao encoder como se fosse face
+        # alinhada — embedding de lixo, sem erro aparente.
+        resultado.is_aligned = bool(self.is_aligned and other.is_aligned)
+        # União das especificações de coluna: sem isso, as colunas do
+        # segundo dataset nascem como CUSTOM no resultado e perdem rótulo,
+        # papel e categoria.
+        specs = dict(getattr(other, "column_specs", None) or {})
+        specs.update(dict(getattr(self, "column_specs", None) or {}))
+        if specs:
+            resultado.column_specs = specs
+        proveniencia = dict(getattr(other, "provenance_metadata", None) or {})
+        proveniencia.update(dict(getattr(self, "provenance_metadata", None) or {}))
+        if proveniencia:
+            resultado.provenance_metadata = proveniencia
+        return resultado
 
     def __add__(self, other: 'FaceDataset') -> 'FaceDataset':
         """Sobrecarga do operador + para concatenação."""

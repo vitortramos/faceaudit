@@ -2900,17 +2900,100 @@ class DatasetManagerController(QtCore.QObject):
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self.view, "Erro", f"Falha na comparação: {e}")
 
+    _AMOSTRA_VERIFICACAO_MERGE = 200
+
     def fluxo_merge(self):
-        if not self.dataset: return
+        if not self.dataset:
+            return
         self.sync_changes_from_table()
-        path, _ = QFileDialog.getOpenFileName(self.view, "Juntar com...", self._get_initial_dir(), "Parquet (*.parquet)")
-        if path:
-            with wait_cursor():
-                other = FaceDataset.from_parquet(path)
-                new_ds = self.dataset.concat(other)
-                self.carregar_dataset_na_tela(new_ds)
-            QMessageBox.information(self.view, "Merge", f"Datasets unidos. Total: {len(new_ds)} imagens.")
+        path, _ = QFileDialog.getOpenFileName(
+            self.view, "Juntar com...", self._get_initial_dir(),
+            "Parquet (*.parquet)",
+        )
+        if not path:
+            return
+
+        with wait_cursor():
+            other = FaceDataset.from_parquet(path)
+
+        # Misturar faces alinhadas com fotos originais num mesmo dataset é
+        # armadilha silenciosa: o dataset fica marcado como não-alinhado, e
+        # num enriquecimento futuro os recortes 112×112 passam pelo detector,
+        # que costuma falhar neles. Pergunta ANTES, porque depois de unido
+        # não há como separar sem refazer.
+        if bool(self.dataset.is_aligned) != bool(other.is_aligned):
+            alinhado = ("o atual" if self.dataset.is_aligned else "o escolhido")
+            resposta = QMessageBox.question(
+                self.view, "Tipos de imagem diferentes",
+                f"Apenas {alinhado} contém faces já alinhadas (112×112); o "
+                f"outro contém fotos originais.\n\n"
+                f"O dataset unido ficará marcado como NÃO alinhado, e num "
+                f"enriquecimento futuro os recortes alinhados passarão pelo "
+                f"detector, que costuma falhar neles.\n\nUnir mesmo assim?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
+
+        with wait_cursor():
+            new_ds = self.dataset.concat(other)
+            ausentes, verificadas = self._amostrar_imagens_ausentes(new_ds)
+            self.carregar_dataset_na_tela(new_ds)
+
+        msg = f"Datasets unidos. Total: {len(new_ds)} imagens."
+        if new_ds.path_mode is not self.dataset.path_mode:
+            # Explica a mudança de modo antes que o usuário a descubra ao
+            # mover a pasta: os dois lados tinham âncoras diferentes e os
+            # caminhos foram resolvidos para absolutos.
+            msg += (
+                "\n\nOs dois datasets apontavam para pastas de imagens "
+                "diferentes, então os caminhos do resultado foram gravados "
+                "como absolutos. Para voltar a ter um dataset portátil, use "
+                "\"Modificar Caminhos\" ou salve como autocontido."
+            )
+        if ausentes:
+            proporcao = ausentes / max(verificadas, 1)
+            estimativa = int(round(proporcao * len(new_ds)))
+            QMessageBox.warning(
+                self.view, "Imagens não encontradas",
+                f"{msg}\n\nATENÇÃO: em uma amostra de {verificadas} "
+                f"imagens, {ausentes} não foram encontradas no disco "
+                f"(cerca de {estimativa} do total).\n\nIsso costuma "
+                f"significar que a pasta de imagens de um dos datasets foi "
+                f"movida ou renomeada. Confira antes de usar este dataset.",
+            )
+        else:
+            QMessageBox.information(self.view, "Juntar", msg)
         self.set_dirty(True)
+
+    @classmethod
+    def _amostrar_imagens_ausentes(cls, dataset) -> tuple:
+        """(ausentes, verificadas) numa amostra. Nunca varre tudo.
+
+        Conferir existência é I/O por face, e em dataset de milhões seria
+        inviável — em pasta sincronizada por nuvem, pior ainda. A amostra
+        responde à pergunta que importa, que é se a união quebrou os
+        caminhos, sem travar a interface.
+        """
+        from pathlib import Path as _Path
+        import random
+
+        faces = getattr(dataset, "faces", None) or []
+        if not faces:
+            return 0, 0
+        amostra = (
+            faces if len(faces) <= cls._AMOSTRA_VERIFICACAO_MERGE
+            else random.sample(faces, cls._AMOSTRA_VERIFICACAO_MERGE)
+        )
+        ausentes = 0
+        for face in amostra:
+            try:
+                if not _Path(dataset.resolve_image_path(face)).is_file():
+                    ausentes += 1
+            except Exception:
+                ausentes += 1
+        return ausentes, len(amostra)
 
     def fluxo_split(self):
         if not self.dataset: return
