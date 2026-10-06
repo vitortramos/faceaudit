@@ -195,6 +195,22 @@ class DatasetLocalizationService:
         else:
             raise ValueError(f"Modo não suportado: {mode}")
 
+        # Ancora o dataset resultante na pasta contra a qual os caminhos
+        # acabaram de ser escritos.
+        #
+        # Sem isto, o dataset localizado NÃO resolve imagem nenhuma até ser
+        # gravado dentro de `target_dir`: os caminhos ficam relativos a uma
+        # pasta que o dataset não sabe qual é. Na interface isso aparece
+        # como galeria vazia logo depois de "Modificar Caminhos", e o
+        # usuário conclui que a operação falhou — quando ela funcionou e só
+        # faltava a âncora.
+        #
+        # `_parquet_dir` é exatamente o campo que `resolve_image_path`
+        # consulta, e `target` é, por construção, a pasta onde o parquet
+        # deve ser gravado.
+        if result.dataset is not None and result.dataset.path_mode is PathMode.RELATIVE:
+            result.dataset._parquet_dir = target
+
         # Re-empacota com duration_seconds preenchido. (LocalizationResult
         # é frozen, então recriamos o tuple-like.)
         from dataclasses import replace
