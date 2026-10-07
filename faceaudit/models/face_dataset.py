@@ -104,6 +104,12 @@ _PROVENANCE_METADATA_KEYS = frozenset({
     "selection_warning",
     "source_run_id",
     "source_run_manifest",
+    # Geometria preenchida por detecção POSTERIOR à extração, e não pela
+    # que produziu o embedding. Num laudo a diferença importa: nas imagens
+    # de face única dá no mesmo, mas num quadro com várias pessoas a
+    # detecção pode ter escolhido outra face.
+    "geometry_source",
+    "geometry_backfill_at",
 })
 
 
