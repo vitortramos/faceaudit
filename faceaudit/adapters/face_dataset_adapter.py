@@ -6,6 +6,7 @@ import numpy as np
 
 from faceaudit.models import FaceDataset, FaceInfo, FFInfo, OFIQInfo, SERFIQInfo
 from faceaudit.models.dir_template import BUILTIN_COLUMNS, IGNORE_TOKEN, DirTemplate, split_name
+from faceaudit.models.image_file_extensions import classificar
 from faceaudit.services.hash_service import HashService
 
 class FaceDatasetAdapter:
@@ -17,7 +18,7 @@ class FaceDatasetAdapter:
         template: Optional[DirTemplate] = None,
         default_identity: str = "Unknown",
         origin: str = "Local",
-        extensions: tuple = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'),
+        extensions: Optional[tuple] = None,
         callback: Optional[Callable[[str, int], None]] = None
     ) -> FaceDataset:
         
@@ -27,7 +28,24 @@ class FaceDatasetAdapter:
 
         dataset = FaceDataset(name=name if name else path_obj.name)
         files = list(path_obj.rglob("*") if recursive else path_obj.iterdir())
-        image_files = [f for f in files if f.is_file() and f.suffix.lower() in extensions]
+        if extensions is None:
+            triagem = classificar(files)
+            image_files = list(triagem.imagens)
+            # O descarte por extensão era silencioso: uma pasta só de
+            # `.jfif` rendia dataset de zero faces sem uma linha dizendo
+            # por quê, e uma pasta mista rendia menos faces do que tinha
+            # arquivos. Avisar é o que transforma isso em decisão.
+            aviso = triagem.aviso()
+            if aviso:
+                print(aviso)
+                if callback:
+                    callback(aviso, 0)
+        else:
+            aceitas = tuple(e.lower() for e in extensions)
+            image_files = [
+                f for f in files
+                if f.is_file() and f.suffix.lower() in aceitas
+            ]
         total_images = len(image_files)
         
         for i, file_path in enumerate(image_files):

@@ -17,6 +17,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet, current_token_fn
 from faceaudit.services.ff_service import FFService
+from faceaudit.models.image_file_extensions import filtro_de_dialogo
 from faceaudit.services.image_io import imread_unicode_safe
 from faceaudit.services.video_frame_face_extraction_service import (
     VideoFrameFaceExtractionService,
@@ -1836,7 +1837,7 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         start = self._datasets_dir or ""
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self, "Escolher imagens de referência", start,
-            "Imagens (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;Todos (*.*)")
+            filtro_de_dialogo())
         if not paths:
             return
         existing = set(self._ref_image_paths())

@@ -33,11 +33,14 @@ from typing import Callable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from faceaudit.enums.dataset_image_kind import DatasetImageKind
+from faceaudit.models.image_file_extensions import EXTENSOES_DE_IMAGEM
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.protocols.face_geometry_protocol import FaceGeometryProviderProtocol
 
 _MANIFEST_NAME = "manifest.json"
-_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
+# Lista única, compartilhada com a ingestão de pasta e com o seletor de
+# arquivo — ver `faceaudit/models/image_file_extensions.py`.
+_IMAGE_SUFFIXES = frozenset(EXTENSOES_DE_IMAGEM)
 
 
 @dataclass
