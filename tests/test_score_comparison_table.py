@@ -402,6 +402,20 @@ def test_despacho_sem_fonte_nenhuma():
 
 # ── A interface exibe ────────────────────────────────────────────────────
 
+def _coluna(w, titulo: str):
+    """Índice da coluna pelo título.
+
+    Os testes de interface perguntam pelo TÍTULO e não pela posição: a
+    tabela tem dois formatos (com miniaturas e em texto), e fixar a
+    posição faria o teste medir o layout em vez do comportamento.
+    """
+    for i in range(w._grid.columnCount()):
+        item = w._grid.horizontalHeaderItem(i)
+        if item is not None and item.text() == titulo:
+            return i
+    return None
+
+
 def test_widget_mostra_uma_linha_por_comparacao(app):
     pytest.importorskip("PyQt6")
     from interface.tabs.strategy_manager_v2.strategy_editor.result_widgets import (
@@ -416,6 +430,7 @@ def test_widget_mostra_uma_linha_por_comparacao(app):
         assert w._grid.rowCount() == 4
         assert w._note.text() == t.note
     finally:
+        w._parar_miniaturas()
         w.deleteLater()
 
 
@@ -428,14 +443,15 @@ def test_widget_so_promete_a_coluna_de_log_lr_quando_ha(app):
     w = ScoreComparisonTableWidget()
     try:
         w.set_table(build_from_dataset(_referencia(2, 2)))
-        assert w._grid.columnCount() == 6
+        assert _coluna(w, "log-LR") is None
 
         ds = _referencia(2, 2)
         for item in ds.items:
             item.metadata["log_lr"] = 1.0
         w.set_table(build_from_dataset(ds))
-        assert w._grid.columnCount() == 7
+        assert _coluna(w, "log-LR") is not None
     finally:
+        w._parar_miniaturas()
         w.deleteLater()
 
 
@@ -458,11 +474,15 @@ def test_escore_ordena_por_valor_e_nao_por_texto(app):
     w = ScoreComparisonTableWidget()
     try:
         w.set_table(build_from_dataset(ds))
-        w._grid.sortItems(4, QtCore.Qt.SortOrder.AscendingOrder)
+        coluna = _coluna(w, "Escore")
+        w._grid.sortItems(coluna, QtCore.Qt.SortOrder.AscendingOrder)
 
-        textos = [w._grid.item(i, 4).text() for i in range(w._grid.rowCount())]
+        textos = [
+            w._grid.item(i, coluna).text() for i in range(w._grid.rowCount())
+        ]
         assert textos == ["0,1000", "0,8500", "0,9000"], textos
     finally:
+        w._parar_miniaturas()
         w.deleteLater()
 
 

@@ -21,11 +21,19 @@ from faceaudit.models.plot_number_format import formatar_numero
 from faceaudit.services.score_comparison_table_service import (
     CLASSE_GENUINO,
     CLASSE_IMPOSTOR,
+    MODO_CASO,
+    ComparisonRow,
     ComparisonTable,
 )
 from interface.theme import apply_themed_stylesheet, current_token_fn
 
 from ..widget_helpers import WrappedLabel
+
+
+# Lado da miniatura, em pixels. Grande o bastante para reconhecer a face e
+# pequeno o bastante para caber cem linhas numa coluna de painel.
+_LADO_MINIATURA = 72
+_ALTURA_DA_LINHA = _LADO_MINIATURA + 8
 
 
 class _NumericItem(QtWidgets.QTableWidgetItem):
@@ -60,6 +68,12 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
     ):
         super().__init__(parent)
         self._table: Optional[ComparisonTable] = None
+        # Itens das células de miniatura, na ordem em que foram pedidos ao
+        # worker. Guardar o item (e não a coordenada) é o que mantém o
+        # pareamento quando o usuário ordena a tabela durante a carga.
+        self._itens_de_miniatura: list = []
+        self._thread: Optional[QtCore.QThread] = None
+        self._worker: Optional[QtCore.QObject] = None
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -119,6 +133,7 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
     # ── API pública ──────────────────────────────────────────────────────
 
     def show_placeholder(self, mensagem: str = "") -> None:
+        self._parar_miniaturas()
         self._table = None
         self._grid.setSortingEnabled(False)
         self._grid.clear()
@@ -133,9 +148,30 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
         if table is None:
             self.show_placeholder()
             return
+        self._parar_miniaturas()
         self._table = table
         self._note.setText(table.note)
 
+        # Com as imagens localizadas a tabela mostra as duas faces e o
+        # escore: num confronto é essa a comparação, e identidade e nome de
+        # arquivo cabem na dica do mouse. Sem as imagens não há o que
+        # mostrar além do texto, então o formato antigo continua valendo —
+        # para instrução cujo dataset de origem não é alcançável a partir
+        # dela (PAIR_MINING, SCORE_CALIBRATION) e para dataset movido.
+        if table.has_images:
+            self._montar_com_miniaturas(table)
+        else:
+            self._montar_em_texto(table)
+
+        cabecalho = self._grid.horizontalHeader()
+        cabecalho.setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        )
+        cabecalho.setStretchLastSection(True)
+
+    # ── Formatos ─────────────────────────────────────────────────────────
+
+    def _montar_em_texto(self, table: ComparisonTable) -> None:
         colunas = [
             "Identidade (probe)", "Face (probe)",
             "Identidade (referência)", "Face (referência)",
@@ -143,20 +179,7 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
         ]
         if table.has_log_lr:
             colunas.append("log-LR")
-
-        # Preencher com a ordenação ligada reordena a cada inserção e
-        # embaralha as linhas que o backend já ordenou.
-        self._grid.setSortingEnabled(False)
-        self._grid.clear()
-        self._grid.setColumnCount(len(colunas))
-        self._grid.setHorizontalHeaderLabels(colunas)
-        self._grid.setRowCount(len(table.rows))
-
-        t = current_token_fn()
-        cor_classe = {
-            CLASSE_GENUINO: QtGui.QColor(t("SUCCESS")),
-            CLASSE_IMPOSTOR: QtGui.QColor(t("DANGER")),
-        }
+        self._preparar_grade(colunas, len(table.rows))
 
         for linha, row in enumerate(table.rows):
             self._grid.setItem(linha, 0, QtWidgets.QTableWidgetItem(row.probe_identity))
@@ -170,23 +193,144 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
             self._grid.setItem(
                 linha, 4, _NumericItem(formatar_numero(row.score, 4), row.score)
             )
-            classe = QtWidgets.QTableWidgetItem(row.classe_label)
-            cor = cor_classe.get(row.classe)
-            if cor is not None:
-                classe.setForeground(cor)
-            self._grid.setItem(linha, 5, classe)
+            self._grid.setItem(linha, 5, self._item_de_classe(row))
             if table.has_log_lr:
-                if row.log_lr is None:
-                    self._grid.setItem(linha, 6, QtWidgets.QTableWidgetItem("—"))
-                else:
-                    self._grid.setItem(
-                        linha, 6,
-                        _NumericItem(formatar_numero(row.log_lr, 3), row.log_lr),
-                    )
+                self._grid.setItem(linha, 6, self._item_de_log_lr(row))
+        self._grid.setSortingEnabled(True)
+
+    def _montar_com_miniaturas(self, table: ComparisonTable) -> None:
+        # Em conjunto de caso a classe é "Caso" em toda linha, e uma coluna
+        # de valor constante só rouba largura das miniaturas.
+        mostra_classe = table.mode != MODO_CASO
+        colunas = ["Probe", "Referência", "Escore"]
+        if mostra_classe:
+            colunas.append("Classe")
+        if table.has_log_lr:
+            colunas.append("log-LR")
+        self._preparar_grade(colunas, len(table.rows))
+        self._grid.setIconSize(QtCore.QSize(_LADO_MINIATURA, _LADO_MINIATURA))
+
+        caminhos: list = []
+        for linha, row in enumerate(table.rows):
+            for coluna, lado in ((0, "probe"), (1, "reference")):
+                item = self._item_de_face(row, lado)
+                self._grid.setItem(linha, coluna, item)
+                caminho = getattr(row, f"{lado}_image_path")
+                if caminho:
+                    # O índice na lista é o que casa a miniatura com a
+                    # célula; guardar o ITEM e não (linha, coluna) é o que
+                    # mantém o pareamento quando o usuário ordena a tabela
+                    # enquanto as imagens ainda chegam.
+                    self._itens_de_miniatura.append(item)
+                    caminhos.append(str(caminho))
+            self._grid.setItem(
+                linha, 2, _NumericItem(formatar_numero(row.score, 4), row.score)
+            )
+            proxima = 3
+            if mostra_classe:
+                self._grid.setItem(linha, proxima, self._item_de_classe(row))
+                proxima += 1
+            if table.has_log_lr:
+                self._grid.setItem(linha, proxima, self._item_de_log_lr(row))
+            self._grid.setRowHeight(linha, _ALTURA_DA_LINHA)
 
         self._grid.setSortingEnabled(True)
-        cabecalho = self._grid.horizontalHeader()
-        cabecalho.setSectionResizeMode(
-            QtWidgets.QHeaderView.ResizeMode.ResizeToContents
+        if caminhos:
+            self._carregar_miniaturas(caminhos)
+
+    # ── Células ──────────────────────────────────────────────────────────
+
+    def _preparar_grade(self, colunas: list, n_linhas: int) -> None:
+        # Preencher com a ordenação ligada reordena a cada inserção e
+        # embaralha as linhas que o backend já ordenou.
+        self._grid.setSortingEnabled(False)
+        self._grid.clear()
+        self._itens_de_miniatura = []
+        self._grid.setColumnCount(len(colunas))
+        self._grid.setHorizontalHeaderLabels(colunas)
+        self._grid.setRowCount(n_linhas)
+
+    def _item_de_face(self, row: ComparisonRow, lado: str) -> QtWidgets.QTableWidgetItem:
+        identidade = getattr(row, f"{lado}_identity")
+        arquivo = getattr(row, f"{lado}_face")
+        caminho = getattr(row, f"{lado}_image_path")
+        item = QtWidgets.QTableWidgetItem()
+        item.setTextAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        if not caminho:
+            # Sem imagem a célula mostra o texto, em vez de ficar vazia e
+            # parecer que a comparação não tem aquele lado.
+            item.setText(arquivo)
+        linhas = [f"Identidade: {identidade}", f"Arquivo: {arquivo}"]
+        hash_ = getattr(row, f"{lado}_hash")
+        if hash_:
+            linhas.append(f"Hash: {hash_[:16]}…")
+        if caminho:
+            linhas.append(str(caminho))
+        item.setToolTip("\n".join(linhas))
+        return item
+
+    def _item_de_classe(self, row: ComparisonRow) -> QtWidgets.QTableWidgetItem:
+        item = QtWidgets.QTableWidgetItem(row.classe_label)
+        t = current_token_fn()
+        cor = {
+            CLASSE_GENUINO: t("SUCCESS"),
+            CLASSE_IMPOSTOR: t("DANGER"),
+        }.get(row.classe)
+        if cor is not None:
+            item.setForeground(QtGui.QColor(cor))
+        return item
+
+    def _item_de_log_lr(self, row: ComparisonRow) -> QtWidgets.QTableWidgetItem:
+        if row.log_lr is None:
+            return QtWidgets.QTableWidgetItem("—")
+        return _NumericItem(formatar_numero(row.log_lr, 3), row.log_lr)
+
+    # ── Miniaturas ───────────────────────────────────────────────────────
+
+    def _carregar_miniaturas(self, caminhos: list) -> None:
+        """Decodifica as miniaturas numa thread própria.
+
+        Cem linhas são duzentas imagens, e várias delas são fotos de
+        megapixels: decodificar na thread da interface congelaria a janela
+        exatamente enquanto o usuário tenta olhar as faces.
+        """
+        from interface.tabs.dataset_manager.workers.thumbnail_load_worker import (
+            ThumbnailLoadWorker,
         )
-        cabecalho.setStretchLastSection(True)
+
+        self._thread = QtCore.QThread(self)
+        self._worker = ThumbnailLoadWorker(caminhos, lado=_LADO_MINIATURA)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.thumbnail_ready.connect(self._on_miniatura_pronta)
+        self._worker.finished.connect(self._thread.quit)
+        self._thread.start()
+
+    @QtCore.pyqtSlot(int, QtGui.QImage)
+    def _on_miniatura_pronta(self, indice: int, imagem: QtGui.QImage) -> None:
+        if imagem.isNull():
+            return  # imagem ilegível — a célula fica com a dica do mouse
+        if not (0 <= indice < len(self._itens_de_miniatura)):
+            return
+        item = self._itens_de_miniatura[indice]
+        try:
+            item.setIcon(QtGui.QIcon(QtGui.QPixmap.fromImage(imagem)))
+        except RuntimeError:
+            # A tabela foi remontada entre o pedido e a resposta; o item
+            # desta célula já não existe.
+            pass
+
+    def _parar_miniaturas(self) -> None:
+        """Cancela o carregamento em curso antes de remontar a tabela."""
+        if self._worker is not None:
+            self._worker.cancel()
+        if self._thread is not None:
+            self._thread.quit()
+            self._thread.wait(2000)
+        self._worker = None
+        self._thread = None
+        self._itens_de_miniatura = []
+
+    def closeEvent(self, event) -> None:  # noqa: N802 — Qt API
+        self._parar_miniaturas()
+        super().closeEvent(event)

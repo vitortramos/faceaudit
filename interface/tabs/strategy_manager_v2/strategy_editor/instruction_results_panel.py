@@ -530,6 +530,10 @@ class _ResultsCard(QtWidgets.QWidget):
         self._comparison_pending: Optional[tuple] = None
         # (payload em memória, caminho do parquet) do recurso corrente.
         self._comparison_sources: tuple = (None, None)
+        # Parquets dos datasets de origem do par. O parquet de escores
+        # guarda `face_hash` e não caminho de imagem, então é deles que sai
+        # a miniatura de cada face da tabela de comparações.
+        self._comparison_datasets: list = []
         self._plot_widget: Optional[QtWidgets.QWidget] = None
         self._output_widgets: Dict[str, OutputRowWidget] = {}
         # Cache do último payload renderizado — evita redesenhar gráficos
@@ -968,11 +972,15 @@ class _ResultsCard(QtWidgets.QWidget):
             definition, resource_id, resource_loader,
         )
 
+        datasets = self._resolve_source_dataset_parquets(
+            definition, context, resource_loader,
+        )
         assinatura = (
             resource_id,
             id(payload) if payload is not None else None,
             str(parquet) if parquet else None,
             getattr(getattr(recurso, "artifact_ref", None), "hash", None),
+            tuple(str(d) for d in datasets),
         )
         if assinatura != self._comparison_pending:
             self._comparison_pending = assinatura
@@ -985,6 +993,7 @@ class _ResultsCard(QtWidgets.QWidget):
                         "Carregando as comparações…"
                     )
         self._comparison_sources = (payload, parquet)
+        self._comparison_datasets = datasets
 
         if self._stats_widget is not None:
             if recurso is not None and (recurso.has_artifact or recurso.has_payload):
@@ -1027,6 +1036,7 @@ class _ResultsCard(QtWidgets.QWidget):
             return
 
         from faceaudit.services.score_comparison_table_service import (
+            attach_face_images,
             build_comparison_table,
         )
 
@@ -1035,6 +1045,12 @@ class _ResultsCard(QtWidgets.QWidget):
                 tabela = build_comparison_table(
                     dataset=payload, parquet_path=parquet,
                 )
+                if tabela is not None and self._comparison_datasets:
+                    # Localiza a imagem de cada face pelo `face_hash`. Face
+                    # não encontrada fica sem miniatura, não sem linha.
+                    tabela = attach_face_images(
+                        tabela, self._comparison_datasets,
+                    )
             except Exception as exc:  # noqa: BLE001 — a mensagem vai pra tela
                 self._comparison_widget.show_placeholder(
                     f"Não foi possível ler as comparações: {exc}"
@@ -1047,6 +1063,66 @@ class _ResultsCard(QtWidgets.QWidget):
             return
         self._comparison_widget.set_table(tabela)
         self._comparison_signature = self._comparison_pending
+
+    def _resolve_source_dataset_parquets(
+        self,
+        definition: LRStrategyDefinition,
+        context: Optional[StrategyExecutionContextProtocol],
+        resource_loader: Any,
+    ) -> list:
+        """Parquets dos datasets que a instrução comparou.
+
+        Três fontes, em ordem: o contexto vivo, que é onde os recursos de
+        PROJETO ficam registrados; a definition, que só declara os
+        derivados; e, por fim, a busca por nome na pasta de datasets, que
+        é o que funciona num projeto recém-aberto, antes de qualquer
+        execução — e justamente aí um dataset de projeto não está em
+        nenhuma das duas primeiras.
+        """
+        from pathlib import Path
+
+        from faceaudit.services.face_image_locator_service import (
+            find_dataset_parquet,
+        )
+
+        storage = getattr(resource_loader, "_storage", None) if resource_loader else None
+        project_root = getattr(storage, "project_root", None) if storage else None
+        if project_root is None:
+            return []
+
+        ids = []
+        for campo in (
+            "probe_dataset_resource_id",
+            "reference_dataset_resource_id",
+            "dataset_resource_id",
+        ):
+            rid = getattr(self._instruction, campo, None)
+            if rid:
+                ids.append(rid)
+
+        caminhos = []
+        for rid in dict.fromkeys(ids):
+            ref = None
+            try:
+                if context is not None and context.has_resource(rid):
+                    ref = getattr(context.get_resource(rid), "artifact_ref", None)
+            except Exception:
+                ref = None
+            if ref is None and definition is not None:
+                existente = definition.get_resource_by_id(rid)
+                ref = getattr(existente, "artifact_ref", None) if existente else None
+
+            candidato = None
+            caminho_ref = getattr(ref, "path", None) if ref is not None else None
+            if caminho_ref:
+                tentativa = Path(project_root) / caminho_ref
+                if tentativa.is_file():
+                    candidato = tentativa
+            if candidato is None:
+                candidato = find_dataset_parquet(project_root, rid)
+            if candidato is not None:
+                caminhos.append(candidato)
+        return caminhos
 
     def _resolve_scores_parquet_path(
         self,

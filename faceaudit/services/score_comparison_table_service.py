@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import heapq
 import itertools
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -70,10 +70,23 @@ _LINHAS_POR_LOTE = 65_536
 # Caracteres do hash mostrados quando o nome do arquivo não está disponível.
 _PREFIXO_HASH = 10
 
+# Ressalva acrescentada à nota quando a origem é o parquet de escores, que
+# não guarda nome de arquivo. `attach_face_images` a retira quando recupera
+# os nomes do dataset.
+_RESSALVA_SEM_NOME = (
+    " As faces aparecem pelo início do hash porque o nome do arquivo não é "
+    "gravado no parquet de escores."
+)
+
 
 @dataclass(frozen=True)
 class ComparisonRow:
-    """Uma comparação: as duas faces, o escore e a classe."""
+    """Uma comparação: as duas faces, o escore e a classe.
+
+    Os caminhos de imagem são opcionais porque o parquet de escores não os
+    guarda — quem quiser as miniaturas chama `attach_face_images` com os
+    parquets dos datasets de origem.
+    """
 
     probe_identity: str
     probe_face: str
@@ -83,6 +96,10 @@ class ComparisonRow:
     same_person: Optional[bool]
     log_lr: Optional[float]
     classe: str
+    probe_hash: str = ""
+    reference_hash: str = ""
+    probe_image_path: Optional[str] = None
+    reference_image_path: Optional[str] = None
 
     @property
     def classe_label(self) -> str:
@@ -106,6 +123,9 @@ class ComparisonTable:
     has_log_lr: bool
     has_file_names: bool
     note: str
+    #: True quando ao menos uma linha tem imagem localizada, e portanto a
+    #: tabela pode ser exibida com as duas faces lado a lado.
+    has_images: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -388,6 +408,8 @@ def _linha_do_item(sample: Any, *, de_caso: bool = False) -> ComparisonRow:
     metadata = getattr(sample, "metadata", None)
     log_lr = metadata.get("log_lr") if isinstance(metadata, dict) else None
     mesma = None if de_caso else getattr(sample, "same_person", None)
+    # O payload hidratado já traz o caminho da imagem em cada face; é o
+    # único caminho em que as miniaturas aparecem sem consultar o dataset.
     return ComparisonRow(
         probe_identity=str(getattr(probe, "identity", None) or "—"),
         probe_face=_rotulo_da_face(probe),
@@ -397,7 +419,17 @@ def _linha_do_item(sample: Any, *, de_caso: bool = False) -> ComparisonRow:
         same_person=mesma,
         log_lr=float(log_lr) if log_lr is not None else None,
         classe=_classe_de(mesma),
+        probe_hash=str(getattr(probe, "face_hash", "") or ""),
+        reference_hash=str(getattr(referencia, "face_hash", "") or ""),
+        probe_image_path=_caminho_da_face(probe),
+        reference_image_path=_caminho_da_face(referencia),
     )
+
+
+def _caminho_da_face(info: Any) -> Optional[str]:
+    """Caminho da imagem quando o payload o carrega."""
+    caminho = getattr(info, "image_path", None)
+    return str(caminho) if caminho else None
 
 
 def _rotulo_da_face(info: Any) -> str:
@@ -427,6 +459,8 @@ def _linha_do_registro(registro: dict, *, de_caso: bool = False) -> ComparisonRo
         same_person=mesma,
         log_lr=float(log_lr) if log_lr is not None else None,
         classe=_classe_de(mesma),
+        probe_hash=str(registro.get("probe_face_hash") or ""),
+        reference_hash=str(registro.get("reference_face_hash") or ""),
     )
 
 
@@ -442,6 +476,70 @@ def _parquet_e_de_caso(arquivo: Any) -> bool:
         return metadata.get(b"faceaudit:is_casework") == b"true"
     except Exception:
         return False
+
+
+def attach_face_images(
+    table: ComparisonTable,
+    dataset_parquets: Sequence[Path | str],
+) -> ComparisonTable:
+    """Preenche a imagem e o nome de arquivo de cada face da tabela.
+
+    Lido do parquet, o escore só tem identidade e `face_hash`; a imagem
+    pertence ao dataset. Esta função faz a ponte, e de passagem troca o
+    hash abreviado pelo nome do arquivo real, que é o que serve ao perito.
+
+    Face não encontrada fica sem imagem, não sem linha: dataset movido ou
+    não informado é caso normal, e esconder a comparação por causa da
+    miniatura seria esconder o resultado por causa da moldura.
+    """
+    if table.is_empty:
+        return table
+
+    from faceaudit.services.face_image_locator_service import locate_faces
+
+    pendentes = {
+        h
+        for linha in table.rows
+        for h, caminho in (
+            (linha.probe_hash, linha.probe_image_path),
+            (linha.reference_hash, linha.reference_image_path),
+        )
+        if h and not caminho
+    }
+    if not pendentes:
+        return table
+
+    achados = locate_faces(dataset_parquets, pendentes)
+    if not achados:
+        return table
+
+    novas = []
+    for linha in table.rows:
+        mudancas = {}
+        for lado in ("probe", "reference"):
+            if getattr(linha, f"{lado}_image_path"):
+                continue
+            registro = achados.get(getattr(linha, f"{lado}_hash"))
+            if registro is None:
+                continue
+            mudancas[f"{lado}_image_path"] = str(registro.image_path)
+            mudancas[f"{lado}_face"] = registro.file_name
+        novas.append(replace(linha, **mudancas) if mudancas else linha)
+
+    novas_tuple = tuple(novas)
+    tem_imagem = any(
+        r.probe_image_path or r.reference_image_path for r in novas_tuple
+    )
+    tem_nomes = table.has_file_names or bool(achados)
+    nota = table.note
+    if tem_nomes and not table.has_file_names:
+        # A ressalva sobre o hash deixa de valer quando o nome do arquivo
+        # foi recuperado do dataset.
+        nota = nota.replace(_RESSALVA_SEM_NOME, "")
+    return replace(
+        table, rows=novas_tuple, has_images=tem_imagem,
+        has_file_names=tem_nomes, note=nota,
+    )
 
 
 def _tabela_vazia(
@@ -483,6 +581,9 @@ def _montar(
         n_genuines=n_genuines, n_impostors=n_impostors,
         truncated=truncated, has_log_lr=has_log_lr,
         has_file_names=has_file_names,
+        has_images=any(
+            r.probe_image_path or r.reference_image_path for r in linhas
+        ),
         note=_nota(
             linhas, mode=mode, total_pairs=total_pairs, truncated=truncated,
             extremos_por_classe=extremos_por_classe,
@@ -537,8 +638,5 @@ def _nota(
             f"de maior escore, até {_milhar(extremos_por_classe)} de cada."
         )
     if not has_file_names:
-        texto += (
-            " As faces aparecem pelo início do hash porque o nome do arquivo "
-            "não é gravado no parquet de escores."
-        )
+        texto += _RESSALVA_SEM_NOME
     return texto
