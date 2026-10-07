@@ -291,8 +291,12 @@ class StrategyEditorWidget(QtWidgets.QWidget):
             config_panel.set_available_resources(available_resources or [])
             instr_list.load_strategy(definition._get_phase_list(phase_key))
             config_panel.show_empty()
-            # Drop dos cards cacheados: estratégia anterior pode ter
-            # instruções com IDs que colidiriam (raro mas possível).
+            # Declara a estratégia ao painel ANTES de qualquer instrução
+            # chegar: o cache dos cards é por (estratégia, instrução), e
+            # `instruction_id` só é único dentro da estratégia — duplicar
+            # uma estratégia copia os ids. Trocar o id já descarta os
+            # cards da anterior.
+            results_panel.set_strategy_id(definition.strategy_id)
             results_panel.invalidate_all()
 
         # Sincroniza a seleção do combo com `definition.embedding_column`.
@@ -344,6 +348,7 @@ class StrategyEditorWidget(QtWidgets.QWidget):
         for _, (instr_list, config_panel, results_panel) in self._phase_widgets.items():
             instr_list.clear()
             config_panel.show_empty()
+            results_panel.set_strategy_id("")
             results_panel.invalidate_all()
         self.combo_embedding_column.blockSignals(True)
         self.combo_embedding_column.clear()

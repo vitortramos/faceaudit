@@ -1816,7 +1816,16 @@ class InstructionResultsPanel(QtWidgets.QWidget):
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
-        self._cards: Dict[str, _ResultsCard] = {}
+        # Chave do cache: (strategy_id, instruction_id). `instruction_id` é
+        # único DENTRO da estratégia e só dentro dela — o próprio DTO diz
+        # isso —, e duplicar uma estratégia copia os ids das instruções. Com
+        # a chave só no id, abrir a cópia servia o card da original: o card
+        # carrega a instrução que o construiu, então o painel procurava o
+        # gráfico do recurso de saída da OUTRA estratégia, não encontrava e
+        # mostrava "Execute para gerar visualização" numa instrução já
+        # executada, sem erro nenhum para explicar.
+        self._cards: Dict[Tuple[str, str], _ResultsCard] = {}
+        self._strategy_id: str = ""
         self._current_instruction: Optional[StrategyInstructionDefinition] = None
         self._latest_definition: Optional[LRStrategyDefinition] = None
         self._latest_executed_ids: Set[str] = set()
@@ -1853,6 +1862,22 @@ class InstructionResultsPanel(QtWidgets.QWidget):
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def set_strategy_id(self, strategy_id: Optional[str]) -> None:
+        """Declara de qual estratégia são as instruções que vão chegar.
+
+        Trocar de estratégia descarta os cards: eles guardam a instrução
+        que os construiu, e aquela instância pertence à estratégia que
+        está sendo abandonada.
+        """
+        novo = str(strategy_id or "")
+        if novo == self._strategy_id:
+            return
+        self.invalidate_all()
+        self._strategy_id = novo
+
+    def _key(self, instruction_id: str) -> Tuple[str, str]:
+        return (self._strategy_id, instruction_id)
+
     def show_empty(self) -> None:
         self._current_instruction = None
         self._stack.setCurrentIndex(0)
@@ -1865,10 +1890,11 @@ class InstructionResultsPanel(QtWidgets.QWidget):
             self.show_empty()
             return
         self._current_instruction = instruction
-        card = self._cards.get(instruction.instruction_id)
+        chave = self._key(instruction.instruction_id)
+        card = self._cards.get(chave)
         if card is None:
             card = self._build_card(instruction)
-            self._cards[instruction.instruction_id] = card
+            self._cards[chave] = card
             self._stack.addWidget(card)
         self._stack.setCurrentWidget(card)
         # Popula com último estado conhecido.
@@ -1891,7 +1917,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         self._latest_context = context
         if self._current_instruction is None:
             return
-        card = self._cards.get(self._current_instruction.instruction_id)
+        card = self._cards.get(self._key(self._current_instruction.instruction_id))
         if card is None or definition is None:
             return
         card.update_state(
@@ -1906,7 +1932,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         Drop do card cacheado (cleanup gráfico). Próxima exibição é fresca.
         Usado quando uma instrução é re-executada.
         """
-        card = self._cards.pop(instruction_id, None)
+        card = self._cards.pop(self._key(instruction_id), None)
         if card is None:
             return
         # Remove do stack
@@ -1922,9 +1948,22 @@ class InstructionResultsPanel(QtWidgets.QWidget):
             self.load_instruction(self._current_instruction)
 
     def invalidate_all(self) -> None:
-        """Limpa todos os cards. Usado em troca de estratégia/projeto."""
-        for instr_id in list(self._cards.keys()):
-            self.invalidate_instruction(instr_id)
+        """Limpa todos os cards. Usado em troca de estratégia/projeto.
+
+        Zera a instrução corrente ANTES de descartar. `invalidate_instruction`
+        reconstrói o card da instrução selecionada, para que a re-execução
+        de uma instrução apareça de imediato; aqui isso seria o oposto do
+        desejado, porque a instrução selecionada é a da estratégia que está
+        sendo abandonada — o card renascia com ela e ficava no cache,
+        pronto para ser servido à estratégia seguinte.
+        """
+        self._current_instruction = None
+        for card in self._cards.values():
+            idx = self._stack.indexOf(card)
+            if idx >= 0:
+                self._stack.removeWidget(card)
+            card.deleteLater()
+        self._cards.clear()
         self.show_empty()
 
     def update_output_name(self, field_name: str, new_value: str) -> None:
@@ -1935,7 +1974,7 @@ class InstructionResultsPanel(QtWidgets.QWidget):
         instr_id = getattr(self._current_instruction, "instruction_id", None)
         if instr_id is None:
             return
-        card = self._cards.get(instr_id)
+        card = self._cards.get(self._key(instr_id))
         if card is None:
             return
         row = card._output_widgets.get(field_name)
