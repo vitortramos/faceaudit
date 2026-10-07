@@ -17,6 +17,12 @@ class EmbeddingInfo:
     __slots__ = (
         "embedding", "face_hash", "image_path", "identity", "file_name",
         "source", "origin", "face_image", "pose", "quality_scores",
+        # Proveniência de template agregado — ver
+        # `faceaudit/models/aggregation_provenance.py`. Vazio em face
+        # comum, que é o caso da esmagadora maioria das linhas.
+        "aggregation_source_count",
+        "aggregation_source_hashes",
+        "aggregation_source_paths",
     )
 
     def __init__(
@@ -35,7 +41,25 @@ class EmbeddingInfo:
         yaw: Optional[float] = None,
         pitch: Optional[float] = None,
         quality_scores: Optional[Dict[str, float]] = None,
+        # Proveniência de template agregado. `count` é o que permite
+        # rotular a linha mesmo quando as imagens não estão alcançáveis;
+        # `hashes` é o rastro estável; `paths` é o atalho para exibir.
+        aggregation_source_count: Optional[int] = None,
+        aggregation_source_hashes: Optional[Any] = None,
+        aggregation_source_paths: Optional[Any] = None,
     ):
+        self.aggregation_source_count = (
+            int(aggregation_source_count)
+            if aggregation_source_count is not None else None
+        )
+        self.aggregation_source_hashes = (
+            tuple(str(h) for h in aggregation_source_hashes)
+            if aggregation_source_hashes else None
+        )
+        self.aggregation_source_paths = (
+            tuple(str(p) for p in aggregation_source_paths)
+            if aggregation_source_paths else None
+        )
         self.embedding = embedding
         self.face_hash = face_hash
         self.image_path = image_path
@@ -170,6 +194,9 @@ class EmbeddingInfo:
             face_image=img,
             pose=pose,
             quality_scores=q_scores,
+            aggregation_source_count=data.get("aggregation_source_count"),
+            aggregation_source_hashes=data.get("aggregation_source_hashes"),
+            aggregation_source_paths=data.get("aggregation_source_paths"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -194,6 +221,15 @@ class EmbeddingInfo:
             "pitch": self.pose.get("pitch"),
             "pose": dict(self.pose),
             "quality_scores": dict(self.quality_scores),
+            "aggregation_source_count": self.aggregation_source_count,
+            "aggregation_source_hashes": (
+                list(self.aggregation_source_hashes)
+                if self.aggregation_source_hashes else None
+            ),
+            "aggregation_source_paths": (
+                list(self.aggregation_source_paths)
+                if self.aggregation_source_paths else None
+            ),
         }
 
     def to_dataframe(self) -> pd.DataFrame:

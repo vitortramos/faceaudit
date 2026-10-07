@@ -1110,10 +1110,20 @@ class FaceDataset:
                     pitch_val = face.ofiq_info.head_pose_pitch_raw if face.ofiq_info.head_pose_pitch_raw is not None else 0.0
 
                 # 4. Criação do EmbeddingInfo com os novos atributos de Pose
+                # Caminho RESOLVIDO, não o cru. `EmbeddingDataset` não tem
+                # `path_mode` nem `path_root`, então um caminho relativo
+                # chega lá sem âncora e não abre mais — e é esse o caminho
+                # que a agregação registra como proveniência do template e
+                # que a tabela de comparações usa para mostrar a face.
+                try:
+                    caminho_resolvido = str(self.resolve_image_path(face))
+                except Exception:
+                    caminho_resolvido = face.image_path
+
                 emb_items.append(EmbeddingInfo(
                     embedding=vec,
                     face_hash=face.hash or "",
-                    image_path=face.image_path,
+                    image_path=caminho_resolvido,
                     identity=face.identity,
                     file_name=face.file_name or "",
                     origin=face.origin,

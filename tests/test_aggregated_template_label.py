@@ -117,15 +117,27 @@ def test_foto_nao_ganha_rotulo_de_template():
 
 # ── A tabela ─────────────────────────────────────────────────────────────
 
-def _par(hash_probe, nome_probe, hash_ref, nome_ref, escore=0.8):
-    def _face(h, n):
+def _png(caminho):
+    from PIL import Image
+
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (40, 50), (150, 120, 90)).save(caminho)
+    return str(caminho)
+
+
+def _par(hash_probe, nome_probe, hash_ref, nome_ref, escore=0.8,
+         prov_probe=None):
+    def _face(h, n, prov=None):
+        count, caminhos = prov if prov else (None, None)
         return EmbeddingInfo(
             embedding=np.zeros(4, dtype=np.float32), face_hash=h,
             image_path="", identity="P1", file_name=n,
+            aggregation_source_count=count,
+            aggregation_source_paths=caminhos,
         )
 
     amostra = SimilarityScoreSample(
-        probe=_face(hash_probe, nome_probe),
+        probe=_face(hash_probe, nome_probe, prov_probe),
         reference=_face(hash_ref, nome_ref),
         raw_score=escore, same_person=True,
     )
@@ -289,9 +301,37 @@ def test_a_celula_mostra_o_rotulo(app):
         w.deleteLater()
 
 
-def test_a_janela_explica_em_vez_de_dizer_imagem_faltando(app, tmp_path):
-    """Dizer "imagem não encontrada" mandaria o perito caçar um arquivo
-    que nunca existiu."""
+def test_a_janela_mostra_as_faces_agregadas(app, tmp_path):
+    """O template não tem foto própria, mas as faces que o formaram têm —
+    e num exame é isso que se quer ver. Dizer "imagem não encontrada"
+    mandaria o perito caçar um arquivo que nunca existiu."""
+    from interface.tabs.strategy_manager_v2.strategy_editor.face_comparison_dialog import (  # noqa: E501
+        FaceComparisonDialog,
+    )
+
+    caminhos = [_png(tmp_path / f"f{i}.png") for i in range(3)]
+    ds = SimilarityScoreDataset(
+        name="s",
+        items=[_par(
+            _HASH_TEMPLATE, _NOME_TEMPLATE, "b" * 64, "foto.png",
+            prov_probe=(3, caminhos),
+        )],
+    )
+    linha = build_from_dataset(ds).rows[0]
+
+    d = FaceComparisonDialog(linha)
+    try:
+        assert d._probe._pilha.currentWidget() is d._probe._montagem
+        assert len(d._probe._montagem._pixmaps) == 3
+        # O outro lado é foto comum e continua no painel de face única.
+        assert d._referencia._pilha.currentWidget() is d._referencia._tela
+    finally:
+        d.deleteLater()
+
+
+def test_sem_as_imagens_o_mosaico_diz_que_nao_achou(app):
+    """Template de dataset agregado antes da coluna de proveniência, ou com
+    as imagens movidas."""
     from interface.tabs.strategy_manager_v2.strategy_editor.face_comparison_dialog import (  # noqa: E501
         FaceComparisonDialog,
     )
@@ -304,10 +344,8 @@ def test_a_janela_explica_em_vez_de_dizer_imagem_faltando(app, tmp_path):
 
     d = FaceComparisonDialog(linha)
     try:
-        mensagem = d._probe._tela._mensagem
-        assert "Template" in mensagem
-        assert "média dos embeddings" in mensagem
-        assert "não encontrad" not in mensagem.lower()
+        assert d._probe._pilha.currentWidget() is d._probe._montagem
+        assert d._probe._montagem._pixmaps == []
     finally:
         d.deleteLater()
 
@@ -317,3 +355,179 @@ def test_a_explicacao_sem_numero_nao_inventa():
 
     assert "Template agregado" in dica
     assert "faces da mesma identidade" not in dica
+
+
+# ── A agregação registra de quais faces o template é ─────────────────────
+
+def _dataset_de_fotos(tmp_path, n=3, identidade="P1"):
+    """FaceDataset RELATIVE com imagens reais — o caso em que o caminho
+    perde a âncora ao virar EmbeddingDataset."""
+    from faceaudit.enums.path_mode import PathMode
+    from faceaudit.models.face_dataset import FaceDataset
+    from faceaudit.models.face_info import FaceInfo
+    from faceaudit.models.ff_info import FFInfo
+
+    imagens = tmp_path / "ds" / "images"
+    faces = []
+    for i in range(n):
+        _png(imagens / f"{identidade}_{i}.png")
+        face = FaceInfo(image_path=f"{identidade}_{i}.png")
+        face.identity = identidade
+        face.file_name = f"{identidade}_{i}.png"
+        face.hash = f"{identidade}h{i}"
+        face.ff_info = FFInfo(
+            embedding_sepaelv2=np.random.rand(8).astype(np.float32),
+        )
+        faces.append(face)
+    ds = FaceDataset(
+        name="ds", faces=faces, path_mode=PathMode.RELATIVE, path_root="images",
+    )
+    ds._parquet_dir = tmp_path / "ds"
+    return ds
+
+
+def _agregar(ds):
+    import contextlib
+    import io
+
+    from faceaudit.models.aggregation_config import AggregationConfig
+    from faceaudit.services.embedding_math_service import EmbeddingMathService
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        return EmbeddingMathService().apply_smart_aggregation(
+            ds.to_embedding_dataset(), AggregationConfig(),
+        )
+
+
+def test_a_conversao_resolve_o_caminho(tmp_path):
+    """`EmbeddingDataset` não tem `path_mode` nem `path_root`, então um
+    caminho relativo chega lá sem âncora e não abre mais. É esse caminho
+    que a agregação registra e que a tabela usa para mostrar a face."""
+    from pathlib import Path as _P
+
+    emb = _dataset_de_fotos(tmp_path).to_embedding_dataset()
+
+    assert all(_P(i.image_path).is_file() for i in emb.items)
+
+
+def test_a_agregacao_registra_as_faces(tmp_path):
+    """O `face_hash` do template é digest de mão única: serve para
+    verificar, nunca para recuperar. Sem a lista, de quais faces ele veio
+    se perderia."""
+    from pathlib import Path as _P
+
+    template = _agregar(_dataset_de_fotos(tmp_path, 3)).items[0]
+
+    assert template.aggregation_source_count == 3
+    assert len(template.aggregation_source_hashes) == 3
+    assert all(_P(p).is_file() for p in template.aggregation_source_paths)
+
+
+def test_a_proveniencia_sobrevive_ao_parquet(tmp_path):
+    import contextlib
+    import io
+
+    from faceaudit.models.embedding_dataset import EmbeddingDataset
+    from faceaudit.models import aggregation_provenance
+
+    agg = _agregar(_dataset_de_fotos(tmp_path, 4))
+    caminho = tmp_path / "agg.parquet"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agg.to_parquet(caminho)
+
+    p = aggregation_provenance.from_item(
+        EmbeddingDataset.from_parquet(caminho).items[0]
+    )
+
+    assert p is not None
+    assert p.count == 4
+    assert len(p.paths) == 4
+    assert p.rotulo() == "Template de 4 faces"
+
+
+def test_face_comum_nao_ganha_proveniencia(tmp_path):
+    """A coluna existe no parquet por causa das linhas de template; nas
+    outras ela tem de voltar vazia, e não como NaN virando contagem."""
+    import contextlib
+    import io
+
+    from faceaudit.models.embedding_dataset import EmbeddingDataset
+    from faceaudit.models import aggregation_provenance
+
+    emb = _dataset_de_fotos(tmp_path, 2).to_embedding_dataset()
+    caminho = tmp_path / "comum.parquet"
+    with contextlib.redirect_stdout(io.StringIO()):
+        emb.to_parquet(caminho)
+
+    for item in EmbeddingDataset.from_parquet(caminho).items:
+        assert item.aggregation_source_count is None
+        assert aggregation_provenance.from_item(item) is None
+
+
+def test_a_contagem_vem_da_coluna_e_nao_do_nome(tmp_path):
+    """Era o atalho anterior: extrair o número do nome que a agregação
+    inventa. O nome pode ser editado; a coluna é o dado."""
+    from faceaudit.models import aggregation_provenance
+
+    template = _agregar(_dataset_de_fotos(tmp_path, 3)).items[0]
+    template.file_name = "nome trocado por alguém"
+
+    p = aggregation_provenance.from_item(template)
+
+    assert p is not None and p.count == 3
+
+
+def test_a_tabela_le_a_proveniencia_gravada(tmp_path):
+    """Ponta a ponta: a agregação grava, a tabela lê e rotula."""
+    template = _agregar(_dataset_de_fotos(tmp_path, 3)).items[0]
+    outra = EmbeddingInfo(
+        embedding=np.zeros(4, dtype=np.float32), face_hash="b" * 64,
+        image_path="", identity="P2", file_name="foto.png",
+    )
+    amostra = SimilarityScoreSample(
+        probe=template, reference=outra, raw_score=0.7, same_person=False,
+    )
+    amostra.same_person = False
+
+    linha = build_from_dataset(
+        SimilarityScoreDataset(name="s", items=[amostra])
+    ).rows[0]
+
+    assert linha.probe_face == "Template de 3 faces"
+    assert linha.probe_provenance.count == 3
+    assert len(linha.probe_provenance.paths) == 3
+    assert linha.reference_provenance is None
+
+
+def test_o_dataset_agregado_alimenta_a_tabela_lida_do_parquet(tmp_path):
+    """Do parquet de escores vem só o hash; a proveniência chega quando o
+    dataset agregado é alcançável."""
+    import contextlib
+    import io
+
+    from faceaudit.services.score_comparison_table_service import (
+        attach_face_images, build_from_parquet,
+    )
+
+    agg = _agregar(_dataset_de_fotos(tmp_path, 3))
+    agregado = tmp_path / "templates.parquet"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agg.to_parquet(agregado)
+    template = agg.items[0]
+
+    outra = EmbeddingInfo(
+        embedding=np.zeros(4, dtype=np.float32), face_hash="b" * 64,
+        image_path="", identity="P2", file_name="foto.png",
+    )
+    amostra = SimilarityScoreSample(
+        probe=template, reference=outra, raw_score=0.7, same_person=False,
+    )
+    amostra.same_person = False
+    escores = tmp_path / "escores.parquet"
+    with contextlib.redirect_stdout(io.StringIO()):
+        SimilarityScoreDataset(name="s", items=[amostra]).to_parquet(escores)
+
+    t = attach_face_images(build_from_parquet(escores), [agregado])
+
+    assert t.rows[0].probe_face == "Template de 3 faces"
+    assert len(t.rows[0].probe_provenance.paths) == 3

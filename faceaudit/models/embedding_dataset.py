@@ -11,6 +11,42 @@ from pathlib import Path
 
 # Import relativo
 from .embedding_info import EmbeddingInfo
+from .aggregation_provenance import (
+    COLUNA_COUNT, COLUNA_HASHES, COLUNA_PATHS,
+)
+
+
+def _prov_count(row_dict):
+    """Número de faces agregadas, lido da linha do parquet.
+
+    `None` em face comum. O parquet devolve NaN quando a coluna existe por
+    causa de OUTRA linha do mesmo arquivo, e NaN tem de virar ausente.
+    """
+    bruto = row_dict.get(COLUNA_COUNT)
+    if bruto is None or (isinstance(bruto, float) and bruto != bruto):
+        return None
+    try:
+        valor = int(bruto)
+    except (TypeError, ValueError):
+        return None
+    return valor if valor > 0 else None
+
+
+def _prov_lista(bruto):
+    """Lista de strings tolerante ao que o parquet devolve.
+
+    Coluna de lista volta como `numpy.ndarray`, e NaN aparece nas linhas
+    de face comum do mesmo arquivo.
+    """
+    if bruto is None:
+        return None
+    if isinstance(bruto, float) and bruto != bruto:
+        return None
+    try:
+        valores = [str(v) for v in bruto if v is not None]
+    except TypeError:
+        return None
+    return valores or None
 
 
 @dataclass
@@ -198,7 +234,9 @@ class EmbeddingDataset:
         if not self.items:
             df = pd.DataFrame(columns=[
                 'identity', 'embedding', 'image_path', 'file_name',
-                'source', 'origin', 'face_image', 'face_hash', 'quality_scores_json'
+                'source', 'origin', 'face_image', 'face_hash',
+                'quality_scores_json',
+                COLUNA_COUNT, COLUNA_HASHES, COLUNA_PATHS,
             ])
         else:
             data_dicts = []
@@ -231,6 +269,19 @@ class EmbeddingDataset:
                     # quando a face não tem pose — ausente continua ausente.
                     "yaw": item.yaw,
                     "pitch": item.pitch,
+                    # Proveniência de template agregado. Em face comum sai
+                    # vazia; sem ela, saber de quais faces um template foi
+                    # feito dependeria de decifrar o nome inventado pela
+                    # agregação, de onde só se extrai o número.
+                    COLUNA_COUNT: item.aggregation_source_count,
+                    COLUNA_HASHES: (
+                        list(item.aggregation_source_hashes)
+                        if item.aggregation_source_hashes else None
+                    ),
+                    COLUNA_PATHS: (
+                        list(item.aggregation_source_paths)
+                        if item.aggregation_source_paths else None
+                    ),
                 }
                 data_dicts.append(row)
 
@@ -413,6 +464,13 @@ class EmbeddingDataset:
                 face_image=face_img_array,
                 yaw=yaw_f,
                 pitch=pitch_f,
+                aggregation_source_count=_prov_count(row_dict),
+                aggregation_source_hashes=_prov_lista(
+                    row_dict.get(COLUNA_HASHES)
+                ),
+                aggregation_source_paths=_prov_lista(
+                    row_dict.get(COLUNA_PATHS)
+                ),
                 quality_scores=q_scores,
             )
             items.append(info)

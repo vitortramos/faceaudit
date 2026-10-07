@@ -31,6 +31,10 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.enums.project_folder import ProjectFolder
+from faceaudit.models.aggregation_provenance import (
+    COLUNA_COUNT, COLUNA_HASHES, COLUNA_PATHS, AggregationProvenance,
+)
+from faceaudit.models import aggregation_provenance
 
 # Colunas procuradas no parquet do dataset. `hash` é o nome da coluna do
 # face_hash lá; no parquet de escores o mesmo valor aparece como
@@ -40,7 +44,10 @@ from faceaudit.enums.project_folder import ProjectFolder
 # Aceitar os dois é o que permite achar o nome de um template agregado, que
 # só existe no segundo.
 _COLUNAS_DE_HASH = ("hash", "face_hash")
-_OUTRAS_COLUNAS = ("image_path", "file_name", "identity", "bbox", "keypoints")
+_OUTRAS_COLUNAS = (
+    "image_path", "file_name", "identity", "bbox", "keypoints",
+    COLUNA_COUNT, COLUNA_HASHES, COLUNA_PATHS,
+)
 
 _LINHAS_POR_LOTE = 65_536
 
@@ -59,6 +66,8 @@ class FaceImageRecord:
     identity: Optional[str]
     bbox: Optional[Tuple[float, ...]] = None
     keypoints: Optional[Tuple[Tuple[float, float], ...]] = None
+    # Preenchido só em template agregado: de quais faces ele foi feito.
+    provenance: Optional[AggregationProvenance] = None
 
 
 def locate_faces(
@@ -220,6 +229,7 @@ def _registro(
         identity=linha.get("identity"),
         bbox=_caixa(linha.get("bbox")),
         keypoints=_pontos(linha.get("keypoints")),
+        provenance=aggregation_provenance.from_row(linha),
     )
 
 

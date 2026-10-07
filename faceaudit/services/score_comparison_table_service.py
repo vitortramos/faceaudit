@@ -38,6 +38,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple
 
+from faceaudit.models.aggregation_provenance import AggregationProvenance
+
 # Rótulos dos regimes. Expostos como constantes porque a interface decide
 # texto de cabeçalho a partir deles.
 MODO_CASO = "caso"
@@ -106,19 +108,30 @@ class ComparisonRow:
     probe_keypoints: Optional[tuple] = None
     reference_bbox: Optional[tuple] = None
     reference_keypoints: Optional[tuple] = None
-    # Quantas faces formaram o template agregado, quando o lado é um
-    # template. `None` em face de foto; `0` em template cujo nome não
-    # revela o número.
-    probe_template_faces: Optional[int] = None
-    reference_template_faces: Optional[int] = None
+    # De quais faces o template foi feito, quando o lado é um template.
+    # `None` em face de foto. Vem da coluna que a agregação grava, e é o
+    # que permite mostrar as faces agregadas em vez de só contá-las.
+    probe_provenance: Optional[AggregationProvenance] = None
+    reference_provenance: Optional[AggregationProvenance] = None
 
     @property
     def probe_is_template(self) -> bool:
-        return self.probe_template_faces is not None
+        return self.probe_provenance is not None
 
     @property
     def reference_is_template(self) -> bool:
-        return self.reference_template_faces is not None
+        return self.reference_provenance is not None
+
+    @property
+    def probe_template_faces(self) -> Optional[int]:
+        return self.probe_provenance.count if self.probe_provenance else None
+
+    @property
+    def reference_template_faces(self) -> Optional[int]:
+        return (
+            self.reference_provenance.count
+            if self.reference_provenance else None
+        )
 
     @property
     def tem_geometria(self) -> bool:
@@ -426,9 +439,10 @@ def _rotulo_do_hash(face_hash: Any) -> str:
     Template agregado é nomeado como tal; foto fica no hash abreviado, que
     `attach_face_images` troca pelo nome real quando acha o dataset.
     """
-    from faceaudit.services.aggregated_template_identity import template_label
-
-    return template_label(face_hash) or _abreviar_hash(face_hash)
+    prov_do_hash = _proveniencia_do_hash(face_hash)
+    if prov_do_hash is not None:
+        return _rotulo_de_template(prov_do_hash)
+    return _abreviar_hash(face_hash)
 
 
 def _abreviar_hash(valor: Any) -> str:
@@ -457,13 +471,8 @@ def _linha_do_item(sample: Any, *, de_caso: bool = False) -> ComparisonRow:
         reference_hash=str(getattr(referencia, "face_hash", "") or ""),
         probe_image_path=_caminho_da_face(probe),
         reference_image_path=_caminho_da_face(referencia),
-        probe_template_faces=_template_faces(
-            getattr(probe, "face_hash", None), getattr(probe, "file_name", None),
-        ),
-        reference_template_faces=_template_faces(
-            getattr(referencia, "face_hash", None),
-            getattr(referencia, "file_name", None),
-        ),
+        probe_provenance=_proveniencia(probe),
+        reference_provenance=_proveniencia(referencia),
     )
 
 
@@ -473,6 +482,15 @@ def _caminho_da_face(info: Any) -> Optional[str]:
     return str(caminho) if caminho else None
 
 
+def _rotulo_de_template(prov: AggregationProvenance) -> str:
+    """Rótulo da linha quando o lado é um template.
+
+    Sem contagem o rótulo não chuta um número: template de dataset
+    agregado antes de a coluna existir fica em "Template agregado".
+    """
+    return prov.rotulo() if prov.count else "Template agregado"
+
+
 def _rotulo_da_face(info: Any) -> str:
     """Nome do arquivo quando existe; hash abreviado como alternativa.
 
@@ -480,13 +498,9 @@ def _rotulo_da_face(info: Any) -> str:
     (`AGG_<id>_k3_<digest>`) não é nome de arquivo nenhum, e exibi-lo como
     se fosse mandaria o perito procurar uma foto que não existe.
     """
-    from faceaudit.services.aggregated_template_identity import template_label
-
-    rotulo = template_label(
-        getattr(info, "face_hash", None), getattr(info, "file_name", None),
-    )
-    if rotulo is not None:
-        return rotulo
+    prov_gravada = _proveniencia(info)
+    if prov_gravada is not None:
+        return _rotulo_de_template(prov_gravada)
     nome = getattr(info, "file_name", None)
     if nome:
         return str(nome)
@@ -496,20 +510,34 @@ def _rotulo_da_face(info: Any) -> str:
     return _abreviar_hash(getattr(info, "face_hash", None))
 
 
-def _template_faces(face_hash, file_name) -> Optional[int]:
-    """Quantas faces o template fundiu; `None` quando não é template.
+def _proveniencia(info: Any) -> Optional[AggregationProvenance]:
+    """Proveniência gravada no próprio item, quando ele é um template."""
+    from faceaudit.models import aggregation_provenance
 
-    `0` quando é template mas o nome não revela o número — distinguir isso
-    de "não é template" é o que permite rotular a linha corretamente sem
-    inventar uma contagem.
-    """
+    gravada = aggregation_provenance.from_item(info)
+    if gravada is not None:
+        return gravada
+    # Template de dataset agregado ANTES de a coluna existir: o número
+    # ainda dá para extrair do nome que a agregação inventou. Reconhecer o
+    # template é o que importa; as faces, esses não têm como mostrar.
+    return _proveniencia_do_nome(
+        getattr(info, "face_hash", None), getattr(info, "file_name", None),
+    )
+
+
+def _proveniencia_do_hash(face_hash) -> Optional[AggregationProvenance]:
+    """Só o prefixo do hash: sabe-se que é template, não de quantas faces."""
+    return _proveniencia_do_nome(face_hash, None)
+
+
+def _proveniencia_do_nome(face_hash, file_name) -> Optional[AggregationProvenance]:
     from faceaudit.services.aggregated_template_identity import (
         contributing_faces, is_synthetic_template,
     )
 
     if not is_synthetic_template(face_hash):
         return None
-    return contributing_faces(file_name) or 0
+    return AggregationProvenance(count=contributing_faces(file_name) or 0)
 
 
 def _linha_do_registro(registro: dict, *, de_caso: bool = False) -> ComparisonRow:
@@ -530,15 +558,14 @@ def _linha_do_registro(registro: dict, *, de_caso: bool = False) -> ComparisonRo
         classe=_classe_de(mesma),
         probe_hash=str(registro.get("probe_face_hash") or ""),
         reference_hash=str(registro.get("reference_face_hash") or ""),
-        # O parquet de escores não traz nome de arquivo, então aqui só dá
-        # para saber QUE é template, não de quantas faces. O nome, e com
-        # ele o número, chega em `attach_face_images` se o dataset
-        # agregado for alcançável.
-        probe_template_faces=_template_faces(
-            registro.get("probe_face_hash"), None,
+        # O parquet de ESCORES guarda só o hash, então aqui no máximo se
+        # sabe QUE é template. De quantas faces, e quais, vem da coluna de
+        # proveniência do dataset agregado, em `attach_face_images`.
+        probe_provenance=_proveniencia_do_hash(
+            registro.get("probe_face_hash"),
         ),
-        reference_template_faces=_template_faces(
-            registro.get("reference_face_hash"), None,
+        reference_provenance=_proveniencia_do_hash(
+            registro.get("reference_face_hash"),
         ),
     )
 
@@ -574,9 +601,6 @@ def attach_face_images(
     if table.is_empty:
         return table
 
-    from faceaudit.services.aggregated_template_identity import (
-        contributing_faces, template_label,
-    )
     from faceaudit.services.face_image_locator_service import locate_faces
 
     pendentes = {
@@ -604,16 +628,14 @@ def attach_face_images(
             registro = achados.get(getattr(linha, f"{lado}_hash"))
             if registro is None:
                 continue
-            rotulo = template_label(
+            prov_gravada = registro.provenance or _proveniencia_do_nome(
                 getattr(linha, f"{lado}_hash"), registro.file_name,
             )
-            if rotulo is not None:
-                # Template: o dataset agregado tem o nome que revela de
-                # quantas faces ele é, mas não tem imagem para mostrar.
-                mudancas[f"{lado}_face"] = rotulo
-                mudancas[f"{lado}_template_faces"] = (
-                    contributing_faces(registro.file_name) or 0
-                )
+            if prov_gravada is not None:
+                # Template: o dataset agregado não tem imagem própria, mas
+                # tem a lista das faces que o formaram.
+                mudancas[f"{lado}_provenance"] = prov_gravada
+                mudancas[f"{lado}_face"] = _rotulo_de_template(prov_gravada)
                 continue
             mudancas[f"{lado}_image_path"] = str(registro.image_path)
             mudancas[f"{lado}_face"] = registro.file_name

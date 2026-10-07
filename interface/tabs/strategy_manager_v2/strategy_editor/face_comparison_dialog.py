@@ -21,7 +21,7 @@ temas da interface.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
@@ -45,6 +45,115 @@ _COR_CONTORNO_PONTO = QtGui.QColor(255, 255, 255)
 # sem cabelo nem queixo; 1,8 traz o contorno do rosto e um pouco de
 # entorno, que é o que se olha numa comparação.
 _FOLGA_DO_ENQUADRAMENTO = 1.8
+
+# Lado da miniatura das faces agregadas, em pixels. Lidas já reduzidas:
+# um template de vinte faces não deve trazer vinte fotos de megapixels à
+# memória para desenhar um mosaico de miniaturas.
+_LADO_DA_MINIATURA = 320
+
+
+class _Montagem(QtWidgets.QWidget):
+    """As faces que formaram um template agregado, em grade.
+
+    Um template é a média de N faces e não corresponde a imagem nenhuma,
+    mas as faces que o formaram existem — e num exame é isso que se quer
+    ver. Elas ficam na coluna de proveniência que a agregação grava.
+
+    A grade é quadrada o bastante para caber o número de faces, e as
+    miniaturas são lidas já reduzidas: um template de vinte faces não
+    deve trazer vinte fotos de megapixels à memória.
+    """
+
+    def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent)
+        self._pixmaps: list = []
+        self._ausentes = 0
+        self.setMinimumSize(240, 240)
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Expanding,
+        )
+
+    def set_faces(self, caminhos: Sequence[str]) -> None:
+        self._pixmaps = []
+        self._ausentes = 0
+        for caminho in caminhos:
+            pixmap = self._ler_reduzida(caminho)
+            if pixmap is None:
+                self._ausentes += 1
+            else:
+                self._pixmaps.append(pixmap)
+        self.update()
+
+    @staticmethod
+    def _ler_reduzida(caminho: str) -> Optional[QtGui.QPixmap]:
+        p = Path(str(caminho))
+        if not p.is_file():
+            return None
+        leitor = QtGui.QImageReader(str(p))
+        leitor.setAutoTransform(True)
+        tamanho = leitor.size()
+        if tamanho.isValid() and tamanho.width() > 0:
+            escala = min(
+                _LADO_DA_MINIATURA / tamanho.width(),
+                _LADO_DA_MINIATURA / tamanho.height(),
+                1.0,
+            )
+            leitor.setScaledSize(
+                QtCore.QSize(
+                    max(1, int(tamanho.width() * escala)),
+                    max(1, int(tamanho.height() * escala)),
+                )
+            )
+        imagem = leitor.read()
+        if imagem.isNull():
+            return None
+        return QtGui.QPixmap.fromImage(imagem)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 — Qt API
+        pintor = QtGui.QPainter(self)
+        pintor.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
+        t = current_token_fn()
+        pintor.fillRect(self.rect(), QtGui.QColor(t("SURFACE_RAISED")))
+
+        if not self._pixmaps:
+            pintor.setPen(QtGui.QColor(t("TEXT_MUTED")))
+            fonte = pintor.font()
+            fonte.setItalic(True)
+            pintor.setFont(fonte)
+            pintor.drawText(
+                self.rect(),
+                int(
+                    QtCore.Qt.AlignmentFlag.AlignCenter
+                    | QtCore.Qt.TextFlag.TextWordWrap
+                ),
+                "As imagens das faces agregadas não foram encontradas.",
+            )
+            return
+
+        import math
+
+        n = len(self._pixmaps)
+        colunas = max(1, math.ceil(math.sqrt(n)))
+        linhas = max(1, math.ceil(n / colunas))
+        folga = 4
+        largura = (self.width() - folga * (colunas + 1)) / colunas
+        altura = (self.height() - folga * (linhas + 1)) / linhas
+        lado = max(8.0, min(largura, altura))
+
+        for indice, pixmap in enumerate(self._pixmaps):
+            coluna = indice % colunas
+            linha = indice // colunas
+            x = folga + coluna * (lado + folga)
+            y = folga + linha * (lado + folga)
+            escala = min(lado / pixmap.width(), lado / pixmap.height())
+            largura_f = pixmap.width() * escala
+            altura_f = pixmap.height() * escala
+            destino = QtCore.QRectF(
+                x + (lado - largura_f) / 2, y + (lado - altura_f) / 2,
+                largura_f, altura_f,
+            )
+            pintor.drawPixmap(destino, pixmap, QtCore.QRectF(pixmap.rect()))
 
 
 class _FacePanel(QtWidgets.QWidget):
@@ -73,8 +182,15 @@ class _FacePanel(QtWidgets.QWidget):
         )
         layout.addWidget(self._titulo)
 
-        self._tela = _Tela(parent=self)
-        layout.addWidget(self._tela, 1)
+        # Pilha: face única (índice 0) ou mosaico das faces de um template
+        # (índice 1). Um template não tem imagem própria, mas as faces que
+        # o formaram têm.
+        self._pilha = QtWidgets.QStackedWidget(parent=self)
+        self._tela = _Tela(parent=self._pilha)
+        self._montagem = _Montagem(parent=self._pilha)
+        self._pilha.addWidget(self._tela)
+        self._pilha.addWidget(self._montagem)
+        layout.addWidget(self._pilha, 1)
 
         self._legenda = WrappedLabel("", parent=self)
         self._legenda.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -92,13 +208,19 @@ class _FacePanel(QtWidgets.QWidget):
         identidade: str,
         arquivo: str,
         mensagem_sem_imagem: str = "",
+        provenance=None,
     ) -> None:
         pixmap = None
         mensagem = mensagem_sem_imagem
+        if provenance is not None:
+            # Template agregado: não há foto própria a mostrar, mas as
+            # faces que o formaram existem e é isso que se quer ver.
+            self._pilha.setCurrentWidget(self._montagem)
+            self._montagem.set_faces(provenance.paths)
+            self._legenda.setText(f"{identidade}\n{arquivo}")
+            return
+        self._pilha.setCurrentWidget(self._tela)
         if mensagem:
-            # Template agregado: não há foto a procurar, e dizer "imagem
-            # não encontrada" mandaria o perito caçar um arquivo que nunca
-            # existiu.
             self._tela.set_conteudo(None, None, None, mensagem)
             self._legenda.setText(f"{identidade}\n{arquivo}")
             return
@@ -301,11 +423,13 @@ class FaceComparisonDialog(QtWidgets.QDialog):
             row.probe_image_path, row.probe_bbox, row.probe_keypoints,
             row.probe_identity, row.probe_face,
             self._mensagem_de_template("probe"),
+            provenance=row.probe_provenance,
         )
         self._referencia.set_face(
             row.reference_image_path, row.reference_bbox,
             row.reference_keypoints, row.reference_identity, row.reference_face,
             self._mensagem_de_template("reference"),
+            provenance=row.reference_provenance,
         )
         self._on_enquadrar(self._check_enquadrar.isChecked())
 

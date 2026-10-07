@@ -34,6 +34,7 @@ from faceaudit.enums.lda_estimator_type import LdaEstimatorType
 from faceaudit.enums.lda_grid_search_metric import LdaGridSearchMetric
 
 # --- INJEÇÃO DO DTO DE AGREGAÇÃO ---
+from faceaudit.models import aggregation_provenance
 from faceaudit.models.aggregation_config import AggregationConfig
 from faceaudit.models.wccn_config import WCCNConfig
 from faceaudit.models.lda_config import LDAConfig
@@ -1717,6 +1718,7 @@ class EmbeddingMathService:
                 mean_vector = self._compute_mean_and_normalize(sub_embeddings, sub_weights)
                 
                 sub_items = [items[i] for i in indices]
+                provenancia = aggregation_provenance.build(sub_items)
 
                 # Identidade da linha: derivada do CONJUNTO de faces que
                 # entraram, determinística entre execuções e distinta de
@@ -1752,6 +1754,15 @@ class EmbeddingMathService:
                     # for unânime entre as faces fundidas.
                     source=self._unanimous_attr(sub_items, "source"),
                     origin=self._unanimous_attr(sub_items, "origin"),
+                    # De QUAIS faces este template foi feito. O `face_hash`
+                    # é digest de mão única: serve para verificar, nunca
+                    # para recuperar. Sem esta lista, a proveniência ficava
+                    # só no nome inventado aqui, de onde no máximo se
+                    # extrai o número — e as faces agregadas não teriam
+                    # como ser mostradas.
+                    aggregation_source_count=provenancia.count,
+                    aggregation_source_hashes=provenancia.hashes,
+                    aggregation_source_paths=provenancia.paths,
                 ))
 
         # `face_hash` é a chave de par de toda a infra a jusante (PAIR_MINING,
