@@ -33,6 +33,11 @@ from ..widget_helpers import WrappedLabel
 # Lado da miniatura, em pixels. Grande o bastante para reconhecer a face e
 # pequeno o bastante para caber cem linhas numa coluna de painel.
 _LADO_MINIATURA = 72
+
+# Papel do item que guarda o índice da linha NO BACKEND. A tabela é
+# ordenável, então o índice visual deixa de corresponder ao da lista assim
+# que o usuário clica num cabeçalho.
+_PAPEL_INDICE_DA_LINHA = int(QtCore.Qt.ItemDataRole.UserRole) + 1
 _ALTURA_DA_LINHA = _LADO_MINIATURA + 8
 
 
@@ -100,6 +105,13 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
             QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self._grid.verticalHeader().setVisible(False)
+        # Duplo clique abre a comparação ampliada. Clique simples continua
+        # servindo para selecionar e copiar, que é o que se espera de uma
+        # tabela.
+        self._grid.cellDoubleClicked.connect(self._on_linha_ativada)
+        self._grid.setToolTip(
+            "Clique duas vezes numa linha para ver as duas faces lado a lado."
+        )
         self._grid.setSortingEnabled(True)
         self._grid.setWordWrap(False)
         apply_themed_stylesheet(
@@ -131,6 +143,26 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
             self.show_placeholder()
 
     # ── API pública ──────────────────────────────────────────────────────
+
+    def _on_linha_ativada(self, linha: int, _coluna: int) -> None:
+        """Abre a comparação da linha clicada.
+
+        A linha é encontrada pelo item, e não pelo índice: a tabela é
+        ordenável, então o índice visual não é o índice do backend depois
+        que o usuário clica num cabeçalho.
+        """
+        if self._table is None:
+            return
+        chave = self._grid.item(linha, 0)
+        if chave is None:
+            return
+        indice = chave.data(_PAPEL_INDICE_DA_LINHA)
+        if indice is None or not (0 <= int(indice) < len(self._table.rows)):
+            return
+        from ..face_comparison_dialog import FaceComparisonDialog
+
+        dialogo = FaceComparisonDialog(self._table.rows[int(indice)], parent=self)
+        dialogo.exec()
 
     def show_placeholder(self, mensagem: str = "") -> None:
         self._parar_miniaturas()
@@ -182,7 +214,9 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
         self._preparar_grade(colunas, len(table.rows))
 
         for linha, row in enumerate(table.rows):
-            self._grid.setItem(linha, 0, QtWidgets.QTableWidgetItem(row.probe_identity))
+            primeira = QtWidgets.QTableWidgetItem(row.probe_identity)
+            primeira.setData(_PAPEL_INDICE_DA_LINHA, linha)
+            self._grid.setItem(linha, 0, primeira)
             self._grid.setItem(linha, 1, QtWidgets.QTableWidgetItem(row.probe_face))
             self._grid.setItem(
                 linha, 2, QtWidgets.QTableWidgetItem(row.reference_identity)
@@ -214,6 +248,8 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
         for linha, row in enumerate(table.rows):
             for coluna, lado in ((0, "probe"), (1, "reference")):
                 item = self._item_de_face(row, lado)
+                if coluna == 0:
+                    item.setData(_PAPEL_INDICE_DA_LINHA, linha)
                 self._grid.setItem(linha, coluna, item)
                 caminho = getattr(row, f"{lado}_image_path")
                 if caminho:

@@ -100,6 +100,16 @@ class ComparisonRow:
     reference_hash: str = ""
     probe_image_path: Optional[str] = None
     reference_image_path: Optional[str] = None
+    # Geometria no sistema da imagem apontada acima — é o invariante do
+    # dataset, então dá para desenhar direto, sem conversão.
+    probe_bbox: Optional[tuple] = None
+    probe_keypoints: Optional[tuple] = None
+    reference_bbox: Optional[tuple] = None
+    reference_keypoints: Optional[tuple] = None
+
+    @property
+    def tem_geometria(self) -> bool:
+        return bool(self.probe_keypoints or self.reference_keypoints)
 
     @property
     def classe_label(self) -> str:
@@ -524,6 +534,8 @@ def attach_face_images(
                 continue
             mudancas[f"{lado}_image_path"] = str(registro.image_path)
             mudancas[f"{lado}_face"] = registro.file_name
+            mudancas[f"{lado}_bbox"] = registro.bbox
+            mudancas[f"{lado}_keypoints"] = registro.keypoints
         novas.append(replace(linha, **mudancas) if mudancas else linha)
 
     novas_tuple = tuple(novas)

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from faceaudit.enums.path_mode import PathMode
 from faceaudit.enums.project_folder import ProjectFolder
@@ -36,18 +36,27 @@ from faceaudit.enums.project_folder import ProjectFolder
 # face_hash lá; no parquet de escores o mesmo valor aparece como
 # `probe_face_hash` / `reference_face_hash`.
 _COLUNA_HASH = "hash"
-_COLUNAS_DESEJADAS = (_COLUNA_HASH, "image_path", "file_name", "identity")
+_COLUNAS_DESEJADAS = (
+    _COLUNA_HASH, "image_path", "file_name", "identity", "bbox", "keypoints",
+)
 
 _LINHAS_POR_LOTE = 65_536
 
 
 @dataclass(frozen=True)
 class FaceImageRecord:
-    """O que o dataset sabe sobre uma face, além do embedding."""
+    """O que o dataset sabe sobre uma face, além do embedding.
+
+    A geometria vem no sistema de coordenadas da imagem apontada por
+    `image_path`, que é o invariante do dataset — por isso dá para
+    desenhá-la direto sobre a imagem, sem conversão.
+    """
 
     image_path: Path
     file_name: str
     identity: Optional[str]
+    bbox: Optional[Tuple[float, ...]] = None
+    keypoints: Optional[Tuple[Tuple[float, float], ...]] = None
 
 
 def locate_faces(
@@ -200,4 +209,36 @@ def _registro(
         image_path=caminho,
         file_name=str(nome),
         identity=linha.get("identity"),
+        bbox=_caixa(linha.get("bbox")),
+        keypoints=_pontos(linha.get("keypoints")),
+    )
+
+
+def _caixa(bruto) -> Optional[Tuple[float, ...]]:
+    """`(x1, y1, x2, y2)`, ou nada quando o tamanho não bate.
+
+    Meia caixa desenharia um retângulo errado sobre a face, o que é pior
+    que não desenhar nada.
+    """
+    if bruto is None:
+        return None
+    try:
+        valores = [float(v) for v in bruto]
+    except (TypeError, ValueError):
+        return None
+    return tuple(valores[:4]) if len(valores) >= 4 else None
+
+
+def _pontos(bruto) -> Optional[Tuple[Tuple[float, float], ...]]:
+    """Os cinco pares, a partir da lista achatada gravada no parquet."""
+    if bruto is None:
+        return None
+    try:
+        valores = [float(v) for v in bruto]
+    except (TypeError, ValueError):
+        return None
+    if len(valores) != 10:
+        return None
+    return tuple(
+        (valores[i], valores[i + 1]) for i in range(0, 10, 2)
     )
