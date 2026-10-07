@@ -45,15 +45,29 @@ class ResourceInfoWidget(QtWidgets.QWidget):
     # dataset. Path é absoluto.
     edit_dataset_in_manager_requested = QtCore.pyqtSignal(str)
 
-    def __init__(self, parent=None, compact: bool = False):
+    def __init__(
+        self,
+        parent=None,
+        compact: bool = False,
+        show_basic_info: bool = True,
+        show_scores_details: bool = True,
+    ):
         """
         Args:
             compact: quando True, oculta a aba "Utilização", a barra de
-                abas e a seção de metadados básicos (ID/Tipo/Path/Hash/
-                Tamanho), deixando apenas as seções ricas
+                abas e a linha do ID, deixando as seções ricas
                 (Stats / Pipeline / Sim Model / Calib Model / Scores).
                 Útil pra embedar em outros painéis (ex: 3ª coluna do
                 editor de instruções) sem duplicar info que já está visível.
+            show_basic_info: quando False, some com Tipo/Path/Hash/Tamanho.
+                Para quem quer só as seções ricas — a aba "Estatísticas"
+                do painel de resultados, que fica ao lado da linha de saída
+                onde esses mesmos campos já aparecem.
+            show_scores_details: quando False, some com "Detalhes do Score
+                Dataset". Serve ao inverso: a linha de saída diz O QUE o
+                artefato é (caminho, hash, tamanho) e deixa O QUE ELE
+                CONTÉM para a aba de Estatísticas, em vez de repetir os
+                dois lugares.
         """
         super().__init__(parent)
         # WA_DontShowOnScreen impede o Qt de exibir este widget como
@@ -67,6 +81,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         )
         self._hash_service = HashService()
         self._compact = bool(compact)
+        self._show_basic_info = bool(show_basic_info)
+        self._show_scores_details = bool(show_scores_details)
         self._init_ui()
         self.clear()
 
@@ -239,6 +255,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Path absoluto atual exposto pra `_on_open_in_dataset_manager`.
         self._current_resource_abs_path: Optional[Path] = None
 
+        if not self._show_basic_info:
+            self._basic_info_section.setVisible(False)
         props_layout.addWidget(self._basic_info_section)
 
         # Estatísticas do dataset (visível apenas para DATASET)
@@ -679,7 +697,7 @@ class ResourceInfoWidget(QtWidgets.QWidget):
         # Esconde o placeholder e mostra a seção básica (Tipo/Path/Hash/
         # Tamanho — ID é só no modo não-compact).
         self._empty_placeholder.setVisible(False)
-        self._basic_info_section.setVisible(True)
+        self._basic_info_section.setVisible(self._show_basic_info)
 
         # Metadados
         type_label = resource.resource_type.value
@@ -773,8 +791,8 @@ class ResourceInfoWidget(QtWidgets.QWidget):
             StrategyResourceType.SIMILARITY_SCORES,
             StrategyResourceType.CALIBRATED_SCORES,
         )
-        self._scores_section.setVisible(is_scores)
-        if is_scores:
+        self._scores_section.setVisible(is_scores and self._show_scores_details)
+        if is_scores and self._show_scores_details:
             self._load_scores_details(resource, abs_path)
         else:
             self._clear_scores()

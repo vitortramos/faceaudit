@@ -513,6 +513,23 @@ class _ResultsCard(QtWidgets.QWidget):
         super().__init__(parent)
         self._instruction = instruction
         self._plot_kind = _instruction_plot_kind(instruction)
+        # Instruções que produzem um conjunto de escores ganham três abas
+        # no lugar do gráfico solto: Gráfico, Comparações e Estatísticas.
+        # O gráfico sozinho mostrava a FORMA do conjunto e não deixava
+        # saber qual escore saiu de qual par de faces — que num confronto
+        # de caso é justamente o resultado do exame.
+        self._has_result_tabs = self._plot_kind == _PLOT_KIND_SCORE_DISTRIBUTION
+        self._result_tabs: Optional[QtWidgets.QTabWidget] = None
+        self._comparison_widget: Optional[QtWidgets.QWidget] = None
+        self._stats_widget: Optional[QtWidgets.QWidget] = None
+        # Assinatura do recurso cuja tabela de comparações está carregada.
+        # A tabela é montada só quando o usuário abre a aba: varrer o
+        # parquet a cada `update_state` custaria por nada, já que a aba
+        # Gráfico é a que abre por padrão.
+        self._comparison_signature: Optional[tuple] = None
+        self._comparison_pending: Optional[tuple] = None
+        # (payload em memória, caminho do parquet) do recurso corrente.
+        self._comparison_sources: tuple = (None, None)
         self._plot_widget: Optional[QtWidgets.QWidget] = None
         self._output_widgets: Dict[str, OutputRowWidget] = {}
         # Cache do último payload renderizado — evita redesenhar gráficos
@@ -559,7 +576,8 @@ class _ResultsCard(QtWidgets.QWidget):
 
         # ── Seção: Visualização (opcional) ─────────────────────────────────
         if self._plot_kind is not None:
-            self._scroll_layout.addWidget(SectionHeader("Visualização", "plots"))
+            titulo = "Resultados" if self._has_result_tabs else "Visualização"
+            self._scroll_layout.addWidget(SectionHeader(titulo, "plots"))
             self._build_plot_section()
 
         self._scroll_layout.addStretch(1)
@@ -594,6 +612,7 @@ class _ResultsCard(QtWidgets.QWidget):
                 resource_type=resource_type,
                 parent=self,
                 read_only=True,
+                show_scores_details=not self._has_result_tabs,
             )
             self._outputs_layout.addWidget(row)
             self._output_widgets[field_name] = row
@@ -679,7 +698,10 @@ class _ResultsCard(QtWidgets.QWidget):
         # Container vai num QStackedWidget interno: index 0 é placeholder/botão
         # de hidratação, index 1 é o widget renderizado.
         self._plot_stack = QtWidgets.QStackedWidget(parent=self)
-        self._scroll_layout.addWidget(self._plot_stack, 1)
+        if self._has_result_tabs:
+            self._build_result_tabs()
+        else:
+            self._scroll_layout.addWidget(self._plot_stack, 1)
 
         # ── Página 0: placeholder/loading ──────────────────────────────────
         placeholder_page = QtWidgets.QWidget(parent=self._plot_stack)
@@ -859,6 +881,197 @@ class _ResultsCard(QtWidgets.QWidget):
         # Default: placeholder (será trocado quando payload chegar).
         self._plot_stack.setCurrentIndex(0)
 
+    # ── Abas de resultado (instruções de escore) ──────────────────────────────
+
+    #: Índices das abas. Gráfico primeiro porque é o que o usuário já
+    #: esperava encontrar aqui.
+    _ABA_GRAFICO = 0
+    _ABA_COMPARACOES = 1
+    _ABA_ESTATISTICAS = 2
+
+    def _build_result_tabs(self) -> None:
+        """Gráfico / Comparações / Estatísticas em volta do gráfico inline.
+
+        As estatísticas vêm do mesmo `ResourceInfoWidget` do painel de
+        propriedades, em modo compacto e sem os campos de artefato — esses
+        continuam na linha de saída logo acima, que diz o que o artefato é
+        enquanto a aba diz o que ele contém.
+        """
+        from interface.tabs.strategy_manager_v2.left_panel.resource_info_widget import (  # noqa: E501
+            ResourceInfoWidget,
+        )
+        from .result_widgets import ScoreComparisonTableWidget
+
+        self._result_tabs = QtWidgets.QTabWidget(parent=self)
+        self._result_tabs.setDocumentMode(True)
+        apply_themed_stylesheet(
+            self._result_tabs,
+            lambda t: (
+                "QTabWidget::pane { border: none; border-top: 1px solid "
+                + t("BORDER") + "; background: " + t("SURFACE") + "; }"
+                "QTabBar::tab { padding: 4px 12px; font-size: 11px;"
+                " background: transparent; color: " + t("TEXT_MUTED") + "; }"
+                "QTabBar::tab:selected { color: " + t("TEXT")
+                + "; border-bottom: 2px solid " + t("ACCENT") + "; }"
+            ),
+        )
+
+        grafico = QtWidgets.QWidget(parent=self._result_tabs)
+        g_layout = QtWidgets.QVBoxLayout(grafico)
+        g_layout.setContentsMargins(0, 0, 0, 0)
+        g_layout.setSpacing(0)
+        g_layout.addWidget(self._plot_stack, 1)
+        self._result_tabs.addTab(grafico, "Gráfico")
+
+        self._comparison_widget = ScoreComparisonTableWidget(
+            parent=self._result_tabs,
+        )
+        self._result_tabs.addTab(self._comparison_widget, "Comparações")
+
+        estatisticas = QtWidgets.QWidget(parent=self._result_tabs)
+        e_layout = QtWidgets.QVBoxLayout(estatisticas)
+        e_layout.setContentsMargins(8, 6, 8, 6)
+        e_layout.setSpacing(0)
+        self._stats_widget = ResourceInfoWidget(
+            parent=estatisticas, compact=True, show_basic_info=False,
+        )
+        e_layout.addWidget(self._stats_widget)
+        e_layout.addStretch(1)
+        self._result_tabs.addTab(estatisticas, "Estatísticas")
+
+        self._result_tabs.currentChanged.connect(self._on_result_tab_changed)
+        self._scroll_layout.addWidget(self._result_tabs, 1)
+
+    def _update_result_tabs(
+        self,
+        definition: LRStrategyDefinition,
+        context: Optional[StrategyExecutionContextProtocol],
+        resource_loader: Any,
+    ) -> None:
+        """Repassa o recurso de escores às abas de Comparações e Estatísticas.
+
+        A tabela de comparações é apenas AGENDADA aqui. Montá-la exige
+        varrer o conjunto, e a aba que abre por padrão é a do gráfico —
+        pagar a varredura a cada `update_state` seria trabalho jogado fora.
+        """
+        if self._result_tabs is None:
+            return
+
+        payload, resource_id, _ = self._resolve_plot_payload(
+            definition=definition, context=context,
+        )
+        recurso = (
+            definition.get_resource_by_id(resource_id)
+            if definition is not None and resource_id else None
+        )
+        parquet = self._resolve_scores_parquet_path(
+            definition, resource_id, resource_loader,
+        )
+
+        assinatura = (
+            resource_id,
+            id(payload) if payload is not None else None,
+            str(parquet) if parquet else None,
+            getattr(getattr(recurso, "artifact_ref", None), "hash", None),
+        )
+        if assinatura != self._comparison_pending:
+            self._comparison_pending = assinatura
+            self._comparison_signature = None
+            if self._comparison_widget is not None:
+                if resource_id is None:
+                    self._comparison_widget.show_placeholder()
+                else:
+                    self._comparison_widget.show_placeholder(
+                        "Carregando as comparações…"
+                    )
+        self._comparison_sources = (payload, parquet)
+
+        if self._stats_widget is not None:
+            if recurso is not None and (recurso.has_artifact or recurso.has_payload):
+                try:
+                    storage = (
+                        getattr(resource_loader, "_storage", None)
+                        if resource_loader else None
+                    )
+                    project_root = (
+                        getattr(storage, "project_root", None) if storage else None
+                    )
+                    self._stats_widget.show_resource(
+                        resource=recurso,
+                        project_root=project_root,
+                        definitions=None,
+                    )
+                except Exception:
+                    self._stats_widget.clear()
+            else:
+                self._stats_widget.clear()
+
+        # Se a aba de comparações já está à vista, monta agora — o usuário
+        # não tem como pedir de novo sem sair e voltar.
+        if self._result_tabs.currentIndex() == self._ABA_COMPARACOES:
+            self._build_comparison_table_now()
+
+    def _on_result_tab_changed(self, index: int) -> None:
+        if index == self._ABA_COMPARACOES:
+            self._build_comparison_table_now()
+
+    def _build_comparison_table_now(self) -> None:
+        """Monta a tabela de comparações para o recurso corrente."""
+        if self._comparison_widget is None:
+            return
+        if self._comparison_signature == self._comparison_pending:
+            return  # já montada para este recurso
+        payload, parquet = self._comparison_sources
+        if payload is None and parquet is None:
+            self._comparison_widget.show_placeholder()
+            return
+
+        from faceaudit.services.score_comparison_table_service import (
+            build_comparison_table,
+        )
+
+        with _with_wait_cursor():
+            try:
+                tabela = build_comparison_table(
+                    dataset=payload, parquet_path=parquet,
+                )
+            except Exception as exc:  # noqa: BLE001 — a mensagem vai pra tela
+                self._comparison_widget.show_placeholder(
+                    f"Não foi possível ler as comparações: {exc}"
+                )
+                return
+        if tabela is None:
+            self._comparison_widget.show_placeholder(
+                "O artefato de escores não está acessível em disco."
+            )
+            return
+        self._comparison_widget.set_table(tabela)
+        self._comparison_signature = self._comparison_pending
+
+    def _resolve_scores_parquet_path(
+        self,
+        definition: LRStrategyDefinition,
+        resource_id: Optional[str],
+        resource_loader: Any,
+    ):
+        """Caminho absoluto do parquet de escores, se houver artefato."""
+        if definition is None or not resource_id or resource_loader is None:
+            return None
+        recurso = definition.get_resource_by_id(resource_id)
+        if recurso is None or not recurso.has_artifact:
+            return None
+        try:
+            from pathlib import Path
+
+            storage = getattr(resource_loader, "_storage", None)
+            project_root = getattr(storage, "project_root", None) if storage else None
+            if project_root is None:
+                return None
+            caminho = Path(project_root) / recurso.artifact_ref.path
+            return caminho if caminho.is_file() else None
+        except Exception:
+            return None
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def update_state(
@@ -893,6 +1106,9 @@ class _ResultsCard(QtWidgets.QWidget):
                 context,
                 project_root=project_root,
             )
+
+        if self._result_tabs is not None:
+            self._update_result_tabs(definition, context, resource_loader)
 
         # Caminho do botão de Trajetória 3D (PIPELINE_APPLICATION): só
         # exibe quando a instrução já foi executada E
@@ -1274,6 +1490,15 @@ class _ResultsCard(QtWidgets.QWidget):
         self._last_rendered_payload_id = None
         self._last_render_args = None
         self._plot_rendered_once = False
+        # Re-execução produz outro conjunto de escores; manter a tabela
+        # antiga visível seria mostrar o resultado da execução anterior
+        # como se fosse o atual.
+        self._comparison_signature = None
+        self._comparison_pending = None
+        if self._comparison_widget is not None:
+            self._comparison_widget.show_placeholder()
+        if self._stats_widget is not None:
+            self._stats_widget.clear()
         self._show_placeholder()
 
     # ── Internal helpers ──────────────────────────────────────────────────────

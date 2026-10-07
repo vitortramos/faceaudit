@@ -24,6 +24,7 @@ from .validation_result_widget import ValidationResultWidget
 from .casework_visualization_widget import CaseworkVisualizationWidget
 from .hubness_report_widget import HubnessReportWidget
 from .hubness_ablation_widget import HubnessAblationWidget
+from .score_comparison_table_widget import ScoreComparisonTableWidget
 
 __all__ = [
     "ScoreDistributionWidget",
@@ -31,4 +32,5 @@ __all__ = [
     "CaseworkVisualizationWidget",
     "HubnessReportWidget",
     "HubnessAblationWidget",
+    "ScoreComparisonTableWidget",
 ]

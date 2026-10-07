@@ -43,11 +43,15 @@ class OutputRowWidget(QtWidgets.QFrame):
         resource_type: StrategyResourceType,
         parent: Optional[QtWidgets.QWidget] = None,
         read_only: bool = False,
+        show_scores_details: bool = True,
     ):
         super().__init__(parent)
         self._field_name = field_name
         self._resource_type = resource_type
         self._read_only = bool(read_only)
+        # Quando o card tem aba de Estatísticas, a contagem de pares vive
+        # lá e a linha de saída fica só com o que o artefato é.
+        self._show_scores_details = bool(show_scores_details)
 
         # ResourceInfoWidget embedado (modo read_only). Eagerly criado em
         # `_init_ui` e sempre visível quando há recurso com dados. Cache
@@ -166,7 +170,8 @@ class OutputRowWidget(QtWidgets.QFrame):
                 QtCore.Qt.WidgetAttribute.WA_DontShowOnScreen, True
             )
             self._info_widget = ResourceInfoWidget(
-                parent=self._info_container, compact=True
+                parent=self._info_container, compact=True,
+                show_scores_details=self._show_scores_details,
             )
             # Em compact o widget tem QTabWidget+QScrollArea (policy
             # Expanding default) — sem Maximum vertical o widget puxa o
