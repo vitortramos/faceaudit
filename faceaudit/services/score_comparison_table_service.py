@@ -106,6 +106,19 @@ class ComparisonRow:
     probe_keypoints: Optional[tuple] = None
     reference_bbox: Optional[tuple] = None
     reference_keypoints: Optional[tuple] = None
+    # Quantas faces formaram o template agregado, quando o lado é um
+    # template. `None` em face de foto; `0` em template cujo nome não
+    # revela o número.
+    probe_template_faces: Optional[int] = None
+    reference_template_faces: Optional[int] = None
+
+    @property
+    def probe_is_template(self) -> bool:
+        return self.probe_template_faces is not None
+
+    @property
+    def reference_is_template(self) -> bool:
+        return self.reference_template_faces is not None
 
     @property
     def tem_geometria(self) -> bool:
@@ -407,6 +420,17 @@ def _classe_de(mesma: Optional[bool]) -> str:
     return CLASSE_CASO
 
 
+def _rotulo_do_hash(face_hash: Any) -> str:
+    """Rótulo de uma face conhecida só pelo hash.
+
+    Template agregado é nomeado como tal; foto fica no hash abreviado, que
+    `attach_face_images` troca pelo nome real quando acha o dataset.
+    """
+    from faceaudit.services.aggregated_template_identity import template_label
+
+    return template_label(face_hash) or _abreviar_hash(face_hash)
+
+
 def _abreviar_hash(valor: Any) -> str:
     texto = str(valor or "")
     return texto[:_PREFIXO_HASH] if texto else "—"
@@ -433,6 +457,13 @@ def _linha_do_item(sample: Any, *, de_caso: bool = False) -> ComparisonRow:
         reference_hash=str(getattr(referencia, "face_hash", "") or ""),
         probe_image_path=_caminho_da_face(probe),
         reference_image_path=_caminho_da_face(referencia),
+        probe_template_faces=_template_faces(
+            getattr(probe, "face_hash", None), getattr(probe, "file_name", None),
+        ),
+        reference_template_faces=_template_faces(
+            getattr(referencia, "face_hash", None),
+            getattr(referencia, "file_name", None),
+        ),
     )
 
 
@@ -443,7 +474,19 @@ def _caminho_da_face(info: Any) -> Optional[str]:
 
 
 def _rotulo_da_face(info: Any) -> str:
-    """Nome do arquivo quando existe; hash abreviado como alternativa."""
+    """Nome do arquivo quando existe; hash abreviado como alternativa.
+
+    Template agregado tem rótulo próprio: o nome que a agregação inventou
+    (`AGG_<id>_k3_<digest>`) não é nome de arquivo nenhum, e exibi-lo como
+    se fosse mandaria o perito procurar uma foto que não existe.
+    """
+    from faceaudit.services.aggregated_template_identity import template_label
+
+    rotulo = template_label(
+        getattr(info, "face_hash", None), getattr(info, "file_name", None),
+    )
+    if rotulo is not None:
+        return rotulo
     nome = getattr(info, "file_name", None)
     if nome:
         return str(nome)
@@ -451,6 +494,22 @@ def _rotulo_da_face(info: Any) -> str:
     if caminho:
         return Path(str(caminho)).name
     return _abreviar_hash(getattr(info, "face_hash", None))
+
+
+def _template_faces(face_hash, file_name) -> Optional[int]:
+    """Quantas faces o template fundiu; `None` quando não é template.
+
+    `0` quando é template mas o nome não revela o número — distinguir isso
+    de "não é template" é o que permite rotular a linha corretamente sem
+    inventar uma contagem.
+    """
+    from faceaudit.services.aggregated_template_identity import (
+        contributing_faces, is_synthetic_template,
+    )
+
+    if not is_synthetic_template(face_hash):
+        return None
+    return contributing_faces(file_name) or 0
 
 
 def _linha_do_registro(registro: dict, *, de_caso: bool = False) -> ComparisonRow:
@@ -462,15 +521,25 @@ def _linha_do_registro(registro: dict, *, de_caso: bool = False) -> ComparisonRo
         log_lr = None
     return ComparisonRow(
         probe_identity=str(registro.get("probe_identity") or "—"),
-        probe_face=_abreviar_hash(registro.get("probe_face_hash")),
+        probe_face=_rotulo_do_hash(registro.get("probe_face_hash")),
         reference_identity=str(registro.get("reference_identity") or "—"),
-        reference_face=_abreviar_hash(registro.get("reference_face_hash")),
+        reference_face=_rotulo_do_hash(registro.get("reference_face_hash")),
         score=float(registro.get("raw_score") or 0.0),
         same_person=mesma,
         log_lr=float(log_lr) if log_lr is not None else None,
         classe=_classe_de(mesma),
         probe_hash=str(registro.get("probe_face_hash") or ""),
         reference_hash=str(registro.get("reference_face_hash") or ""),
+        # O parquet de escores não traz nome de arquivo, então aqui só dá
+        # para saber QUE é template, não de quantas faces. O nome, e com
+        # ele o número, chega em `attach_face_images` se o dataset
+        # agregado for alcançável.
+        probe_template_faces=_template_faces(
+            registro.get("probe_face_hash"), None,
+        ),
+        reference_template_faces=_template_faces(
+            registro.get("reference_face_hash"), None,
+        ),
     )
 
 
@@ -505,6 +574,9 @@ def attach_face_images(
     if table.is_empty:
         return table
 
+    from faceaudit.services.aggregated_template_identity import (
+        contributing_faces, template_label,
+    )
     from faceaudit.services.face_image_locator_service import locate_faces
 
     pendentes = {
@@ -531,6 +603,17 @@ def attach_face_images(
                 continue
             registro = achados.get(getattr(linha, f"{lado}_hash"))
             if registro is None:
+                continue
+            rotulo = template_label(
+                getattr(linha, f"{lado}_hash"), registro.file_name,
+            )
+            if rotulo is not None:
+                # Template: o dataset agregado tem o nome que revela de
+                # quantas faces ele é, mas não tem imagem para mostrar.
+                mudancas[f"{lado}_face"] = rotulo
+                mudancas[f"{lado}_template_faces"] = (
+                    contributing_faces(registro.file_name) or 0
+                )
                 continue
             mudancas[f"{lado}_image_path"] = str(registro.image_path)
             mudancas[f"{lado}_face"] = registro.file_name

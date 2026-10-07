@@ -91,9 +91,17 @@ class _FacePanel(QtWidgets.QWidget):
         keypoints,
         identidade: str,
         arquivo: str,
+        mensagem_sem_imagem: str = "",
     ) -> None:
         pixmap = None
-        mensagem = ""
+        mensagem = mensagem_sem_imagem
+        if mensagem:
+            # Template agregado: não há foto a procurar, e dizer "imagem
+            # não encontrada" mandaria o perito caçar um arquivo que nunca
+            # existiu.
+            self._tela.set_conteudo(None, None, None, mensagem)
+            self._legenda.setText(f"{identidade}\n{arquivo}")
+            return
         if caminho and Path(caminho).is_file():
             carregado = QtGui.QPixmap(str(caminho))
             if carregado.isNull():
@@ -292,12 +300,27 @@ class FaceComparisonDialog(QtWidgets.QDialog):
         self._probe.set_face(
             row.probe_image_path, row.probe_bbox, row.probe_keypoints,
             row.probe_identity, row.probe_face,
+            self._mensagem_de_template("probe"),
         )
         self._referencia.set_face(
             row.reference_image_path, row.reference_bbox,
             row.reference_keypoints, row.reference_identity, row.reference_face,
+            self._mensagem_de_template("reference"),
         )
         self._on_enquadrar(self._check_enquadrar.isChecked())
+
+    def _mensagem_de_template(self, lado: str) -> str:
+        """Texto do painel quando aquele lado é um template agregado."""
+        if not getattr(self._row, f"{lado}_is_template"):
+            return ""
+        from faceaudit.services.aggregated_template_identity import (
+            template_tooltip,
+        )
+
+        return template_tooltip(
+            getattr(self._row, f"{lado}_hash"),
+            getattr(self._row, f"{lado}_face"),
+        )
 
     # ── Montagem ─────────────────────────────────────────────────────────
 

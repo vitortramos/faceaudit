@@ -187,8 +187,8 @@ def test_varredura_nao_materializa_o_dataset(tmp_path):
     materializadas = []
     original = svc._filtrar_lote
 
-    def espiao(lote, procurados):
-        linhas = original(lote, procurados)
+    def espiao(lote, procurados, coluna_hash="hash"):
+        linhas = original(lote, procurados, coluna_hash)
         materializadas.append(len(linhas))
         return linhas
 

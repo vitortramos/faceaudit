@@ -35,10 +35,12 @@ from faceaudit.enums.project_folder import ProjectFolder
 # Colunas procuradas no parquet do dataset. `hash` é o nome da coluna do
 # face_hash lá; no parquet de escores o mesmo valor aparece como
 # `probe_face_hash` / `reference_face_hash`.
-_COLUNA_HASH = "hash"
-_COLUNAS_DESEJADAS = (
-    _COLUNA_HASH, "image_path", "file_name", "identity", "bbox", "keypoints",
-)
+# `FaceDataset` grava o hash da face em `hash`; `EmbeddingDataset`, que é o
+# que sai da agregação e de `PIPELINE_APPLICATION`, grava em `face_hash`.
+# Aceitar os dois é o que permite achar o nome de um template agregado, que
+# só existe no segundo.
+_COLUNAS_DE_HASH = ("hash", "face_hash")
+_OUTRAS_COLUNAS = ("image_path", "file_name", "identity", "bbox", "keypoints")
 
 _LINHAS_POR_LOTE = 65_536
 
@@ -91,18 +93,19 @@ def locate_faces(
             continue
 
         nomes = set(arquivo.schema_arrow.names)
-        if _COLUNA_HASH not in nomes or "image_path" not in nomes:
+        coluna_hash = next((c for c in _COLUNAS_DE_HASH if c in nomes), None)
+        if coluna_hash is None:
             continue
-        colunas = [c for c in _COLUNAS_DESEJADAS if c in nomes]
+        colunas = [coluna_hash] + [c for c in _OUTRAS_COLUNAS if c in nomes]
         modo, raiz = _ancoragem(arquivo)
 
         try:
             for lote in arquivo.iter_batches(
                 batch_size=_LINHAS_POR_LOTE, columns=colunas,
             ):
-                achados_no_lote = _filtrar_lote(lote, procurados)
+                achados_no_lote = _filtrar_lote(lote, procurados, coluna_hash)
                 for registro in achados_no_lote:
-                    h = registro[_COLUNA_HASH]
+                    h = registro[coluna_hash]
                     encontrados[h] = _registro(
                         registro, parquet_dir=caminho.parent,
                         path_mode=modo, path_root=raiz,
@@ -172,7 +175,7 @@ def _ancoragem(arquivo) -> tuple:
     return modo, raiz
 
 
-def _filtrar_lote(lote, procurados: set) -> List[dict]:
+def _filtrar_lote(lote, procurados: set, coluna_hash: str = "hash") -> List[dict]:
     """As linhas do lote cujos hashes estão sendo procurados.
 
     O filtro é feito sobre a coluna de hash antes de converter qualquer
@@ -182,7 +185,7 @@ def _filtrar_lote(lote, procurados: set) -> List[dict]:
     import numpy as np
     import pyarrow as pa
 
-    coluna = lote.column(_COLUNA_HASH).to_pylist()
+    coluna = lote.column(coluna_hash).to_pylist()
     indices = [i for i, h in enumerate(coluna) if h in procurados]
     if not indices:
         return []
@@ -198,13 +201,19 @@ def _registro(
 ) -> FaceImageRecord:
     from faceaudit.services.image_path_resolver import resolve_image_path
 
-    caminho = resolve_image_path(
-        linha.get("image_path") or "",
-        parquet_dir=parquet_dir,
-        path_mode=path_mode,
-        path_root=path_root,
+    bruto = linha.get("image_path") or ""
+    # Template agregado não tem imagem: `image_path` sai vazio de
+    # propósito, porque a média de N faces não corresponde a foto nenhuma.
+    # Resolver o vazio devolveria a pasta do parquet, que existe, e a linha
+    # passaria por face com imagem.
+    caminho = (
+        resolve_image_path(
+            bruto, parquet_dir=parquet_dir,
+            path_mode=path_mode, path_root=path_root,
+        )
+        if bruto else Path("")
     )
-    nome = linha.get("file_name") or caminho.name
+    nome = linha.get("file_name") or (caminho.name if bruto else "")
     return FaceImageRecord(
         image_path=caminho,
         file_name=str(nome),

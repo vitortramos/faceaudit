@@ -217,12 +217,12 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
             primeira = QtWidgets.QTableWidgetItem(row.probe_identity)
             primeira.setData(_PAPEL_INDICE_DA_LINHA, linha)
             self._grid.setItem(linha, 0, primeira)
-            self._grid.setItem(linha, 1, QtWidgets.QTableWidgetItem(row.probe_face))
+            self._grid.setItem(linha, 1, self._celula_de_texto(row, "probe"))
             self._grid.setItem(
                 linha, 2, QtWidgets.QTableWidgetItem(row.reference_identity)
             )
             self._grid.setItem(
-                linha, 3, QtWidgets.QTableWidgetItem(row.reference_face)
+                linha, 3, self._celula_de_texto(row, "reference"),
             )
             self._grid.setItem(
                 linha, 4, _NumericItem(formatar_numero(row.score, 4), row.score)
@@ -296,14 +296,43 @@ class ScoreComparisonTableWidget(QtWidgets.QWidget):
             # Sem imagem a célula mostra o texto, em vez de ficar vazia e
             # parecer que a comparação não tem aquele lado.
             item.setText(arquivo)
-        linhas = [f"Identidade: {identidade}", f"Arquivo: {arquivo}"]
+        item.setToolTip(self._dica_da_face(row, lado))
+        return item
+
+    def _celula_de_texto(
+        self, row: ComparisonRow, lado: str,
+    ) -> QtWidgets.QTableWidgetItem:
+        """A face no formato em texto, com a mesma dica do formato com
+        miniatura — a explicação do template não pode depender de a tabela
+        estar mostrando imagem."""
+        item = QtWidgets.QTableWidgetItem(getattr(row, f"{lado}_face"))
+        item.setToolTip(self._dica_da_face(row, lado))
+        return item
+
+    def _dica_da_face(self, row: ComparisonRow, lado: str) -> str:
+        identidade = getattr(row, f"{lado}_identity")
+        arquivo = getattr(row, f"{lado}_face")
+        caminho = getattr(row, f"{lado}_image_path")
         hash_ = getattr(row, f"{lado}_hash")
+        if getattr(row, f"{lado}_is_template"):
+            # Template não é foto que sumiu: é objeto de outra natureza, e
+            # a dica tem de dizer isso, em vez de parecer imagem faltando.
+            from faceaudit.services.aggregated_template_identity import (
+                template_tooltip,
+            )
+
+            linhas = [
+                f"Identidade: {identidade}",
+                arquivo,
+                template_tooltip(hash_, arquivo),
+            ]
+        else:
+            linhas = [f"Identidade: {identidade}", f"Arquivo: {arquivo}"]
+            if caminho:
+                linhas.append(str(caminho))
         if hash_:
             linhas.append(f"Hash: {hash_[:16]}…")
-        if caminho:
-            linhas.append(str(caminho))
-        item.setToolTip("\n".join(linhas))
-        return item
+        return "\n".join(linhas)
 
     def _item_de_classe(self, row: ComparisonRow) -> QtWidgets.QTableWidgetItem:
         item = QtWidgets.QTableWidgetItem(row.classe_label)
