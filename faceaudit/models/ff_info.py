@@ -24,8 +24,26 @@ class FFInfo:
     
     # Geometria (Arrays)
     # repr=False evita imprimir a matriz inteira no terminal ao debugar
+    #
+    # INVARIANTE: `bbox` e `keypoints` estão SEMPRE no sistema de
+    # coordenadas da imagem que o dataset guarda, isto é, a de
+    # `FaceInfo.image_path`. Quem muda a imagem muda a geometria junto, e
+    # na CRIAÇÃO do dataset: o recorte com margem translada os dois para a
+    # origem do recorte; a materialização alinhada os descarta, porque os
+    # pontos no sistema do recorte 112×112 não estão disponíveis ali e
+    # guardar os da foto original seria guardar outra régua.
+    #
+    # Sem o invariante, o mesmo par de campos significava coisas diferentes
+    # por fluxo e nada no dado dizia qual. Desenhá-los sobre a imagem punha
+    # os cinco pontos fora da face, e o consumidor do KPRPE, que lia este
+    # slot assumindo 112×112, alimentava o modelo com a régua errada e
+    # produzia embedding errado sem erro aparente.
+    #
+    # Os pontos no sistema 112×112, que os modelos KPRPE exigem, têm casa
+    # própria: `FaceInfo.extra_data[ALIGNED_KEYPOINTS_EXTRA_KEY]`.
     bbox: Optional[np.ndarray] = None
     keypoints: Optional[np.ndarray] = field(default=None, repr=False)
+
     
     # Embeddings (Vetores de características) — um slot por modelo
     # ForensicFace. Nomeação canônica `embedding_<ff_name>`; novos modelos

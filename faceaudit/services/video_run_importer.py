@@ -204,7 +204,10 @@ class VideoRunImporter:
                 yaw=pose.get("yaw"),
                 pitch=pose.get("pitch"),
                 roll=pose.get("roll"),
-                keypoints=akps,  # alinhados (112×112) — usados pelos modelos KPRPE
+                # `keypoints` NÃO recebe os pontos alinhados: por
+                # invariante o slot é o sistema da imagem que o dataset
+                # guarda. Os pontos 112×112 que o KPRPE exige vão para a
+                # casa própria deles, em `extra_data`, logo abaixo.
             )
             # Persiste os keypoints no parquet (via extra_data, JSON) — assim o
             # KPRPE/sepaelv6 funciona tanto no enrich E2E quanto num re-enrich.

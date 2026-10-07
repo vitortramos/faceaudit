@@ -7,7 +7,7 @@ import random
 import copy
 
 # Imports relativos
-from .face_info import FaceInfo
+from .face_info import FaceInfo, geometry_from_row
 from .ff_info import FFInfo
 from .ofiq_info import OFIQInfo
 from .serfiq_info import SERFIQInfo
@@ -105,6 +105,23 @@ _PROVENANCE_METADATA_KEYS = frozenset({
     "source_run_id",
     "source_run_manifest",
 })
+
+
+def _inteiro_ou_nada(valor):
+    """Inteiro, ou nada.
+
+    O parquet devolve float quando a coluna tem nulos, e
+    `detection_rotation=90.0` não compara igual aos inteiros de
+    `ROTACOES_PADRAO` — a orientação registrada deixaria de ser tentada
+    primeiro no enriquecimento, que é exatamente o que ela existe para
+    garantir.
+    """
+    if valor is None:
+        return None
+    try:
+        return int(round(float(valor)))
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -606,6 +623,22 @@ class FaceDataset:
                     age=clean(row.get('age_est')),
                     gender=clean(row.get('gender_est')),
                     ipd=clean(row.get('ipd')),
+                    # Escritos por `to_flat_dict` (estão em
+                    # `_FF_ATTR_COLUMNS`) e, até aqui, nunca relidos — o
+                    # mesmo defeito que o `det_score` acima teve. A
+                    # consequência é pior que a coluna sumir: a rotação que
+                    # a detecção precisou aplicar é o que explica por que a
+                    # caixa está no sistema do arquivo e a pose veio do
+                    # quadro corrigido, e um ciclo abrir → salvar a apagava.
+                    detection_rotation=_inteiro_ou_nada(
+                        clean(row.get('detection_rotation'))
+                    ),
+                    detection_det_size=_inteiro_ou_nada(
+                        clean(row.get('detection_det_size'))
+                    ),
+                    **geometry_from_row(
+                        row.get('bbox'), row.get('keypoints'),
+                    ),
                     **embeddings_per_model,
                 )
             

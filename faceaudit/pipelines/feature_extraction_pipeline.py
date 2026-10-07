@@ -18,6 +18,9 @@ from faceaudit.services import (
     OFIQService,
     SERFIQService
 )
+from faceaudit.services.face_geometry_frame_service import (
+    descartar_geometria, transladar_geometria,
+)
 from faceaudit.services.image_io import imwrite_unicode_safe
 from faceaudit.services.image_rotation_service import ROTACOES_PADRAO
 from faceaudit.services.oriented_alignment_service import (
@@ -1220,6 +1223,16 @@ class FeatureExtractionPipeline:
             # Libera memória — embedding e demais campos já estão em
             # ff_info; aligned_face foi persistido em disco.
             face.ff_info.aligned_face = None
+            # A imagem do dataset passou a ser o recorte ALINHADO 112×112, e
+            # a geometria da foto original não descreve mais nada nele.
+            # Descartar, e não traduzir: os pontos no sistema do recorte
+            # alinhado não estão disponíveis aqui (a transformação de
+            # similaridade fica dentro do `detect_and_align`), e guardar os
+            # da foto original seria guardar outra régua sob o mesmo nome —
+            # era isso que fazia o consumidor do KPRPE receber coordenadas
+            # erradas. Os pontos 112×112, quando o fluxo os tem, vivem em
+            # `extra_data[ALIGNED_KEYPOINTS_EXTRA_KEY]`.
+            descartar_geometria(face.ff_info)
             n_materialized += 1
 
             if progress_callback and (idx % 50 == 0 or idx + 1 == n):
@@ -1497,6 +1510,15 @@ class FeatureExtractionPipeline:
             face.hash = hash_service.calculate_file_hash(dst)
             if face.ff_info is not None:
                 face.ff_info.aligned_face = None   # já extraído; libera memória
+                # A imagem do dataset passou a ser o RECORTE, então a
+                # geometria passa a ser a do recorte. `bbox` e `keypoints`
+                # são, por invariante, o sistema da imagem apontada por
+                # `image_path`; deixá-los nas coordenadas da foto original
+                # punha a caixa e os cinco pontos fora da imagem gravada,
+                # e quem fosse marcar a face desenharia no vazio.
+                transladar_geometria(
+                    face.ff_info, x1, y1, x2 - x1, y2 - y1,
+                )
             n_materialized += 1
 
             if progress_callback and (idx % 50 == 0 or idx + 1 == n):

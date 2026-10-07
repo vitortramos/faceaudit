@@ -463,6 +463,33 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         metric_name="detection", direction=QualityDirection.HIGHER_IS_BETTER,
         scale=(0.0, 1.0), quality_subtype=QualitySubtype.AUX,
     )
+    # Geometria da detecção. Sem ela não há como marcar a face na imagem
+    # nem saber QUAL face de um quadro com várias produziu o embedding —
+    # redetectar depois pode cair noutra.
+    specs["bbox"] = ColumnSpec(
+        name="bbox", label="Caixa da face",
+        role=ColumnRole.GEOMETRY, source=ColumnSource.FF,
+        dtype=ColumnDType.LIST,
+        editable=False, visible_default=False, category=CATEGORY_FF_IDENT,
+        description=(
+            "Caixa da face no sistema de coordenadas do ARQUIVO, em "
+            "[x1, y1, x2, y2]. Quando a detecção precisou girar a imagem, a "
+            "caixa já volta convertida para o arquivo como ele está gravado "
+            "— a rotação aplicada fica em 'Rotação p/ detectar'."
+        ),
+    )
+    specs["keypoints"] = ColumnSpec(
+        name="keypoints", label="Pontos da face",
+        role=ColumnRole.GEOMETRY, source=ColumnSource.FF,
+        dtype=ColumnDType.LIST,
+        editable=False, visible_default=False, category=CATEGORY_FF_IDENT,
+        description=(
+            "Os cinco pontos do detector, achatados em "
+            "[x1, y1, … x5, y5]: olho esquerdo, olho direito, nariz, canto "
+            "esquerdo da boca, canto direito. São os pontos que definiram o "
+            "alinhamento de onde saiu o embedding, no sistema do arquivo."
+        ),
+    )
     # Compressão: a declarada pela câmera e a calculada do arquivo atual.
     # Coexistem de propósito — a divergência entre elas é sinal de
     # recompressão depois da captura.

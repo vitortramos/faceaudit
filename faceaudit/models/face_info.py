@@ -23,6 +23,70 @@ _FF_ATTR_COLUMNS = (
     "detection_rotation", "detection_det_size",
 )
 
+# Geometria da detecção, achatada para o parquet. A caixa é
+# `[x1, y1, x2, y2]`; os cinco pontos vêm em `[x1, y1, x2, y2, …, x5, y5]`,
+# na ordem que o detector entrega (olho esquerdo, olho direito, nariz, canto
+# esquerdo da boca, canto direito). Achatado, e não aninhado, porque
+# `list<double>` atravessa o parquet sem surpresa de tipo — é o que os
+# embeddings já fazem.
+_COLUNA_BBOX = "bbox"
+_COLUNA_KEYPOINTS = "keypoints"
+_N_KEYPOINTS = 5
+
+
+def _geometry_columns(ff_info) -> Dict[str, Any]:
+    """Colunas de geometria de um `FFInfo`, prontas para o parquet.
+
+    Ausente continua ausente: geometria que não existe não gera coluna, em
+    vez de gerar uma coluna de nulos que depois se confunde com dado
+    perdido.
+    """
+    saida: Dict[str, Any] = {}
+    caixa = getattr(ff_info, "bbox", None)
+    if caixa is not None:
+        try:
+            achatada = [float(v) for v in np.asarray(caixa).reshape(-1)[:4]]
+            if len(achatada) == 4:
+                saida[_COLUNA_BBOX] = achatada
+        except (TypeError, ValueError):
+            pass
+    pontos = getattr(ff_info, "keypoints", None)
+    if pontos is not None:
+        try:
+            achatados = [float(v) for v in np.asarray(pontos).reshape(-1)]
+            if len(achatados) == 2 * _N_KEYPOINTS:
+                saida[_COLUNA_KEYPOINTS] = achatados
+        except (TypeError, ValueError):
+            pass
+    return saida
+
+
+def geometry_from_row(bbox_raw, keypoints_raw) -> Dict[str, Any]:
+    """Reconstrói `bbox` e `keypoints` lidos do parquet.
+
+    Devolve kwargs para o construtor do `FFInfo`. Valor com tamanho errado
+    é descartado: meia caixa desenharia um retângulo errado sobre a face, o
+    que é pior que não desenhar nada.
+    """
+    saida: Dict[str, Any] = {}
+    try:
+        if bbox_raw is not None:
+            caixa = np.asarray(list(bbox_raw), dtype=np.float32).reshape(-1)
+            if caixa.size == 4:
+                saida["bbox"] = caixa
+    except (TypeError, ValueError):
+        pass
+    try:
+        if keypoints_raw is not None:
+            pontos = np.asarray(
+                list(keypoints_raw), dtype=np.float32,
+            ).reshape(-1)
+            if pontos.size == 2 * _N_KEYPOINTS:
+                saida["keypoints"] = pontos.reshape(_N_KEYPOINTS, 2)
+    except (TypeError, ValueError):
+        pass
+    return saida
+
 
 @dataclass
 class FaceInfo:
@@ -235,6 +299,23 @@ class FaceInfo:
                     if emb is None:
                         continue
                     ff_data[member.parquet_column] = emb.tolist()
+
+            # --- REINJEÇÃO DA GEOMETRIA ---
+            # `exclude_heavy` tira bbox/keypoints junto com os embeddings e
+            # o recorte alinhado, e eles não voltavam: a caixa e os cinco
+            # pontos existiam só em memória, durante a ingestão, e morriam
+            # na gravação. Quem abrisse o parquet depois não tinha como
+            # marcar a face na imagem nem conferir QUAL face do quadro
+            # produziu o embedding — num retrato de grupo, isso é a
+            # diferença entre conferir o exame e redetectar na esperança de
+            # cair na mesma face.
+            #
+            # São 14 floats por face, e vão junto com os embeddings
+            # (`include_embeddings`) porque a tabela da interface não os
+            # usa: pagá-los em dataset de milhões de linhas carregado em
+            # memória para exibição seria desperdício.
+            if include_embeddings:
+                ff_data.update(_geometry_columns(self.ff_info))
             
             # Tratamento de conflitos de nome
             if 'gender' in ff_data:

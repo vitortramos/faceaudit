@@ -28,11 +28,20 @@ from faceaudit.services.ff_service import _aligned_keypoints_from_face
 _KPS = [[30.0, 40.0], [80.0, 41.0], [55.0, 65.0], [35.0, 85.0], [78.0, 86.0]]
 
 
-def test_helper_reads_ff_info_keypoints():
+def test_pontos_no_sistema_do_dataset_nao_servem_ao_kprpe():
+    """O KPRPE lê SÓ a casa própria dos pontos alinhados.
+
+    A premissa anterior era que bastava haver pontos em
+    `ff_info.keypoints`. Mas aquele slot é, por invariante, o sistema de
+    coordenadas da imagem que o dataset guarda: num dataset de recortes
+    vindo de fotos são as coordenadas da foto original, e alimentar o
+    modelo com elas produzia embedding errado sem erro aparente. Seguir
+    sem keypoints, que o encoder sabe recusar, é melhor que seguir com os
+    errados.
+    """
     fi = FaceInfo(image_path="x.png", ff_info=FFInfo(keypoints=_KPS))
-    arr = _aligned_keypoints_from_face(fi)
-    assert arr is not None and arr.shape == (5, 2)
-    assert np.allclose(arr, _KPS)
+
+    assert _aligned_keypoints_from_face(fi) is None
 
 
 def test_helper_reads_extra_data_json():

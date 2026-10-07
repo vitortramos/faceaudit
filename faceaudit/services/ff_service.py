@@ -214,11 +214,12 @@ def _aligned_keypoints_from_face(face) -> Optional[np.ndarray]:
     Fonte: `ff_info.keypoints` (em memória, fluxo ponta-a-ponta) ou
     `extra_data['aligned_keypoints_112']` (JSON persistido no parquet, para
     re-enriquecimento). Necessário para os modelos KPRPE (sepaelv6)."""
-    ff = getattr(face, "ff_info", None)
-    kp = getattr(ff, "keypoints", None) if ff is not None else None
-    if kp is not None:
-        arr = np.asarray(kp, dtype=np.float32)
-        return arr if arr.shape == (5, 2) else None
+    # Lê SÓ a casa própria dos pontos alinhados. `ff_info.keypoints` é, por
+    # invariante, o sistema da imagem que o dataset guarda — num dataset de
+    # recortes vindo de fotos são as coordenadas da foto original, e
+    # alimentar o KPRPE com elas produzia embedding errado sem erro
+    # aparente. Seguir sem keypoints, que o encoder sabe recusar, é melhor
+    # que seguir com os errados.
     raw = (getattr(face, "extra_data", None) or {}).get(ALIGNED_KEYPOINTS_EXTRA_KEY)
     if raw:
         try:
