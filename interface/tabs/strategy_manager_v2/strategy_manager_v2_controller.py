@@ -1195,24 +1195,33 @@ class StrategyManagerV2Controller(QtCore.QObject):
                 return None
 
         # 3. Ajusta path_root pro destino dentro do projeto. O service
-        # cria a estrutura `<target_images_dir>/images/<file>` com
-        # path_root="images" — mas como já estamos dentro de
-        # `<project>/images/<id>/`, o path_root "images" aponta pra
-        # `<project>/images/<id>/images/`. Pra ficar mais limpo, ajustamos
-        # o path_root do dataset salvo pra apontar `images/<id>/images`
-        # relativo ao parquet (que vai pra `<project>/datasets/`).
+        # cria `<target_images_dir>/images/<file>` com path_root="images",
+        # que é relativo à pasta de imagens; o parquet vai para outro
+        # lugar, então o path_root tem de ser recalculado em relação à
+        # pasta DELE.
         #
-        # Math: parquet em `<project>/datasets/<id>.parquet`, imagens em
-        # `<project>/images/<id>/images/`. Path_root relativo ao parquet
-        # = `../images/<id>/images`. POSIX, cross-platform.
-        result.dataset.path_root = f"../{ProjectFolder.IMAGES.value}/{resource_id}/images"
-
-        # 4. Salva parquet localizado
+        # Calculado, nunca suposto. A versão anterior escrevia
+        # `../images/<id>/images` à mão, supondo o parquet em
+        # `<project>/datasets/`. Ele vai para `datasets/primary/`, um
+        # nível mais fundo, então faltava um `..`: a âncora resolvia para
+        # `datasets/images/...`, que não existe. O dataset importava "com
+        # sucesso", abria, listava as faces e não encontrava imagem
+        # nenhuma — e a tabela de comparações ficava sem as faces sem
+        # dizer por quê. Derivar de `relpath` mantém isto correto se o
+        # destino do parquet mudar de novo.
         parquet_dest = (
             project_root
             / StrategyFileType.SOURCE_DATASET.build_path(dataset_id=resource_id)
         )
         parquet_dest.parent.mkdir(parents=True, exist_ok=True)
+
+        import os as _os
+
+        result.dataset.path_root = _os.path.relpath(
+            target_images_dir / "images", parquet_dest.parent,
+        ).replace("\\", "/")
+
+        # 4. Salva parquet localizado
         result.dataset.to_parquet(parquet_dest)
 
         # 5. Calcula hash + monta artifact_ref
