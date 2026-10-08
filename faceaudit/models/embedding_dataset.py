@@ -16,6 +16,45 @@ from .aggregation_provenance import (
 )
 
 
+def _resolvedor_de_caminho(parquet: Path, meta: dict):
+    """Devolve a função que resolve `image_path` deste parquet.
+
+    Parquet sem `faceaudit:path_mode` é tratado como absoluto, que é o
+    caso dos parquets de `EmbeddingDataset` e o comportamento herdado dos
+    anteriores ao campo. A resolução passa pelo `resolve_image_path`
+    compartilhado — reimplementá-la aqui faria o dataset leve divergir do
+    rico na primeira mudança.
+    """
+    from faceaudit.enums.path_mode import PathMode
+    from faceaudit.services.image_path_resolver import (
+        normalize_stored_path, resolve_image_path,
+    )
+
+    bruto = meta.get("faceaudit:path_mode") or PathMode.ABSOLUTE.value
+    try:
+        modo = PathMode(bruto)
+    except ValueError:
+        modo = PathMode.ABSOLUTE
+    if modo is PathMode.ABSOLUTE:
+        return lambda caminho: caminho or ""
+
+    raiz = meta.get("faceaudit:path_root") or None
+    if raiz:
+        raiz = normalize_stored_path(raiz)
+    pasta = parquet.parent
+
+    def _resolver(caminho):
+        if not caminho:
+            return ""
+        return str(
+            resolve_image_path(
+                caminho, parquet_dir=pasta, path_mode=modo, path_root=raiz,
+            )
+        )
+
+    return _resolver
+
+
 def _prov_count(row_dict):
     """Número de faces agregadas, lido da linha do parquet.
 
@@ -332,6 +371,16 @@ class EmbeddingDataset:
         raw_meta = table.schema.metadata or {}
         decoded_meta = {k.decode('utf-8'): v.decode('utf-8') for k, v in raw_meta.items()}
 
+        # Âncora do parquet de origem. `EmbeddingDataset` NÃO tem
+        # `path_mode` nem `path_root` — é dataset leve, sem noção de
+        # pasta —, então o caminho precisa sair daqui já resolvido. Sem
+        # isto, carregar um dataset RELATIVE (o que "copiar imagens para o
+        # projeto" produz) rendia `image_path` com só o nome do arquivo, e
+        # tudo a jusante herdava um caminho que não abre: os escores, a
+        # proveniência da agregação e a tabela de comparações, que ficava
+        # sem as faces sem dizer por quê.
+        resolvedor = _resolvedor_de_caminho(p, decoded_meta)
+
         # Fallback para DataFrame vazio
         if df.empty:
             return cls(
@@ -456,7 +505,7 @@ class EmbeddingDataset:
             info = EmbeddingInfo(
                 embedding=emb_array,
                 face_hash=hash_value or '',
-                image_path=row_dict.get('image_path', ''),
+                image_path=resolvedor(row_dict.get('image_path', '')),
                 identity=row_dict.get('identity'),
                 file_name=row_dict.get('file_name', ''),
                 source=row_dict.get('source'),

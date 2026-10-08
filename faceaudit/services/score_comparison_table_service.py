@@ -477,9 +477,26 @@ def _linha_do_item(sample: Any, *, de_caso: bool = False) -> ComparisonRow:
 
 
 def _caminho_da_face(info: Any) -> Optional[str]:
-    """Caminho da imagem quando o payload o carrega."""
+    """Caminho da imagem do payload, SE ele abrir.
+
+    Caminho preenchido não é caminho resolvido. Um payload pode trazer só
+    o nome do arquivo (dataset relativo carregado sem âncora) ou um
+    absoluto de outra máquina, e confiar nele tinha duas consequências: a
+    tabela se declarava com imagens e abria no formato de miniatura, e
+    `attach_face_images` não via a face como pendente e portanto nunca
+    recuperava o caminho real pelo hash. Resultado: formato de imagem com
+    célula sem imagem.
+
+    A conferência é por face da TABELA, não do conjunto — são no máximo
+    uma centena de linhas, não os milhões de pares.
+    """
     caminho = getattr(info, "image_path", None)
-    return str(caminho) if caminho else None
+    if not caminho:
+        return None
+    try:
+        return str(caminho) if Path(str(caminho)).is_file() else None
+    except OSError:
+        return None
 
 
 def _rotulo_de_template(prov: AggregationProvenance) -> str:
