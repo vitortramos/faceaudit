@@ -558,8 +558,13 @@ class SimilarityScoreDataset(JSONSerializableMixin):
             x_min -= 0.5
             x_max += 0.5
 
-        # Histograma — 60 bins, density=True (mesmo formato que o widget).
-        bins = np.linspace(x_min, x_max, 60)
+        # Histograma com a grade COMPARTILHADA — a mesma que a figura de
+        # contextualização do caso usa, para que duas figuras dos mesmos
+        # escores não saiam com faixas diferentes. Ver
+        # `faceaudit/models/plot_histogram_bins.py`.
+        from faceaudit.models.plot_histogram_bins import arestas_compartilhadas
+
+        bins = arestas_compartilhadas(gen_arr, imp_arr, case_arr)
         gen_hist, _ = (
             np.histogram(gen_arr, bins=bins, density=True)
             if n_gen

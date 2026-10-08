@@ -260,16 +260,22 @@ def test_concordancia_de_numero_na_legenda_do_caso():
         assert caso and caso[0].endswith(esperado), f"n={n}: {caso}"
 
 
-def test_faixas_do_histograma_acompanham_o_tamanho_do_grupo():
-    """50 faixas servem para centenas de milhares e deixam ~9 observações
-    por faixa em grupos de poucas centenas, produzindo serrilhado que é
-    ruído amostral e que num laudo pode ser lido como estrutura."""
-    from faceaudit.models.casework_visualization_plot import _faixas_para
+def test_as_duas_classes_dividem_a_grade_de_faixas():
+    """A premissa anterior era o contrário: faixas pela raiz do tamanho de
+    CADA classe, para suavizar o grupo pequeno. O preço era
+    comparabilidade — com `density=True`, larguras diferentes produzem
+    alturas que não se comparam, e num laudo isso apresenta como
+    comparável o que não é. Grupo escasso parece escasso, e isso é
+    verdade sobre ele. Detalhe em `tests/test_shared_histogram_bins.py`.
+    """
+    ax = _desenhar(score_type="RAW")
 
-    assert _faixas_para(364742) == 50
-    assert _faixas_para(468) == 22
-    assert _faixas_para(5) == 10, "piso evita histograma de três barras"
-    assert _faixas_para(0) == 10
+    larguras = {
+        round(p.get_width(), 6)
+        for p in ax.patches
+        if getattr(p, "get_height", None) and p.get_height() > 0
+    }
+    assert len(larguras) == 1, larguras
 
 
 def test_limiar_de_eer_fica_fora_por_padrao():

@@ -20,6 +20,7 @@ import numpy as np
 from matplotlib.figure import Figure
 
 from faceaudit.enums.project_folder import ProjectFolder
+from faceaudit.models.plot_histogram_bins import arestas_compartilhadas
 from faceaudit.models.plot_number_format import (
     aplicar_formato_brasileiro,
     formatar_numero,
@@ -52,25 +53,6 @@ _LARGURA_RELATIVA_BARRA = 0.9
 # Quanto o eixo Y se estende acima do dado, para a legenda não cobrir
 # as anotações do caso.
 _FOLGA_SUPERIOR = 1.32
-
-
-def _faixas_para(n: int) -> int:
-    """Número de faixas do histograma, a partir do tamanho DO GRUPO.
-
-    Um valor fixo para todos os grupos trata mal o menor deles: 50 faixas
-    servem para centenas de milhares de comparações e deixam ~9 observações
-    por faixa quando o grupo tem poucas centenas, produzindo um serrilhado
-    que é ruído amostral e que, numa figura de laudo, pode ser lido como
-    estrutura do dado.
-
-    Raiz de n é a regra simples e usual; o piso evita histograma de três
-    barras e o teto mantém a figura legível.
-    """
-    import math
-
-    if n <= 0:
-        return 10
-    return max(10, min(50, int(round(math.sqrt(n)))))
 
 
 def draw_casework_visualization(
@@ -141,6 +123,14 @@ def draw_casework_visualization(
     # Folga proporcional, com piso pequeno. O piso anterior de 0,5 era
     # largo demais para escore de similaridade, que vive em [-1, 1]:
     # deixava um terço do eixo vazio de cada lado.
+    # UMA grade de faixas para as duas classes, cobrindo o intervalo dos
+    # dados — a folga abaixo é só do eixo. Grade por classe deixava as
+    # barras com larguras diferentes, e com `density=True` as alturas
+    # param de se comparar; a mesma referência desenhada pela instrução de
+    # escores saía como distribuição inteira e esta saía com um punhado de
+    # barras largas. Ver `plot_histogram_bins`.
+    arestas = arestas_compartilhadas(gen, imp, case)
+
     pad = max(0.05 * (x_max - x_min), 0.05)
     x_min -= pad
     x_max += pad
@@ -148,7 +138,7 @@ def draw_casework_visualization(
 
     if imp.size > 0:
         ax.hist(
-            imp, bins=_faixas_para(imp.size), density=True,
+            imp, bins=arestas, density=True,
             color=_COR_PESSOAS_DIFERENTES, alpha=0.75,
             rwidth=_LARGURA_RELATIVA_BARRA,
             label=f"Pessoas diferentes (n={imp.size:,})".replace(",", "."),
@@ -160,7 +150,7 @@ def draw_casework_visualization(
 
     if gen.size > 0:
         ax.hist(
-            gen, bins=_faixas_para(gen.size), density=True,
+            gen, bins=arestas, density=True,
             color=_COR_MESMA_PESSOA, alpha=0.75,
             rwidth=_LARGURA_RELATIVA_BARRA,
             label=f"Mesma pessoa (n={gen.size:,})".replace(",", "."),
