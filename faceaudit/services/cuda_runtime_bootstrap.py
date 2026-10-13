@@ -183,7 +183,12 @@ def _escolher_fonte() -> Tuple[Optional[str], List[str]]:
     """
     raiz = _raiz_dos_pacotes_nvidia()
     if raiz is not None:
-        dirs = sorted(glob.glob(os.path.join(raiz, "*", "bin")))
+        # Os pacotes da série 13 juntam o toolkit em `nvidia/cu13/bin/x86_64`;
+        # os da série 12 têm um `nvidia/<componente>/bin` por componente.
+        dirs = sorted(
+            glob.glob(os.path.join(raiz, "*", "bin"))
+            + glob.glob(os.path.join(raiz, "*", "bin", "x86_64"))
+        )
         if dirs:
             return "pacotes pip", dirs
 
@@ -272,7 +277,13 @@ def cuda_provider_disponivel() -> bool:
             [helper.make_tensor_value_info("x", TensorProto.FLOAT, [1])],
             [helper.make_tensor_value_info("y", TensorProto.FLOAT, [1])],
         )
-        modelo = helper.make_model(grafo)
+        # IR e opset fixos: o `onnx` costuma andar à frente do ORT, e um
+        # modelo de IR mais novo que o suportado falha antes de o provider
+        # ser sequer consultado — o teste diria "sem CUDA" por engano.
+        modelo = helper.make_model(
+            grafo, opset_imports=[helper.make_opsetid("", 17)]
+        )
+        modelo.ir_version = 8
         sessao = ort.InferenceSession(
             modelo.SerializeToString(),
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
