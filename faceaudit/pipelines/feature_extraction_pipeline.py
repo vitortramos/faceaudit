@@ -893,13 +893,29 @@ class FeatureExtractionPipeline:
                                     del ff_svc
                                     gc.collect()
                     else:
+                        # Recortes de vídeo com a geometria da extração:
+                        # realinha pelos pontos em vez de detectar de novo
+                        # (a detecção no recorte falha em face pequena).
+                        realinhar = self._pode_realinhar_pelos_pontos(dataset)
+                        realinhadas = 0
+                        if realinhar:
+                            realinhadas = self._preparar_realinhamento(
+                                target, progress_callback)
                         self._resolve_ff_service(config).process_dataset(
                             target, progress_callback=ff_callback,
                             models=wanted_models,
                             rotation_attempts=(
                                 ROTACOES_PADRAO if config.try_rotated_detection else ()
                             ),
+                            realign_from_keypoints=realinhar,
                         )
+                        if realinhar and realinhadas:
+                            dataset.record_embedding_source(
+                                wanted_models,
+                                "realigned_from_crop_keypoints"
+                                if realinhadas == len(target.faces)
+                                else "mixed_realigned_and_other",
+                            )
                     self._log_stage_summary(
                         "FF", target, lambda f: f.ff_info is not None,
                     )
@@ -1076,6 +1092,83 @@ class FeatureExtractionPipeline:
             progress_callback("Enriquecimento Concluído!", 100)
 
         return dataset
+
+    # =========================================================================
+    # Realinhamento pelos pontos gravados (recortes de vídeo)
+    # =========================================================================
+
+    @staticmethod
+    def _pode_realinhar_pelos_pontos(dataset: FaceDataset) -> bool:
+        """Os pontos do dataset são os da detecção que gerou o embedding?
+
+        Decidido pela proveniência e não pela presença dos pontos: só assim
+        se sabe que realinhar por eles reproduz o alinhamento original, em
+        vez de alinhar outra face. Dataset alinhado não tem o que realinhar.
+        """
+        from faceaudit.services.face_alignment_window_service import (
+            ORIGENS_DE_GEOMETRIA_REALINHAVEIS,
+        )
+        if bool(getattr(dataset, "is_aligned", False)):
+            return False
+        origem = (getattr(dataset, "provenance_metadata", None) or {}).get("geometry_source")
+        return origem in ORIGENS_DE_GEOMETRIA_REALINHAVEIS
+
+    def _preparar_realinhamento(
+        self,
+        target: FaceDataset,
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> int:
+        """Mede, nas faces que vão ser realinhadas, quanto da face 112×112
+        ficaria sem pixel, e avisa. Devolve quantas serão realinhadas.
+
+        A medida exata vem da importação (que conhece o tamanho do quadro).
+        Face importada antes disso recebe aqui o limite superior: conta tudo
+        o que sai do recorte, inclusive o que já estava além da borda do
+        quadro na extração.
+        """
+        from faceaudit.services.face_alignment_window_service import (
+            ALIGNMENT_MISSING_PIXELS_COLUMN, fracao_sem_pixel,
+        )
+        from faceaudit.services.ff_service import _pontos_da_imagem, _tem_alinhada_em_cache
+        from PIL import Image
+
+        realinhadas = 0
+        com_falta: List[str] = []
+        for face in target.faces:
+            if _tem_alinhada_em_cache(face):
+                continue
+            pontos = _pontos_da_imagem(face)
+            if pontos is None:
+                continue
+            realinhadas += 1
+            extra = face.extra_data if isinstance(face.extra_data, dict) else {}
+            falta = extra.get(ALIGNMENT_MISSING_PIXELS_COLUMN)
+            if falta is None:
+                try:
+                    with Image.open(target.resolve_image_path(face)) as img:
+                        largura, altura = img.size
+                    falta = round(fracao_sem_pixel(pontos, largura, altura), 6)
+                except Exception:
+                    falta = None
+                if falta is not None:
+                    extra[ALIGNMENT_MISSING_PIXELS_COLUMN] = falta
+                    face.extra_data = extra
+            if falta:
+                com_falta.append(Path(str(face.image_path)).name)
+
+        if com_falta:
+            exemplos = ", ".join(com_falta[:5]) + (
+                f" e mais {len(com_falta) - 5}" if len(com_falta) > 5 else "")
+            msg = (
+                f"⚠ {len(com_falta)} de {realinhadas} face(s) realinhada(s) pelos "
+                "pontos gravados têm parte da face alinhada fora do recorte; o "
+                "embedding delas pode diferir do que seria extraído do quadro "
+                f"(coluna '{ALIGNMENT_MISSING_PIXELS_COLUMN}'). Ex.: {exemplos}"
+            )
+            print(f"[Pipeline] {msg}")
+            if progress_callback:
+                progress_callback(msg, 0)
+        return realinhadas
 
     # =========================================================================
     # PR 18 — Helpers de idempotência por estágio
