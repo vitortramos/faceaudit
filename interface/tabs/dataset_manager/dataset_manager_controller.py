@@ -2131,6 +2131,10 @@ class DatasetManagerController(QtCore.QObject):
                     "rows": len(dataset),
                     "identities": dataset.number_of_identities,
                     **self._metadados_da_deteccao(dataset),
+                    **self._metadados_do_ofiq(
+                        dataset,
+                        rodou=getattr(self._ingestion_config, "compute_ofiq", False),
+                    ),
                 },
                 hash_file=True,
             )
@@ -2205,6 +2209,29 @@ class DatasetManagerController(QtCore.QObject):
         # limitados pelo mesmo teto das outras entradas de custódia.
         meta["undetected_included_files"] = self._nomes_de_arquivo(incluidas)
         meta["undetected_discarded_files"] = self._nomes_de_arquivo(descartadas)
+        return meta
+
+    def _metadados_do_ofiq(self, dataset, *, rodou: bool) -> dict:
+        """De qual OFIQ vieram as métricas de qualidade, para a custódia.
+
+        `ofiq_versions` conta as faces por origem e vale mesmo quando o
+        OFIQ não rodou nesta operação (as métricas antigas continuam no
+        dataset). Versão, modo e modelos do serviço só entram quando ele
+        de fato rodou — senão a entrada atribuiria à operação um OFIQ que
+        ela não usou.
+        """
+        from faceaudit.services.ofiq_provenance_service import summarize_ofiq_versions
+
+        meta: dict = {}
+        resumo = summarize_ofiq_versions(getattr(dataset, "faces", []) or [])
+        if resumo:
+            meta["ofiq_versions"] = resumo
+        servico = getattr(self.pipeline, "ofiq_service", None) if self.pipeline else None
+        if rodou and servico is not None and hasattr(servico, "provenance"):
+            try:
+                meta.update(servico.provenance())
+            except Exception as e:  # noqa: BLE001 — custódia é best-effort
+                meta["ofiq_provenance_error"] = str(e)
         return meta
 
     @staticmethod
@@ -3356,6 +3383,14 @@ class DatasetManagerController(QtCore.QObject):
             n_giradas = self._contar_giradas(dataset)
             if n_giradas:
                 meta["faces_detected_after_rotation"] = n_giradas
+            from faceaudit.services.ofiq_provenance_service import mixed_versions_message
+            meta.update(self._metadados_do_ofiq(
+                dataset,
+                rodou=getattr(self._enrich_config, "compute_ofiq", False),
+            ))
+            aviso_ofiq = mixed_versions_message(meta.get("ofiq_versions") or {})
+            if aviso_ofiq:
+                descricao += " " + aviso_ofiq
             self._audit(AuditOperation.ENRICH, descricao, metadata=meta)
             # Consumido: não pode vazar para a próxima operação.
             self._revisao_recuperadas = []
@@ -3369,7 +3404,15 @@ class DatasetManagerController(QtCore.QObject):
             # apontando pra entrada de uma versão pré-enriquecimento.
             if self.current_path:
                 self.dataset_saved_to_project.emit(str(self.current_path))
-            QMessageBox.information(self.view, "Sucesso", "Enriquecimento concluído com sucesso!")
+            if aviso_ofiq:
+                # Concluiu, mas o dataset ficou heterogêneo: dizer na hora,
+                # e não deixar só na custódia, onde ninguém olha antes do laudo.
+                QMessageBox.warning(
+                    self.view, "Enriquecimento concluído",
+                    "Enriquecimento concluído.\n\n" + aviso_ofiq,
+                )
+            else:
+                QMessageBox.information(self.view, "Sucesso", "Enriquecimento concluído com sucesso!")
             self.set_dirty(True)
         else:
             QMessageBox.warning(self.view, "Cancelado", "Operação cancelada ou finalizada sem dados.")
