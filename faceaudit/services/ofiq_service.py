@@ -9,6 +9,13 @@ from tqdm.auto import tqdm
 
 # ATUALIZAÇÃO: Adicionado FaceDataset aos imports
 from faceaudit.models import FaceInfo, OFIQInfo, FaceDataset
+from faceaudit.services.ofiq_provenance_service import (
+    detect_ofiq_version,
+    models_fingerprint,
+)
+
+# Modo de chamada gravado em `OFIQInfo.backend`.
+BACKEND_EXECUTABLE = "executable"
 
 class OFIQService:
     """
@@ -50,6 +57,26 @@ class OFIQService:
             raise FileNotFoundError(f"Executável OFIQ não encontrado em: {self.exe_path}")
         if not os.path.exists(self.config_path):
             raise FileNotFoundError(f"Pasta 'data' do OFIQ não encontrada em: {self.config_path}")
+
+        # Vai para cada face processada. None quando o executável não está
+        # numa instalação com `Version.txt` (ex.: achado solto no PATH).
+        self.version: Optional[str] = detect_ofiq_version(self.exe_path)
+        self.backend: str = BACKEND_EXECUTABLE
+        self._models_sha256: Optional[str] = None
+
+    def provenance(self) -> Dict[str, Optional[str]]:
+        """Versão, modo e impressão digital dos modelos, para a cadeia de custódia.
+
+        A impressão digital lê os ~420 MB de modelos uma vez por sessão
+        (cerca de 1 s) e fica guardada.
+        """
+        if self._models_sha256 is None:
+            self._models_sha256 = models_fingerprint(self.config_path)
+        return {
+            "ofiq_version": self.version,
+            "ofiq_backend": self.backend,
+            "ofiq_models_sha256": self._models_sha256,
+        }
 
     def process_face(
         self,
@@ -166,7 +193,10 @@ class OFIQService:
                         face_original = mapa_temp_face.get(fname)
                         if face_original:
                             # Converte o dict cru do CSV para nosso objeto OFIQInfo
-                            face_original.ofiq_info = OFIQInfo.from_dict(row)
+                            info = OFIQInfo.from_dict(row)
+                            info.version = self.version
+                            info.backend = self.backend
+                            face_original.ofiq_info = info
 
         except Exception as e:
             print(f"Erro crítico no lote OFIQ: {e}")

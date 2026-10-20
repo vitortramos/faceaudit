@@ -821,6 +821,28 @@ def _face_default_specs() -> Dict[str, ColumnSpec]:
         dtype=ColumnDType.FLOAT,
         editable=False, visible_default=False, category=CATEGORY_OFIQ_METADATA,
     )
+    specs["ofiq_version"] = ColumnSpec(
+        name="ofiq_version", label="OFIQ Versão",
+        role=ColumnRole.METADATA, source=ColumnSource.OFIQ,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False, category=CATEGORY_OFIQ_METADATA,
+        description=(
+            "Versão do OFIQ que calculou as métricas desta face. A v1.0.3 é a "
+            "implementação de referência da ISO/IEC 29794-5; da v1.1.0 em "
+            "diante, implementação conforme. Vazio = calculada antes de o "
+            "FaceAudit registrar a versão."
+        ),
+    )
+    specs["ofiq_backend"] = ColumnSpec(
+        name="ofiq_backend", label="OFIQ Modo",
+        role=ColumnRole.METADATA, source=ColumnSource.OFIQ,
+        dtype=ColumnDType.STR,
+        editable=False, visible_default=False, category=CATEGORY_OFIQ_METADATA,
+        description=(
+            "Como o OFIQ foi chamado: 'executable' (programa OFIQSampleApp) "
+            "ou 'library' (biblioteca carregada pelo FaceAudit)."
+        ),
+    )
     specs["ofiq_unified_quality_score_raw"] = ColumnSpec(
         name="ofiq_unified_quality_score_raw", label="OFIQ Unified Score (raw)",
         role=ColumnRole.QUALITY, source=ColumnSource.OFIQ,

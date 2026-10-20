@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from typing import List, Dict, Any, Optional, Union, Tuple, Callable, TYPE_CHECKING, Set
 from pathlib import Path
 import pandas as pd
@@ -534,6 +535,12 @@ class FaceDataset:
 
         # 2. Mapa de Tradução (Parquet -> Atributo Interno)
         parquet_mapping = {
+            # `FaceInfo.to_row` grava os ângulos brutos como `ofiq_yaw`/
+            # `_pitch`/`_roll` (sem `_raw`). Sem estas três entradas eles
+            # voltavam como extras e `head_pose_*_raw` ficava vazio a cada
+            # abertura do dataset.
+            'yaw': 'head_pose_yaw_raw', 'pitch': 'head_pose_pitch_raw',
+            'roll': 'head_pose_roll_raw',
             'yaw_raw': 'head_pose_yaw_raw', 'yaw_scalar': 'head_pose_yaw_scalar',
             'pitch_raw': 'head_pose_pitch_raw', 'pitch_scalar': 'head_pose_pitch_scalar',
             'roll_raw': 'head_pose_roll_raw', 'roll_scalar': 'head_pose_roll_scalar',
@@ -551,7 +558,7 @@ class FaceDataset:
             'no_head_covering_scalar': 'no_head_coverings_scalar', 'no_head_covering_raw': 'no_head_coverings_raw'
         }
         
-        valid_ofiq_fields = set(OFIQInfo.__annotations__.keys())
+        valid_ofiq_fields = {f.name for f in dataclass_fields(OFIQInfo)} - {"_extra_metrics"}
 
         # 3. Iteração e Reconstrução
         for _, row in df.iterrows():
@@ -657,7 +664,9 @@ class FaceDataset:
                     if pd.notna(val) and val != "":
                         raw_key = col[5:]
                         attr_name = parquet_mapping.get(raw_key, raw_key)
-                        if attr_name in valid_ofiq_fields:
+                        if attr_name in OFIQInfo.TEXT_FIELDS:
+                            ofiq_values[attr_name] = str(val)
+                        elif attr_name in valid_ofiq_fields:
                             try:
                                 ofiq_values[attr_name] = float(val)
                             except (ValueError, TypeError):
