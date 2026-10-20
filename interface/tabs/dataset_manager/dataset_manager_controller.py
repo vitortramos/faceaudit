@@ -55,6 +55,22 @@ from faceaudit.services.hash_service import HashService
 _MAX_AUDIT_IDENTIFIERS = 50
 
 
+def _sem_infinito(valor):
+    """Troca ±inf por "inf"/"-inf" (texto) numa estrutura JSON.
+
+    Intervalo aberto de filtro numérico é guardado como `float('inf')`, e o
+    `json.dumps` o escreve como `Infinity` — que não é JSON válido e quebra
+    a leitura da cadeia de custódia por qualquer ferramenta fora do Python.
+    """
+    if isinstance(valor, float) and valor in (float("inf"), float("-inf")):
+        return "inf" if valor > 0 else "-inf"
+    if isinstance(valor, dict):
+        return {k: _sem_infinito(v) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [_sem_infinito(v) for v in valor]
+    return valor
+
+
 class DatasetManagerController(QtCore.QObject):
     """
     Controlador Mestre do Gerenciamento de Datasets.
@@ -1525,6 +1541,32 @@ class DatasetManagerController(QtCore.QObject):
             path, a_gravar, origem, manter_origem=manter_origem,
         )
 
+    def _descrever_conteudo_salvo(self, a_gravar) -> dict:
+        """O que está sendo gravado: o dataset inteiro, a vista filtrada ou
+        uma seleção — e, havendo filtro ativo, o critério dele.
+
+        Com filtro, o dataset na tela É o recorte e `dataset_original` é o
+        inteiro; a seleção chega como outro objeto (cópias das faces).
+        """
+        filtro = getattr(self, "current_filter_config", None)
+        filtrado = (
+            getattr(self, "dataset_original", None) is not None
+            and bool(getattr(filtro, "filters", None))
+        )
+        if a_gravar is not self.dataset:
+            tipo = "selection"
+        elif filtrado:
+            tipo = "filtered_view"
+        else:
+            tipo = "full"
+        out = {"content": tipo}
+        if filtrado:
+            try:
+                out["filter"] = _sem_infinito(filtro.to_dict())
+            except Exception as e:
+                out["filter_error"] = str(e)
+        return out
+
     def _gravar_e_finalizar_salvar_como(
         self, path: str, a_gravar=None, origem=None, *,
         manter_origem: bool = False,
@@ -1546,17 +1588,22 @@ class DatasetManagerController(QtCore.QObject):
         old_path = self.current_path
         rebase = getattr(self, "_last_path_rebase", None)
         self._last_path_rebase = None
+        # O QUE foi gravado vai para a cadeia de custódia — capturado antes
+        # de os ramos abaixo desfazerem o estado de filtro. Um dataset
+        # filtrado gravado com só "rows: 83" não permite reconstruir depois
+        # qual critério produziu aquelas 83 linhas.
+        conteudo = self._descrever_conteudo_salvo(a_gravar)
         a_gravar.name = Path(path).stem
         a_gravar.to_parquet(path)
-        # PR 25 (Tema 5.4) — preserva o sidecar do dataset original
-        # quando o usuário faz Save As: copia o `.audit.json` antigo
-        # para o novo path antes de adicionar a entrada SAVE_AS,
-        # mantendo a cadeia de custódia ininterrupta.
+        # PR 25 (Tema 5.4) — o arquivo novo herda a cadeia de custódia do
+        # original: COPIA o `.audit.json` antes de adicionar a entrada
+        # SAVE_AS. Copiar, não mover — mover deixava o dataset de origem
+        # sem cadeia nenhuma.
         if old_path and old_path != path:
             try:
-                AuditLogService.migrate_sidecar(old_path, path)
+                AuditLogService.copy_sidecar(old_path, path)
             except Exception:
-                pass  # se a migração falhar, segue com chain nova
+                pass  # se a cópia falhar, segue com chain nova
         salvo_nome = a_gravar.name
         salvo_linhas = len(a_gravar)
         salvo_ids = a_gravar.number_of_identities
@@ -1603,10 +1650,30 @@ class DatasetManagerController(QtCore.QObject):
                     rebase.action.value if rebase is not None else "not_needed"
                 ),
                 "path_root": rebase.path_root if rebase is not None else None,
+                **conteudo,
             },
             path_override=path,
             hash_file=True,
         )
+        # A cadeia da origem foi copiada, não movida — e ela pode conter
+        # alterações registradas "até gravar" (exclusões, edições) que
+        # foram gravadas no arquivo NOVO. Sem esta entrada, a cadeia da
+        # origem afirmaria exclusões que o arquivo dela não sofreu.
+        if old_path and old_path != path and Path(old_path).exists():
+            self._audit(
+                AuditOperation.SAVE_AS,
+                f"Conteúdo gravado em novo arquivo '{Path(path).name}'. "
+                "Este arquivo não foi alterado; alterações registradas "
+                "como pendentes nesta cadeia, se houver, foram gravadas no "
+                "arquivo novo.",
+                metadata={
+                    "saved_to": str(path),
+                    "this_file_unchanged": True,
+                    **conteudo,
+                },
+                path_override=old_path,
+                hash_file=True,
+            )
 
         if rebase is not None and rebase.changed:
             QMessageBox.information(

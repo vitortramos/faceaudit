@@ -1739,6 +1739,9 @@ class InstructionConfigPanel(QtWidgets.QWidget):
         ValidationRuleType.MODEL_FITTED: lambda p: (
             f"modelo: <b>{p.get('model_resource_id', '—')}</b>"
         ),
+        ValidationRuleType.EMBEDDINGS_COMPLETE: lambda p: (
+            f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
+        ),
         ValidationRuleType.EMBEDDING_DIM_MATCHES_MODEL: lambda p: (
             f"dataset: <b>{p.get('dataset_resource_id', '—')}</b>"
             f" × modelo: <b>{p.get('model_resource_id', '—')}</b>"

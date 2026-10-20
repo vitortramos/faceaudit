@@ -23,6 +23,7 @@ from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
 from faceaudit.models.ff_info import FFInfo
 from faceaudit.models.video.face_provenance import FaceProvenanceScalarProjection
+from faceaudit.services.face_geometry_frame_service import transladar_geometria
 from faceaudit.services.hash_service import HashService
 from faceaudit.models.column_catalog import (
     ColumnSpec, ColumnRole, ColumnSource, ColumnDType,
@@ -133,6 +134,9 @@ class VideoRunImporter:
         faces: List[FaceInfo] = []
         n_skipped_status = n_hash_mismatch = n_missing = 0
         any_aligned = False
+        # Recortes cuja biometria vem da face ALINHADA da extração (ver
+        # `_load_extraction_aligned_face`), e os que ficaram sem ela.
+        n_biometria_da_extracao = n_sem_alinhada = 0
         n_com_captura = 0
         for sidecar in sorted(meta_dir.glob("*.json")):
             nm = sidecar.name
@@ -209,6 +213,32 @@ class VideoRunImporter:
                 # guarda. Os pontos 112×112 que o KPRPE exige vão para a
                 # casa própria deles, em `extra_data`, logo abaixo.
             )
+            if not used_aligned:
+                # Recorte com margem: a geometria é a da detecção que gerou
+                # o recorte, levada do sistema do QUADRO para o do recorte —
+                # o invariante do dataset (bbox/keypoints no sistema da
+                # imagem que ele guarda). Na face alinhada não há o que
+                # gravar: a transformação de similaridade não é translação.
+                self._geometry_into_crop(ff, artifact, det)
+                if enrich:
+                    alinhada = self._load_extraction_aligned_face(
+                        run_dir, artifact, validate_hashes)
+                    if alinhada is False:
+                        n_hash_mismatch += 1
+                        if logger:
+                            logger(f"hash divergente {artifact.get('aligned_image_file')}")
+                        continue
+                    if alinhada is None:
+                        n_sem_alinhada += 1
+                    else:
+                        # Vai como cache em memória: o FFService extrai o
+                        # embedding dela SEM detectar de novo. Redetectar no
+                        # recorte derruba a confiança do detector em faces
+                        # pequenas (medido: ~0,25–0,30) e a face cai abaixo
+                        # do limiar — ou pior, ele acha outra região. Não é
+                        # persistida (`to_dict` descarta `aligned_face`).
+                        ff.aligned_face = alinhada
+                        n_biometria_da_extracao += 1
             # Persiste os keypoints no parquet (via extra_data, JSON) — assim o
             # KPRPE/sepaelv6 funciona tanto no enrich E2E quanto num re-enrich.
             if akps:
@@ -250,6 +280,21 @@ class VideoRunImporter:
         ds.is_aligned = any_aligned
         ds.column_specs = build_video_column_specs()
         ds.provenance_metadata = self._build_provenance_metadata(manifest)
+        if not any_aligned:
+            # Recorte com margem: a geometria gravada é a da extração.
+            ds.provenance_metadata["geometry_source"] = "video_extraction_detection"
+        if n_biometria_da_extracao:
+            ds.provenance_metadata["embedding_source"] = (
+                "video_extraction_aligned_face"
+                if not n_sem_alinhada else "mixed_extraction_aligned_and_redetection"
+            )
+            if logger:
+                logger(
+                    f"biometria de {n_biometria_da_extracao} recorte(s) extraída da face "
+                    "alinhada da extração (sem nova detecção)"
+                    + (f"; {n_sem_alinhada} sem face alinhada no run serão "
+                       "redetectados no recorte" if n_sem_alinhada else "")
+                )
 
         if n_com_captura and logger:
             logger(
@@ -279,12 +324,83 @@ class VideoRunImporter:
                 progress_callback(
                     f"Enriquecendo: carregando {n_models} modelo(s) e extraindo "
                     "embeddings… (pode levar minutos com vários modelos)", 45)
-            pipeline.enrich_existing_dataset(ds, cfg, progress_callback=progress_callback)
+            try:
+                pipeline.enrich_existing_dataset(ds, cfg, progress_callback=progress_callback)
+            finally:
+                # A face alinhada só servia ao enriquecimento; 112×112×3 por
+                # face, em run de milhares de faces, é memória que sobra.
+                for face in ds.faces:
+                    if face.ff_info is not None:
+                        face.ff_info.aligned_face = None
             self._finalize_manifest(meta_dir, run_dir, ds, now=None)
 
         return ds
 
     # ---- helpers ----
+    @staticmethod
+    def _crop_origin(artifact: Dict[str, Any], det: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+        """Origem `(x1, y1)` do recorte no quadro, ou None se não há como saber.
+
+        Runs novos gravam `crop_box_xyxy`. Nos antigos a conta do
+        `extend_bbox` é refeita a partir da caixa e do fator de margem — a
+        ORIGEM não depende do tamanho do quadro (o recorte só é preso a zero
+        à esquerda e acima; a largura do quadro só limita o canto oposto).
+        """
+        box = artifact.get("crop_box_xyxy")
+        if box and len(box) >= 2:
+            return int(box[0]), int(box[1])
+        bbox = det.get("bbox_xyxy")
+        margem = artifact.get("crop_margin_factor")
+        if not bbox or margem is None:
+            return None
+        import numpy as np
+        from forensicface.geometry import extend_bbox
+        enorme = (2 ** 31, 2 ** 31)
+        x1, y1, _, _ = extend_bbox(np.asarray(bbox, dtype=float), enorme, float(margem))
+        return int(x1), int(y1)
+
+    @classmethod
+    def _geometry_into_crop(cls, ff: FFInfo, artifact: Dict[str, Any], det: Dict[str, Any]) -> None:
+        """Grava em `ff` a caixa e os 5 pontos da extração, no sistema do recorte."""
+        import numpy as np
+        origem = cls._crop_origin(artifact, det)
+        bbox = det.get("bbox_xyxy")
+        kps = det.get("keypoints_5pt")
+        if origem is None or (bbox is None and kps is None):
+            return
+        if bbox is not None:
+            ff.bbox = np.asarray(bbox, dtype=np.float32).reshape(-1)[:4]
+        if kps is not None:
+            ff.keypoints = np.asarray(kps, dtype=np.float32).reshape(5, 2)
+        tamanho = list(artifact.get("image_size_px") or [])
+        largura, altura = (tamanho + [None, None])[:2]
+        transladar_geometria(ff, origem[0], origem[1], largura, altura)
+
+    def _load_extraction_aligned_face(self, run_dir: Path, artifact: Dict[str, Any], validate_hashes: bool):
+        """Face alinhada 112×112 da extração, em RGB.
+
+        None quando o run não a tem (runs antigos) ou ela não lê; False
+        quando o hash diverge do registrado — a mesma política do recorte:
+        arquivo adulterado não entra.
+        """
+        rel = artifact.get("aligned_image_file")
+        if not rel:
+            return None
+        caminho = run_dir / rel
+        if not caminho.exists():
+            return None
+        esperado = artifact.get("aligned_image_sha256")
+        if validate_hashes and esperado:
+            atual = self._hash.calculate_file_hash(caminho)
+            if atual and atual != esperado:
+                return False
+        import cv2
+        import numpy as np
+        bgr = cv2.imdecode(np.fromfile(str(caminho), dtype=np.uint8), cv2.IMREAD_COLOR)
+        if bgr is None or bgr.shape != (112, 112, 3):
+            return None
+        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
     @staticmethod
     def _default_ingestion_config(name: str, run_dir: Path) -> Any:
         """DatasetIngestionConfig mínimo p/ enrich (FF apenas; input_path é
