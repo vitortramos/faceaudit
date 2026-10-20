@@ -237,6 +237,21 @@ def _tem_alinhada_em_cache(face) -> bool:
     return alinhada is not None and getattr(alinhada, "shape", None) == (112, 112, 3)
 
 
+def _pontos_da_imagem(face) -> Optional[np.ndarray]:
+    """Os 5 pontos da face no sistema da imagem do dataset, `(5, 2)`, ou None."""
+    ff = getattr(face, "ff_info", None)
+    kps = getattr(ff, "keypoints", None) if ff is not None else None
+    if kps is None:
+        return None
+    try:
+        arr = np.asarray(kps, dtype=np.float64).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.size != 10 or not np.all(np.isfinite(arr)):
+        return None
+    return arr.reshape(5, 2)
+
+
 def _sub_dataset(dataset: FaceDataset, faces: List[FaceInfo]) -> FaceDataset:
     """Recorte do dataset com as MESMAS FaceInfo (mutações propagam)."""
     sub = FaceDataset(
@@ -1267,6 +1282,7 @@ class FFService:
         model: Optional[str] = None,
         models: Optional[List[str]] = None,
         rotation_attempts: Sequence[int] = (),
+        realign_from_keypoints: bool = False,
     ) -> FaceDataset:
         """
         Processa um dataset completo, gerando biometria para todas as faces
@@ -1284,6 +1300,11 @@ class FFService:
                 (extração crua) — os caminhos em lote partem de faces já
                 alinhadas ou de um `aligned_face` em cache, onde não há
                 orientação a corrigir.
+            realign_from_keypoints: faces com os 5 pontos gravados são
+                realinhadas a partir deles, SEM detecção. Só quem conhece a
+                origem dos pontos pode pedir: eles têm de ser os da detecção
+                que gerou o embedding original, no sistema da imagem que o
+                dataset guarda (ver `geometry_source` do dataset).
         """
         total_faces = len(dataset)
         if total_faces == 0:
@@ -1325,26 +1346,43 @@ class FFService:
         # o dataset inteiro na redetecção — que é justamente o que o cache
         # existe para evitar (o importador de vídeo carrega a face alinhada
         # da extração porque redetectar no recorte de uma face pequena falha).
+        #
+        # Mesma lógica para o realinhamento pelos pontos gravados: quem tem
+        # os pontos vai por ele, quem não tem segue a detecção.
         if not is_aligned:
             com_cache = [f for f in dataset if _tem_alinhada_em_cache(f)]
-            if com_cache and len(com_cache) < total_faces:
-                ids_cache = {id(f) for f in com_cache}
-                sem_cache = [f for f in dataset if id(f) not in ids_cache]
+            ids = {id(f) for f in com_cache}
+            realinhaveis = [
+                f for f in dataset
+                if realign_from_keypoints and id(f) not in ids
+                and _pontos_da_imagem(f) is not None
+            ]
+            ids |= {id(f) for f in realinhaveis}
+            resto = [f for f in dataset if id(f) not in ids]
+            if realinhaveis or (com_cache and resto):
                 print(
-                    f"[FFService] {len(com_cache)} face(s) com face alinhada "
-                    f"em cache (sem detecção) e {len(sem_cache)} sem."
+                    f"[FFService] {len(com_cache)} face(s) com face alinhada em "
+                    f"cache, {len(realinhaveis)} realinhada(s) pelos pontos "
+                    f"gravados (ambas sem detecção) e {len(resto)} pela detecção."
                 )
-                self._process_dataset_cached_aligned_batched(
-                    _sub_dataset(dataset, com_cache), len(com_cache),
-                    model, models, progress_callback,
-                )
-                self.process_dataset(
-                    _sub_dataset(dataset, sem_cache),
-                    progress_callback=progress_callback, model=model,
-                    models=models, rotation_attempts=rotation_attempts,
-                )
+                if com_cache:
+                    self._process_dataset_cached_aligned_batched(
+                        _sub_dataset(dataset, com_cache), len(com_cache),
+                        model, models, progress_callback,
+                    )
+                if realinhaveis:
+                    self._process_dataset_realign_from_keypoints(
+                        _sub_dataset(dataset, realinhaveis), len(realinhaveis),
+                        model, models, progress_callback,
+                    )
+                if resto:
+                    self.process_dataset(
+                        _sub_dataset(dataset, resto),
+                        progress_callback=progress_callback, model=model,
+                        models=models, rotation_attempts=rotation_attempts,
+                    )
                 # O consenso de gênero roda por identidade e tem de ver o
-                # dataset inteiro, não cada metade.
+                # dataset inteiro, não cada parte.
                 self._apply_identity_gender_consensus(dataset)
                 return dataset
 
@@ -1703,6 +1741,104 @@ class FFService:
             _err_cb(
                 f"[FFService] {n_sem_alinhamento} de {total_faces} face(s) "
                 "ficaram sem embedding por falha de detecção/alinhamento."
+            )
+
+    def _process_dataset_realign_from_keypoints(
+        self,
+        dataset: "FaceDataset",
+        total_faces: int,
+        model: Optional[str],
+        models: Optional[List[str]],
+        progress_callback: Optional[Callable[[str, int], None]],
+    ) -> None:
+        """Realinha cada face pelos 5 pontos gravados e extrai em lote.
+
+        Sem detecção: é a mesma transformação que gerou o alinhamento
+        original, aplicada à imagem que o dataset guarda (o recorte). Existe
+        porque detectar de novo num recorte de face pequena derruba a
+        confiança do detector e a face cai abaixo do limiar — ou ele acha
+        outra região. Os pontos alinhados são os da própria transformação,
+        o que serve ao KPRPE (sepaelv6).
+
+        MERGE de `fiqa_score` + slots de embedding, como os outros caminhos
+        em lote: o resto do FFInfo é o da extração e fica.
+        """
+        from faceaudit.services.face_alignment_window_service import realinhar
+
+        target_models = list(models) if models else (
+            [model] if model is not None else [self._default_model])
+        buffer_crops: List[np.ndarray] = []
+        buffer_faces: List[FaceInfo] = []
+        buffer_kps: List[np.ndarray] = []
+
+        def _err_cb(msg: str) -> None:
+            if progress_callback:
+                progress_callback(f"⚠ {msg}", 0)
+            else:
+                print(msg)
+
+        def flush() -> None:
+            if not buffer_crops:
+                return
+            try:
+                ff_infos = self.extract_embeddings_from_aligned_faces_batch(
+                    np.stack(buffer_crops, axis=0), models=target_models,
+                    aligned_keypoints_batch=np.stack(buffer_kps, axis=0),
+                    error_callback=_err_cb,
+                )
+            except Exception as e:
+                _err_cb(f"[FFService] Falha no batch de tamanho {len(buffer_crops)}: {e}")
+                ff_infos = [None] * len(buffer_faces)
+            for face, new_ff in zip(buffer_faces, ff_infos):
+                if new_ff is None:
+                    continue
+                for key in ("fiqa_score", *_FFINFO_EMBEDDING_SLOTS):
+                    val = getattr(new_ff, key, None)
+                    if val is not None:
+                        setattr(face.ff_info, key, val)
+            buffer_crops.clear()
+            buffer_faces.clear()
+            buffer_kps.clear()
+
+        n_falhas = 0
+        for processed, face in enumerate(tqdm(
+            dataset, desc=f"Processando {dataset.name} (realinhamento+batch)",
+            unit="face",
+        ), start=1):
+            image_path = str(dataset.resolve_image_path(face))
+            img = self._safe_read_image(image_path)
+            pontos = _pontos_da_imagem(face)
+            motivo = None
+            if img is None:
+                motivo = "imagem ilegível"
+            elif pontos is None:
+                motivo = "sem os 5 pontos gravados"
+            else:
+                try:
+                    alinhada, pontos_alinhados = realinhar(img, pontos)
+                except (ValueError, RuntimeError) as e:
+                    motivo = f"pontos degenerados ({e})"
+                else:
+                    buffer_crops.append(alinhada)
+                    buffer_faces.append(face)
+                    buffer_kps.append(pontos_alinhados)
+            if motivo is not None:
+                n_falhas += 1
+                _err_cb(f"[FFService] {motivo}: {Path(image_path).name}")
+
+            if len(buffer_crops) >= self._batch_size:
+                flush()
+            if progress_callback:
+                progress_callback(
+                    f"Extraindo embedding ({processed}/{total_faces}) "
+                    f"[realinhamento+batch={self._batch_size}]...",
+                    int((processed / total_faces) * 95),
+                )
+        flush()
+        if n_falhas:
+            _err_cb(
+                f"[FFService] {n_falhas} de {total_faces} face(s) não puderam "
+                "ser realinhadas pelos pontos gravados."
             )
 
     def _process_dataset_aligned_batched(

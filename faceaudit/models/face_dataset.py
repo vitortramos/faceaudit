@@ -116,6 +116,11 @@ _PROVENANCE_METADATA_KEYS = frozenset({
     # da extração). Sem isto, o recorte e o embedding parecem ter a mesma
     # origem e não têm.
     "embedding_source",
+    # Mesma informação POR MODELO, em JSON: num dataset de recortes de vídeo
+    # o sepaelv2 pode vir da face alinhada da extração e um modelo
+    # acrescentado depois, do realinhamento pelos pontos gravados. Ver
+    # `FaceDataset.record_embedding_source`.
+    "embedding_sources_by_model",
 })
 
 
@@ -243,6 +248,28 @@ class FaceDataset:
     def __iter__(self):
         """Permite iteração direta sobre as faces (ex: for face in dataset)."""
         return iter(self.faces)
+
+    def record_embedding_source(self, models, source: str) -> None:
+        """Registra de onde veio o embedding de cada modelo (proveniência).
+
+        Acumula em `provenance_metadata["embedding_sources_by_model"]` (JSON
+        modelo → origem); um modelo registrado de novo tem a origem trocada,
+        porque o embedding dele foi recalculado.
+        """
+        import json
+
+        atual = {}
+        bruto = self.provenance_metadata.get("embedding_sources_by_model")
+        if bruto:
+            try:
+                atual = dict(json.loads(bruto))
+            except (TypeError, ValueError):
+                atual = {}
+        for m in models or []:
+            atual[str(m)] = str(source)
+        self.provenance_metadata["embedding_sources_by_model"] = json.dumps(
+            atual, sort_keys=True, ensure_ascii=False,
+        )
 
     @property
     def number_of_identities(self) -> int:

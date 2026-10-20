@@ -25,6 +25,7 @@ import numpy as np
 
 from forensicface.geometry import extend_bbox
 
+from faceaudit.services.face_alignment_window_service import caixa_do_recorte
 from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_io import imwrite_unicode_safe
 from faceaudit.services.video_provenance_writer import VideoProvenanceWriter
@@ -1027,6 +1028,16 @@ class VideoFrameFaceExtractionService:
     ) -> Optional[FaceProvenance]:
         bbox = np.asarray(d["bbox"]).astype(float).flatten()[:4]
         ext = extend_bbox(np.asarray(bbox), frame.shape, margin_factor=config.margin)
+        # O recorte cobre também a janela de alinhamento: em cabeça
+        # inclinada o quadrado girado do gabarito escapa da margem pedida,
+        # e realinhar depois a partir do recorte (que é o que o dataset
+        # guarda) poria preto onde a extração tinha pixel.
+        kps = d.get("keypoints")
+        if kps is not None:
+            try:
+                ext = caixa_do_recorte(ext, kps, frame.shape[1], frame.shape[0])
+            except (ValueError, RuntimeError):
+                pass  # pontos degenerados: fica a margem pedida
         x1, y1, x2, y2 = (int(v) for v in ext)
         if x2 <= x1 or y2 <= y1:
             return None

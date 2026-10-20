@@ -23,6 +23,7 @@ from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
 from faceaudit.models.ff_info import FFInfo
 from faceaudit.models.video.face_provenance import FaceProvenanceScalarProjection
+from faceaudit.services.face_alignment_window_service import ALIGNMENT_MISSING_PIXELS_COLUMN
 from faceaudit.services.face_geometry_frame_service import transladar_geometria
 from faceaudit.services.hash_service import HashService
 from faceaudit.models.column_catalog import (
@@ -36,6 +37,7 @@ SELECTION_WARNING = (
 )
 
 _CATEGORY_VIDEO = "Vídeo (extração)"
+
 
 
 def build_video_column_specs() -> Dict[str, ColumnSpec]:
@@ -73,6 +75,19 @@ def build_video_column_specs() -> Dict[str, ColumnSpec]:
         "video_min_det_score": meta_num("video_min_det_score", "Min det (vídeo)", ColumnDType.FLOAT),
         "video_min_fiqa_score": meta_num("video_min_fiqa_score", "Min FIQA (vídeo)", ColumnDType.FLOAT),
         "anchor_embedding_fingerprint": meta_str("anchor_embedding_fingerprint", "Fingerprint da âncora"),
+        ALIGNMENT_MISSING_PIXELS_COLUMN: ColumnSpec(
+            name=ALIGNMENT_MISSING_PIXELS_COLUMN, label="Alinhamento sem pixel (fração)",
+            role=ColumnRole.METADATA, source=ColumnSource.DERIVED, dtype=ColumnDType.FLOAT,
+            editable=False, visible_default=False, category=_CATEGORY_VIDEO,
+            description=(
+                "Fração da face alinhada 112×112 que, refeita a partir do recorte, "
+                "sairia sem o pixel que a extração teve no quadro (o recorte não "
+                "alcançou aquela parte). 0 = realinhar a partir do recorte reproduz "
+                "o alinhamento da extração. Acima de 0, um embedding de modelo "
+                "acrescentado depois, realinhado do recorte, difere do que seria "
+                "extraído do quadro. Runs novos cobrem a janela inteira e dão 0."
+            ),
+        ),
     }
     # Colunas de captura do vídeo de origem: as mesmas do caminho de fotos,
     # vindas do catálogo em vez de redefinidas aqui. Sem isto elas nasceriam
@@ -130,6 +145,7 @@ class VideoRunImporter:
         # do mesmo arquivo compartilham a mesma instância de cada string
         # (inclusive o dump completo), em vez de uma cópia por face.
         captura_por_video = self._capture_columns_by_video(manifest)
+        quadro_por_video = self._frame_size_by_video(manifest)
 
         faces: List[FaceInfo] = []
         n_skipped_status = n_hash_mismatch = n_missing = 0
@@ -213,6 +229,7 @@ class VideoRunImporter:
                 # guarda. Os pontos 112×112 que o KPRPE exige vão para a
                 # casa própria deles, em `extra_data`, logo abaixo.
             )
+            falta = None
             if not used_aligned:
                 # Recorte com margem: a geometria é a da detecção que gerou
                 # o recorte, levada do sistema do QUADRO para o do recorte —
@@ -220,6 +237,10 @@ class VideoRunImporter:
                 # imagem que ele guarda). Na face alinhada não há o que
                 # gravar: a transformação de similaridade não é translação.
                 self._geometry_into_crop(ff, artifact, det)
+                falta = self._missing_alignment_pixels(
+                    artifact, det,
+                    quadro_por_video.get((d.get("source_video") or {}).get("sha256")),
+                )
                 if enrich:
                     alinhada = self._load_extraction_aligned_face(
                         run_dir, artifact, validate_hashes)
@@ -269,6 +290,8 @@ class VideoRunImporter:
                 )
                 n_com_captura += 1
 
+            if falta is not None:
+                extra[ALIGNMENT_MISSING_PIXELS_COLUMN] = falta
             fi.extra_data = extra
             faces.append(fi)
             if used_aligned:
@@ -324,6 +347,12 @@ class VideoRunImporter:
                 progress_callback(
                     f"Enriquecendo: carregando {n_models} modelo(s) e extraindo "
                     "embeddings… (pode levar minutos com vários modelos)", 45)
+            if n_biometria_da_extracao:
+                from faceaudit.enums.sepael_model import SepaelModel
+                ds.record_embedding_source(
+                    getattr(cfg, "ff_models", None) or [SepaelModel.default().ff_name],
+                    ds.provenance_metadata["embedding_source"],
+                )
             try:
                 pipeline.enrich_existing_dataset(ds, cfg, progress_callback=progress_callback)
             finally:
@@ -358,6 +387,52 @@ class VideoRunImporter:
         enorme = (2 ** 31, 2 ** 31)
         x1, y1, _, _ = extend_bbox(np.asarray(bbox, dtype=float), enorme, float(margem))
         return int(x1), int(y1)
+
+    @staticmethod
+    def _frame_size_by_video(manifest: Dict[str, Any]) -> Dict[str, Tuple[int, int]]:
+        """SHA-256 do vídeo → (largura, altura) do quadro como foi decodificado."""
+        saida: Dict[str, Tuple[int, int]] = {}
+        for v in manifest.get("source_videos") or []:
+            if not isinstance(v, dict) or not v.get("sha256"):
+                continue
+            res = v.get("resolution_effective")
+            if isinstance(res, str):
+                try:
+                    res = json.loads(res)
+                except ValueError:
+                    res = None
+            if isinstance(res, (list, tuple)) and len(res) == 2:
+                try:
+                    saida[v["sha256"]] = (int(res[0]), int(res[1]))
+                except (TypeError, ValueError):
+                    pass
+        return saida
+
+    @classmethod
+    def _missing_alignment_pixels(
+        cls, artifact: Dict[str, Any], det: Dict[str, Any],
+        quadro: Optional[Tuple[int, int]],
+    ) -> Optional[float]:
+        """Fração da face 112×112 que o recorte não alcança e o quadro tinha.
+
+        Sem o tamanho do quadro, conta tudo o que sai do recorte (limite
+        superior). None quando falta geometria para calcular.
+        """
+        from faceaudit.services.face_alignment_window_service import fracao_sem_pixel
+        origem = cls._crop_origin(artifact, det)
+        kps = det.get("keypoints_5pt")
+        tamanho = list(artifact.get("image_size_px") or [])
+        if origem is None or kps is None or len(tamanho) < 2 or None in tamanho[:2]:
+            return None
+        ox, oy = origem
+        pontos = [[x - ox, y - oy] for x, y in kps]
+        existente = None
+        if quadro is not None:
+            existente = (-ox, -oy, quadro[0] - ox, quadro[1] - oy)
+        try:
+            return round(fracao_sem_pixel(pontos, int(tamanho[0]), int(tamanho[1]), existente), 6)
+        except (ValueError, RuntimeError):
+            return None
 
     @classmethod
     def _geometry_into_crop(cls, ff: FFInfo, artifact: Dict[str, Any], det: Dict[str, Any]) -> None:
