@@ -100,6 +100,15 @@ class ValidationRuleType(Enum):
         "Aplicável a PIPELINE_APPLICATION e SIMILARITY_SCORING.",
     )
 
+    EMBEDDINGS_COMPLETE = (
+        "EMBEDDINGS_COMPLETE",
+        "Embeddings completos",
+        "Verifica que toda amostra do dataset tem embedding válido "
+        "(presente, vetor 1-D, finito e com a dimensão das demais). "
+        "Aplicável a SIMILARITY_SCORING. Sem isso, uma face sem biometria "
+        "derruba o cálculo com erro de empilhamento que não diz qual imagem.",
+    )
+
     SCORE_CALIBRATION_STATE = (
         "SCORE_CALIBRATION_STATE",
         "Estado de calibração do score dataset",

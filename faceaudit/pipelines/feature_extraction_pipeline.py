@@ -63,6 +63,20 @@ def _tem_algum_embedding(ff_info) -> bool:
     )
 
 
+def _modelos_sem_embedding(ff_info, modelos) -> List[str]:
+    """Modelos pedidos cujo slot de embedding ficou vazio na face.
+
+    É o critério de falha do estágio FF no enriquecimento: o que importa é
+    se a face saiu com a biometria PEDIDA, não se o objeto FFInfo existe.
+    """
+    if ff_info is None:
+        return list(modelos)
+    return [
+        m for m in modelos
+        if getattr(ff_info, SepaelModel.ffinfo_slot_for(m), None) is None
+    ]
+
+
 class FeatureExtractionPipeline:
     """
     Orquestrador ETL (Extract, Transform, Load) para Datasets Faciais.
@@ -889,14 +903,21 @@ class FeatureExtractionPipeline:
                     self._log_stage_summary(
                         "FF", target, lambda f: f.ff_info is not None,
                     )
-                    # Coleta falhas: face foi enviada mas ff_info ficou None
-                    # (provável falha de leitura/detecção — service já loga
-                    # o motivo via `_safe_read_image`).
+                    # Coleta falhas: face foi enviada e saiu sem o embedding
+                    # de algum modelo pedido. `ff_info is None` NÃO basta:
+                    # face que já chega com FFInfo (atributos de uma passada
+                    # anterior, ou do sidecar da extração de vídeo) continua
+                    # com o objeto quando a detecção falha, e o teste antigo
+                    # deixava passar em silêncio — foi assim que um dataset
+                    # de vídeo saiu com metade das faces sem biometria e
+                    # `error=False`.
                     for f in target.faces:
-                        if f.ff_info is None:
+                        faltando = _modelos_sem_embedding(f.ff_info, wanted_models)
+                        if faltando:
                             per_face_failures.append(
-                                (f, "ff", "nenhum embedding gerado "
-                                 "(face não detectada ou imagem ilegível)"),
+                                (f, "ff", "nenhum embedding gerado para "
+                                 + ", ".join(faltando)
+                                 + " (face não detectada ou imagem ilegível)"),
                             )
 
                     # Diferente da criação, aqui NADA é retirado do dataset: o

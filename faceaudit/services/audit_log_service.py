@@ -234,3 +234,28 @@ class AuditLogService:
             shutil.copy2(old_side, new_side)
             old_side.unlink(missing_ok=True)
         return True
+
+    @classmethod
+    def copy_sidecar(
+        cls, old_path: str | Path, new_path: str | Path,
+    ) -> bool:
+        """Copia o sidecar para o parquet novo, mantendo o da origem.
+
+        É o que o Salvar Como precisa: o arquivo novo herda a história até
+        aqui, e o de origem continua existindo com a dele. Mover (como faz
+        `migrate_sidecar`, que serve a renomear) deixava a origem SEM cadeia
+        de custódia — um dataset do qual se derivou um recorte perdia todo
+        o registro de criação e exclusões.
+
+        Não sobrescreve sidecar já existente no destino. Retorna True se
+        copiou.
+        """
+        import shutil
+
+        old_side = cls.sidecar_path_for(old_path)
+        new_side = cls.sidecar_path_for(new_path)
+        if not old_side.exists() or new_side.exists():
+            return False
+        new_side.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(old_side, new_side)
+        return True

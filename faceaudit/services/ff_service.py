@@ -230,6 +230,24 @@ def _aligned_keypoints_from_face(face) -> Optional[np.ndarray]:
     return None
 
 
+def _tem_alinhada_em_cache(face) -> bool:
+    """A face já traz o recorte alinhado 112×112 em memória (RGB)."""
+    ff = getattr(face, "ff_info", None)
+    alinhada = getattr(ff, "aligned_face", None) if ff is not None else None
+    return alinhada is not None and getattr(alinhada, "shape", None) == (112, 112, 3)
+
+
+def _sub_dataset(dataset: FaceDataset, faces: List[FaceInfo]) -> FaceDataset:
+    """Recorte do dataset com as MESMAS FaceInfo (mutações propagam)."""
+    sub = FaceDataset(
+        name=dataset.name, faces=faces,
+        path_mode=dataset.path_mode, path_root=dataset.path_root,
+    )
+    sub._parquet_dir = getattr(dataset, "_parquet_dir", None)
+    sub.is_aligned = bool(getattr(dataset, "is_aligned", False))
+    return sub
+
+
 class FFService:
     """
     Serviço de interface para a biblioteca ForensicFace.
@@ -1300,6 +1318,36 @@ class FFService:
         #   metadata completo (gender/age/pose/det_score) que
         #   `detect_and_align` sozinho não traz.
         is_aligned = bool(getattr(dataset, "is_aligned", False))
+
+        # Parte das faces com a face alinhada em memória e parte sem: as
+        # que têm vão pelo caminho em cache, SEM detecção, e o resto segue
+        # a escolha normal. Sem a partição, uma única face sem cache jogava
+        # o dataset inteiro na redetecção — que é justamente o que o cache
+        # existe para evitar (o importador de vídeo carrega a face alinhada
+        # da extração porque redetectar no recorte de uma face pequena falha).
+        if not is_aligned:
+            com_cache = [f for f in dataset if _tem_alinhada_em_cache(f)]
+            if com_cache and len(com_cache) < total_faces:
+                ids_cache = {id(f) for f in com_cache}
+                sem_cache = [f for f in dataset if id(f) not in ids_cache]
+                print(
+                    f"[FFService] {len(com_cache)} face(s) com face alinhada "
+                    f"em cache (sem detecção) e {len(sem_cache)} sem."
+                )
+                self._process_dataset_cached_aligned_batched(
+                    _sub_dataset(dataset, com_cache), len(com_cache),
+                    model, models, progress_callback,
+                )
+                self.process_dataset(
+                    _sub_dataset(dataset, sem_cache),
+                    progress_callback=progress_callback, model=model,
+                    models=models, rotation_attempts=rotation_attempts,
+                )
+                # O consenso de gênero roda por identidade e tem de ver o
+                # dataset inteiro, não cada metade.
+                self._apply_identity_gender_consensus(dataset)
+                return dataset
+
         all_have_cached_aligned = (
             total_faces > 0
             and all(
@@ -1405,6 +1453,7 @@ class FFService:
 
         buffer_crops: List[np.ndarray] = []
         buffer_faces: List[FaceInfo] = []
+        buffer_keypoints: List[Optional[np.ndarray]] = []
 
         # Adapter que rebobina erros internos do batch helper como
         # linhas de log no LogProgressDialog (via progress_callback).
@@ -1420,9 +1469,16 @@ class FFService:
             if not buffer_crops:
                 return
             arr = np.stack(buffer_crops, axis=0)
+            # Pontos 112×112 quando TODAS as faces do lote os têm — o KPRPE
+            # (sepaelv6) os exige; os demais modelos ignoram. Mesma regra do
+            # caminho de faces alinhadas em disco.
+            kps_batch = None
+            if buffer_keypoints and all(k is not None for k in buffer_keypoints):
+                kps_batch = np.stack(buffer_keypoints, axis=0)
             try:
                 ff_infos = self.extract_embeddings_from_aligned_faces_batch(
-                    arr, models=target_models, error_callback=_err_cb,
+                    arr, models=target_models,
+                    aligned_keypoints_batch=kps_batch, error_callback=_err_cb,
                 )
             except Exception as e:
                 _err_cb(
@@ -1443,6 +1499,7 @@ class FFService:
                         setattr(existing, key, val)
             buffer_crops.clear()
             buffer_faces.clear()
+            buffer_keypoints.clear()
 
         processed = 0
         for face in tqdm(
@@ -1464,6 +1521,7 @@ class FFService:
             aligned_bgr = aligned_rgb[..., ::-1].copy()
             buffer_crops.append(aligned_bgr)
             buffer_faces.append(face)
+            buffer_keypoints.append(_aligned_keypoints_from_face(face))
 
             if len(buffer_crops) >= self._batch_size:
                 flush()
@@ -1583,28 +1641,23 @@ class FFService:
             buffer_faces.clear()
             buffer_kps.clear()
 
-        processed = 0
-        for face in tqdm(
-            dataset, desc=f"Processando {dataset.name} (align+batch)",
-            unit="face",
-        ):
-            processed += 1
-            image_path = str(dataset.resolve_image_path(face))
+        def enfileirar(face, image_path: str) -> Optional[str]:
+            """Alinha e põe no buffer. Devolve o motivo quando não deu."""
             img_array = self._safe_read_image(image_path)
             if img_array is None:
-                continue
+                return "imagem ilegível"
             item, graus = alinhar_tentando_rotacoes(
                 align_engine, img_array, rotation_attempts, image_path,
                 rotacao_conhecida=rotacao_registrada(face),
                 error_callback=_err_cb,
             )
             if not item:
-                continue
+                return "face não detectada na imagem"
             if graus and face.ff_info is not None:
                 face.ff_info.detection_rotation = graus
             rgb_aligned = item.get("aligned_face")
             if rgb_aligned is None or rgb_aligned.shape != (112, 112, 3):
-                continue
+                return "alinhamento não produziu face 112×112"
             # RGB → BGR pro batch helper (consistente com
             # `extract_embeddings_from_aligned_face`).
             bgr_aligned = rgb_aligned[..., ::-1].copy()
@@ -1612,11 +1665,28 @@ class FFService:
                 aligned_kps = item.get("aligned_keypoints")
                 if aligned_kps is None:
                     # KPRPE precisa de keypoints; sem eles o encoder
-                    # rejeita o input. Skip pra manter os buffers em sync.
-                    continue
+                    # rejeita o input. Fica fora para manter os buffers em sync.
+                    return "alinhamento sem pontos 112×112 (exigidos pelo modelo)"
                 buffer_kps.append(aligned_kps)
             buffer_crops.append(bgr_aligned)
             buffer_faces.append(face)
+            return None
+
+        processed = 0
+        n_sem_alinhamento = 0
+        for face in tqdm(
+            dataset, desc=f"Processando {dataset.name} (align+batch)",
+            unit="face",
+        ):
+            processed += 1
+            image_path = str(dataset.resolve_image_path(face))
+            motivo = enfileirar(face, image_path)
+            if motivo is not None:
+                # A face fica sem embedding; quem marca o erro nela é o
+                # pipeline. Aqui o registro é para o log de progresso, que
+                # é onde o operador vê QUAL imagem caiu e por quê.
+                n_sem_alinhamento += 1
+                _err_cb(f"[FFService] {motivo}: {Path(image_path).name}")
 
             if len(buffer_crops) >= self._batch_size:
                 flush()
@@ -1629,6 +1699,11 @@ class FFService:
                 )
 
         flush()
+        if n_sem_alinhamento:
+            _err_cb(
+                f"[FFService] {n_sem_alinhamento} de {total_faces} face(s) "
+                "ficaram sem embedding por falha de detecção/alinhamento."
+            )
 
     def _process_dataset_aligned_batched(
         self,

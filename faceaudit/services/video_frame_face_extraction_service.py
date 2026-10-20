@@ -1068,7 +1068,7 @@ class VideoFrameFaceExtractionService:
         prov = FaceProvenance(
             run_id=run_id, run_manifest=f"_run_{run_id}.json", identity_label=label,
             image_file=crop_name, image_sha256=image_sha, image_width_px=w, image_height_px=h,
-            crop_margin_factor=config.margin, color_space="BGR", saved_at_utc=clock(), target_index=target_index,
+            crop_margin_factor=config.margin, crop_box_xyxy=[x1, y1, x2, y2], color_space="BGR", saved_at_utc=clock(), target_index=target_index,
             aligned_image_file=aligned_file, aligned_image_sha256=aligned_sha,
             source_video_filename=info.filename, source_video_sha256=info.sha256,
             frame_native_index=native, timestamp_s_from_fps=ts_fps, timestamp_s_capture_prop=ts_cap,

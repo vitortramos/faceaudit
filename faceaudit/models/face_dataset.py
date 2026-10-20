@@ -111,6 +111,11 @@ _PROVENANCE_METADATA_KEYS = frozenset({
     # detecção pode ter escolhido outra face.
     "geometry_source",
     "geometry_backfill_at",
+    # De onde veio o embedding quando não foi de detecção na própria imagem
+    # do dataset (ex.: recorte de vídeo cuja biometria sai da face alinhada
+    # da extração). Sem isto, o recorte e o embedding parecem ter a mesma
+    # origem e não têm.
+    "embedding_source",
 })
 
 

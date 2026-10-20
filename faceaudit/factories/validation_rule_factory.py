@@ -190,6 +190,17 @@ class ValidationRuleFactory:
                 ),
             )
 
+        if rule_type == ValidationRuleType.EMBEDDINGS_COMPLETE:
+            from faceaudit.validation_rules.embeddings_complete_rule import (
+                EmbeddingsCompleteRule,
+            )
+            return EmbeddingsCompleteRule(
+                rule_id=rule_id,
+                dataset_resource_id=ValidationRuleFactory._req_str(
+                    params, "dataset_resource_id", rule_type
+                ),
+            )
+
         if rule_type == ValidationRuleType.EMBEDDING_DIM_MATCHES_MODEL:
             from faceaudit.validation_rules.embedding_dim_matches_model_rule import (
                 EmbeddingDimMatchesModelRule,

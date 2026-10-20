@@ -84,6 +84,12 @@ class FaceProvenance:
     image_width_px: Optional[int] = None
     image_height_px: Optional[int] = None
     crop_margin_factor: Optional[float] = None
+    # Retângulo do recorte no QUADRO, `[x1, y1, x2, y2]` em pixels inteiros,
+    # já preso às bordas. É o que permite levar a geometria da detecção para
+    # o sistema do recorte sem refazer a conta do `extend_bbox`. Runs antigos
+    # não têm o campo; o importador recalcula a origem a partir da caixa e do
+    # fator de margem.
+    crop_box_xyxy: Optional[List[int]] = None
     color_space: str = "BGR"
     saved_at_utc: Optional[str] = None
     # Face ALINHADA 112×112 (derivada da detecção em full-res). É a imagem
@@ -161,6 +167,7 @@ class FaceProvenance:
                 "image_sha256": self.image_sha256,
                 "image_size_px": [self.image_width_px, self.image_height_px],
                 "crop_margin_factor": self.crop_margin_factor,
+                "crop_box_xyxy": self.crop_box_xyxy,
                 "color_space": self.color_space,
                 "saved_at_utc": self.saved_at_utc,
                 "aligned_image_file": self.aligned_image_file,
