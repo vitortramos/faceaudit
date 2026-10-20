@@ -111,16 +111,38 @@ class SimilarityScoringInstruction(StrategyInstructionDefinition):
         Regras dinâmicas (não persistidas):
         - MODEL_FITTED no modelo de similaridade
         - EMBEDDING_DIM_MATCHES_MODEL no probe (e no reference se cross)
+        - EMBEDDINGS_COMPLETE no probe (e no reference se cross)
 
         Não persistidas por serem pré-condições intrínsecas — sem o
-        modelo treinado ou com dim incompatível o executor crasha.
+        modelo treinado, com dim incompatível ou com face sem embedding o
+        executor crasha.
         """
         from faceaudit.validation_rules.model_fitted_rule import ModelFittedRule
         from faceaudit.validation_rules.embedding_dim_matches_model_rule import (
             EmbeddingDimMatchesModelRule,
         )
+        from faceaudit.validation_rules.embeddings_complete_rule import (
+            EmbeddingsCompleteRule,
+        )
 
         rules: list = []
+        # Independe do modelo: uma face sem embedding inviabiliza o cálculo
+        # qualquer que seja ele, e o usuário deve saber disso já ao montar
+        # a instrução, não só depois de escolher o modelo.
+        if self.probe_dataset_resource_id:
+            rules.append(EmbeddingsCompleteRule(
+                rule_id=f"{self.instruction_id}_embeddings_complete_probe",
+                dataset_resource_id=self.probe_dataset_resource_id,
+            ))
+        if (
+            self.reference_dataset_resource_id
+            and self.reference_dataset_resource_id != self.probe_dataset_resource_id
+        ):
+            rules.append(EmbeddingsCompleteRule(
+                rule_id=f"{self.instruction_id}_embeddings_complete_reference",
+                dataset_resource_id=self.reference_dataset_resource_id,
+            ))
+
         if not self.trained_similarity_model_resource_id:
             return rules
 
