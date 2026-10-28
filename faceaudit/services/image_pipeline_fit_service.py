@@ -2,10 +2,15 @@
 
 Procura, entre os campos numéricos marcados como ajustáveis
 (`StepParamSpec.tunable`), os valores que deixam as imagens da base, UMA
-A UMA, mais parecidas com a questionada. O objetivo é a distância média
-por imagem (`per_image_distance`: soma das distâncias das medidas, em
-múltiplos da tolerância) — não a mediana do conjunto, que já se mostrou
-enganosa.
+A UMA, dentro da tolerância da questionada.
+
+O objetivo é o EXCESSO além da tolerância, por imagem e medida
+(`excess_objective`): o que já está dentro não conta. A primeira versão
+minimizava a distância média — e no caso real a distância caiu enquanto
+a parcela de imagens dentro da tolerância, que é o que se relata, CAIU
+(18% → 12%): aproximar imagens que já estavam dentro "pagava" empurrar
+outras para fora. Com o objetivo alinhado ao relatório, partindo do
+mesmo ponto, a parcela subiu (12% → 21%, em 231 imagens de validação).
 
 Busca por coordenadas com passo decrescente: a cada rodada, cada campo é
 testado em 6 valores em torno do atual, e o passo cai à metade na rodada
@@ -16,8 +21,10 @@ O que o ajuste NÃO decide: a ordem dos passos, a técnica de meio-tom, o
 tipo de oclusão, qualquer escolha qualitativa. Esses ficam com o perito.
 
 Duas amostras disjuntas: o ajuste é feito na de TREINO e o resultado é
-relatado também numa de VALIDAÇÃO, com imagens que o ajuste não viu —
-sem isso o número relatado seria otimista por construção.
+relatado numa de VALIDAÇÃO com todas as outras imagens da base (até
+`DEFAULT_VALIDATION_MAX`) — o número de treino seria otimista, e 40
+imagens de validação deixavam a contagem oscilar vários pontos com duas
+imagens a mais ou a menos. `improved_on_validation` diz se vale aplicar.
 """
 
 from __future__ import annotations
@@ -38,7 +45,6 @@ from faceaudit.models.image_processing.step_param_spec import (
 )
 from faceaudit.services.image_degradation_profile_service import (
     MEASURES,
-    per_image_distance,
 )
 from faceaudit.services.image_pipeline_evaluation_service import (
     SampleEvaluation,
@@ -49,7 +55,7 @@ from faceaudit.services.image_pipeline_evaluation_service import (
 )
 
 DEFAULT_TRAIN_SIZE = 40
-DEFAULT_VALIDATION_SIZE = 40
+DEFAULT_VALIDATION_MAX = 400
 DEFAULT_ROUNDS = 4
 _CANDIDATOS_POR_LADO = 3
 
@@ -77,6 +83,23 @@ class FitResult:
     validation_before: Optional[SampleEvaluation]
     validation_after: Optional[SampleEvaluation]
     n_evaluations: int
+    validation_objective_before: Optional[float] = None
+    validation_objective_after: Optional[float] = None
+
+    @property
+    def improved_on_validation(self) -> Optional[bool]:
+        """O ajuste melhorou nas imagens que não usou? None sem validação.
+        Melhorou = menos excesso além da tolerância E pelo menos tantas
+        imagens com todas as medidas, ou todas menos uma, dentro."""
+        if self.validation_objective_before is None or self.validation_objective_after is None:
+            return None
+        a = (self.validation_before.agreement or {}) if self.validation_before else {}
+        b = (self.validation_after.agreement or {}) if self.validation_after else {}
+        nao_piorou = (
+            b.get("all_close_fraction", 0) >= a.get("all_close_fraction", 0)
+            and b.get("all_but_one_close_fraction", 0) >= a.get("all_but_one_close_fraction", 0)
+        )
+        return self.validation_objective_after < self.validation_objective_before and nao_piorou
 
     def to_dict(self) -> Dict[str, Any]:
         """Registro do ajuste (vai para a descrição do pipeline/log)."""
@@ -90,6 +113,9 @@ class FitResult:
             "validation_before": _r(self.validation_before),
             "validation_after": _r(self.validation_after),
             "n_evaluations": self.n_evaluations,
+            "validation_objective_before": self.validation_objective_before,
+            "validation_objective_after": self.validation_objective_after,
+            "improved_on_validation": self.improved_on_validation,
         }
 
 
@@ -104,13 +130,27 @@ def tunable_params(config: ImageProcessingPipelineConfig) -> List[Tuple[int, Ste
     return out
 
 
-def objective(ev: SampleEvaluation, config: ImageProcessingPipelineConfig, n_imagens: int) -> float:
-    """Distância média por imagem; imagem que falhou conta como a pior."""
+def excess_objective(ev: SampleEvaluation, config: ImageProcessingPipelineConfig,
+                     n_imagens: int) -> float:
+    """Excesso médio além da tolerância, por imagem.
+
+    Para cada imagem e medida: `max(0, distância − 1)` (distância em
+    múltiplos da tolerância), limitado a 10. Medida dentro da tolerância
+    contribui zero. Imagem que falhou no pipeline conta como a pior.
+    """
     alvo = config.questioned.measures
-    pior = 10.0 * sum(1 for m in MEASURES if getattr(alvo, m.key) is not None)
-    soma = sum(per_image_distance(alvo, m) for m in ev.measures)
+    medidas = [m for m in MEASURES if getattr(alvo, m.key) is not None]
+    pior = 10.0 * len(medidas)
+    soma = 0.0
+    for x in ev.measures:
+        for m in medidas:
+            d = m.distance(getattr(alvo, m.key), getattr(x, m.key))
+            soma += 10.0 if d is None else min(max(0.0, d - 1.0), 10.0)
     soma += pior * (n_imagens - len(ev.measures))
     return soma / max(1, n_imagens)
+
+
+objective = excess_objective
 
 
 def _copia(config: ImageProcessingPipelineConfig) -> ImageProcessingPipelineConfig:
@@ -141,8 +181,10 @@ def _com_valor(config, i: int, spec: StepParamSpec, valor) -> ImageProcessingPip
     return c
 
 
-def split_indices(n_total: int, n_train: int, n_validation: int) -> Tuple[List[int], List[int]]:
-    """Treino espaçado pela base; validação espaçada no que sobrou."""
+def split_indices(n_total: int, n_train: int,
+                  n_validation: int = DEFAULT_VALIDATION_MAX) -> Tuple[List[int], List[int]]:
+    """Treino espaçado pela base; validação espaçada no que sobrou (todo o
+    resto, até `n_validation`)."""
     treino = sample_indices(n_total, n_train)
     resto = [i for i in range(n_total) if i not in set(treino)]
     validacao = [resto[j] for j in sample_indices(len(resto), n_validation)] if resto else []
@@ -154,7 +196,7 @@ def fit_to_questioned(
     dataset: FaceDataset,
     *,
     n_train: int = DEFAULT_TRAIN_SIZE,
-    n_validation: int = DEFAULT_VALIDATION_SIZE,
+    n_validation: int = DEFAULT_VALIDATION_MAX,
     rounds: int = DEFAULT_ROUNDS,
     ff_service=None,
     progress: Optional[Callable[[str], None]] = None,
@@ -228,11 +270,13 @@ def fit_to_questioned(
             mudancas.append(ParamChange(i, config.steps[i].step_type.label_pt,
                                         spec.name, spec.label, antes, depois))
 
-    val_antes = val_depois = None
+    val_antes = val_depois = obj_antes = obj_depois = None
     if validation_sample:
-        _avisar("Medindo na amostra de validação…")
+        _avisar(f"Medindo nas {len(validation_sample)} imagens de validação…")
         val_antes = evaluate(validation_sample, config, ff_service=ff_service)
         val_depois = evaluate(validation_sample, atual, ff_service=ff_service)
+        obj_antes = objective(val_antes, config, len(validation_sample))
+        obj_depois = objective(val_depois, atual, len(validation_sample))
 
     return FitResult(
         config=atual,
@@ -242,4 +286,6 @@ def fit_to_questioned(
         validation_before=val_antes,
         validation_after=val_depois,
         n_evaluations=n_aval,
+        validation_objective_before=obj_antes,
+        validation_objective_after=obj_depois,
     )

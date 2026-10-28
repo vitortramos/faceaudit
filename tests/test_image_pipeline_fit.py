@@ -168,6 +168,8 @@ def test_ajuste_melhora_e_confere_em_imagens_nao_usadas(dataset):
 def test_amostras_de_treino_e_validacao_sao_disjuntas():
     treino, val = split_indices(271, 40, 40)
     assert len(treino) == 40 and len(val) == 40 and not set(treino) & set(val)
+    treino, val = split_indices(271, 40)  # padrão: todo o resto valida
+    assert len(val) == 231 and not set(treino) & set(val)
     treino, val = split_indices(10, 40, 40)
     assert len(treino) == 10 and val == []
 
@@ -228,3 +230,60 @@ def test_editor_aplica_o_ajuste_e_registra_na_descricao(app, dataset):
     assert "Ajustado à questionada Q1.png" in c._pipeline_config.description
     assert c._is_dirty
     assert c.view.degradation_measures._amostra is r.validation_after
+
+
+def test_objetivo_so_conta_o_que_esta_fora_da_tolerancia():
+    """A distância média melhorava enquanto a parcela de imagens dentro da
+    tolerância caía (caso real 18% → 12%). O objetivo novo não premia
+    aproximar o que já está dentro."""
+    from faceaudit.services.image_degradation_profile_service import DegradationMeasures
+    from faceaudit.services.image_pipeline_evaluation_service import SampleEvaluation
+    from faceaudit.services.image_pipeline_fit_service import excess_objective
+
+    alvo = _perfil(ipd=20.0)
+    m0 = alvo.measures
+    dentro = m0.__class__(**{**m0.to_dict(), "black_fraction": m0.black_fraction + 0.04})
+    exato = m0
+    fora = m0.__class__(**{**m0.to_dict(), "black_fraction": m0.black_fraction + 0.15})
+    ev = lambda ms: SampleEvaluation(ms, {}, [], None, 0, [])  # noqa: E731
+    cfg = _cfg([], alvo)
+    assert excess_objective(ev([dentro]), cfg, 1) == excess_objective(ev([exato]), cfg, 1) == 0
+    assert excess_objective(ev([fora]), cfg, 1) == pytest.approx(2.0)
+    assert excess_objective(ev([]), cfg, 1) > excess_objective(ev([fora]), cfg, 1)
+
+
+def test_sem_melhora_na_validacao_o_editor_recomenda_nao_aplicar(app, dataset):
+    from PyQt6 import QtCore, QtWidgets
+    from interface.tabs.dataset_manager.image_pipeline_dialog import (
+        ImagePipelineDialogController,
+    )
+    from faceaudit.services.image_pipeline_fit_service import FitResult, ParamChange
+
+    inicio = _alvo_e_inicio(dataset)
+    r = fit_to_questioned(inicio, dataset, n_train=6, n_validation=6, rounds=1)
+    pior = FitResult(r.config, r.changes or [ParamChange(1, "Curva", "gamma", "Gama", 1.0, 1.1)],
+                     r.train_before, r.train_after, r.validation_before, r.validation_after,
+                     r.n_evaluations, validation_objective_before=1.0,
+                     validation_objective_after=2.0)
+    assert pior.improved_on_validation is False
+
+    c = ImagePipelineDialogController(dataset, initial_face_index=0)
+    c._pipeline_config = inicio
+    vistos = {}
+
+    def _responder(botao):
+        caixa = QtWidgets.QApplication.activeModalWidget()
+        vistos["texto"] = caixa.text()
+        vistos["padrao"] = caixa.standardButton(caixa.defaultButton())
+        caixa.button(botao).click()
+
+    QtCore.QTimer.singleShot(0, lambda: _responder(QtWidgets.QMessageBox.StandardButton.No))
+    c._on_fit_done(pior)
+    assert "NÃO melhorou" in vistos["texto"]
+    assert vistos["padrao"] == QtWidgets.QMessageBox.StandardButton.No
+    assert c._pipeline_config is inicio and not c._is_dirty
+
+    # Quem insiste e clica Sim, aplica.
+    QtCore.QTimer.singleShot(0, lambda: _responder(QtWidgets.QMessageBox.StandardButton.Yes))
+    c._on_fit_done(pior)
+    assert c._is_dirty and "Ajustado à questionada" in c._pipeline_config.description

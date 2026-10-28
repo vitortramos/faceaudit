@@ -383,11 +383,22 @@ base, **uma a uma**, mais parecidas com a questionada.
   tipo de oclusão, qualquer escolha qualitativa. Essas são do perito.
 - **Como procura:** testa cada campo em valores em torno do atual,
   guarda o que melhora, e repete com passos cada vez menores (~150
-  configurações, menos de um minuto). O objetivo é a distância média de
-  cada imagem à questionada, não a mediana do conjunto.
+  configurações, menos de um minuto). O objetivo é o **quanto cada
+  imagem passa da tolerância** em cada medida — o que já está dentro
+  não conta. (Uma versão anterior minimizava a distância média e, num
+  caso real, aproximou imagens que já estavam dentro enquanto empurrava
+  outras para fora: a distância melhorou e a parcela de imagens dentro
+  caiu de 18% para 12%.)
 - **Como confere:** ajusta numa amostra de 40 imagens e mede o resultado
-  em **outras 40 que o ajuste não viu**. É esse número de validação que
-  aparece no fim — o da amostra de ajuste seria otimista.
+  em **todas as outras imagens da base** (até 400), que o ajuste não
+  viu. É esse número de validação que aparece no fim — o da amostra de
+  ajuste seria otimista, e uma validação pequena oscila muito (em 40
+  imagens, 2 imagens são 5 pontos percentuais).
+- **Quando não melhora, ele diz.** Se a validação não melhorar (menos
+  excesso além da tolerância e nenhuma queda na parcela de imagens
+  dentro), a janela avisa, recomenda **não aplicar** e deixa "Não" como
+  botão padrão. Isso acontece, por exemplo, quando os valores já foram
+  ajustados antes: o que limita, aí, é a estrutura do pipeline.
 - **Nada é aplicado sem confirmação.** A janela final lista cada campo
   alterado (de → para) e a concordância antes e depois na validação. Ao
   aplicar, o registro do ajuste vai para a descrição do pipeline.
@@ -616,8 +627,9 @@ entre os olhos de ~49 px), ajustados sobre a base de fotos de documento.
 A primeira versão desse caso usava curva de **níveis fixos** (90–160):
 a mediana da base acertava as 8 medidas, mas só ~5% das imagens tinham
 4 ou mais das 5 medidas de tom dentro. Com a curva por percentis e o
-ajuste, medido em imagens que o ajuste não usou: 15% com as 8 medidas
-dentro e 48% com 7 ou mais. São ponto de partida, não receita — cada
+ajuste, medido em 231 imagens que o ajuste não usou: 21% com as 8
+medidas dentro e 49% com 7 ou mais. Ajustar de novo a partir do modelo,
+com a mesma questionada, não melhora — e o editor diz isso. São ponto de partida, não receita — cada
 cópia tem a sua copiadora e o seu scanner, e amostras de 40 imagens
 oscilam alguns pontos percentuais de uma para outra.
 O *Ganho de toner* entra quando as sombras da questionada são mais

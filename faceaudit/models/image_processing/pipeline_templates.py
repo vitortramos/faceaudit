@@ -36,8 +36,8 @@ def _xerox_de_documento() -> ImageProcessingPipelineConfig:
             {"step_type": "resize", "mode": "target_ipd", "target_ipd_px": 84.0},
             {"step_type": "halftone", "mode": "error_diffusion"},
             {"step_type": "resize", "mode": "target_ipd", "use_questioned_ipd": True},
-            {"step_type": "tone_curve", "black_point": 39, "white_point": 219,
-             "gamma": 0.97},
+            {"step_type": "tone_curve", "black_point": 24, "white_point": 223,
+             "gamma": 1.12},
         ],
     })
 
