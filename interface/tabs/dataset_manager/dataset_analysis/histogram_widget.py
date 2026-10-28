@@ -22,6 +22,7 @@ from matplotlib.backends.backend_qtagg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.figure import Figure
+from interface.oriented_image import ler_pixmap_orientado
 
 
 _TAIL_SIZE = 10
@@ -77,7 +78,7 @@ class _TailThumb(QtWidgets.QFrame):
         if not image_path:
             self._img_lbl.setText("(sem path)")
             return
-        pix = QtGui.QPixmap(image_path)
+        pix = ler_pixmap_orientado(image_path)
         if pix.isNull():
             self._img_lbl.setText("(não\nencontrada)")
             return

@@ -29,6 +29,7 @@ from typing import Any, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet, current_token_fn
+from interface.oriented_image import ler_pixmap_orientado
 
 
 _THUMB_SIZE = 360            # lado do quadro de imagem em pixels
@@ -205,7 +206,7 @@ class _FacePanel(QtWidgets.QFrame):
             if self._dataset is not None and raw
             else raw
         )
-        pix = QtGui.QPixmap(path) if path else QtGui.QPixmap()
+        pix = ler_pixmap_orientado(path) if path else QtGui.QPixmap()
         if not pix.isNull():
             scaled = pix.scaled(
                 _THUMB_SIZE, _THUMB_SIZE,

@@ -53,6 +53,7 @@ python -m pytest tests/test_dataset_concat_paths.py          # "Juntar" preserva
 python -m pytest tests/test_localization_anchor.py           # "Modificar Caminhos" ancora de imediato
 python -m pytest tests/test_template_column_types.py         # coluna de template nasce com o tipo escolhido (inteiro com vazio inclusive)
 python -m pytest tests/test_image_pipeline_self_contained.py # Processar (pipeline de imagens) cria dataset autocontido na pasta escolhida
+python -m pytest tests/test_oriented_image_display.py       # interface exibe a foto com a orientação EXIF, como o OpenCV a vê
 
 # Tabela de comparações e janela de confronto (Strategy Manager V2)
 python -m pytest tests/test_score_comparison_table.py        # seleção das linhas: caso completo vs extremos
@@ -432,6 +433,8 @@ Botões no header da seção:
 **Localização descarta face cuja imagem não existe — isso nunca pode ser silencioso.** `DatasetLocalizationService._copy_originals` pula a face e registra em `failures`. Quem chama tem de (a) recusar-se a gravar quando sobram zero faces e (b) mostrar as falhas parciais na interface, exigindo decisão. Um parquet vazio (sem colunas) é aceito pela UI, listado como recurso e some dos dropdowns do Strategy Manager sem explicação — foi assim que dois datasets periciais viraram arquivos de 798 bytes sem ninguém notar.
 
 **Detecção de face tenta as quatro orientações antes de desistir.** Foto tirada com a câmera de lado não tem face detectável na orientação em que foi gravada e tem depois de girar 90°. `FFService.process_face(..., rotation_attempts=ROTACOES_PADRAO)` tenta a imagem como está e, só se falhar, girada 90°, 270° e 180° — o custo extra é pago apenas por quem falhou. Ligado por `DatasetIngestionConfig.try_rotated_detection` (default **True**; é ganho puro e não depende de ninguém decidir nada).
+
+**A orientação EXIF faz parte do "sistema da imagem", e a interface tem de aplicá-la.** Foto de câmera segurada de lado é gravada deitada com `Orientation` (6/8) no EXIF. O OpenCV aplica a etiqueta ao decodificar (`IMREAD_COLOR`), então detecção, caixa, pontos, OFIQ e recortes estão no sistema da foto DE PÉ. `QPixmap(caminho)` ignora a etiqueta: um dataset de 2515 fotos aparecia inteiro deitado na galeria, com os dados certos. Toda imagem exibida passa por `interface/oriented_image.py` (`ler_pixmap_orientado` / `ler_imagem_orientada`, que usam `QImageReader.setAutoTransform(True)`); `tests/test_oriented_image_display.py` trava `QPixmap(caminho)` novo na interface. No backend, quem lê só o TAMANHO com Pillow (`img.size`) tem de trocar largura e altura quando a orientação é 5–8.
 
 **A caixa persistida está SEMPRE em coordenadas da imagem original.** Este é o ponto que estraga em silêncio se ignorado: o detector devolve a caixa no quadro **girado**, mas `image_path` continua apontando para o arquivo como ele está gravado. Guardá-la girada faz o recorte sair da região errada e o desenho da caixa cair fora da face, sem nada no dado denunciando a troca de quadro. Então `bbox`/`keypoints` voltam ao sistema do arquivo (`caixa_girada_para_original`) antes de serem gravados, e a rotação vai em `ff_info.detection_rotation`. O `aligned_face` fica como veio — é o recorte de pé, e é justamente o que o encoder deve ver. Quem precisar do quadro girado (recortar a face de pé) converte de volta com `caixa_original_para_girada`.
 

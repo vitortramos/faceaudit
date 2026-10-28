@@ -21,6 +21,7 @@ from matplotlib.backends.backend_qtagg import (
     NavigationToolbar2QT as NavigationToolbar,
 )
 from matplotlib.figure import Figure
+from interface.oriented_image import ler_pixmap_orientado
 
 
 # Quantos valores mais populosos colorimos quando o atributo é
@@ -635,7 +636,7 @@ class UmapScatterWidget(QtWidgets.QWidget):
             self._lookalike_thumb.clear()
             self._lookalike_thumb.setText("(sem path)")
             return
-        pix = QtGui.QPixmap(path)
+        pix = ler_pixmap_orientado(path)
         if pix.isNull():
             self._lookalike_thumb.clear()
             self._lookalike_thumb.setText("(não encontrada)")

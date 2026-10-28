@@ -17,6 +17,7 @@ from typing import Any, List, Optional
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet
+from interface.oriented_image import ler_pixmap_orientado
 
 
 class HubnessTablesWidget(QtWidgets.QWidget):
@@ -296,7 +297,7 @@ class HubnessTablesWidget(QtWidgets.QWidget):
             )
             return
 
-        pix = QtGui.QPixmap(path)
+        pix = ler_pixmap_orientado(path)
         if pix.isNull():
             self._image_label.clear()
             self._image_label.setText("(imagem não encontrada)")

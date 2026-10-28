@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet, current_token_fn
+from interface.oriented_image import ler_pixmap_orientado
 
 
 _THUMB_SIZE = 200            # lado da imagem em pixels
@@ -631,7 +632,7 @@ class IssuePreviewWidget(QtWidgets.QWidget):
             if self._dataset is not None
             else path
         )
-        pix = QtGui.QPixmap(resolved)
+        pix = ler_pixmap_orientado(resolved)
         # Cacheia mesmo o null pra evitar re-tentativa
         self._cache[path] = pix
         return pix if not pix.isNull() else None
