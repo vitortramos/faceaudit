@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QAbstractTableModel, QModelIndex
 
 from interface.theme import apply_themed_stylesheet, current_token_fn
+from interface.oriented_image import ler_pixmap_orientado
 
 # --- IMPORTAÇÕES DO SEU PROJETO ---
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -184,7 +185,7 @@ class FaceDetailPanel(QWidget):
             else raw
         )
         if path and os.path.exists(path):
-            pixmap = QtGui.QPixmap(path)
+            pixmap = ler_pixmap_orientado(path)
             if not pixmap.isNull():
                 w = self.lbl_image.width()
                 scaled = pixmap.scaled(w, 280, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)

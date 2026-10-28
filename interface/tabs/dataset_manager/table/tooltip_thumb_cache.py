@@ -22,6 +22,7 @@ from typing import Dict, Optional
 
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, Qt
 from PyQt6.QtGui import QPixmap
+from interface.oriented_image import ler_pixmap_orientado
 
 
 _DEFAULT_THUMB_SIZE = 200  # lado máximo (mantém aspect ratio)
@@ -61,7 +62,7 @@ class TooltipThumbCache:
     # ── Internals ──────────────────────────────────────────────────────
 
     def _build_html(self, path: str) -> Optional[str]:
-        pix = QPixmap(path)
+        pix = ler_pixmap_orientado(path)
         if pix.isNull():
             return None
         scaled = pix.scaled(

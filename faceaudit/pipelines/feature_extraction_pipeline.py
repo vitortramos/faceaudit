@@ -1147,6 +1147,10 @@ class FeatureExtractionPipeline:
                 try:
                     with Image.open(target.resolve_image_path(face)) as img:
                         largura, altura = img.size
+                        # Os pontos estão no sistema da imagem DE PÉ (o
+                        # OpenCV aplica a orientação EXIF); `img.size` não.
+                        if img.getexif().get(0x0112) in (5, 6, 7, 8):
+                            largura, altura = altura, largura
                     falta = round(fracao_sem_pixel(pontos, largura, altura), 6)
                 except Exception:
                     falta = None

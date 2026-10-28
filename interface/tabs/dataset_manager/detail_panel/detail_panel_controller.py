@@ -4,6 +4,7 @@ import pandas as pd
 from PyQt6 import QtCore, QtGui
 from faceaudit.models.face_dataset import FaceDataset
 from .detail_panel_view import DetailPanelView
+from interface.oriented_image import ler_pixmap_orientado
 
 class DetailPanelController(QtCore.QObject):
     """
@@ -80,7 +81,7 @@ class DetailPanelController(QtCore.QObject):
             else raw_path
         )
         if resolved and os.path.exists(resolved):
-            pixmap = QtGui.QPixmap(resolved)
+            pixmap = ler_pixmap_orientado(resolved)
             self.view.set_image(pixmap)
         else:
             self.view.reset_image_placeholder("Imagem não encontrada")

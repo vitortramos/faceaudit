@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+from interface.oriented_image import ler_pixmap_orientado
 
 
 class PngSnapshotWidget(QtWidgets.QWidget):
@@ -82,7 +83,7 @@ class PngSnapshotWidget(QtWidgets.QWidget):
         p = Path(png_path)
         if not p.exists():
             return False
-        pixmap = QtGui.QPixmap(str(p))
+        pixmap = ler_pixmap_orientado(p)
         if pixmap.isNull():
             return False
         self._full_pixmap = pixmap

@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet
+from interface.oriented_image import ler_pixmap_orientado
 
 
 _THUMB_SIZE = 96            # lado em pixels do ícone exibido
@@ -215,7 +216,7 @@ class GalleryWidget(QtWidgets.QWidget):
         if cached is not None:
             return cached if not cached.isNull() else None
 
-        pix = QtGui.QPixmap(path)
+        pix = ler_pixmap_orientado(path)
         # Cacheia mesmo o null pra evitar re-tentativa
         self._pixmap_cache[path] = pix
         return pix if not pix.isNull() else None

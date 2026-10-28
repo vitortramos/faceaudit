@@ -34,6 +34,7 @@ from faceaudit.services.score_comparison_table_service import (
 from interface.theme import apply_themed_stylesheet, current_token_fn
 
 from .widget_helpers import WrappedLabel
+from interface.oriented_image import ler_pixmap_orientado
 
 # Cores da marcação. Fixas de propósito: têm de ser legíveis sobre pele
 # clara e escura e sobre fundo de qualquer cor, nos dois temas.
@@ -225,7 +226,7 @@ class _FacePanel(QtWidgets.QWidget):
             self._legenda.setText(f"{identidade}\n{arquivo}")
             return
         if caminho and Path(caminho).is_file():
-            carregado = QtGui.QPixmap(str(caminho))
+            carregado = ler_pixmap_orientado(caminho)
             if carregado.isNull():
                 mensagem = "Imagem ilegível."
             else:
