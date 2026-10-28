@@ -11,6 +11,11 @@ from faceaudit.enums.dataset_columns import DatasetColumns
 from interface.theme import current_token_fn
 
 
+def _e_coluna_inteira(spec: Any) -> bool:
+    dtype = getattr(spec, "dtype", None)
+    return getattr(dtype, "value", dtype) == "int"
+
+
 @dataclass(frozen=True)
 class _ColumnView:
     """Adaptador interno: representa uma coluna visível na tabela com os
@@ -457,6 +462,12 @@ class DatasetTableModel(QtCore.QAbstractTableModel):
                 return ""
 
             if isinstance(val, (float, np.floating)):
+                # Coluna declarada inteira chega decimal quando tem vazio:
+                # o pandas faz float64 toda coluna de inteiros com nulo, e
+                # "idade" com "NC" aparecia como 45.00. O tipo da coluna é
+                # o do spec, não o que o DataFrame deduziu.
+                if _e_coluna_inteira(spec) and float(val).is_integer():
+                    return str(int(val))
                 return f"{val:.2f}"
 
             return str(val)
