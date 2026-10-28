@@ -824,18 +824,42 @@ class ImagePipelineDialogController:
         mudancas = "\n".join(
             f"  {c.step_index + 1}. {c.step_label} — {c.param_label}: "
             f"{c.before:g} → {c.after:g}" for c in resultado.changes)
+        n_val = (resultado.validation_after.n_measured
+                 if resultado.validation_after is not None else 0)
+        melhorou = resultado.improved_on_validation
+        if melhorou is False:
+            veredito = (
+                "⚠ O ajuste NÃO melhorou nas imagens de validação. Os valores "
+                "atuais já estão no melhor que a busca encontra para esta "
+                "estrutura de pipeline. Recomendo NÃO aplicar.\n\n"
+                "Se a concordância continua baixa, o que limita é a "
+                "estrutura (a ordem ou o tipo dos passos), não os valores."
+            )
+        elif melhorou is None:
+            veredito = "Sem imagens de validação para conferir o ajuste."
+        else:
+            veredito = "O ajuste melhorou nas imagens de validação."
         texto = (
             f"O ajuste testou {resultado.n_evaluations} configurações.\n\n"
             f"Mudanças propostas:\n{mudancas}\n\n"
-            "Validação (imagens que o ajuste NÃO usou):\n"
+            f"Validação ({n_val} imagens que o ajuste NÃO usou):\n"
             + self._linha_de_concordancia("antes ", resultado.validation_before) + "\n"
             + self._linha_de_concordancia("depois", resultado.validation_after)
-            + "\n\nAplicar os valores ao pipeline?"
+            + f"\n\n{veredito}\n\nAplicar os valores ao pipeline?"
         )
-        resp = QtWidgets.QMessageBox.question(
-            self.view, "Ajuste à questionada", texto,
+        caixa = QtWidgets.QMessageBox(
+            QtWidgets.QMessageBox.Icon.Warning if melhorou is False
+            else QtWidgets.QMessageBox.Icon.Question,
+            "Ajuste à questionada", texto,
             QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+            self.view,
         )
+        # Sem melhora na validação, o botão padrão é NÃO aplicar.
+        caixa.setDefaultButton(
+            QtWidgets.QMessageBox.StandardButton.No if melhorou is False
+            else QtWidgets.QMessageBox.StandardButton.Yes)
+        caixa.exec()
+        resp = caixa.standardButton(caixa.clickedButton())
         if resp != QtWidgets.QMessageBox.StandardButton.Yes:
             self.view.degradation_measures.set_sample(None)
             return
