@@ -264,6 +264,11 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         ]
         if cfg.description:
             meta_lines.append(f"<b>Descrição:</b> {cfg.description}")
+        if cfg.questioned is not None:
+            meta_lines.append(
+                f"<b>Questionada:</b> {cfg.questioned.file_name} — o resultado "
+                "traz a comparação das medidas com ela"
+            )
         self.lbl_pipeline_meta.setText(" · ".join(meta_lines))
 
         self.list_steps.clear()

@@ -20,6 +20,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.image_input_source import ImageInputSource
 
+from .degradation_measures_panel import DegradationMeasuresPanel
 from .image_compare_widget import ImageCompareWidget
 from .quality_scores_panel import QualityScoresPanel
 from .step_config_panel import StepConfigPanel
@@ -34,12 +35,14 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
     name_changed = QtCore.pyqtSignal(str)
     input_source_changed = QtCore.pyqtSignal(object)  # ImageInputSource
     seed_changed = QtCore.pyqtSignal(int)
+    questioned_load_clicked = QtCore.pyqtSignal()
+    questioned_clear_clicked = QtCore.pyqtSignal()
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setWindowTitle("Editor de Pipeline de Imagens")
         self.setModal(True)
-        self.resize(1300, 820)
+        self.resize(1500, 920)
         # PR I4 — controller injeta callback aqui pra interceptar
         # close quando há mudanças não salvas.
         self.confirm_close_callback: Optional[Callable[[], bool]] = None
@@ -137,7 +140,34 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.btn_save.clicked.connect(self.save_clicked.emit)
         top_row.addWidget(self.btn_save)
 
+        top_row.addSpacing(20)
+        self.btn_questioned = QtWidgets.QPushButton("📄 Questionada…", parent=self)
+        self.btn_questioned.setToolTip(
+            "Carrega a imagem questionada que o pipeline deve reproduzir. "
+            "Ela aparece ao lado da processada, com as medidas de "
+            "degradação das duas, e fica registrada no pipeline (nome e "
+            "SHA-256) e na cadeia de custódia do dataset adaptado."
+        )
+        self.btn_questioned.clicked.connect(self.questioned_load_clicked.emit)
+        top_row.addWidget(self.btn_questioned)
+        self.btn_questioned_clear = QtWidgets.QToolButton(parent=self)
+        self.btn_questioned_clear.setText("✕")
+        self.btn_questioned_clear.setToolTip("Retirar a questionada do pipeline")
+        self.btn_questioned_clear.setEnabled(False)
+        self.btn_questioned_clear.clicked.connect(self.questioned_clear_clicked.emit)
+        top_row.addWidget(self.btn_questioned_clear)
+
         main.addLayout(top_row)
+
+        self.lbl_questioned_info = QtWidgets.QLabel("", parent=self)
+        self.lbl_questioned_info.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+        apply_themed_stylesheet(
+            self.lbl_questioned_info,
+            lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 10px; padding: 0 4px;",
+        )
+        self.lbl_questioned_info.setVisible(False)
+        main.addWidget(self.lbl_questioned_info)
         main.addWidget(self.lbl_input_source_help)
         # Texto inicial — atualizado dinamicamente em set_pipeline_meta
         # e quando o usuário troca o dropdown.
@@ -184,9 +214,15 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.image_compare = ImageCompareWidget()
         right_layout.addWidget(self.image_compare, 1)
 
-        # PR I3 — painel de scores embaixo do preview
-        self.quality_scores = QualityScoresPanel()
-        right_layout.addWidget(self.quality_scores)
+        # Embaixo do preview: scores de qualidade e medidas de degradação
+        paineis = QtWidgets.QHBoxLayout()
+        self.quality_scores = QualityScoresPanel(parent=right_container)
+        paineis.addWidget(self.quality_scores, 1)
+        self.degradation_measures = DegradationMeasuresPanel(parent=right_container)
+        paineis.addWidget(self.degradation_measures, 1)
+        for painel in (self.quality_scores, self.degradation_measures):
+            paineis.setAlignment(painel, QtCore.Qt.AlignmentFlag.AlignTop)
+        right_layout.addLayout(paineis)
 
         self.splitter.addWidget(right_container)
 
@@ -244,6 +280,12 @@ class ImagePipelineDialogView(QtWidgets.QDialog):
         self.spn_seed.blockSignals(True)
         self.spn_seed.setValue(int(seed))
         self.spn_seed.blockSignals(False)
+
+    def set_questioned_info(self, texto: Optional[str]):
+        """Linha com nome e SHA-256 da questionada; None esconde."""
+        self.lbl_questioned_info.setVisible(bool(texto))
+        self.lbl_questioned_info.setText(texto or "")
+        self.btn_questioned_clear.setEnabled(bool(texto))
 
     def set_save_load_enabled(self, enabled: bool, reason: str = ""):
         """PR I4 — desabilita Salvar/Carregar quando library_root

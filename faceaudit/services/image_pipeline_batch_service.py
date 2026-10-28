@@ -26,8 +26,14 @@ O que o derivado leva de cada face:
     pose, geometria, metadados de captura): a imagem mudou e essas
     medidas deixaram de valer. O perito roda Enriquecer depois.
 
+Medidas de degradação: cada imagem processada é medida na região da
+face (ver `image_degradation_profile_service`), e o manifesto e a cadeia
+de custódia registram o resumo do conjunto e — quando o pipeline traz a
+questionada que reproduz — a comparação da mediana com ela.
+
 Determinismo: `seed_jitter = face.image_path` propaga pro pipeline.
-Idempotência via `skip_existing=True`: PNG já existe → reaproveita.
+Idempotência via `skip_existing=True`: PNG já existe → não regrava (a
+imagem é processada em memória mesmo assim, para ser medida).
 
 Service stateless. Construa uma instância por chamada ou compartilhe.
 """
@@ -69,6 +75,12 @@ from faceaudit.services.dataset_localization_service import (
     self_contained_dataset_dir,
 )
 from faceaudit.services.hash_service import HashService
+from faceaudit.services.image_degradation_profile_service import (
+    DegradationMeasures,
+    compare_summary,
+    measure,
+    summarize,
+)
 
 
 _MANIFEST_NAME = "manifest.json"
@@ -217,6 +229,7 @@ class ImagePipelineBatchService:
         levadas, descartadas = colunas_que_acompanham(dataset)
 
         new_faces: List[FaceInfo] = []
+        medidas: List[DegradationMeasures] = []
         failures: List[Tuple[str, str]] = []
         n_processed = 0
         n_succeeded = 0
@@ -246,6 +259,7 @@ class ImagePipelineBatchService:
                 n_succeeded += 1
             new_faces.append(result["face"])
             used_names.add(result["rel_name"])
+            medidas.append(result["measures"])
 
         specs_origem = dataset.column_specs or {}
         new_dataset = FaceDataset(
@@ -278,6 +292,17 @@ class ImagePipelineBatchService:
         if source_parquet_path is not None and Path(source_parquet_path).exists():
             source_sha = hash_service.calculate_file_hash(Path(source_parquet_path))
 
+        questionada = pipeline_config.questioned
+        resumo = summarize(medidas) if medidas else {}
+        degradacao = {
+            "questioned": None if questionada is None else questionada.to_dict(),
+            "n_measured": len(medidas),
+            "summary": resumo,
+            "comparison": compare_summary(
+                None if questionada is None else questionada.measures, resumo,
+            ) if medidas else [],
+        }
+
         manifest = {
             "pipeline_name": pipeline_config.name,
             "pipeline_seed": pipeline_config.seed,
@@ -295,6 +320,7 @@ class ImagePipelineBatchService:
             "source_parquet_sha256": source_sha,
             "columns_carried": levadas,
             "columns_dropped": descartadas,
+            "degradation_measures": degradacao,
             "operator": AuditLogService.current_operator(),
             "pipeline_config": pipeline_config.to_dict(),
         }
@@ -323,6 +349,7 @@ class ImagePipelineBatchService:
             error_parquet_path=error_parquet_path,
             dataset_dir=dataset_dir,
             manifest_path=manifest_path,
+            degradation=degradacao,
         )
 
     # ── Cadeia de custódia do derivado ─────────────────────────────────────
@@ -374,6 +401,13 @@ class ImagePipelineBatchService:
             "columns_dropped": manifest["columns_dropped"],
             "is_aligned": bool(new_dataset.is_aligned),
         }
+        degradacao = manifest.get("degradation_measures") or {}
+        questionada = degradacao.get("questioned")
+        if questionada:
+            metadata["questioned_file_name"] = questionada.get("file_name")
+            metadata["questioned_sha256"] = questionada.get("sha256")
+        if degradacao.get("comparison"):
+            metadata["degradation_comparison"] = degradacao["comparison"]
         AuditLogService.append(
             parquet_path,
             AuditOperation.CREATE,
@@ -403,17 +437,8 @@ class ImagePipelineBatchService:
         if not src_path.exists():
             raise RuntimeError(f"arquivo fonte não encontrado: {src_path}")
 
-        # Determina filename — sempre .png
         rel_name = self._build_dest_name(face, src_path, used_names)
         dst = images_dir / rel_name
-
-        # Idempotência: PNG já existe? Decide antes de ler e processar.
-        if skip_existing and dst.exists():
-            existing_hash = hash_service.calculate_file_hash(dst)
-            new_face = self._clone_face_minimal(
-                face, rel_name, existing_hash, colunas_levadas,
-            )
-            return {"status": "skipped", "face": new_face, "rel_name": rel_name}
 
         # Carrega imagem via open+imdecode — `cv2.imread` falha
         # SILENCIOSAMENTE em paths com chars não-ASCII no Windows.
@@ -442,7 +467,19 @@ class ImagePipelineBatchService:
             geom = geometria_do_registro(face, dataset)
 
         jitter = str(face.image_path or "")
-        processed = pipeline.process(bgr, seed_jitter=jitter, face=geom).image
+        saida = pipeline.process(bgr, seed_jitter=jitter, face=geom)
+        processed = saida.image
+        medidas = measure(processed, saida.face)
+
+        # Idempotência: PNG já existe → não regrava. A imagem foi
+        # processada assim mesmo, para ser medida.
+        if skip_existing and dst.exists():
+            existing_hash = hash_service.calculate_file_hash(dst)
+            new_face = self._clone_face_minimal(
+                face, rel_name, existing_hash, colunas_levadas,
+            )
+            return {"status": "skipped", "face": new_face,
+                    "rel_name": rel_name, "measures": medidas}
 
         # Grava PNG (lossless) via imencode+write_bytes — `cv2.imwrite`
         # tem o mesmo bug de não-ASCII no Windows.
@@ -459,7 +496,8 @@ class ImagePipelineBatchService:
         new_face = self._clone_face_minimal(
             face, rel_name, file_hash, colunas_levadas,
         )
-        return {"status": "success", "face": new_face, "rel_name": rel_name}
+        return {"status": "success", "face": new_face,
+                "rel_name": rel_name, "measures": medidas}
 
     # ── Helpers ─────────────────────────────────────────────────────────────
 

@@ -1,5 +1,5 @@
 """ImageCompareWidget — preview lado-a-lado original × processada
-(PR I2).
+(× questionada, quando o pipeline tem uma) (PR I2).
 
 Coluna direita do editor. Mostra duas QLabels com pixmaps:
   - Esquerda: imagem original (ou face alinhada, conforme
@@ -31,19 +31,20 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from interface.theme import apply_themed_stylesheet, current_token_fn
 
 
-_PREVIEW_SIZE = 480  # tamanho fixo das duas thumbnails
+_PREVIEW_MIN = 220  # lado mínimo de cada painel; cresce com a janela
 
 
 class _ImagePane(QtWidgets.QWidget):
     """Container de uma das duas imagens com título + label."""
 
-    def __init__(self, title: str):
-        super().__init__()
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self._pixmap: Optional[QtGui.QPixmap] = None
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
-        self.lbl_title = QtWidgets.QLabel(title)
+        self.lbl_title = QtWidgets.QLabel(title, parent=self)
         self.lbl_title.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         apply_themed_stylesheet(
             self.lbl_title,
@@ -54,9 +55,14 @@ class _ImagePane(QtWidgets.QWidget):
         )
         layout.addWidget(self.lbl_title)
 
-        self.lbl_image = QtWidgets.QLabel("(sem imagem)")
-        self.lbl_image.setMinimumSize(_PREVIEW_SIZE, _PREVIEW_SIZE)
-        self.lbl_image.setMaximumSize(_PREVIEW_SIZE, _PREVIEW_SIZE)
+        self.lbl_image = QtWidgets.QLabel("(sem imagem)", parent=self)
+        self.lbl_image.setMinimumSize(_PREVIEW_MIN, _PREVIEW_MIN)
+        # Ignored: o tamanho do pixmap não puxa o layout — sem isso, cada
+        # reescala aumentaria a dica de tamanho e a janela cresceria sozinha.
+        self.lbl_image.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Ignored,
+            QtWidgets.QSizePolicy.Policy.Ignored,
+        )
         self.lbl_image.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         apply_themed_stylesheet(
             self.lbl_image,
@@ -66,18 +72,34 @@ class _ImagePane(QtWidgets.QWidget):
                 "border-radius: 4px; color: " + t("TEXT_MUTED") + ";"
             ),
         )
-        layout.addWidget(self.lbl_image)
+        # A imagem leva todo o espaço que sobrar; o título fica no tamanho dele.
+        layout.addWidget(self.lbl_image, 1)
 
-    def set_pixmap(self, pixmap: Optional[QtGui.QPixmap]):
+    def set_pixmap(self, pixmap: Optional[QtGui.QPixmap], placeholder: str = "(sem imagem)"):
+        self._pixmap = pixmap
         if pixmap is None:
-            self.lbl_image.setText("(sem imagem)")
+            self.lbl_image.clear()
+            self.lbl_image.setText(placeholder)
             return
-        scaled = pixmap.scaled(
-            _PREVIEW_SIZE, _PREVIEW_SIZE,
-            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
-            QtCore.Qt.TransformationMode.SmoothTransformation,
+        self._rescale()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale()
+
+    def _rescale(self):
+        if self._pixmap is None or self._pixmap.isNull():
+            return
+        lado = self.lbl_image.size()
+        # Imagem pequena (ex.: questionada de 168 px) é ampliada para caber,
+        # sem suavizar: o grão é justamente o que se quer comparar.
+        modo = (
+            QtCore.Qt.TransformationMode.FastTransformation
+            if self._pixmap.width() < lado.width() and self._pixmap.height() < lado.height()
+            else QtCore.Qt.TransformationMode.SmoothTransformation
         )
-        self.lbl_image.setPixmap(scaled)
+        self.lbl_image.setPixmap(self._pixmap.scaled(
+            lado, QtCore.Qt.AspectRatioMode.KeepAspectRatio, modo))
 
     def set_dimensions_text(self, dims: str):
         """Adiciona dimensões ao título (ex: '480×640')."""
@@ -144,12 +166,15 @@ class ImageCompareWidget(QtWidgets.QWidget):
         panes_row = QtWidgets.QHBoxLayout()
         panes_row.setSpacing(12)
 
-        self.pane_original = _ImagePane("Original")
-        self.pane_processed = _ImagePane("Processada")
+        self.pane_original = _ImagePane("Original", parent=self)
+        self.pane_processed = _ImagePane("Processada", parent=self)
+        self.pane_questioned = _ImagePane("Questionada", parent=self)
+        self.pane_questioned.setVisible(False)
 
         panes_row.addWidget(self.pane_original)
         panes_row.addWidget(self.pane_processed)
-        layout.addLayout(panes_row)
+        panes_row.addWidget(self.pane_questioned)
+        layout.addLayout(panes_row, 1)
 
         # Status (filename + erro)
         self.lbl_status = QtWidgets.QLabel("")
@@ -182,8 +207,6 @@ class ImageCompareWidget(QtWidgets.QWidget):
         apply_row.addWidget(self.btn_apply)
         layout.addLayout(apply_row)
 
-        layout.addStretch()
-
     # ── API pra controller ─────────────────────────────────────────────────
 
     def show_original(
@@ -203,6 +226,20 @@ class ImageCompareWidget(QtWidgets.QWidget):
         self.pane_processed.set_pixmap(pixmap)
         if dims:
             self.pane_processed.set_dimensions_text(dims)
+
+    def show_questioned(
+        self,
+        pixmap: Optional[QtGui.QPixmap],
+        *,
+        visible: bool,
+        dims: Optional[str] = None,
+        placeholder: str = "(sem imagem)",
+    ):
+        """Painel da questionada — só aparece quando o pipeline tem uma."""
+        self.pane_questioned.setVisible(visible)
+        self.pane_questioned.set_pixmap(pixmap, placeholder=placeholder)
+        if dims:
+            self.pane_questioned.set_dimensions_text(dims)
 
     def show_status(self, text: str, is_error: bool = False):
         self.lbl_status.setText(text)

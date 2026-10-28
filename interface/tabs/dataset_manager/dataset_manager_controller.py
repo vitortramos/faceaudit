@@ -2831,6 +2831,33 @@ class DatasetManagerController(QtCore.QObject):
             on_finished=self._on_aplicar_image_pipeline_concluido,
         )
 
+    @staticmethod
+    def _texto_da_comparacao_com_a_questionada(result) -> str:
+        """Questionada × mediana da base adaptada, medida a medida."""
+        from faceaudit.services.image_degradation_profile_service import (
+            MEASURES_BY_KEY,
+        )
+
+        deg = getattr(result, "degradation", None) or {}
+        questionada = deg.get("questioned")
+        linhas = deg.get("comparison") or []
+        if not questionada or not linhas:
+            return ""
+        saida = [f"\n\nQuestionada {questionada.get('file_name')} × mediana da base adaptada:"]
+        n_perto = 0
+        for linha in linhas:
+            m = MEASURES_BY_KEY.get(linha["measure"])
+            if m is None:
+                continue
+            marca = {True: "✓", False: "✗"}.get(linha.get("close"), "–")
+            n_perto += int(linha.get("close") is True)
+            saida.append(
+                f"  {marca} {m.label}: {m.format(linha.get('questioned'))} × "
+                f"{m.format(linha.get('set_median'))}"
+            )
+        saida.append(f"  {n_perto} de {len(linhas)} medidas dentro da tolerância.")
+        return "\n".join(saida)
+
     def _on_aplicar_image_pipeline_concluido(self, result):
         if result is None:
             QMessageBox.warning(
@@ -2887,7 +2914,8 @@ class DatasetManagerController(QtCore.QObject):
 
         QMessageBox.information(
             self.view, "Pipeline aplicado",
-            f"{result.summary()}{extra}\n\n"
+            f"{result.summary()}{extra}"
+            f"{self._texto_da_comparacao_com_a_questionada(result)}\n\n"
             f"Dataset derivado: {result.dataset_dir}\n"
             f"  parquet: {result.parquet_path.name}\n"
             f"  imagens: {result.images_dir.name}/\n"
