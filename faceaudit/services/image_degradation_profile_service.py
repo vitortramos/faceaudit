@@ -14,6 +14,14 @@ documento) e dominaria as frações de preto e branco sem dizer nada sobre
 a face. Sem a posição da face, a imagem inteira é medida e a medida diz
 isso (`region`).
 
+A comparação de um CONJUNTO com a questionada tem duas leituras, e as
+duas são registradas: a mediana do conjunto (`compare_summary`) e a
+parcela das imagens que, uma a uma, ficam dentro da tolerância
+(`agreement`). Só a mediana engana: num caso real a mediana de uma base
+adaptada acertou as 8 medidas da questionada enquanto apenas 5% das
+imagens, individualmente, se pareciam com ela — cópias escuras demais e
+claras demais se compensavam na mediana.
+
 Módulo de backend, sem Qt.
 """
 
@@ -107,6 +115,21 @@ class MeasureSpec:
         if self.rel_tol is not None:
             return f"± {100 * self.rel_tol:g}%".replace(".", ",")
         return "igual"
+
+    def distance(self, target: Any, value: Any) -> Optional[float]:
+        """Distância em múltiplos da tolerância (≤ 1 = dentro dela)."""
+        if target is None or value is None:
+            return None
+        if self.kind == "bool":
+            return 0.0 if bool(target) == bool(value) else 1e3
+        t, v = float(target), float(value)
+        if self.abs_tol is not None:
+            return abs(v - t) / self.abs_tol
+        if self.rel_tol is not None:
+            if t <= 0 or v <= 0:
+                return 0.0 if t == v else 1e3
+            return abs(math.log(v / t)) / math.log1p(self.rel_tol)
+        return 0.0 if t == v else 1e3
 
     def is_close(self, target: Any, value: Any) -> Optional[bool]:
         if target is None or value is None:
@@ -240,10 +263,79 @@ def summarize(medidas: Sequence[DegradationMeasures]) -> Dict[str, Dict[str, Any
     return out
 
 
+def agreement(
+    target: Optional[DegradationMeasures], medidas: Sequence[DegradationMeasures],
+) -> Optional[Dict[str, Any]]:
+    """Quantas imagens, UMA A UMA, ficam dentro da tolerância da questionada.
+
+    Returns:
+        None sem questionada ou sem imagens. Senão:
+        - `per_measure`: fração das imagens dentro, por medida;
+        - `close_count_histogram`: quantas imagens têm k medidas dentro;
+        - `all_close_fraction` / `all_but_one_close_fraction`;
+        - `median_distance`: distância mediana por imagem, somada nas
+          medidas e em múltiplos da tolerância.
+    """
+    if target is None or not medidas:
+        return None
+    chaves = [m.key for m in MEASURES if getattr(target, m.key) is not None]
+    por_imagem = []
+    distancias = []
+    for x in medidas:
+        dentro = {}
+        soma = 0.0
+        for k in chaves:
+            spec = MEASURES_BY_KEY[k]
+            d = spec.distance(getattr(target, k), getattr(x, k))
+            dentro[k] = d is not None and d <= 1.0
+            soma += min(d, 10.0) if d is not None else 10.0
+        por_imagem.append(dentro)
+        distancias.append(soma)
+    n = len(medidas)
+    contagens = [sum(d.values()) for d in por_imagem]
+    hist: Dict[str, int] = {}
+    for c in contagens:
+        hist[str(c)] = hist.get(str(c), 0) + 1
+    return {
+        "n_images": n,
+        "measures": chaves,
+        "per_measure": {
+            k: round(sum(d[k] for d in por_imagem) / n, 6) for k in chaves
+        },
+        "close_count_histogram": dict(sorted(hist.items(), key=lambda kv: -int(kv[0]))),
+        "all_close_fraction": round(sum(c == len(chaves) for c in contagens) / n, 6),
+        "all_but_one_close_fraction": round(
+            sum(c >= len(chaves) - 1 for c in contagens) / n, 6),
+        "median_distance": round(float(np.median(distancias)), 6),
+    }
+
+
+def per_image_distance(target: DegradationMeasures, x: DegradationMeasures) -> float:
+    """Distância de uma imagem à questionada: soma, nas medidas que a
+    questionada tem, da distância em múltiplos da tolerância (cada termo
+    limitado a 10, para uma medida absurda não dominar)."""
+    soma = 0.0
+    for m in MEASURES:
+        t = getattr(target, m.key)
+        if t is None:
+            continue
+        d = m.distance(t, getattr(x, m.key))
+        soma += 10.0 if d is None else min(d, 10.0)
+    return soma
+
+
 def compare_summary(
-    target: Optional[DegradationMeasures], resumo: Dict[str, Dict[str, Any]],
+    target: Optional[DegradationMeasures],
+    resumo: Dict[str, Dict[str, Any]],
+    medidas: Optional[Sequence[DegradationMeasures]] = None,
 ) -> List[Dict[str, Any]]:
-    """Questionada × mediana do conjunto, medida a medida (JSON-safe)."""
+    """Questionada × mediana do conjunto, medida a medida (JSON-safe).
+
+    Com `medidas`, cada linha traz também `images_close_fraction`: a
+    parcela das imagens que, uma a uma, ficam dentro da tolerância.
+    """
+    concordancia = agreement(target, medidas) if medidas else None
+    por_medida = (concordancia or {}).get("per_measure", {})
     linhas = []
     for m in MEASURES:
         r = resumo.get(m.key)
@@ -259,6 +351,7 @@ def compare_summary(
             "set_p5": r.get("p5"),
             "set_p95": r.get("p95"),
             "close": m.is_close(t, central),
+            "images_close_fraction": por_medida.get(m.key),
             "tolerance": m.tolerance_text(),
         })
     return linhas

@@ -54,6 +54,7 @@ from faceaudit.services.image_pipeline_batch_service import geometria_do_registr
 from .image_pipeline_dialog_view import ImagePipelineDialogView
 from .workers.quality_scores_worker import QualityScoresWorker
 from .workers.questioned_load_worker import QuestionedLoadWorker
+from .workers.sample_evaluation_worker import SampleEvaluationWorker
 
 
 class ImagePipelineDialogController:
@@ -106,6 +107,9 @@ class ImagePipelineDialogController:
         # o arquivo não está mais no caminho gravado.
         self._questioned_image: Optional[np.ndarray] = None
         self._questioned_warning: Optional[str] = None
+        # Amostra da base para "Medir na base": carregada uma vez por origem
+        # (foto original × face alinhada) e reaproveitada.
+        self._sample_cache = None  # (ImageInputSource, List[SampleItem])
 
         # PR I3 — worker thread pra scores de qualidade. Mantém
         # referências fortes pra evitar GC durante a execução.
@@ -172,6 +176,7 @@ class ImagePipelineDialogController:
         # Questionada
         self.view.questioned_load_clicked.connect(self._on_questioned_load_clicked)
         self.view.questioned_clear_clicked.connect(self._on_questioned_clear)
+        self.view.degradation_measures.sample_requested.connect(self._on_sample_requested)
 
     def _sync_initial_state(self):
         # Topo
@@ -213,6 +218,7 @@ class ImagePipelineDialogController:
             self._mark_dirty()
 
     def _on_input_source_changed(self, src: ImageInputSource):
+        self._sample_cache = None
         if src != self._pipeline_config.input_source:
             self._pipeline_config.input_source = src
             self._mark_dirty()
@@ -484,6 +490,7 @@ class ImagePipelineDialogController:
     # ── PR I4 — Persistência na biblioteca global ──────────────────────────
 
     def _mark_dirty(self):
+        self.view.degradation_measures.mark_sample_stale()
         if not self._is_dirty:
             self._is_dirty = True
             self.view.set_dirty_indicator(True)
@@ -686,6 +693,49 @@ class ImagePipelineDialogController:
         for ch in bad:
             out = out.replace(ch, "_")
         return out.strip() or "untitled"
+
+    # ── Amostra da base ───────────────────────────────────────────────────
+
+    def _on_sample_requested(self):
+        if not self._dataset or len(self._dataset) == 0:
+            return
+        if not self._pipeline_config.steps:
+            self.view.degradation_measures.set_sample(None)
+            return
+        origem = self._pipeline_config.input_source
+        amostra = (self._sample_cache[1]
+                   if self._sample_cache and self._sample_cache[0] == origem else None)
+        config = ImageProcessingPipelineConfig.from_dict(self._pipeline_config.to_dict())
+        self.view.degradation_measures.set_sample_running(
+            "Medindo a amostra da base…" if amostra is not None
+            else "Carregando e medindo a amostra da base…")
+
+        thread = QtCore.QThread()
+        worker = SampleEvaluationWorker(
+            self._dataset, config, sample=amostra, ff_service=self._ff_service)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        self._sample_origem = origem
+        worker.finished.connect(self._on_sample_done)
+        worker.error.connect(self._on_sample_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        entrada = (thread, worker)
+        self._pending_quality_threads.append(entrada)
+        thread.finished.connect(lambda e=entrada: self._discard_pending_thread(e))
+        thread.start()
+
+    def _on_sample_done(self, resultado):
+        amostra, avaliacao = resultado
+        self._sample_cache = (self._sample_origem, amostra)
+        self.view.degradation_measures.set_sample(avaliacao)
+
+    def _on_sample_error(self, msg: str):
+        self.view.degradation_measures.set_sample(None)
+        self.view.image_compare.show_status(f"Falha ao medir a amostra: {msg}", is_error=True)
 
     # ── Questionada ───────────────────────────────────────────────────────
 

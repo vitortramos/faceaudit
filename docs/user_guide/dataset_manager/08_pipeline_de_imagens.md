@@ -318,17 +318,42 @@ nela, mede, e a partir daí:
 > 💡 O **grão** depende da resolução: só compare com a mesma distância
 > entre os olhos (por isso o *Redimensionar* final vem antes da medida).
 
+### Medir na base, não numa face só
+
+Uma face parecida com a questionada não quer dizer uma base parecida. O
+botão **📊 Medir na base** (no painel de medidas) roda o pipeline numa
+**amostra de 40 imagens** espalhadas pela base, sem gravar nada, e
+preenche a coluna **Base (amostra)** com, para cada medida:
+
+- a **mediana** da amostra;
+- a **parcela das imagens que, uma a uma, ficam dentro da tolerância**
+  (verde quando é a maioria).
+
+A linha de baixo resume quantas imagens têm **todas** as medidas dentro.
+Quando o pipeline muda depois da medição, a coluna fica cinza e pede
+nova medição.
+
+> ⚠️ **A mediana sozinha engana.** Num caso real, a mediana da base
+> adaptada acertou as 8 medidas da questionada enquanto só **5% das
+> imagens**, individualmente, se pareciam com ela: as fotos originais
+> têm exposições diferentes, a curva de tons fixa as separava em cópias
+> escuras demais e claras demais, e as duas se compensavam na mediana.
+> Calibre olhando a parcela por imagem.
+
 ### No Processar
 
 Toda imagem adaptada é medida. O `manifest.json` e a entrada **CREATE**
 da cadeia de custódia do dataset gerado registram:
 
 - a mediana, o P5 e o P95 de cada medida no conjunto;
-- quando o pipeline tem questionada: o nome e o SHA-256 dela e a
+- quando o pipeline tem questionada: o nome e o SHA-256 dela, a
   comparação, medida a medida, da questionada com a **mediana da base
-  adaptada** (dentro ou fora da tolerância).
+  adaptada**, e a **concordância imagem a imagem** — para cada medida, a
+  parcela das imagens dentro da tolerância; quantas imagens têm todas
+  as medidas dentro; a distribuição do número de medidas dentro.
 
-A janela de conclusão mostra essa comparação com ✓ e ✗. É o que permite
+A janela de conclusão mostra a comparação com ✓ e ✗ e, ao lado de cada
+medida, a parcela das imagens dentro. É o que permite
 escrever no laudo que a base de referência foi degradada até apresentar
 as mesmas características mensuráveis da questionada — e com quais
 números.
@@ -544,11 +569,14 @@ Pipeline "xerox_documento":
 ```
 
 Carregue a questionada no Editor (**📄 Questionada…**) e ajuste os
-valores até as medidas da processada ficarem verdes. Os valores acima
-vieram de um caso real (questionada com distância entre os olhos de
-48,8 px): aplicados à base de fotos de documento, a mediana da base
-adaptada ficou dentro da tolerância nas **8 medidas**. São ponto de
-partida, não receita — cada cópia tem a sua copiadora e o seu scanner.
+valores até as medidas ficarem verdes — conferindo com **📊 Medir na
+base**, não só na face da tela. Os valores acima vieram de um caso real
+(questionada com distância entre os olhos de ~49 px). Aplicados à base
+de fotos de documento, a **mediana** da base adaptada ficou dentro da
+tolerância nas 8 medidas, mas só ~5% das imagens tinham 4 ou mais das 5
+medidas de tom dentro: a curva fixa reage à exposição de cada foto. São
+ponto de partida, não receita — cada cópia tem a sua copiadora e o seu
+scanner.
 O *Ganho de toner* entra quando as sombras da questionada são mais
 fechadas que as da base processada.
 
