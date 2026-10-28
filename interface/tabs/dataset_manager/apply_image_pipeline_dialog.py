@@ -9,8 +9,9 @@ UX:
   - Combo: pipelines disponíveis na biblioteca global (lê
     `<library>/image_pipelines/*.json`).
   - Lista read-only de steps do pipeline selecionado.
-  - Seletor de pasta destino (default = `<parquet_dir>/
-    <dataset>__<pipeline>/`).
+  - Pasta de destino (qualquer) + nome do dataset. O dataset nasce
+    autocontido em `<pasta>/<nome>/`, com parquet, cadeia de custódia,
+    manifesto e `images/` dentro.
   - Checkbox skip_existing (default ON).
   - Botões Cancel / 🌀 Processar.
 """
@@ -30,6 +31,9 @@ from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.models.image_processing.image_processing_pipeline_config import (
     ImageProcessingPipelineConfig,
 )
+from faceaudit.services.dataset_localization_service import (
+    self_contained_dataset_dir,
+)
 
 
 class ApplyImagePipelineDialog(QtWidgets.QDialog):
@@ -37,7 +41,9 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
     Após `exec() == Accepted`, chame:
       - `selected_pipeline()` → `ImageProcessingPipelineConfig` ou None
-      - `target_dir()` → `Path`
+      - `target_dir()` → `Path` (pasta-base escolhida)
+      - `dataset_name()` → `str`
+      - `dataset_dir()` → `Path` (`<pasta>/<nome>/`, o que será criado)
       - `skip_existing()` → `bool`
     """
 
@@ -71,9 +77,10 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
         intro = QtWidgets.QLabel(
             "<b>Aplicar pipeline em todo o dataset</b> — gera um dataset "
-            "derivado enxuto (sem embeddings, só image_path/hash/file_name/"
-            "identity). Perito roda <i>Enriquecer</i> depois pra recalcular "
-            "métricas no novo dataset."
+            "derivado com as imagens transformadas. Ele leva a identidade "
+            "e as colunas de template, mas não embeddings nem métricas de "
+            "qualidade: rode <i>Enriquecer</i> no novo dataset depois.",
+            parent=self,
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -105,41 +112,54 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
 
         layout.addWidget(pipeline_box)
 
-        # ── Destino das imagens ──
-        target_box = QtWidgets.QGroupBox("Pasta das imagens")
-        target_outer = QtWidgets.QVBoxLayout(target_box)
+        # ── Destino do dataset ──
+        target_box = QtWidgets.QGroupBox("Destino do dataset", parent=self)
+        target_form = QtWidgets.QFormLayout(target_box)
 
         target_row = QtWidgets.QHBoxLayout()
-        self.input_target = QtWidgets.QLineEdit()
+        self.input_target = QtWidgets.QLineEdit(parent=target_box)
+        self.input_target.textChanged.connect(self._refresh_preview)
         target_row.addWidget(self.input_target, 1)
-        self.btn_browse = QtWidgets.QPushButton("📁 Escolher…")
+        self.btn_browse = QtWidgets.QPushButton("📁 Escolher…", parent=target_box)
         self.btn_browse.clicked.connect(self._on_browse)
         target_row.addWidget(self.btn_browse)
-        target_outer.addLayout(target_row)
+        target_form.addRow("Pasta:", target_row)
 
-        # Nome do arquivo (sem extensão)
-        name_row = QtWidgets.QHBoxLayout()
-        name_row.addWidget(QtWidgets.QLabel("Nome do arquivo:"))
-        self.input_filename = QtWidgets.QLineEdit()
+        self.input_filename = QtWidgets.QLineEdit(parent=target_box)
         self.input_filename.setPlaceholderText("dataset__pipeline")
-        name_row.addWidget(self.input_filename, 1)
-        name_row.addWidget(QtWidgets.QLabel(".parquet"))
-        target_outer.addLayout(name_row)
+        self.input_filename.textChanged.connect(self._refresh_preview)
+        target_form.addRow("Nome do dataset:", self.input_filename)
+
+        self.lbl_preview = QtWidgets.QLabel("", parent=target_box)
+        self.lbl_preview.setWordWrap(True)
+        self.lbl_preview.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        target_form.addRow(self.lbl_preview)
+
+        self.lbl_exists = QtWidgets.QLabel("", parent=target_box)
+        self.lbl_exists.setWordWrap(True)
+        apply_themed_stylesheet(
+            self.lbl_exists,
+            lambda t: "color: " + t("WARNING") + "; font-size: 11px;",
+        )
+        self.lbl_exists.setVisible(False)
+        target_form.addRow(self.lbl_exists)
 
         target_help = QtWidgets.QLabel(
-            "A pasta escolhida recebe os PNGs processados + "
-            "<code>manifest.json</code>. O parquet do dataset derivado "
-            "vai pra biblioteca global de datasets. Em caso de falhas, "
-            "<code>&lt;nome&gt;__errors.parquet</code> também é gerado "
-            "na biblioteca global, com 1 linha por face que falhou + "
-            "coluna <code>error_message</code>."
+            "O dataset ganha uma pasta própria dentro da pasta escolhida, "
+            "com o parquet, a cadeia de custódia, o <code>manifest.json</code> "
+            "e as imagens em <code>images/</code>. A pasta pode ser movida "
+            "inteira sem quebrar o dataset. Falhas vão para "
+            "<code>&lt;nome&gt;__errors.parquet</code>, na mesma pasta.",
+            parent=target_box,
         )
         target_help.setWordWrap(True)
         apply_themed_stylesheet(
             target_help,
             lambda t: "color: " + t("TEXT_MUTED") + "; font-size: 10px;",
         )
-        target_outer.addWidget(target_help)
+        target_form.addRow(target_help)
 
         layout.addWidget(target_box)
 
@@ -255,21 +275,43 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
         self._refresh_target_default()
 
     def _refresh_target_default(self):
-        """Sugere `<parent>/<dataset>__<pipeline>/` + filename default."""
+        """Sugere a pasta-base e o nome `<dataset>__<pipeline>`."""
         cfg = self.selected_pipeline()
         if cfg is None:
             self.input_target.setText("")
             self.input_filename.setText("")
             return
-        # Sanitização básica (igual do service)
+        if not self.input_target.text().strip():
+            self.input_target.setText(str(self._suggested_target_parent))
         safe_ds = self._safe_name(self._dataset_name)
         safe_pipe = self._safe_name(cfg.name)
-        stem = f"{safe_ds}__{safe_pipe}"
-        target = self._suggested_target_parent / stem
-        self.input_target.setText(str(target))
-        # Default do nome — usuário pode editar livremente. O service
-        # sanitiza/garante o `.parquet` na hora de salvar.
-        self.input_filename.setText(stem)
+        self.input_filename.setText(f"{safe_ds}__{safe_pipe}")
+        self._refresh_preview()
+
+    def _refresh_preview(self, *_):
+        """Mostra a pasta que será criada e avisa se ela já existe."""
+        ok = self.buttons.button(QtWidgets.QDialogButtonBox.StandardButton.Ok)
+        base = self.input_target.text().strip()
+        nome = self.dataset_name()
+        if not base or not nome:
+            self.lbl_preview.setText("<i>Escolha a pasta e o nome do dataset.</i>")
+            self.lbl_exists.setVisible(False)
+            ok.setEnabled(False)
+            return
+        destino = self.dataset_dir()
+        self.lbl_preview.setText(f"Será criado: <b>{destino}</b>")
+        try:
+            existe = destino.is_dir() and any(destino.iterdir())
+        except OSError:
+            existe = False
+        if existe:
+            self.lbl_exists.setText(
+                "⚠ Esta pasta já existe e não está vazia. O parquet será "
+                "substituído; com a opção abaixo marcada, os PNGs já "
+                "gravados são reaproveitados."
+            )
+        self.lbl_exists.setVisible(existe)
+        ok.setEnabled(self.selected_pipeline() is not None)
 
     @staticmethod
     def _safe_name(raw: str) -> str:
@@ -284,7 +326,7 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
             self._suggested_target_parent
         )
         chosen = QtWidgets.QFileDialog.getExistingDirectory(
-            self, "Pasta destino", current,
+            self, "Pasta onde o dataset será criado", current,
         )
         if chosen:
             self.input_target.setText(chosen)
@@ -303,17 +345,18 @@ class ApplyImagePipelineDialog(QtWidgets.QDialog):
     def skip_existing(self) -> bool:
         return self.chk_skip.isChecked()
 
-    def output_filename(self) -> str:
-        """Stem do arquivo de saída (sem extensão). Sanitizado contra
-        caracteres ruins de filesystem. Quando vazio, cai pro default
-        do service."""
+    def dataset_name(self) -> str:
+        """Nome do dataset derivado — também nome da pasta e do parquet.
+        Espaços e acentos são mantidos; o serviço só troca caracteres
+        proibidos em nome de pasta."""
         raw = self.input_filename.text().strip()
-        if not raw:
-            return ""
-        # Remove `.parquet` redundante caso o usuário tenha digitado.
         if raw.lower().endswith(".parquet"):
             raw = raw[:-len(".parquet")]
-        return self._safe_name(raw)
+        return raw
+
+    def dataset_dir(self) -> Path:
+        """Pasta que será criada: `<pasta escolhida>/<nome>/`."""
+        return self_contained_dataset_dir(self.target_dir(), self.dataset_name())
 
     def open_new_after(self) -> bool:
         """True quando o usuário escolheu abrir o derivado e fechar o

@@ -1,51 +1,53 @@
 """ImagePipelineBatchService — aplica pipeline de imagens em todo o
-dataset, produzindo dataset derivado enxuto (PR I5).
+dataset, produzindo um dataset derivado AUTOCONTIDO.
 
-Output:
-    <images_dir>/
-    ├── <file>.png                                 ← imagens processadas
-    ├── ...
-    └── manifest.json                              ← anchor forense
+Saída, numa pasta qualquer escolhida pelo usuário:
 
-    <dataset_output_dir>/
-    ├── <dataset_name>__<pipeline_name>.parquet           ← dataset derivado
-    └── <dataset_name>__<pipeline_name>__errors.parquet   ← falhas (se houver)
+    <pasta escolhida>/<nome>/
+    ├── <nome>.parquet               ← dataset derivado (RELATIVE, path_root=images)
+    ├── <nome>.audit.json            ← cadeia de custódia, nasce com CREATE
+    ├── <nome>__errors.parquet       ← falhas (se houver)
+    ├── manifest.json                ← pipeline aplicado + contagens
+    └── images/
+        └── <file>.png               ← imagens processadas
 
-Mesma separação do fluxo "Novo Dataset com Alinhamento" — pasta global
-de datasets recebe o parquet; pasta escolhida pelo usuário recebe só as
-imagens (sem subpasta `images/` intermediária).
+Mesma convenção dos outros fluxos que produzem dataset autocontido
+(`self_contained_dataset_dir` + `SELF_CONTAINED_IMAGES_SUBDIR`): a pasta
+é uma unidade e pode ser movida, compactada ou levada para outra máquina
+sem quebrar os caminhos. Antes o parquet ia para a biblioteca global e
+as imagens para outra pasta, com caminhos absolutos — mover qualquer um
+dos dois quebrava o dataset.
 
-Decisões consolidadas (PR I0):
-  - Output enxuto: novo FaceDataset com `image_path`/`hash`/`file_name`/
-    `identity` apenas. Sem ff_info/ofiq_info/serfiq_info — perito roda
-    Enrich depois quando precisar.
-  - `path_mode=ABSOLUTE`: cada PNG tem path self-describing. Como o
-    parquet vive na biblioteca global e as imagens podem estar em qualquer
-    pasta escolhida pelo usuário, RELATIVE não tem âncora estável.
-  - Naming: PRESERVE com `.png` forçado (sempre PNG, lossless — pipelines
-    lossy ficam evidentes pelo conteúdo, não pela serialização).
-  - Idempotência via `skip_existing=True`: PNG já existe + hash bate → pula.
-  - Determinismo: `seed_jitter = face.image_path` propaga pro pipeline.
-  - Audit log: `AuditOperation.COPY_IMAGES` no parquet original.
+O que o derivado leva de cada face:
+  - identidade, origem, etnia, gênero e as colunas que descrevem a
+    PESSOA ou o REGISTRO (role CUSTOM — colunas de template como idade —
+    e colunas manuais), com os specs de coluna.
+  - NÃO leva o que foi medido na imagem de origem (embedding, qualidade,
+    pose, geometria, metadados de captura): a imagem mudou e essas
+    medidas deixaram de valer. O perito roda Enriquecer depois.
+
+Determinismo: `seed_jitter = face.image_path` propaga pro pipeline.
+Idempotência via `skip_existing=True`: PNG já existe → reaproveita.
 
 Service stateless. Construa uma instância por chamada ou compartilhe.
 """
 
 from __future__ import annotations
 
-import copy
-import hashlib
 import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from faceaudit.enums.audit_operation import AuditOperation
 from faceaudit.enums.image_input_source import ImageInputSource
+from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.path_mode import PathMode
+from faceaudit.models.column_catalog import ColumnRole, ColumnSource
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
 from faceaudit.models.image_processing.batch_processing_result import (
@@ -58,26 +60,95 @@ from faceaudit.pipelines.image_processing_pipeline import (
     ImageProcessingPipeline,
 )
 from faceaudit.services.audit_log_service import AuditLogService
+from faceaudit.services.dataset_localization_service import (
+    SELF_CONTAINED_IMAGES_SUBDIR,
+    sanitize_dir_name,
+    self_contained_dataset_dir,
+)
 from faceaudit.services.hash_service import HashService
 
 
 _MANIFEST_NAME = "manifest.json"
 
+# Colunas que descrevem a pessoa ou o registro, e por isso continuam
+# verdadeiras depois que a imagem é degradada.
+_ROLES_QUE_ACOMPANHAM = frozenset({ColumnRole.CUSTOM})
+_FONTES_QUE_ACOMPANHAM = frozenset({ColumnSource.MANUAL, ColumnSource.CUSTOM})
+# Mesmo de fonte manual, estas descrevem a IMAGEM.
+_ROLES_DA_IMAGEM = frozenset({
+    ColumnRole.EMBEDDING, ColumnRole.QUALITY, ColumnRole.POSE,
+    ColumnRole.GEOMETRY, ColumnRole.CAPTURE,
+})
+
+
+def colunas_que_acompanham(dataset: FaceDataset) -> Tuple[List[str], List[str]]:
+    """Separa as colunas extras do dataset em (levadas, descartadas).
+
+    Levada: descreve a pessoa ou o registro (coluna de template, anotação
+    manual). Descartada: foi medida na imagem de origem. Coluna sem spec
+    é levada — no parquet ela já nasceria como CUSTOM.
+    """
+    specs = dataset.column_specs or {}
+    nomes: List[str] = []
+    vistos = set()
+    for face in dataset.faces:
+        for k in (face.extra_data or {}):
+            if k not in vistos:
+                vistos.add(k)
+                nomes.append(k)
+    levadas, descartadas = [], []
+    for nome in nomes:
+        spec = specs.get(nome)
+        if spec is None:
+            levadas.append(nome)
+            continue
+        role = getattr(spec, "role", None)
+        fonte = getattr(spec, "source", None)
+        if role in _ROLES_DA_IMAGEM:
+            descartadas.append(nome)
+        elif role in _ROLES_QUE_ACOMPANHAM or fonte in _FONTES_QUE_ACOMPANHAM:
+            levadas.append(nome)
+        else:
+            descartadas.append(nome)
+    return levadas, descartadas
+
+
+def derivado_e_alinhado(
+    dataset: FaceDataset, pipeline_config: ImageProcessingPipelineConfig,
+) -> bool:
+    """O derivado é face alinhada 112×112?
+
+    Sim quando o pipeline alinha antes dos steps, ou quando a origem já
+    era alinhada — desde que nenhum step recorte, porque o recorte tira a
+    imagem do gabarito. Sem a marca, o Enriquecer seguinte redetectaria a
+    face dentro da face alinhada.
+    """
+    recorta = any(
+        s.step_type == ImageProcessingStepType.CROP for s in pipeline_config.steps
+    )
+    if recorta:
+        return False
+    return (
+        pipeline_config.input_source == ImageInputSource.ALIGNED_FACE
+        or bool(getattr(dataset, "is_aligned", False))
+    )
+
 
 class ImagePipelineBatchService:
-    """Aplica pipeline em todo dataset → cria dataset derivado +
-    manifest. Stateless."""
+    """Aplica pipeline em todo dataset → dataset derivado autocontido.
+    Stateless."""
 
     def run(
         self,
         dataset: FaceDataset,
         pipeline_config: ImageProcessingPipelineConfig,
-        images_dir: Path,
+        base_dir: Path,
         *,
-        dataset_output_dir: Path,
+        dataset_name: Optional[str] = None,
         ff_service=None,
         skip_existing: bool = True,
-        output_filename: Optional[str] = None,
+        source_parquet_path: Optional[Path] = None,
+        source_has_unsaved_changes: bool = False,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> BatchProcessingResult:
         """Aplica pipeline em todo dataset.
@@ -85,39 +156,39 @@ class ImagePipelineBatchService:
         Args:
             dataset: dataset de entrada (não é mutado).
             pipeline_config: configuração do pipeline a aplicar.
-            images_dir: pasta destino dos PNGs processados. Os arquivos
-                vão direto pra cá, sem subpasta intermediária; manifest
-                também (`<images_dir>/manifest.json`). Mesmo padrão do
-                fluxo "Novo Dataset com Alinhamento". Será criada se não
-                existir.
-            dataset_output_dir: pasta onde o parquet do dataset derivado
-                + parquet de erros (se houver) são gravados. Espera-se
-                receber `pipeline.storage_path` (biblioteca global de
-                datasets). Será criada se não existir.
+            base_dir: pasta escolhida pelo usuário. O dataset ganha pasta
+                própria dentro dela (`<base_dir>/<nome>/`).
+            dataset_name: nome do dataset derivado (também nome da pasta e
+                do parquet). Default = `<dataset>__<pipeline>`.
             ff_service: necessário se `input_source=ALIGNED_FACE` ou
                 algum step usa FFService (ex: CropMode.FACE_DETECTED).
-            skip_existing: idempotência — PNGs já existentes com mesmo
-                hash são pulados.
-            output_filename: stem do parquet de saída (sem extensão).
-                Default = `<dataset>__<pipeline>` (compat). Falhas vão
-                pra `<stem>__errors.parquet`.
+            skip_existing: idempotência — PNGs já existentes são pulados.
+            source_parquet_path: parquet do dataset de origem, para a
+                cadeia de custódia do derivado registrar de onde veio.
+            source_has_unsaved_changes: a origem em memória difere do
+                arquivo (o hash registrado não descreve o que foi usado).
             progress_callback: chamado por face com `(idx, total, msg)`.
 
         Returns:
-            `BatchProcessingResult` agregando totais.
+            `BatchProcessingResult` agregando totais e caminhos.
         """
-        images_dir = Path(images_dir).resolve()
+        # O nome vira pasta e arquivo: os dois precisam do mesmo nome limpo.
+        nome = sanitize_dir_name(
+            (dataset_name or "").strip() or self._build_derived_name(
+                dataset.name, pipeline_config.name,
+            )
+        )
+        dataset_dir = self_contained_dataset_dir(base_dir, nome).resolve()
+        images_dir = dataset_dir / SELF_CONTAINED_IMAGES_SUBDIR
         images_dir.mkdir(parents=True, exist_ok=True)
-        dataset_output_dir = Path(dataset_output_dir).resolve()
-        dataset_output_dir.mkdir(parents=True, exist_ok=True)
 
         started_at = datetime.now(timezone.utc)
         start_time = time.time()
 
-        # Constrói pipeline uma vez (factory + processors)
         pipeline = ImageProcessingPipeline(
             pipeline_config, ff_service=ff_service,
         )
+        levadas, descartadas = colunas_que_acompanham(dataset)
 
         new_faces: List[FaceInfo] = []
         failures: List[Tuple[str, str]] = []
@@ -137,7 +208,7 @@ class ImagePipelineBatchService:
                     face, dataset, pipeline,
                     pipeline_config.input_source,
                     images_dir, used_names, skip_existing,
-                    ff_service, hash_service,
+                    ff_service, hash_service, levadas,
                 )
             except Exception as e:
                 failures.append((face.image_path or "<empty>", str(e)))
@@ -147,65 +218,40 @@ class ImagePipelineBatchService:
                 n_skipped += 1
             else:
                 n_succeeded += 1
+            new_faces.append(result["face"])
+            used_names.add(result["rel_name"])
 
-            if result["face"] is not None:
-                new_faces.append(result["face"])
-                used_names.add(result["rel_name"])
-
-        # Cria FaceDataset enxuto (sem ff_info/ofiq_info/serfiq_info)
-        output_stem = (
-            output_filename.strip() if output_filename
-            else self._build_derived_name(
-                dataset.name, pipeline_config.name,
-            )
-        )
-        # is_aligned propaga quando o pipeline foi configurado com
-        # input_source=ALIGNED_FACE: o batch service aplica
-        # detect+align nas imagens fontes antes dos steps, então o
-        # output é sempre faces alinhadas 112×112. Sem essa marca, o
-        # FFService re-detectaria a face dentro do crop alinhado no
-        # próximo enrich (degrada qualidade do embedding).
-        derived_is_aligned = (
-            pipeline_config.input_source == ImageInputSource.ALIGNED_FACE
-        )
+        specs_origem = dataset.column_specs or {}
         new_dataset = FaceDataset(
-            name=output_stem,
+            name=nome,
             description=(
                 f"Derivado de '{dataset.name}' via pipeline "
                 f"'{pipeline_config.name}'."
             ),
             faces=new_faces,
-            # ABSOLUTE pra que o parquet (na biblioteca global) e as
-            # imagens (na pasta escolhida pelo usuário) se mantenham
-            # rastreáveis independente de onde estão. Cada face tem o
-            # path absoluto do PNG resolvido no `_process_one`.
-            path_mode=PathMode.ABSOLUTE,
-            path_root=None,
-            is_aligned=derived_is_aligned,
+            column_specs={k: specs_origem[k] for k in levadas if k in specs_origem},
+            path_mode=PathMode.RELATIVE,
+            path_root=SELF_CONTAINED_IMAGES_SUBDIR,
+            is_aligned=derivado_e_alinhado(dataset, pipeline_config),
         )
+        new_dataset._parquet_dir = dataset_dir
 
-        # Salva parquet na biblioteca global de datasets (separado das
-        # imagens — mesmo padrão do fluxo "Novo Dataset com Alinhamento").
-        parquet_path = dataset_output_dir / f"{output_stem}.parquet"
+        parquet_path = dataset_dir / f"{nome}.parquet"
         new_dataset.to_parquet(parquet_path)
 
-        # Salva parquet de erros quando houver — mesmo schema do
-        # dataset original (image_path/identity/file_name/hash) +
-        # coluna `error_message`. Permite ao perito abrir esse arquivo
-        # como dataset normal pra inspecionar/exportar/reanálisar as
-        # falhas. Vai pra biblioteca global junto com o parquet principal.
         error_parquet_path: Optional[Path] = None
         if failures:
-            error_parquet_path = (
-                dataset_output_dir / f"{output_stem}__errors.parquet"
-            )
+            error_parquet_path = dataset_dir / f"{nome}__errors.parquet"
             self._save_error_parquet(
-                dataset, failures, error_parquet_path, output_stem,
+                dataset, failures, error_parquet_path, nome,
             )
 
         duration = time.time() - start_time
 
-        # Manifest forense
+        source_sha = None
+        if source_parquet_path is not None and Path(source_parquet_path).exists():
+            source_sha = hash_service.calculate_file_hash(Path(source_parquet_path))
+
         manifest = {
             "pipeline_name": pipeline_config.name,
             "pipeline_seed": pipeline_config.seed,
@@ -219,15 +265,23 @@ class ImagePipelineBatchService:
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
             "duration_seconds": round(duration, 3),
             "source_dataset": dataset.name,
+            "source_parquet_path": str(source_parquet_path) if source_parquet_path else None,
+            "source_parquet_sha256": source_sha,
+            "columns_carried": levadas,
+            "columns_dropped": descartadas,
             "operator": AuditLogService.current_operator(),
             "pipeline_config": pipeline_config.to_dict(),
         }
-        # Manifest fica com as imagens — quem encontra a pasta de PNGs
-        # no disco precisa saber qual pipeline as gerou.
-        manifest_path = images_dir / _MANIFEST_NAME
+        manifest_path = dataset_dir / _MANIFEST_NAME
         manifest_path.write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),
             encoding="utf-8",
+        )
+
+        self._audit_criacao(
+            parquet_path, new_dataset, dataset, pipeline_config, manifest,
+            manifest_path, source_sha, source_parquet_path,
+            source_has_unsaved_changes, hash_service,
         )
 
         return BatchProcessingResult(
@@ -241,6 +295,65 @@ class ImagePipelineBatchService:
             failures=tuple(failures),
             duration_seconds=duration,
             error_parquet_path=error_parquet_path,
+            dataset_dir=dataset_dir,
+            manifest_path=manifest_path,
+        )
+
+    # ── Cadeia de custódia do derivado ─────────────────────────────────────
+
+    @staticmethod
+    def _audit_criacao(
+        parquet_path: Path,
+        new_dataset: FaceDataset,
+        source: FaceDataset,
+        pipeline_config: ImageProcessingPipelineConfig,
+        manifest: Dict[str, Any],
+        manifest_path: Path,
+        source_sha: Optional[str],
+        source_parquet_path: Optional[Path],
+        source_has_unsaved_changes: bool,
+        hash_service: HashService,
+    ) -> None:
+        """Primeira entrada da cadeia do derivado.
+
+        Quem abrir o derivado precisa saber, pela própria cadeia, que as
+        imagens foram degradadas de propósito, por qual pipeline e a partir
+        de qual arquivo. A entrada do dataset de ORIGEM (COPY_IMAGES) não
+        basta: ela não viaja com o derivado.
+        """
+        passos = " → ".join(
+            s.step_type.label_pt for s in pipeline_config.steps
+        ) or "nenhum step"
+        descricao = (
+            f"Dataset derivado de '{source.name}' pelo pipeline de imagens "
+            f"'{pipeline_config.name}' ({passos}). As imagens foram "
+            f"transformadas de propósito para reproduzir as condições de "
+            f"uma imagem questionada."
+        )
+        metadata = {
+            "operation": "image_pipeline_batch",
+            "rows": len(new_dataset),
+            "identities": new_dataset.number_of_identities,
+            "source_dataset": source.name,
+            "source_parquet_path": str(source_parquet_path) if source_parquet_path else None,
+            "source_parquet_sha256": source_sha,
+            "source_has_unsaved_changes": bool(source_has_unsaved_changes),
+            "pipeline_config": pipeline_config.to_dict(),
+            "manifest_sha256": hash_service.calculate_file_hash(manifest_path),
+            "n_processed": manifest["n_processed"],
+            "n_succeeded": manifest["n_succeeded"],
+            "n_skipped": manifest["n_skipped"],
+            "n_failed": manifest["n_failed"],
+            "columns_carried": manifest["columns_carried"],
+            "columns_dropped": manifest["columns_dropped"],
+            "is_aligned": bool(new_dataset.is_aligned),
+        }
+        AuditLogService.append(
+            parquet_path,
+            AuditOperation.CREATE,
+            descricao,
+            metadata=metadata,
+            dataset_hash=hash_service.calculate_file_hash(parquet_path),
         )
 
     # ── Per-face ───────────────────────────────────────────────────────────
@@ -256,18 +369,28 @@ class ImagePipelineBatchService:
         skip_existing: bool,
         ff_service,
         hash_service: HashService,
+        colunas_levadas: List[str],
     ) -> dict:
         """Processa uma face. Retorna dict com `status` (success/skipped)
-        + `face` (FaceInfo novo ou None) + `rel_name`."""
-        # Resolve src
+        + `face` (FaceInfo novo) + `rel_name`."""
         src_path = dataset.resolve_image_path(face)
         if not src_path.exists():
             raise RuntimeError(f"arquivo fonte não encontrado: {src_path}")
 
+        # Determina filename — sempre .png
+        rel_name = self._build_dest_name(face, src_path, used_names)
+        dst = images_dir / rel_name
+
+        # Idempotência: PNG já existe? Decide antes de ler e processar.
+        if skip_existing and dst.exists():
+            existing_hash = hash_service.calculate_file_hash(dst)
+            new_face = self._clone_face_minimal(
+                face, rel_name, existing_hash, colunas_levadas,
+            )
+            return {"status": "skipped", "face": new_face, "rel_name": rel_name}
+
         # Carrega imagem via open+imdecode — `cv2.imread` falha
-        # SILENCIOSAMENTE em paths com chars não-ASCII no Windows
-        # (bug histórico do OpenCV em paths via fopen). Mesmo padrão
-        # do `FFService._safe_read_image`.
+        # SILENCIOSAMENTE em paths com chars não-ASCII no Windows.
         try:
             with open(src_path, "rb") as fh:
                 file_bytes = fh.read()
@@ -279,41 +402,21 @@ class ImagePipelineBatchService:
         if bgr is None:
             raise RuntimeError(f"falha ao decodificar: {src_path.name}")
 
-        # Se ALIGNED_FACE, alinha primeiro
         if input_source == ImageInputSource.ALIGNED_FACE:
             if ff_service is None:
                 raise RuntimeError(
                     "input_source=ALIGNED_FACE requer FFService"
                 )
-            # `align_face_from_array` retorna (bgr_aligned, aligned_kps);
-            # esse path só materializa o crop em disco, então descartamos
-            # os keypoints — caso queira KPRPE downstream, basta detectar
-            # de novo na re-extração.
             aligned, _aligned_kps = ff_service.align_face_from_array(bgr)
             if aligned is None:
                 raise RuntimeError("nenhuma face detectada")
             bgr = aligned
 
-        # Aplica pipeline (com seed_jitter pra determinismo)
         jitter = str(face.image_path or "")
         processed = pipeline.process_image(bgr, seed_jitter=jitter)
 
-        # Determina filename — sempre .png
-        rel_name = self._build_dest_name(face, src_path, used_names)
-        dst = images_dir / rel_name
-        abs_dst = dst.resolve().as_posix()
-
-        # Idempotência: PNG já existe?
-        if skip_existing and dst.exists():
-            existing_hash = hash_service.calculate_file_hash(dst)
-            new_face = self._clone_face_minimal(
-                face, abs_dst, existing_hash,
-            )
-            return {"status": "skipped", "face": new_face, "rel_name": rel_name}
-
         # Grava PNG (lossless) via imencode+write_bytes — `cv2.imwrite`
-        # tem o mesmo bug de não-ASCII no Windows (não escreve nada e
-        # retorna False). Padrão consistente com `_materialize_aligned_crops`.
+        # tem o mesmo bug de não-ASCII no Windows.
         dst.parent.mkdir(parents=True, exist_ok=True)
         success, buf = cv2.imencode(".png", processed)
         if not success:
@@ -323,10 +426,10 @@ class ImagePipelineBatchService:
         except OSError as exc:
             raise RuntimeError(f"falha ao gravar {dst.name}: {exc}") from exc
 
-        # Hash do PNG resultante
         file_hash = hash_service.calculate_file_hash(dst)
-
-        new_face = self._clone_face_minimal(face, abs_dst, file_hash)
+        new_face = self._clone_face_minimal(
+            face, rel_name, file_hash, colunas_levadas,
+        )
         return {"status": "success", "face": new_face, "rel_name": rel_name}
 
     # ── Helpers ─────────────────────────────────────────────────────────────
@@ -351,21 +454,27 @@ class ImagePipelineBatchService:
 
     @staticmethod
     def _clone_face_minimal(
-        face: FaceInfo, new_image_path: str, new_hash: Optional[str],
+        face: FaceInfo,
+        rel_image_path: str,
+        new_hash: Optional[str],
+        colunas_levadas: List[str],
     ) -> FaceInfo:
-        """Cria FaceInfo enxuto: só image_path/file_name/hash/identity.
+        """FaceInfo do derivado: caminho relativo à pasta de imagens,
+        hash do PNG, dados da pessoa e as colunas que a acompanham.
 
-        Descarta ff_info, ofiq_info, serfiq_info, embedding_*, etc. —
-        decisão #4 do plano (perito enriquece depois).
+        Descarta ff_info, ofiq_info, serfiq_info e o que foi medido na
+        imagem de origem — a imagem mudou (perito enriquece depois).
         """
+        extra = face.extra_data or {}
         return FaceInfo(
-            image_path=new_image_path,
-            file_name=Path(new_image_path).name,
+            image_path=rel_image_path.replace("\\", "/"),
+            file_name=Path(rel_image_path).name,
             hash=new_hash,
             identity=face.identity,
             origin=face.origin,
             ethnicity=face.ethnicity,
             gender=face.gender,
+            extra_data={k: extra[k] for k in colunas_levadas if k in extra},
         )
 
     @staticmethod
@@ -391,28 +500,24 @@ class ImagePipelineBatchService:
         hash/error_message) — perito abre como dataset normal pra
         ordenar/filtrar/inspecionar e gerar lista pra reanálise.
 
-        Os paths apontam pra IMAGEM-FONTE (não pro PNG, que não
-        chegou a ser gerado), com `path_mode=ABSOLUTE` herdado do
-        dataset original quando aplicável.
+        Os caminhos apontam para a IMAGEM-FONTE (o PNG não chegou a ser
+        gerado), absolutos: o arquivo mora na pasta do derivado, e a
+        âncora relativa da origem não vale a partir dali.
         """
-        # Indexa o dataset-fonte por image_path pra resgatar identity/
-        # file_name/hash de cada falha.
         by_path = {f.image_path: f for f in source_dataset.faces}
         error_faces: List[FaceInfo] = []
-        # Vai guardar a mensagem pra cada índice — injetada via
-        # column_specs do FaceDataset.to_parquet não é trivial, então
-        # depois do save patchamos o parquet adicionando a coluna.
         messages: List[str] = []
         for img_path, msg in failures:
             src = by_path.get(img_path)
             if src is None:
-                # Falha de path desconhecido (ex: <empty>) — cria
-                # face placeholder pra preservar a linha.
                 error_faces.append(FaceInfo(image_path=img_path))
             else:
-                # Clone enxuto preservando metadata da fonte.
+                try:
+                    absoluto = source_dataset.resolve_image_path(src).as_posix()
+                except Exception:
+                    absoluto = src.image_path
                 error_faces.append(FaceInfo(
-                    image_path=src.image_path,
+                    image_path=absoluto,
                     file_name=src.file_name,
                     identity=src.identity,
                     hash=src.hash,
@@ -429,10 +534,8 @@ class ImagePipelineBatchService:
                 f"Coluna `error_message` traz a razão de cada falha."
             ),
             faces=error_faces,
-            # Paths apontam pra fonte (absolutos do dataset original)
-            # — preserva path_mode/path_root pra que se abra correto.
-            path_mode=source_dataset.path_mode,
-            path_root=source_dataset.path_root,
+            path_mode=PathMode.ABSOLUTE,
+            path_root=None,
         )
         error_ds.to_parquet(error_parquet_path)
 
@@ -443,7 +546,6 @@ class ImagePipelineBatchService:
             import pyarrow as pa
             import pyarrow.parquet as pq
             table = pq.read_table(error_parquet_path)
-            # Garante mesmo length (defensivo).
             if table.num_rows == len(messages):
                 meta = table.schema.metadata or {}
                 table = table.append_column(
