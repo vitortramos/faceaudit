@@ -268,8 +268,9 @@ Aplica um pipeline **a todas as imagens do dataset** num batch
 | Campo | Notas |
 |---|---|
 | **Pipeline** | Combo listando os nomes (stems dos `*.json` de `image_pipelines/`). Um rótulo abaixo mostra **Origem · Seed · Steps · Descrição** do pipeline selecionado |
-| **Pasta das imagens** (**📁 Escolher…**) | Onde os PNGs de saída serão escritos. Default sugerido: `<parquet_dir>/<dataset>__<pipeline>/` |
-| **Nome do arquivo** | Stem do parquet de saída. Default: `<dataset>__<pipeline>` |
+| **Pasta** (**📁 Escolher…**) | Qualquer pasta. O dataset ganha uma pasta própria **dentro** dela. Default sugerido: a pasta que contém o dataset aberto |
+| **Nome do dataset** | Nome do dataset derivado — também nome da pasta e do parquet. Default: `<dataset>__<pipeline>`. Espaços e acentos são mantidos |
+| *Será criado:* | Mostra o caminho exato que será criado (`<pasta>/<nome>/`); avisa quando ele já existe e não está vazio |
 | ☑️ **Pular imagens cujo PNG destino já existe** | Idempotente: pula quando o PNG de destino **já existe** (por existência do arquivo, não por comparação de hash). Default ON |
 | **Após processar** | Radio: `Manter dataset atual aberto` (default) ou `Abrir o novo dataset (fecha o atual)` |
 
@@ -284,7 +285,7 @@ Worker em thread separada. Diálogo de progresso mostra:
 Cada face do dataset original é:
 1. Lida do disco (`cv2.imdecode` com suporte a paths Unicode no Windows)
 2. Passada pelo pipeline declarado
-3. Escrita como **PNG lossless** na pasta destino
+3. Escrita como **PNG lossless** em `images/`, na pasta do dataset
 
 > ⚠️ **Cancelar não interrompe o lote no meio.** Não há ponto de
 > cancelamento granular dentro do laço por face: o lote atual roda até
@@ -294,48 +295,66 @@ Cada face do dataset original é:
 
 ## O dataset de saída
 
-A operação cria um **novo dataset** (não modifica o atual). Os PNGs
-**preservam o nome do arquivo de origem** (com extensão trocada para
-`.png`), desambiguados por sufixos `_1`, `_2` em caso de colisão:
+A operação cria um **novo dataset autocontido** (não modifica o atual),
+no mesmo formato dos outros fluxos que criam datasets com imagens
+próprias. Os PNGs **preservam o nome do arquivo de origem** (com
+extensão trocada para `.png`), desambiguados por sufixos `_1`, `_2` em
+caso de colisão:
 
 ```
-<pasta_das_imagens>/
-├── foto_05.png             ← imagem processada (sempre PNG lossless; nome preservado)
-├── retrato_frontal.png
-├── ...
-└── manifest.json           ← âncora forense (config do pipeline + contagens)
-
-<biblioteca_global_de_datasets>/
-├── <dataset>__<pipeline>.parquet
-└── <dataset>__<pipeline>__errors.parquet   ← (só se houver falhas)
+<pasta escolhida>/<nome>/
+├── <nome>.parquet              ← dataset derivado (caminhos relativos)
+├── <nome>.audit.json           ← cadeia de custódia — nasce com CREATE
+├── <nome>__errors.parquet      ← (só se houver falhas)
+├── manifest.json               ← âncora forense (config do pipeline + contagens)
+└── images/
+    ├── foto_05.png             ← imagem processada (sempre PNG lossless)
+    └── ...
 ```
 
-> ℹ️ As **imagens** vão para a pasta que você escolheu; o **parquet do
-> dataset derivado** (e o parquet de erros, se houver) vão para a
-> biblioteca global de datasets — mesma separação do fluxo "Novo
-> Dataset com Alinhamento".
+> 💡 A pasta é uma **unidade**: pode ser movida, compactada ou levada
+> para outra máquina inteira, e o dataset continua achando as imagens.
 
 ### Estrutura do parquet de saída
 
-O dataset derivado é **enxuto**, mas preserva a demografia da fonte:
-
 | Coluna | Conteúdo |
 |---|---|
-| `image_path` | Caminho absoluto pra o PNG processado |
+| `image_path` | Caminho do PNG, relativo à pasta `images/` |
 | `hash` | SHA-256 do PNG novo |
 | `file_name` | Nome do PNG |
 | `identity` | Preservado do dataset original |
 | `origin` / `ethnicity` / `gender` | Preservados do dataset original |
+| Colunas de template e manuais (ex.: `idade`) | Preservadas, com o tipo declarado |
 
-> ⚠️ **São descartados apenas os campos pesados** — embeddings,
-> `ff_info`/`ofiq_info`/`serfiq_info`, pose e qualidade. Identidade e
-> demografia (origem, etnia, gênero) **são preservadas**. Se você
-> quiser embeddings e métricas de qualidade no dataset processado, rode
-> **Enriquecer** ([capítulo 05](05_enriquecimento.md)) depois.
+> ⚠️ **O que foi medido na imagem de origem é descartado** —
+> embeddings, `ff_info`/`ofiq_info`/`serfiq_info`, pose, qualidade,
+> geometria e metadados de captura (EXIF, qualidade JPEG estimada…). A
+> imagem mudou, e essas medidas deixaram de descrevê-la. O que descreve
+> a **pessoa** ou o **registro** (identidade, demografia, colunas de
+> template) é preservado. O `manifest.json` e a cadeia de custódia
+> listam as colunas levadas e as descartadas. Para ter embeddings e
+> métricas de qualidade no dataset processado, rode **Enriquecer**
+> ([capítulo 05](05_enriquecimento.md)) depois.
+
+> ℹ️ **Face alinhada continua alinhada.** Se a origem já é um dataset
+> de faces alinhadas 112×112 (ou o pipeline usa *Origem = Face
+> alinhada*), o derivado é marcado como alinhado — **a não ser que o
+> pipeline tenha um Recorte**, que tira a imagem do gabarito.
+
+### Cadeia de custódia do derivado
+
+O derivado nasce com uma entrada **CREATE** que registra o dataset de
+origem e o SHA-256 do parquet dele, o pipeline completo, o SHA-256 do
+`manifest.json`, as contagens e as colunas levadas/descartadas — e o
+texto diz que as imagens foram transformadas de propósito. Quem abrir
+o derivado sabe, pela própria cadeia, de onde ele veio. Se a origem
+tinha alterações não salvas, isso também fica registrado (o hash
+gravado descreve o arquivo, não o que estava em memória). O dataset de
+origem continua recebendo a sua entrada `COPY_IMAGES`.
 
 ### Manifesto e parquet de erros
 
-O `manifest.json` (ao lado dos PNGs) é a âncora forense da execução.
+O `manifest.json` (na pasta do dataset) é a âncora forense da execução.
 Registra: nome/seed/origem do pipeline, tipos e número de steps,
 contagens (processadas / concluídas / puladas / falhas), timestamp de
 início, duração, dataset-fonte, operador e o **config completo do
@@ -343,10 +362,10 @@ pipeline**. Ele **não** contém hashes por imagem — o SHA-256 de cada
 PNG vive na coluna `hash` do parquet derivado.
 
 Quando alguma face falha, é gravado `<nome>__errors.parquet` (na
-biblioteca global), com uma linha por falha e as colunas
+pasta do dataset), com uma linha por falha e as colunas
 `image_path` / `identity` / `file_name` / `hash` + `error_message` (a
-razão da falha). Os paths apontam para a **imagem-fonte** (o PNG não
-chegou a ser gerado). Você pode abrir esse arquivo como um dataset
+razão da falha). Os paths apontam para a **imagem-fonte**, em caminho
+absoluto (o PNG não chegou a ser gerado). Você pode abrir esse arquivo como um dataset
 normal para inspecionar, filtrar e gerar uma lista de reanálise.
 
 ### Por que sempre PNG?

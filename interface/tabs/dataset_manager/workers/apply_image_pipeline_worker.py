@@ -34,20 +34,22 @@ class ApplyImagePipelineWorker(QtCore.QObject):
         self,
         dataset: FaceDataset,
         pipeline_config: ImageProcessingPipelineConfig,
-        images_dir: Path,
-        dataset_output_dir: Path,
+        base_dir: Path,
+        dataset_name: Optional[str] = None,
         ff_service=None,
         skip_existing: bool = True,
-        output_filename: Optional[str] = None,
+        source_parquet_path: Optional[Path] = None,
+        source_has_unsaved_changes: bool = False,
     ):
         super().__init__()
         self.dataset = dataset
         self.pipeline_config = pipeline_config
-        self.images_dir = images_dir
-        self.dataset_output_dir = dataset_output_dir
+        self.base_dir = base_dir
+        self.dataset_name = dataset_name
         self.ff_service = ff_service
         self.skip_existing = skip_existing
-        self.output_filename = output_filename
+        self.source_parquet_path = source_parquet_path
+        self.source_has_unsaved_changes = source_has_unsaved_changes
         self._is_running = True
 
     def run(self):
@@ -60,11 +62,12 @@ class ApplyImagePipelineWorker(QtCore.QObject):
             result = service.run(
                 self.dataset,
                 self.pipeline_config,
-                self.images_dir,
-                dataset_output_dir=self.dataset_output_dir,
+                self.base_dir,
+                dataset_name=self.dataset_name,
                 ff_service=self.ff_service,
                 skip_existing=self.skip_existing,
-                output_filename=self.output_filename,
+                source_parquet_path=self.source_parquet_path,
+                source_has_unsaved_changes=self.source_has_unsaved_changes,
                 progress_callback=self._on_progress,
             )
             if not self._is_running:

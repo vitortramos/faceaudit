@@ -16,10 +16,7 @@ from typing import Optional, Tuple
 class BatchProcessingResult:
     """Resultado de processar um dataset inteiro com um pipeline."""
 
-    # Pasta escolhida pelo usuário onde os PNGs processados foram salvos
-    # (junto com `manifest.json`). Separado de `parquet_path` — desde a
-    # mudança que alinhou esse fluxo ao "Novo Dataset com Alinhamento",
-    # o parquet vai pra biblioteca global de datasets, não pra cá.
+    # Subpasta `images/` da pasta do dataset, onde ficam os PNGs.
     images_dir: Path
     parquet_path: Path
     pipeline_name: str
@@ -32,6 +29,10 @@ class BatchProcessingResult:
     # Path do parquet de erros (com 1 linha por falha + coluna
     # `error_message`). None quando não houve falhas.
     error_parquet_path: Optional[Path] = None
+    # Pasta própria do dataset autocontido (`<escolhida>/<nome>/`), com o
+    # parquet, a cadeia de custódia, o manifesto e `images/` dentro.
+    dataset_dir: Optional[Path] = None
+    manifest_path: Optional[Path] = None
 
     @property
     def succeeded(self) -> bool:

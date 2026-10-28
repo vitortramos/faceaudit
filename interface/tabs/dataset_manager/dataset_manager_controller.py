@@ -2720,9 +2720,15 @@ class DatasetManagerController(QtCore.QObject):
             )
             return
 
-        # Default destino: <parquet_dir>/<dataset>__<pipeline>/
+        # Pasta sugerida: a que CONTÉM o dataset aberto. Num dataset
+        # autocontido o parquet mora em `<base>/<nome>/<nome>.parquet`;
+        # sugerir a pasta dele aninharia o derivado dentro da origem.
         if self.current_path:
-            base = Path(self.current_path).parent
+            pasta_do_parquet = Path(self.current_path).parent
+            if pasta_do_parquet.name == Path(self.current_path).stem:
+                base = pasta_do_parquet.parent
+            else:
+                base = pasta_do_parquet
         else:
             base = Path(self._get_initial_dir() or os.getcwd())
 
@@ -2747,7 +2753,7 @@ class DatasetManagerController(QtCore.QObject):
             return
 
         target_dir = dialog.target_dir()
-        if not target_dir:
+        if not str(target_dir).strip() or str(target_dir) == ".":
             QMessageBox.warning(
                 self.view, "Destino vazio",
                 "Pasta destino não pode estar vazia.",
@@ -2755,7 +2761,7 @@ class DatasetManagerController(QtCore.QObject):
             return
 
         skip_existing = dialog.skip_existing()
-        output_filename = dialog.output_filename()
+        output_filename = dialog.dataset_name()
         open_new_after = dialog.open_new_after()
 
         # Se o usuário quer abrir o derivado e o dataset atual está
@@ -2795,19 +2801,19 @@ class DatasetManagerController(QtCore.QObject):
             else None
         )
 
-        # Mesmo padrão do "Novo Dataset com Alinhamento": parquet vai
-        # pra biblioteca global de datasets, imagens vão pra pasta
-        # escolhida pelo usuário.
-        dataset_output_dir = Path(self.pipeline.storage_path)
-
+        # O derivado nasce autocontido em `<target_dir>/<nome>/`. A origem
+        # vai junto para a cadeia de custódia dele registrar de onde veio.
         worker = ApplyImagePipelineWorker(
             dataset=self.dataset,
             pipeline_config=pipeline_cfg,
-            images_dir=Path(target_dir),
-            dataset_output_dir=dataset_output_dir,
+            base_dir=Path(target_dir),
+            dataset_name=output_filename or None,
             ff_service=ff_svc,
             skip_existing=skip_existing,
-            output_filename=output_filename or None,
+            source_parquet_path=(
+                Path(self.current_path) if self.current_path else None
+            ),
+            source_has_unsaved_changes=bool(self._is_dirty),
         )
         # Guarda contexto pra usar no on_finished
         self._batch_target_dir = Path(target_dir)
@@ -2845,6 +2851,7 @@ class DatasetManagerController(QtCore.QObject):
                 metadata={
                     "operation": "image_pipeline_batch",
                     "pipeline_name": result.pipeline_name,
+                    "dataset_dir": str(result.dataset_dir),
                     "images_dir": str(result.images_dir),
                     "parquet_path": str(result.parquet_path),
                     "n_processed": result.n_processed,
@@ -2881,9 +2888,10 @@ class DatasetManagerController(QtCore.QObject):
         QMessageBox.information(
             self.view, "Pipeline aplicado",
             f"{result.summary()}{extra}\n\n"
-            f"Dataset derivado: {result.parquet_path}\n"
-            f"Imagens: {result.images_dir}\n"
-            f"Manifest forense: {result.images_dir / 'manifest.json'}"
+            f"Dataset derivado: {result.dataset_dir}\n"
+            f"  parquet: {result.parquet_path.name}\n"
+            f"  imagens: {result.images_dir.name}/\n"
+            f"  manifesto: {result.manifest_path.name}"
             f"{error_line}",
         )
 
