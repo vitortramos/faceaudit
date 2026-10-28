@@ -77,13 +77,15 @@ def load_sample(
     input_source: ImageInputSource,
     *,
     n: int = DEFAULT_SAMPLE_SIZE,
+    indices: Optional[Sequence[int]] = None,
     ff_service=None,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[SampleItem]:
-    """Lê (e, se for o caso, alinha) as imagens da amostra. Imagem que não
-    abre ou não alinha fica de fora."""
+    """Lê (e, se for o caso, alinha) as imagens da amostra — `indices`
+    explícitos ou `n` espaçados. Imagem que não abre ou não alinha fica
+    de fora."""
     itens: List[SampleItem] = []
-    indices = sample_indices(len(dataset), n)
+    indices = list(indices) if indices is not None else sample_indices(len(dataset), n)
     for pos, idx in enumerate(indices):
         if progress:
             progress(pos, len(indices))

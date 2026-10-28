@@ -49,6 +49,12 @@ class StepParamSpec:
         visible: função do config; o campo só aparece quando devolve True.
             Reavaliada a cada mudança de qualquer campo.
         action_label: função do config que dá o texto do botão (ACTION).
+        tunable: o "Ajustar à questionada" pode mexer neste campo (só INT e
+            FLOAT). Escolhas qualitativas — a técnica de meio-tom, o tipo
+            de oclusão — ficam com o perito.
+        search_min / search_max: faixa em que o ajuste procura (padrão:
+            a faixa do campo). Mais estreita que a faixa do campo quando
+            os extremos não fazem sentido para adaptar uma base.
     """
 
     name: str
@@ -63,6 +69,16 @@ class StepParamSpec:
     choices: Optional[Choices] = None
     visible: Optional[Callable[[Any], bool]] = None
     action_label: Optional[Callable[[Any], str]] = None
+    tunable: bool = False
+    search_min: Optional[float] = None
+    search_max: Optional[float] = None
+
+    def search_range(self) -> Tuple[float, float]:
+        lo = self.search_min if self.search_min is not None else self.minimum
+        hi = self.search_max if self.search_max is not None else self.maximum
+        if lo is None or hi is None:
+            raise ValueError(f"Campo '{self.name}' ajustável sem faixa de busca.")
+        return float(lo), float(hi)
 
     def is_visible(self, config: Any) -> bool:
         return True if self.visible is None else bool(self.visible(config))
@@ -81,7 +97,11 @@ class StepParamSpec:
             v = max(float(self.minimum), v)
         if self.maximum is not None:
             v = min(float(self.maximum), v)
-        return int(round(v)) if self.kind == StepParamKind.INT else v
+        if self.kind == StepParamKind.INT:
+            return int(round(v))
+        # Arredonda às casas do campo: o valor gravado é o que o formulário
+        # mostra (sem isso o ajuste automático deixava 70,208333…).
+        return round(v, int(self.decimals))
 
 
 def enum_choices(enum_values: Sequence[Any]) -> Tuple[Tuple[Any, str], ...]:

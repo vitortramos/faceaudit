@@ -78,9 +78,27 @@ class ImageProcessingPipeline:
         self._config = config
         self._ff_service = ff_service
         self._steps: List[ImageProcessingStepProtocol] = [
-            ImageProcessorFactory.build(step_config, ff_service=ff_service)
+            ImageProcessorFactory.build(
+                self._resolve_questioned_links(step_config), ff_service=ff_service)
             for step_config in config.steps
         ]
+
+    def _resolve_questioned_links(self, step_config):
+        """Passo que se refere à questionada (ex.: Redimensionar com "IPD da
+        questionada") recebe o valor medido nela. Cópia — o config do
+        pipeline não muda."""
+        if not getattr(step_config, "use_questioned_ipd", False):
+            return step_config
+        q = self._config.questioned
+        ipd = None if q is None or q.measures is None else q.measures.ipd_px
+        if not ipd:
+            raise ValueError(
+                "O passo Redimensionar usa o IPD da questionada, e o pipeline "
+                "não tem questionada com a face localizada."
+            )
+        import dataclasses
+
+        return dataclasses.replace(step_config, target_ipd_px=float(ipd))
 
     @property
     def config(self) -> ImageProcessingPipelineConfig:

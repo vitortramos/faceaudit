@@ -50,6 +50,7 @@ class WebpCompressionConfig(ImageProcessingStepConfig):
             StepParamSpec(
                 "quality", "Qualidade", StepParamKind.INT,
                 minimum=1, maximum=100, step=1, suffix=" / 100",
+                tunable=True, search_min=10, search_max=95,
                 help="WebP geralmente preserva melhor que JPEG na mesma qualidade. 80 é eficiente.",
             ),
         ]

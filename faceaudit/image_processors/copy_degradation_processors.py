@@ -20,6 +20,7 @@ import numpy as np
 from faceaudit.enums.halftone_mode import HalftoneMode
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.resize_mode import ResizeInterpolation, ResizeMode
+from faceaudit.enums.tone_curve_mode import ToneCurveMode
 from faceaudit.image_processors.image_step_base import ImageStepProcessorBase
 from faceaudit.models.image_processing.image_face_geometry import (
     ImageFaceGeometry,
@@ -116,14 +117,39 @@ def tone_curve_lut(black: int, white: int, gamma: float) -> np.ndarray:
     return np.round(255.0 * t ** float(gamma)).astype(np.uint8)
 
 
+def face_region_gray(image: np.ndarray, face: ImageFaceGeometry) -> np.ndarray:
+    """Níveis de cinza da região da face (caixa presa ao quadro)."""
+    gray = _cinza(image)
+    caixa = face.face_box()
+    if caixa is None:
+        raise RuntimeError("Sem caixa nem pontos da face.")
+    h, w = gray.shape
+    x1, y1 = max(0, int(np.floor(caixa[0]))), max(0, int(np.floor(caixa[1])))
+    x2, y2 = min(w, int(np.ceil(caixa[2]))), min(h, int(np.ceil(caixa[3])))
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        raise RuntimeError("A caixa da face está fora da imagem.")
+    return gray[y1:y2, x1:x2]
+
+
 class ToneCurveProcessor(ImageStepProcessorBase):
     @property
     def step_type(self) -> ImageProcessingStepType:
         return ImageProcessingStepType.TONE_CURVE
 
-    def _process(self, image, *, rng, face) -> np.ndarray:
+    def levels_for(self, image: np.ndarray, face: Optional[ImageFaceGeometry]) -> Tuple[int, int]:
+        """Ponto de preto e de branco efetivos para ESTA imagem."""
         c = self._config
-        return cv2.LUT(image, tone_curve_lut(c.black_point, c.white_point, c.gamma))
+        if c.mode != ToneCurveMode.FACE_PERCENTILES:
+            return int(c.black_point), int(c.white_point)
+        regiao = face_region_gray(image, self._require_face(face, "A curva por percentis"))
+        preto, branco = np.percentile(regiao, [c.black_percentile, c.white_percentile])
+        preto = int(round(preto))
+        branco = max(preto + 1, int(round(branco)))
+        return preto, min(255, branco)
+
+    def _process(self, image, *, rng, face) -> np.ndarray:
+        preto, branco = self.levels_for(image, face)
+        return cv2.LUT(image, tone_curve_lut(preto, branco, self._config.gamma))
 
 
 # ── Ganho de toner ─────────────────────────────────────────────────────────

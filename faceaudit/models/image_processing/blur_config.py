@@ -57,6 +57,7 @@ class BlurConfig(ImageProcessingStepConfig):
             StepParamSpec(
                 "sigma", "Sigma", StepParamKind.FLOAT,
                 minimum=0.1, maximum=50.0, step=0.5, decimals=2,
+                tunable=True, search_min=0.1, search_max=5.0,
                 help="Desvio-padrão do kernel gaussiano. Quanto maior, "
                      "mais borrado.",
             ),

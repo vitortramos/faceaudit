@@ -50,6 +50,7 @@ class JpegCompressionConfig(ImageProcessingStepConfig):
             StepParamSpec(
                 "quality", "Qualidade", StepParamKind.INT,
                 minimum=1, maximum=100, step=1, suffix=" / 100",
+                tunable=True, search_min=10, search_max=95,
                 help="1 = destruição agressiva, 85 = mensageiros típicos, 100 = quase sem perda.",
             ),
         ]

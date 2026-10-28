@@ -215,10 +215,14 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | **Redimensionar** | Escala por | IPD / Fator fixo | IPD | |
 | | IPD alvo | 2 – 2000 px | 40 | Distância entre os centros dos olhos depois do passo. Meça na questionada |
 | | Fator | 0,01 – 20 | 0,5 | 0,5 = metade |
+| | IPD da questionada | sim / não | não | Usa o IPD medido na questionada do pipeline em vez do número digitado — o certo no redimensionamento final |
 | | Interpolação | Automática / área / bilinear / bicúbica / vizinho | Automática | Automática = área ao reduzir, bicúbica ao ampliar |
 | | Voltar ao tamanho original | sim / não | não | Perde resolução sem mudar as dimensões em pixels |
-| **Curva de tons** | Ponto de preto | 0 – 254 | 40 | Abaixo dele, tudo vira preto |
-| | Ponto de branco | 1 – 255 | 200 | Acima dele, tudo vira branco |
+| **Curva de tons** | Pontos definidos por | Níveis fixos / Percentis da face | Níveis fixos | Ver abaixo |
+| | Ponto de preto | 0 – 254 | 40 | Níveis fixos: abaixo dele, tudo vira preto |
+| | Ponto de branco | 1 – 255 | 200 | Níveis fixos: acima dele, tudo vira branco |
+| | Percentil do preto | 0 – 99% | 20 | Percentis: os X% mais escuros da face viram preto |
+| | Percentil do branco | 1 – 100% | 60 | Percentis: acima deste percentil da face, branco |
 | | Gama | 0,1 – 5 | 1,0 | > 1 escurece os meios-tons; < 1 clareia |
 | **Ganho de toner** | Raio | 0 – 20 px | 1 | Quanto o escuro avança, na resolução em que o passo roda |
 | | Intensidade | 0 – 1 | 1 | |
@@ -227,6 +231,16 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | | Ângulo | 0 – 180° | 45 | Só retícula |
 | **Ruído de toner** | Densidade | 0 – 0,05 | 0,002 | Fração dos pixels que recebe um ponto |
 | | Raio do ponto | 0 – 5 px | 0 | 0 = um pixel |
+
+> 💡 **Curva por percentis da face.** Com níveis fixos, a mesma curva
+> trata igual fotos de exposições diferentes: uma janela estreita como
+> 90–160 transforma uma foto um pouco mais escura numa cópia quase preta
+> e uma um pouco mais clara numa quase branca. Num caso real, o nível
+> médio da cópia ficou com correlação de 0,96 com o da foto original.
+> Com **percentis da face**, preto e branco são calculados em cada
+> imagem, na região da face: a mesma fração da face vira preto em todas
+> as fotos. Use este modo na primeira curva (a da copiadora) quando a
+> base mistura exposições.
 
 > ⚠️ **O meio-tom produz preto e branco puros na resolução em que
 > roda.** Uma cópia digitalizada tem cinzas porque o scanner (ou a
@@ -357,6 +371,29 @@ medida, a parcela das imagens dentro. É o que permite
 escrever no laudo que a base de referência foi degradada até apresentar
 as mesmas características mensuráveis da questionada — e com quais
 números.
+
+### Ajustar à questionada
+
+O botão **🎯 Ajustar à questionada** procura os valores dos campos
+numéricos dos passos — pontos e percentis das curvas, gama, IPD
+intermediário, qualidade de compressão, etc. — que deixam as imagens da
+base, **uma a uma**, mais parecidas com a questionada.
+
+- **O que ele não muda:** a ordem dos passos, a técnica de meio-tom, o
+  tipo de oclusão, qualquer escolha qualitativa. Essas são do perito.
+- **Como procura:** testa cada campo em valores em torno do atual,
+  guarda o que melhora, e repete com passos cada vez menores (~150
+  configurações, menos de um minuto). O objetivo é a distância média de
+  cada imagem à questionada, não a mediana do conjunto.
+- **Como confere:** ajusta numa amostra de 40 imagens e mede o resultado
+  em **outras 40 que o ajuste não viu**. É esse número de validação que
+  aparece no fim — o da amostra de ajuste seria otimista.
+- **Nada é aplicado sem confirmação.** A janela final lista cada campo
+  alterado (de → para) e a concordância antes e depois na validação. Ao
+  aplicar, o registro do ajuste vai para a descrição do pipeline.
+
+Pode ser cancelado a qualquer momento (o botão vira **⏹ Cancelar
+ajuste**); nada é alterado.
 
 ## Salvando e carregando
 
@@ -555,28 +592,34 @@ Pipeline "mask_lower_face":
 A questionada é a cópia (xerox) de um documento com foto: contraste
 estourado, sombras fechadas, grão de meio-tom, resolução baixa. A base
 mais fiel para adaptar é a de **fotos de documento** (o original da
-cópia era uma foto impressa no documento). A cadeia segue a ordem
-física — tom da copiadora, toner, meio-tom, digitalização:
+cópia era uma foto impressa no documento). Há um **modelo pronto**: em
+**📂 Carregar**, escolha **[modelo] Xerox de documento** (a questionada
+já carregada é mantida). A cadeia segue a ordem física — tom da
+copiadora, meio-tom, digitalização:
 
 ```
-Pipeline "xerox_documento":
+Modelo "Xerox de documento":
   1. Tons de cinza
-  2. Curva de tons      preto=90, branco=160, gama=1,0   ← contraste da copiadora
-  3. Redimensionar      IPD 80 px                        ← resolução em que ela "pontilha"
+  2. Curva de tons      percentis da face P15–P70, gama 1,15  ← contraste da copiadora
+  3. Redimensionar      IPD 84 px                            ← resolução em que ela "pontilha"
   4. Meio-tom           difusão de erro
-  5. Redimensionar      IPD = o da questionada           ← digitalização
-  6. Curva de tons      preto=30, branco=225, gama=1,0   ← contraste do scanner
+  5. Redimensionar      IPD da questionada                   ← digitalização
+  6. Curva de tons      preto 39, branco 219, gama 0,97      ← contraste do scanner
 ```
 
-Carregue a questionada no Editor (**📄 Questionada…**) e ajuste os
-valores até as medidas ficarem verdes — conferindo com **📊 Medir na
-base**, não só na face da tela. Os valores acima vieram de um caso real
-(questionada com distância entre os olhos de ~49 px). Aplicados à base
-de fotos de documento, a **mediana** da base adaptada ficou dentro da
-tolerância nas 8 medidas, mas só ~5% das imagens tinham 4 ou mais das 5
-medidas de tom dentro: a curva fixa reage à exposição de cada foto. São
-ponto de partida, não receita — cada cópia tem a sua copiadora e o seu
-scanner.
+Fluxo: carregue a questionada (**📄 Questionada…**), carregue o
+modelo, clique **🎯 Ajustar à questionada**, confira com **📊 Medir na
+base** e salve.
+
+Os valores do modelo vieram de um caso real (questionada com distância
+entre os olhos de ~49 px), ajustados sobre a base de fotos de documento.
+A primeira versão desse caso usava curva de **níveis fixos** (90–160):
+a mediana da base acertava as 8 medidas, mas só ~5% das imagens tinham
+4 ou mais das 5 medidas de tom dentro. Com a curva por percentis e o
+ajuste, medido em imagens que o ajuste não usou: 15% com as 8 medidas
+dentro e 48% com 7 ou mais. São ponto de partida, não receita — cada
+cópia tem a sua copiadora e o seu scanner, e amostras de 40 imagens
+oscilam alguns pontos percentuais de uma para outra.
 O *Ganho de toner* entra quando as sombras da questionada são mais
 fechadas que as da base processada.
 
