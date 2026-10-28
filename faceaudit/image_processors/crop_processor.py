@@ -4,9 +4,14 @@ Modos suportados:
   - CENTERED — corta retângulo centralizado de
     `(target_width, target_height)`. Erro se imagem é menor que o
     destino (sem padding automático).
-  - FACE_DETECTED — usa `ff_service.app.backend.detect_faces` →
-    pega a maior face → corta bbox + `face_padding` opcional. Sem
-    rotação.
+  - FACE_DETECTED — corta a caixa da face expandida pelo fator de
+    margem. A caixa vem da geometria que acompanha a imagem pelo
+    pipeline (a do dataset, ou a detecção feita na imagem de entrada) —
+    o passo não redetecta na imagem que recebe, que pode já estar
+    degradada pelos passos anteriores.
+
+Nos dois modos a geometria da face é transladada para a origem do
+recorte e segue para os passos seguintes.
 
 USER_RECTANGLE entra em I6 com canvas interativo.
 
@@ -16,55 +21,49 @@ Determinístico — `rng` é ignorado.
 from __future__ import annotations
 
 from random import Random
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 
 from faceaudit.enums.crop_mode import CropMode
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
-from faceaudit.models.image_processing.crop_config import CropConfig
+from faceaudit.image_processors.image_step_base import ImageStepProcessorBase
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 
 
-class CropProcessor:
+class CropProcessor(ImageStepProcessorBase):
     """Aplica recorte conforme `CropConfig.mode`."""
-
-    def __init__(
-        self,
-        config: CropConfig,
-        *,
-        ff_service=None,
-    ):
-        # `ff_service` é obrigatório quando mode == FACE_DETECTED.
-        # Pra outros modos, ignorado. Validação feita lazy no apply.
-        self._config = config
-        self._ff_service = ff_service
 
     @property
     def step_type(self) -> ImageProcessingStepType:
         return ImageProcessingStepType.CROP
 
-    @property
-    def config(self) -> CropConfig:
-        return self._config
-
-    def apply(
+    def apply_step(
         self,
         image: np.ndarray,
         *,
         rng: Optional[Random] = None,
-    ) -> np.ndarray:
+        face: Optional[ImageFaceGeometry] = None,
+    ) -> Tuple[np.ndarray, Optional[ImageFaceGeometry]]:
         if self._config.mode == CropMode.CENTERED:
-            return self._apply_centered(image)
-        if self._config.mode == CropMode.FACE_DETECTED:
-            return self._apply_face_detected(image)
-        raise NotImplementedError(
-            f"CropMode.{self._config.mode.name} ainda não implementado "
-            "(virá em I6: USER_RECTANGLE)."
-        )
+            x1, y1, x2, y2 = self._centered_box(image)
+        elif self._config.mode == CropMode.FACE_DETECTED:
+            x1, y1, x2, y2 = self._face_box(
+                image, self._require_face(face, "O recorte pela face"),
+            )
+        else:
+            raise NotImplementedError(
+                f"CropMode.{self._config.mode.name} ainda não implementado "
+                "(virá em I6: USER_RECTANGLE)."
+            )
+        out = image[y1:y2, x1:x2].copy()
+        return out, (None if face is None else face.translated(-x1, -y1))
 
     # ── CENTERED ───────────────────────────────────────────────────────────
 
-    def _apply_centered(self, image: np.ndarray) -> np.ndarray:
+    def _centered_box(self, image: np.ndarray) -> Tuple[int, int, int, int]:
         h, w = image.shape[:2]
         tw = int(self._config.target_width)
         th = int(self._config.target_height)
@@ -76,65 +75,33 @@ class CropProcessor:
             )
         x = (w - tw) // 2
         y = (h - th) // 2
-        return image[y:y + th, x:x + tw].copy()
+        return x, y, x + tw, y + th
 
     # ── FACE_DETECTED ─────────────────────────────────────────────────────
 
-    def _apply_face_detected(self, image: np.ndarray) -> np.ndarray:
-        if self._ff_service is None:
-            raise RuntimeError(
-                "CropMode.FACE_DETECTED requer FFService injetado. "
-                "Construa o pipeline passando ff_service=... "
-                "(`ImageProcessingPipeline(config, ff_service=...)`)."
-            )
-        # Acessa o backend diretamente — mesmo padrão do
-        # FFService.align_face_only (PR L3).
-        engine = self._ff_service.app
-        faces = engine.backend.detect_faces(image)
-        if not faces:
-            raise RuntimeError(
-                "CropMode.FACE_DETECTED: nenhuma face detectada na imagem."
-            )
-        # forensicface >= 0.7.1 removeu ForensicFace._get_best_face e expôs
-        # a seleção como função de módulo em geometry.select_best_face
-        # (recebe img_shape, não o array). Import local: este caminho só
-        # roda com FFService presente (logo, forensicface instalada).
-        from forensicface.geometry import select_best_face
-        face = select_best_face(image.shape, faces, criterion="size")
-        x1, y1, x2, y2 = self._extract_bbox(face)
+    def _face_box(
+        self, image: np.ndarray, face: ImageFaceGeometry,
+    ) -> Tuple[int, int, int, int]:
+        caixa = face.face_box()
+        if caixa is None:
+            raise RuntimeError("O recorte pela face não tem caixa nem pontos da face.")
 
-        # Expande a bbox pelo fator configurado. Usa a MESMA primitiva da
+        # Expande a caixa pelo fator configurado. Usa a MESMA primitiva da
         # extração de faces de vídeo — o mesmo número tem de produzir o
         # mesmo enquadramento nos dois fluxos.
-        import numpy as _np
         from forensicface.geometry import extend_bbox
 
         x1, y1, x2, y2 = extend_bbox(
-            _np.asarray([x1, y1, x2, y2]),
+            np.asarray(caixa, dtype=np.float64),
             image.shape,
             margin_factor=float(self._config.margin_factor),
         )
 
         # `extend_bbox` já corta ao quadro; resta garantir área não-nula
-        # (bbox degenerada na borda viraria fatia vazia em silêncio).
+        # (caixa degenerada na borda viraria fatia vazia em silêncio).
         h, w = image.shape[:2]
         x1 = max(0, min(w - 1, int(x1)))
         y1 = max(0, min(h - 1, int(y1)))
         x2 = max(x1 + 1, min(w, int(x2)))
         y2 = max(y1 + 1, min(h, int(y2)))
-
-        return image[y1:y2, x1:x2].copy()
-
-    @staticmethod
-    def _extract_bbox(face) -> tuple:
-        """Extrai (x1, y1, x2, y2) do objeto face do backend.
-
-        InsightFace expõe `face.bbox` como ndarray [x1, y1, x2, y2].
-        Conversão pra int defensiva.
-        """
-        bbox = face.bbox
-        x1 = int(bbox[0])
-        y1 = int(bbox[1])
-        x2 = int(bbox[2])
-        y2 = int(bbox[3])
         return x1, y1, x2, y2

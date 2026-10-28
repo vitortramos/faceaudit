@@ -50,6 +50,9 @@ from faceaudit.enums.path_mode import PathMode
 from faceaudit.models.column_catalog import ColumnRole, ColumnSource
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 from faceaudit.models.image_processing.batch_processing_result import (
     BatchProcessingResult,
 )
@@ -111,6 +114,29 @@ def colunas_que_acompanham(dataset: FaceDataset) -> Tuple[List[str], List[str]]:
         else:
             descartadas.append(nome)
     return levadas, descartadas
+
+
+def geometria_do_registro(
+    face: FaceInfo, dataset: FaceDataset,
+) -> Optional[ImageFaceGeometry]:
+    """Geometria da face no sistema da imagem que o dataset guarda.
+
+    A do `ff_info` (invariante do dataset). Em dataset de faces alinhadas
+    sem ela, os pontos 112×112 da casa própria — a imagem guardada É a
+    face alinhada, então estão no sistema dela.
+    """
+    geom = ImageFaceGeometry.from_face_info(face)
+    if geom is not None or not getattr(dataset, "is_aligned", False):
+        return geom
+    from faceaudit.services.ff_service import ALIGNED_KEYPOINTS_EXTRA_KEY
+
+    bruto = (face.extra_data or {}).get(ALIGNED_KEYPOINTS_EXTRA_KEY)
+    if not bruto:
+        return None
+    try:
+        return ImageFaceGeometry.from_values(None, json.loads(bruto))
+    except (TypeError, ValueError):
+        return None
 
 
 def derivado_e_alinhado(
@@ -407,13 +433,16 @@ class ImagePipelineBatchService:
                 raise RuntimeError(
                     "input_source=ALIGNED_FACE requer FFService"
                 )
-            aligned, _aligned_kps = ff_service.align_face_from_array(bgr)
+            aligned, aligned_kps = ff_service.align_face_from_array(bgr)
             if aligned is None:
                 raise RuntimeError("nenhuma face detectada")
             bgr = aligned
+            geom = ImageFaceGeometry.from_values(None, aligned_kps)
+        else:
+            geom = geometria_do_registro(face, dataset)
 
         jitter = str(face.image_path or "")
-        processed = pipeline.process_image(bgr, seed_jitter=jitter)
+        processed = pipeline.process(bgr, seed_jitter=jitter, face=geom).image
 
         # Grava PNG (lossless) via imencode+write_bytes — `cv2.imwrite`
         # tem o mesmo bug de não-ASCII no Windows.

@@ -16,9 +16,10 @@ Implementações suportadas:
   - MASK_FACE       + (N/A)   → polígonos/retângulos/elipses desenhados
                                 no canvas (coords em [0..1])
 
-EYES/MOUTH exigem `ff_service` injetado no constructor (uniforme via
-factory `ImageProcessorFactory.build`). Sem face detectada na
-imagem, cai em CENTER (fallback defensivo).
+EYES/MOUTH usam os pontos da face que acompanham a imagem pelo
+pipeline (os do dataset, ou a detecção feita na imagem de entrada).
+Sem pontos, o passo FALHA — antes caía em CENTER, o que produzia uma
+oclusão no lugar errado sem nada no resultado denunciar.
 
 MASK_FACE não usa `position`. Coordenadas armazenadas em [0..1] são
 escaladas pra dimensões da imagem em runtime — mesma máscara aplica
@@ -37,44 +38,38 @@ from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.occlusion_kind import OcclusionKind
 from faceaudit.enums.occlusion_mask_shape import OcclusionMaskShape
 from faceaudit.enums.occlusion_position import OcclusionPosition
-from faceaudit.models.image_processing.occlusion_config import OcclusionConfig
+from faceaudit.image_processors.image_step_base import (
+    FaceGeometryRequiredError,
+    ImageStepProcessorBase,
+)
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 
 
 _BLACK_BGR = (0, 0, 0)
 
 
-class OcclusionProcessor:
+class OcclusionProcessor(ImageStepProcessorBase):
     """Aplica oclusão geométrica conforme `OcclusionConfig`."""
-
-    def __init__(
-        self,
-        config: OcclusionConfig,
-        *,
-        ff_service=None,  # PR I7 — necessário pra EYES/MOUTH
-    ):
-        self._config = config
-        self._ff_service = ff_service
 
     @property
     def step_type(self) -> ImageProcessingStepType:
         return ImageProcessingStepType.OCCLUSION
 
-    @property
-    def config(self) -> OcclusionConfig:
-        return self._config
-
-    def apply(
+    def _process(
         self,
         image: np.ndarray,
         *,
-        rng: Optional[Random] = None,
+        rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
     ) -> np.ndarray:
         kind = self._config.kind
 
         if kind == OcclusionKind.RECTANGLE_BLACK:
-            return self._apply_rectangle_black(image, rng)
+            return self._apply_rectangle_black(image, rng, face)
         if kind == OcclusionKind.CIRCLE_BLACK:
-            return self._apply_circle_black(image, rng)
+            return self._apply_circle_black(image, rng, face)
         if kind == OcclusionKind.MASK_FACE:
             return self._apply_mask_face(image)
         raise NotImplementedError(
@@ -85,13 +80,14 @@ class OcclusionProcessor:
 
     def _apply_rectangle_black(
         self, image: np.ndarray, rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
     ) -> np.ndarray:
         h, w = image.shape[:2]
         rect_w = max(1, int(w * self._config.width_pct))
         rect_h = max(1, int(h * self._config.height_pct))
 
         centers = self._compute_centers(
-            image, rng,
+            image, rng, face,
             half_extent_x=rect_w // 2,
             half_extent_y=rect_h // 2,
         )
@@ -113,16 +109,15 @@ class OcclusionProcessor:
 
     def _apply_circle_black(
         self, image: np.ndarray, rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
     ) -> np.ndarray:
         h, w = image.shape[:2]
         radius = max(1, int(min(h, w) * self._config.radius_pct))
 
         centers = self._compute_centers(
-            image, rng, half_extent_x=radius, half_extent_y=radius,
+            image, rng, face, half_extent_x=radius, half_extent_y=radius,
         )
         if not centers:
-            # Fallback defensivo — face não detectada em EYES/MOUTH ou
-            # combinação inesperada. Centraliza um círculo único.
             centers = [(w // 2, h // 2)]
 
         # cv2.circle muta in-place — copiamos antes e iteramos. EYES
@@ -144,6 +139,7 @@ class OcclusionProcessor:
         self,
         image: np.ndarray,
         rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
         *,
         half_extent_x: int,
         half_extent_y: int,
@@ -156,8 +152,8 @@ class OcclusionProcessor:
         largura e metade da altura. Usado pra manter o desenho dentro do
         frame quando `position=RANDOM`.
 
-        Lista vazia pra EYES/MOUTH quando a detecção falha (caller faz
-        fallback pra centro da imagem).
+        EYES/MOUTH sem pontos da face levantam
+        `FaceGeometryRequiredError`.
         """
         h, w = image.shape[:2]
         position = self._config.position
@@ -176,66 +172,29 @@ class OcclusionProcessor:
             return [(rng.randint(min_x, max_x), rng.randint(min_y, max_y))]
 
         if position in (OcclusionPosition.EYES, OcclusionPosition.MOUTH):
-            return self._compute_semantic_centers(image, position)
+            return self._compute_semantic_centers(face, position)
 
         return []
 
+    @staticmethod
     def _compute_semantic_centers(
-        self, image: np.ndarray, position: OcclusionPosition,
+        face: Optional[ImageFaceGeometry], position: OcclusionPosition,
     ) -> List[Tuple[int, int]]:
-        """Centros semânticos baseados em landmarks do FFService.
+        """Centros semânticos a partir dos pontos da face.
 
-        Keypoints do RetinaFace (insightface):
-          [0] = olho esquerdo
-          [1] = olho direito
-          [2] = nariz
-          [3] = canto esquerdo da boca
-          [4] = canto direito da boca
-
-        EYES: devolve **dois** centros, um sobre cada olho — `[kps[0],
-        kps[1]]`. O usuário espera ver os dois olhos cobertos, não um
-        único círculo no espaço entre eles.
-
-        MOUTH: devolve **um** centro, midpoint entre os cantos da boca
-        — o círculo único cobre a boca inteira de forma natural.
-
-        Lista vazia se a detecção falhar (caller centraliza).
+        EYES: **dois** centros, um sobre cada olho — o usuário espera ver
+        os dois olhos cobertos, não um único círculo entre eles.
+        MOUTH: **um** centro, no meio dos cantos da boca.
         """
-        if self._ff_service is None:
-            raise RuntimeError(
-                f"OcclusionPosition.{position.name} requer FFService "
-                "injetado. Construa o pipeline passando ff_service=... "
-                "(ImageProcessingPipeline(config, ff_service=...))."
+        if face is None or face.keypoints is None:
+            raise FaceGeometryRequiredError(
+                f"A oclusão '{position.label_pt}' precisa dos pontos da "
+                "face, e eles não estão disponíveis para esta imagem."
             )
-        engine = self._ff_service.app
-        try:
-            faces = engine.backend.detect_faces(image)
-        except Exception as e:
-            print(f"Error detect_faces in OcclusionProcessor: {e}")
-            return []
-        if not faces:
-            return []
-
-        # forensicface >= 0.7.1 removeu ForensicFace._get_best_face e expôs
-        # a seleção como função de módulo em geometry.select_best_face
-        # (recebe img_shape, não o array). Import local: este caminho só
-        # roda com FFService presente (logo, forensicface instalada).
-        from forensicface.geometry import select_best_face
-        face = select_best_face(image.shape, faces, criterion="size")
-        kps = getattr(face, "kps", None)
-        if kps is None or len(kps) < 5:
-            return []
-
         if position == OcclusionPosition.EYES:
-            return [
-                (int(float(kps[0][0])), int(float(kps[0][1]))),
-                (int(float(kps[1][0])), int(float(kps[1][1]))),
-            ]
-
-        # MOUTH: midpoint entre os cantos da boca.
-        cx = int((float(kps[3][0]) + float(kps[4][0])) / 2)
-        cy = int((float(kps[3][1]) + float(kps[4][1])) / 2)
-        return [(cx, cy)]
+            return [(int(round(x)), int(round(y))) for x, y in face.eyes]
+        cx, cy = face.mouth_center
+        return [(int(round(cx)), int(round(cy)))]
 
     # ── MASK_FACE (PR I6) ────────────────────────────────────────────────────
 

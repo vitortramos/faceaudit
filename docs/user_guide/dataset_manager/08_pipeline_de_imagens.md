@@ -169,12 +169,11 @@ tipo de step.
 | **Modo** | `CENTERED` / `FACE_DETECTED` | CENTERED | |
 | *(CENTERED)* **Largura** | 8 – 4096 | 224 | Largura do recorte em px |
 | *(CENTERED)* **Altura** | 8 – 4096 | 224 | Altura do recorte em px |
-| *(FACE_DETECTED)* **Padding face** | ≥ 0.0 | 0.0 | Fração do bbox detectado a adicionar como margem (0.2 = 20% além) |
+| *(FACE_DETECTED)* **Margem** | 1,0 – 5,0 | 1,0 | Fator sobre a caixa da face: 1,0 = caixa exata, 2,0 = o dobro em cada dimensão (mesma unidade da extração de vídeo) |
 
-> 💡 No modo `FACE_DETECTED`, o ForensicFace é chamado pra detectar
-> a maior face, e o recorte é feito em volta do bbox dela (com
-> padding opcional). Útil pra **extrair só a face** preservando a
-> pose original. Esse modo exige o FFService disponível.
+> 💡 No modo `FACE_DETECTED`, o recorte é feito em volta da caixa da
+> face **do dataset** (ver *A posição da face* abaixo). Útil pra
+> **extrair só a face** preservando a pose original.
 
 ### Oclusão (OCCLUSION)
 
@@ -185,7 +184,7 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | Campo (rótulo na UI) | Faixa | Padrão | Notas |
 |---|---|---|---|
 | **Tipo** | Máscara desenhada / Retângulo preto / Círculo preto | Máscara desenhada | |
-| **Posição** | Centralizada / Aleatória / Sobre os olhos / Sobre a boca | Centralizada | Oferecida por **Retângulo preto** e **Círculo preto**; oculta em Máscara desenhada. Sobre os olhos / Sobre a boca exigem FFService (landmarks) |
+| **Posição** | Centralizada / Aleatória / Sobre os olhos / Sobre a boca | Centralizada | Oferecida por **Retângulo preto** e **Círculo preto**; oculta em Máscara desenhada. Sobre os olhos / Sobre a boca usam os pontos da face |
 | *(Retângulo)* **Largura** | 0.01 – 1.0 | 0.5 | Fração da largura da imagem ocluída |
 | *(Retângulo)* **Altura** | 0.01 – 1.0 | 0.5 | Fração da altura da imagem ocluída |
 | *(Círculo)* **Raio** | 0.01 – 0.50 | 0.10 | Raio como fração do menor lado |
@@ -200,9 +199,24 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 > região específica). Com uma ou mais formas, o botão passa a mostrar
 > **🎨 Editar (N shapes)…**.
 
-> ⚠️ **Sobre os olhos** e **Sobre a boca** (e o modo **Origem = Face
-> alinhada** / recorte `FACE_DETECTED`) dependem do **FFService**. Sem
-> ele, o preview mostra um erro explícito no lugar da imagem processada.
+### A posição da face
+
+Recorte pela face, oclusão sobre os olhos ou a boca (e, nos passos de
+cópia, o redimensionamento pela distância entre os olhos) precisam saber
+onde está a face. Essa posição **acompanha a imagem pelo pipeline**:
+
+- vem do **dataset** — a caixa e os pontos gravados na criação, os
+  mesmos que geraram o embedding;
+- se o dataset não os tem, a face é detectada **uma vez**, na imagem de
+  entrada (exige o FFService);
+- cada passo que muda o enquadramento (recorte, redimensionamento)
+  converte a posição para a imagem que produziu.
+
+Os passos **não detectam de novo** na imagem já degradada pelos passos
+anteriores, onde a detecção pode falhar ou achar a face em outro lugar.
+Se a posição não estiver disponível, o passo **falha** (no Processar, a
+imagem vai para o parquet de erros) — ele não cai no centro da imagem,
+o que produziria uma oclusão no lugar errado sem aviso.
 
 ## Métricas ao vivo
 
@@ -379,17 +393,9 @@ não adiciona nenhuma perda extra. Garante reprodutibilidade exata.
 
 O *seed* do pipeline + o `image_path` da face de entrada formam
 o seed efetivo para steps aleatórios (como **Oclusão** com posição
-**Aleatória**). Steps determinísticos (Desfoque, JPEG, WebP, Recorte)
-produzem sempre o mesmo resultado.
-
-> ⚠️ **Ressalva para steps aleatórios.** O RNG por imagem é derivado
-> via `hash()` embutido do Python, que é *salted* por processo
-> (a menos que `PYTHONHASHSEED` esteja fixado). Na prática: dentro de
-> **uma mesma execução** o resultado é reprodutível; entre **execuções
-> distintas** do app, a posição de uma oclusão **Aleatória** pode
-> variar. Para reprodutibilidade bit a bit entre execuções, prefira
-> posições fixas (Centralizada / Sobre os olhos / Sobre a boca) ou uma
-> máscara desenhada. Steps não-aleatórios são sempre bit a bit.
+**Aleatória**), derivado por SHA-256. O mesmo pipeline produz o
+**mesmo resultado bit a bit** em qualquer execução e em qualquer
+máquina — inclusive nos passos aleatórios.
 
 ## Casos de uso forense
 

@@ -17,35 +17,28 @@ import cv2
 import numpy as np
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
+from faceaudit.image_processors.image_step_base import ImageStepProcessorBase
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 from faceaudit.models.image_processing.webp_compression_config import (
     WebpCompressionConfig,
 )
 
 
-class WebpCompressionProcessor:
+class WebpCompressionProcessor(ImageStepProcessorBase):
     """Aplica recompressão WebP no quality declarado no config."""
-
-    def __init__(
-        self,
-        config: WebpCompressionConfig,
-        *,
-        ff_service=None,  # PR I1 — uniforme com outros processors; ignorado aqui
-    ):
-        self._config = config
 
     @property
     def step_type(self) -> ImageProcessingStepType:
         return ImageProcessingStepType.WEBP
 
-    @property
-    def config(self) -> WebpCompressionConfig:
-        return self._config
-
-    def apply(
+    def _process(
         self,
         image: np.ndarray,
         *,
-        rng: Optional[Random] = None,
+        rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
     ) -> np.ndarray:
         ok, buf = cv2.imencode(
             ".webp", image,

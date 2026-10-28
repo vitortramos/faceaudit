@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.occlusion_kind import OcclusionKind
@@ -40,6 +40,26 @@ from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
 )
 from faceaudit.models.image_processing.occlusion_mask import OcclusionMask
+from faceaudit.models.image_processing.step_param_spec import (
+    StepParamKind,
+    StepParamSpec,
+    enum_choices,
+)
+
+
+_POSICOES_GEOMETRICAS = (
+    OcclusionPosition.CENTER,
+    OcclusionPosition.RANDOM,
+    OcclusionPosition.EYES,
+    OcclusionPosition.MOUTH,
+)
+
+
+def _rotulo_da_mascara(config: "OcclusionConfig") -> str:
+    if config.mask is None or config.mask.is_empty:
+        return "🎨 Desenhar máscara…"
+    n = len(config.mask.shapes)
+    return f"🎨 Editar ({n} {'forma' if n == 1 else 'formas'})…"
 
 
 @dataclass
@@ -87,6 +107,62 @@ class OcclusionConfig(ImageProcessingStepConfig):
         if self.mask is not None and not self.mask.is_empty:
             out["mask"] = self.mask.to_dict()
         return out
+
+    def param_specs(self) -> List[StepParamSpec]:
+        mascara = lambda c: c.kind == OcclusionKind.MASK_FACE  # noqa: E731
+        return [
+            StepParamSpec(
+                "kind", "Tipo", StepParamKind.CHOICE,
+                choices=enum_choices([
+                    OcclusionKind.MASK_FACE,
+                    OcclusionKind.RECTANGLE_BLACK,
+                    OcclusionKind.CIRCLE_BLACK,
+                ]),
+            ),
+            StepParamSpec(
+                "position", "Posição", StepParamKind.CHOICE,
+                choices=enum_choices(_POSICOES_GEOMETRICAS),
+                visible=lambda c: not mascara(c),
+                help="Sobre os olhos / Sobre a boca usam os pontos da face "
+                     "que acompanham a imagem.",
+            ),
+            StepParamSpec(
+                "width_pct", "Largura", StepParamKind.FLOAT,
+                minimum=0.01, maximum=1.0, step=0.05, decimals=2,
+                visible=lambda c: c.kind == OcclusionKind.RECTANGLE_BLACK,
+                help="Largura do retângulo como fração da LARGURA da imagem.",
+            ),
+            StepParamSpec(
+                "height_pct", "Altura", StepParamKind.FLOAT,
+                minimum=0.01, maximum=1.0, step=0.05, decimals=2,
+                visible=lambda c: c.kind == OcclusionKind.RECTANGLE_BLACK,
+                help="Altura do retângulo como fração da ALTURA da imagem.",
+            ),
+            StepParamSpec(
+                "radius_pct", "Raio", StepParamKind.FLOAT,
+                minimum=0.01, maximum=0.5, step=0.02, decimals=3,
+                visible=lambda c: c.kind == OcclusionKind.CIRCLE_BLACK,
+                help="Raio do círculo como fração do MENOR LADO da imagem.",
+            ),
+            StepParamSpec(
+                "draw_mask", "Máscara", StepParamKind.ACTION,
+                visible=mascara, action_label=_rotulo_da_mascara,
+                help="Abre um canvas para desenhar polígonos, retângulos e "
+                     "elipses sobre a imagem. Coordenadas em [0..1].",
+            ),
+        ]
+
+    def summary_pt(self) -> str:
+        if self.kind == OcclusionKind.MASK_FACE:
+            n = 0 if self.mask is None else len(self.mask.shapes)
+            return f"máscara, {n} forma(s)"
+        return f"{self.kind.label_pt}, {self.position.label_pt}"
+
+    @property
+    def requires_face(self) -> bool:
+        return self.kind != OcclusionKind.MASK_FACE and self.position in (
+            OcclusionPosition.EYES, OcclusionPosition.MOUTH,
+        )
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OcclusionConfig":

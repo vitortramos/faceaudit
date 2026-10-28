@@ -13,7 +13,8 @@ Decisões de design:
   - Aplicar é síncrono no I2 — performance OK pra steps simples.
     Worker thread entra em I3 quando scores de qualidade exigirem.
   - Imagem carregada via `cv2.imread` direto (já temos cv2 instalado).
-    ALIGNED_FACE delega ao `FFService.align_face_only` (PR L3).
+    ALIGNED_FACE alinha via `FFService.align_face_from_array`, que devolve
+    também os pontos da face alinhada.
 """
 
 from __future__ import annotations
@@ -29,40 +30,24 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from faceaudit.enums.image_input_source import ImageInputSource
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.enums.strategy_artifact_type import StrategyArtifactType
+from faceaudit.factories.image_processor_factory import ImageProcessorFactory
 from faceaudit.models.face_dataset import FaceDataset
-from faceaudit.models.image_processing.blur_config import BlurConfig
-from faceaudit.models.image_processing.crop_config import CropConfig
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 from faceaudit.models.image_processing.image_processing_pipeline_config import (
     ImageProcessingPipelineConfig,
 )
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
 )
-from faceaudit.models.image_processing.jpeg_compression_config import (
-    JpegCompressionConfig,
-)
-from faceaudit.models.image_processing.occlusion_config import OcclusionConfig
-from faceaudit.models.image_processing.webp_compression_config import (
-    WebpCompressionConfig,
-)
 from faceaudit.pipelines.image_processing_pipeline import (
     ImageProcessingPipeline,
 )
+from faceaudit.services.image_pipeline_batch_service import geometria_do_registro
 
 from .image_pipeline_dialog_view import ImagePipelineDialogView
 from .workers.quality_scores_worker import QualityScoresWorker
-
-
-# Defaults pra steps recém-adicionados — refletem casos típicos
-# (não aleatórios) pra que o usuário veja efeito imediatamente após
-# adicionar.
-_DEFAULT_FACTORIES = {
-    ImageProcessingStepType.BLUR: lambda: BlurConfig(kernel_size=7, sigma=2.0),
-    ImageProcessingStepType.JPEG: lambda: JpegCompressionConfig(quality=50),
-    ImageProcessingStepType.WEBP: lambda: WebpCompressionConfig(quality=50),
-    ImageProcessingStepType.CROP: lambda: CropConfig(),
-    ImageProcessingStepType.OCCLUSION: lambda: OcclusionConfig(),
-}
 
 
 class ImagePipelineDialogController:
@@ -105,6 +90,11 @@ class ImagePipelineDialogController:
 
         self._cached_original: Optional[np.ndarray] = None
         self._cached_processed: Optional[np.ndarray] = None
+        # Geometria da face na imagem de entrada e na processada — a da
+        # entrada vem do dataset (ou do alinhamento); a da processada é a
+        # que o pipeline devolve, convertida passo a passo.
+        self._cached_face: Optional[ImageFaceGeometry] = None
+        self._cached_processed_face: Optional[ImageFaceGeometry] = None
 
         # PR I3 — worker thread pra scores de qualidade. Mantém
         # referências fortes pra evitar GC durante a execução.
@@ -157,9 +147,9 @@ class ImagePipelineDialogController:
         self.view.step_config.config_changed.connect(
             self._on_step_config_changed
         )
-        # PR I6 — botão "Desenhar máscara" no form de OCCLUSION
-        self.view.step_config.mask_canvas_requested.connect(
-            self._on_mask_canvas_requested
+        # Botões do formulário (ex.: desenhar a máscara de oclusão)
+        self.view.step_config.action_requested.connect(
+            self._on_step_action_requested
         )
 
         # Image compare
@@ -186,9 +176,7 @@ class ImagePipelineDialogController:
             self.view.set_save_load_enabled(True)
 
         # Lista
-        self.view.steps_list.populate(
-            [s.step_type for s in self._pipeline_config.steps]
-        )
+        self.view.steps_list.populate(self._pipeline_config.steps)
         # Config panel (lista vazia → nada selecionado)
         self.view.step_config.show_config(None)
 
@@ -223,21 +211,17 @@ class ImagePipelineDialogController:
     # ── Steps ──────────────────────────────────────────────────────────────
 
     def _on_step_added(self, step_type: ImageProcessingStepType):
-        new_config = _DEFAULT_FACTORIES[step_type]()
+        new_config = ImageProcessorFactory.new_config(step_type)
         self._pipeline_config.steps.append(new_config)
         new_idx = len(self._pipeline_config.steps) - 1
-        self.view.steps_list.populate(
-            [s.step_type for s in self._pipeline_config.steps]
-        )
+        self.view.steps_list.populate(self._pipeline_config.steps)
         self.view.steps_list.select_index(new_idx)
         self._mark_dirty()
 
     def _on_step_removed(self, idx: int):
         if 0 <= idx < len(self._pipeline_config.steps):
             self._pipeline_config.steps.pop(idx)
-            self.view.steps_list.populate(
-                [s.step_type for s in self._pipeline_config.steps]
-            )
+            self.view.steps_list.populate(self._pipeline_config.steps)
             # Mantém seleção válida
             if self._pipeline_config.steps:
                 new_idx = min(idx, len(self._pipeline_config.steps) - 1)
@@ -256,34 +240,33 @@ class ImagePipelineDialogController:
         else:
             self.view.step_config.show_config(None)
 
-    def _on_steps_reordered(
-        self, new_order: List[ImageProcessingStepType],
-    ):
-        """Lista foi reordenada via drag-and-drop. Reconstrói
-        `_pipeline_config.steps` na nova ordem usando matching por
-        identidade (cada step_type pode aparecer múltiplas vezes —
-        precisa preservar a config DTO específica de cada um).
-        """
-        # Estratégia: pega os configs antigos, distribui pra nova
-        # ordem na sequência de occurrence de cada step_type.
+    def _on_steps_reordered(self, new_order: List[int]):
+        """Lista foi reordenada via drag-and-drop. `new_order` traz o
+        índice anterior de cada passo na nova ordem — é pela posição, e
+        não pelo tipo, que cada config acompanha a sua linha."""
         old = list(self._pipeline_config.steps)
-        new_steps = []
-        used = [False] * len(old)
-        for st in new_order:
-            for i, oc in enumerate(old):
-                if not used[i] and oc.step_type == st:
-                    new_steps.append(oc)
-                    used[i] = True
-                    break
-        self._pipeline_config.steps = new_steps
+        if sorted(new_order) != list(range(len(old))):
+            return
+        self._pipeline_config.steps = [old[i] for i in new_order]
+        self.view.steps_list.populate(self._pipeline_config.steps)
+        novo_idx = new_order.index(self._current_step_idx) if (
+            0 <= self._current_step_idx < len(old)) else -1
+        self.view.steps_list.select_index(novo_idx)
         self._mark_dirty()
 
     def _on_step_config_changed(
         self, _config: ImageProcessingStepConfig,
     ):
         # `_config` é o mesmo objeto já dentro de `_pipeline_config.steps`
-        # (form mutates in place). Marca dirty pra UX consistente.
+        # (form mutates in place). Atualiza o resumo na lista.
+        self.view.steps_list.refresh_texts(self._pipeline_config.steps)
         self._mark_dirty()
+
+    def _on_step_action_requested(self, nome: str, config):
+        if nome == "draw_mask":
+            self._on_mask_canvas_requested(config)
+        self.view.step_config.refresh()
+        self.view.steps_list.refresh_texts(self._pipeline_config.steps)
 
     # ── Navegação de imagem ────────────────────────────────────────────────
 
@@ -312,10 +295,12 @@ class ImagePipelineDialogController:
     # ── Carregamento + processamento ───────────────────────────────────────
 
     def _reload_current_image(self):
-        """Lê a imagem corrente do disco (ou align_face_only) e
+        """Lê a imagem corrente do disco (alinhando, se for o caso) e
         atualiza o painel esquerdo. Limpa o painel processada (precisa
         clicar Aplicar pra atualizar).
         """
+        self._cached_face = None
+        self._cached_processed_face = None
         if (
             not self._dataset
             or self._current_image_idx < 0
@@ -378,10 +363,10 @@ class ImagePipelineDialogController:
                 self.view.image_compare.show_processed(None)
                 return
             try:
-                aligned = self._ff_service.align_face_only(face, dataset=self._dataset)
+                aligned, aligned_kps = self._ff_service.align_face_from_array(img)
             except Exception as e:
                 self.view.image_compare.show_status(
-                    f"align_face_only falhou: {e}", is_error=True,
+                    f"Alinhamento falhou: {e}", is_error=True,
                 )
                 self.view.image_compare.show_original(None)
                 self.view.image_compare.show_processed(None)
@@ -395,6 +380,9 @@ class ImagePipelineDialogController:
                 self.view.image_compare.show_processed(None)
                 return
             img = aligned
+            self._cached_face = ImageFaceGeometry.from_values(None, aligned_kps)
+        else:
+            self._cached_face = geometria_do_registro(face, self._dataset)
 
         self._cached_original = img
         self._cached_processed = None  # força re-aplicação
@@ -444,9 +432,12 @@ class ImagePipelineDialogController:
             )
             face = self._dataset.faces[self._current_image_idx]
             jitter = (face.image_path or "") if face else ""
-            self._cached_processed = pipeline.process_image(
+            saida = pipeline.process(
                 self._cached_original, seed_jitter=jitter,
+                face=self._cached_face,
             )
+            self._cached_processed = saida.image
+            self._cached_processed_face = saida.face
         except Exception as e:
             self.view.image_compare.show_status(
                 f"Erro ao aplicar pipeline: {e}", is_error=True,
@@ -655,9 +646,7 @@ class ImagePipelineDialogController:
             self._pipeline_config.input_source,
             self._pipeline_config.seed,
         )
-        self.view.steps_list.populate(
-            [s.step_type for s in self._pipeline_config.steps]
-        )
+        self.view.steps_list.populate(self._pipeline_config.steps)
         self.view.step_config.show_config(None)
 
         self._mark_clean()
@@ -704,9 +693,6 @@ class ImagePipelineDialogController:
 
         new_mask = dlg.get_mask()
         occlusion_config.mask = new_mask
-        # Refresh do botão pra mostrar contagem de shapes
-        if hasattr(self.view.step_config, "_refresh_mask_button"):
-            self.view.step_config._refresh_mask_button()
         # Marca dirty (mesma semântica de outras edições do form)
         self._mark_dirty()
 

@@ -2,15 +2,17 @@
 (PR I2).
 
 Coluna esquerda do editor. Mostra os steps configurados na ordem em
-que serão aplicados. Drag-reorder via `QListWidget.InternalMove`.
-Cada item tem botão de remover. Botão `+ Adicionar` mostra menu com
-os 5 step types.
+que serão aplicados, com um resumo dos parâmetros de cada um (dois
+"Redimensionar" na mesma cadeia precisam ser distinguíveis). Drag-reorder
+via `QListWidget.InternalMove`. Cada item tem botão de remover. O botão
+`+ Adicionar` lista os tipos registrados na factory, agrupados.
 
 Sinais emitidos pro controller:
   - `selection_changed(idx)` — usuário selecionou outro step (idx ou -1)
   - `step_added(step_type)` — usuário clicou no menu Adicionar
   - `step_removed(idx)` — usuário clicou no botão remover de um item
-  - `steps_reordered(new_order_indices)` — usuário arrastou
+  - `steps_reordered(new_order)` — usuário arrastou; lista com o
+    índice ANTERIOR de cada passo na nova ordem
 """
 
 from __future__ import annotations
@@ -21,16 +23,16 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 
 from interface.theme import apply_themed_stylesheet
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
+from faceaudit.factories.image_processor_factory import ImageProcessorFactory
+from faceaudit.models.image_processing.image_processing_step_config import (
+    ImageProcessingStepConfig,
+)
 
 
-# Step types disponíveis no menu "Adicionar". Ordem reflete a do MVP.
-_AVAILABLE_TYPES = [
-    ImageProcessingStepType.BLUR,
-    ImageProcessingStepType.JPEG,
-    ImageProcessingStepType.WEBP,
-    ImageProcessingStepType.CROP,
-    ImageProcessingStepType.OCCLUSION,
-]
+def _texto_da_linha(idx: int, config: ImageProcessingStepConfig) -> str:
+    resumo = config.summary_pt()
+    base = f"{idx + 1}.  {config.step_type.label_pt}"
+    return f"{base}  —  {resumo}" if resumo else base
 
 
 class _StepRow(QtWidgets.QWidget):
@@ -38,17 +40,17 @@ class _StepRow(QtWidgets.QWidget):
 
     remove_clicked = QtCore.pyqtSignal()
 
-    def __init__(self, step_type: ImageProcessingStepType, idx: int):
-        super().__init__()
+    def __init__(self, config: ImageProcessingStepConfig, idx: int, parent=None):
+        super().__init__(parent)
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(6)
 
-        self.lbl = QtWidgets.QLabel(f"{idx + 1}.  {step_type.label_pt}")
+        self.lbl = QtWidgets.QLabel(_texto_da_linha(idx, config), parent=self)
         self.lbl.setStyleSheet("font-size: 11px;")
         layout.addWidget(self.lbl, 1)
 
-        self.btn_remove = QtWidgets.QToolButton()
+        self.btn_remove = QtWidgets.QToolButton(parent=self)
         self.btn_remove.setText("✕")
         self.btn_remove.setToolTip("Remover step")
         apply_themed_stylesheet(
@@ -63,8 +65,8 @@ class _StepRow(QtWidgets.QWidget):
         self.btn_remove.clicked.connect(self.remove_clicked.emit)
         layout.addWidget(self.btn_remove)
 
-    def update_index(self, idx: int, step_type: ImageProcessingStepType):
-        self.lbl.setText(f"{idx + 1}.  {step_type.label_pt}")
+    def update_text(self, idx: int, config: ImageProcessingStepConfig):
+        self.lbl.setText(_texto_da_linha(idx, config))
 
 
 class StepsListWidget(QtWidgets.QWidget):
@@ -99,7 +101,11 @@ class StepsListWidget(QtWidgets.QWidget):
             ),
         )
         menu = QtWidgets.QMenu(self.btn_add)
-        for step_type in _AVAILABLE_TYPES:
+        categoria_atual = None
+        for step_type in ImageProcessorFactory.available_step_types():
+            if step_type.category_pt != categoria_atual:
+                categoria_atual = step_type.category_pt
+                menu.addSection(categoria_atual)
             act = menu.addAction(step_type.label_pt)
             act.triggered.connect(
                 lambda _checked, st=step_type: self.step_added.emit(st)
@@ -121,20 +127,30 @@ class StepsListWidget(QtWidgets.QWidget):
 
     # ── API pra controller ─────────────────────────────────────────────────
 
-    def populate(self, step_types: List[ImageProcessingStepType]):
-        """Reconstrói a lista com os step_types dados na ordem."""
+    def populate(self, configs: List[ImageProcessingStepConfig]):
+        """Reconstrói a lista com os passos dados, na ordem."""
         self.list.blockSignals(True)
         self.list.clear()
-        for idx, step_type in enumerate(step_types):
-            self._insert_row(idx, step_type)
+        for idx, config in enumerate(configs):
+            self._insert_row(idx, config)
         self.list.blockSignals(False)
 
-    def _insert_row(self, idx: int, step_type: ImageProcessingStepType):
+    def refresh_texts(self, configs: List[ImageProcessingStepConfig]):
+        """Atualiza número e resumo de cada linha sem reconstruir."""
+        for idx, config in enumerate(configs):
+            item = self.list.item(idx)
+            row = self.list.itemWidget(item) if item is not None else None
+            if isinstance(row, _StepRow):
+                row.update_text(idx, config)
+
+    def _insert_row(self, idx: int, config: ImageProcessingStepConfig):
         item = QtWidgets.QListWidgetItem()
-        # Guarda step_type pra reordenamento
-        item.setData(QtCore.Qt.ItemDataRole.UserRole, step_type)
+        # Guarda a posição do passo no pipeline — é por ela, e não pelo
+        # tipo, que a reordenação acha o config de cada linha (dois passos
+        # do mesmo tipo trocavam de configuração ao arrastar).
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, idx)
         self.list.addItem(item)
-        row_widget = _StepRow(step_type, idx)
+        row_widget = _StepRow(config, idx, parent=self.list)
         row_widget.remove_clicked.connect(
             lambda i=item: self._on_remove_clicked(i),
         )
@@ -162,22 +178,13 @@ class StepsListWidget(QtWidgets.QWidget):
             self.step_removed.emit(idx)
 
     def _on_rows_moved(self, _parent, start, _end, _dest, dest_row):
-        """Drag-reorder: emite a nova ordem como lista de indices
-        originais. Ex: se a ordem virou [2, 0, 1], significa que o
-        antigo idx 2 foi pra posição 0, antigo 0 pra 1, antigo 1 pra 2.
+        """Drag-reorder: emite a nova ordem como lista de índices
+        anteriores. Ex.: [2, 0, 1] = o antigo 2 foi para a posição 0, o
+        antigo 0 para a 1 e o antigo 1 para a 2. O controller reordena
+        e chama `populate`, que renumera as linhas.
         """
-        # Reconstrói a ordem lendo userData de cada item
-        # (step_types) e mapeando pra indices da ordem anterior — mas
-        # como `populate` é chamado pelo controller após cada
-        # mudança, basta sinalizar a ordem atual visível.
-        new_order = []
-        for i in range(self.list.count()):
-            item = self.list.item(i)
-            new_order.append(
-                item.data(QtCore.Qt.ItemDataRole.UserRole)
-            )
-        # Emite o delta (inicio, dest_row) pra controller fazer
-        # reorder no pipeline. Convertendo pra simples sinal de
-        # "lista mudou de ordem" — controller refaz com base em
-        # populate→sync.
+        new_order = [
+            int(self.list.item(i).data(QtCore.Qt.ItemDataRole.UserRole))
+            for i in range(self.list.count())
+        ]
         self.steps_reordered.emit(new_order)

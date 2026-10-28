@@ -26,12 +26,17 @@ configs gravados antes da unificação: `fator = 1 + 2 × fração`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from faceaudit.enums.crop_mode import CropMode
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
+)
+from faceaudit.models.image_processing.step_param_spec import (
+    StepParamKind,
+    StepParamSpec,
+    enum_choices,
 )
 
 
@@ -85,9 +90,44 @@ class CropConfig(ImageProcessingStepConfig):
             "target_width": int(self.target_width),
             "target_height": int(self.target_height),
             "margin_factor": float(self.margin_factor),
-            # Gravado junto por compatibilidade com leitores antigos.
-            "face_padding": float(self.face_padding),
+            # Gravado junto por compatibilidade com leitores antigos —
+            # derivado do fator, que é o que o processador usa.
+            "face_padding": round((float(self.margin_factor) - 1.0) / 2.0, 6),
         }
+
+    def param_specs(self) -> List[StepParamSpec]:
+        centrado = lambda c: c.mode == CropMode.CENTERED  # noqa: E731
+        return [
+            StepParamSpec(
+                "mode", "Modo", StepParamKind.CHOICE,
+                choices=enum_choices([CropMode.CENTERED, CropMode.FACE_DETECTED]),
+            ),
+            StepParamSpec(
+                "target_width", "Largura", StepParamKind.INT,
+                minimum=8, maximum=4096, step=1, suffix=" px", visible=centrado,
+            ),
+            StepParamSpec(
+                "target_height", "Altura", StepParamKind.INT,
+                minimum=8, maximum=4096, step=1, suffix=" px", visible=centrado,
+            ),
+            StepParamSpec(
+                "margin_factor", "Margem", StepParamKind.FLOAT,
+                minimum=1.0, maximum=5.0, step=0.1, decimals=2, suffix=" ×",
+                visible=lambda c: not centrado(c),
+                help="Fator sobre a caixa da face: 1,0 = caixa exata, "
+                     "2,0 = o dobro em cada dimensão. Mesma unidade da "
+                     "extração de faces de vídeo.",
+            ),
+        ]
+
+    def summary_pt(self) -> str:
+        if self.mode == CropMode.CENTERED:
+            return f"{int(self.target_width)}×{int(self.target_height)} px"
+        return f"face, margem {float(self.margin_factor):g}×"
+
+    @property
+    def requires_face(self) -> bool:
+        return self.mode == CropMode.FACE_DETECTED
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CropConfig":

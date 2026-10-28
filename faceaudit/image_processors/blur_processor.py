@@ -16,33 +16,26 @@ import numpy as np
 
 from faceaudit.enums.blur_kind import BlurKind
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
+from faceaudit.image_processors.image_step_base import ImageStepProcessorBase
+from faceaudit.models.image_processing.image_face_geometry import (
+    ImageFaceGeometry,
+)
 from faceaudit.models.image_processing.blur_config import BlurConfig
 
 
-class BlurProcessor:
+class BlurProcessor(ImageStepProcessorBase):
     """Aplica desfoque conforme `BlurConfig`."""
-
-    def __init__(
-        self,
-        config: BlurConfig,
-        *,
-        ff_service=None,  # uniforme com outros processors; ignorado aqui
-    ):
-        self._config = config
 
     @property
     def step_type(self) -> ImageProcessingStepType:
         return ImageProcessingStepType.BLUR
 
-    @property
-    def config(self) -> BlurConfig:
-        return self._config
-
-    def apply(
+    def _process(
         self,
         image: np.ndarray,
         *,
-        rng: Optional[Random] = None,
+        rng: Optional[Random],
+        face: Optional[ImageFaceGeometry],
     ) -> np.ndarray:
         if self._config.kind == BlurKind.GAUSSIAN:
             return self._apply_gaussian(image)

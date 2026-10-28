@@ -11,11 +11,15 @@ lossless real, mas 100 já é "near lossless" e simplifica a API).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
+)
+from faceaudit.models.image_processing.step_param_spec import (
+    StepParamKind,
+    StepParamSpec,
 )
 
 
@@ -40,6 +44,22 @@ class WebpCompressionConfig(ImageProcessingStepConfig):
             **super().to_dict(),
             "quality": int(self.quality),
         }
+
+    def param_specs(self) -> List[StepParamSpec]:
+        return [
+            StepParamSpec(
+                "quality", "Qualidade", StepParamKind.INT,
+                minimum=1, maximum=100, step=1, suffix=" / 100",
+                help="WebP geralmente preserva melhor que JPEG na mesma qualidade. 80 é eficiente.",
+            ),
+        ]
+
+    @classmethod
+    def editor_default(cls) -> "WebpCompressionConfig":
+        return cls(quality=50)
+
+    def summary_pt(self) -> str:
+        return f"qualidade {int(self.quality)}"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "WebpCompressionConfig":

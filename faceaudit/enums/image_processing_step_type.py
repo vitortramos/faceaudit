@@ -34,3 +34,14 @@ class ImageProcessingStepType(str, Enum):
             "crop": "Recorte",
             "occlusion": "Oclusão",
         }.get(self.value, self.value)
+
+    @property
+    def category_pt(self) -> str:
+        """Grupo do passo no menu Adicionar do editor."""
+        return {
+            "crop": "Enquadramento",
+            "blur": "Degradação",
+            "jpeg": "Compressão",
+            "webp": "Compressão",
+            "occlusion": "Oclusão",
+        }.get(self.value, "Outros")
