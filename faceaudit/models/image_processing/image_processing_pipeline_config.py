@@ -20,6 +20,7 @@ from faceaudit.enums.image_input_source import ImageInputSource
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
 )
+from faceaudit.models.image_processing.questioned_profile import QuestionedProfile
 
 
 @dataclass
@@ -34,6 +35,8 @@ class ImageProcessingPipelineConfig:
             já recortada via FFService.align_face_only).
         seed: semente global pra steps aleatórios (default 42).
         steps: lista ordenada de step configs.
+        questioned: perfil da imagem questionada que o pipeline tenta
+            reproduzir (opcional) — alvo das medidas de degradação.
     """
 
     name: str = "untitled"
@@ -41,15 +44,19 @@ class ImageProcessingPipelineConfig:
     input_source: ImageInputSource = ImageInputSource.ORIGINAL
     seed: int = 42
     steps: List[ImageProcessingStepConfig] = field(default_factory=list)
+    questioned: Optional[QuestionedProfile] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        out = {
             "name": self.name,
             "description": self.description or "",
             "input_source": self.input_source.value,
             "seed": int(self.seed),
             "steps": [step.to_dict() for step in self.steps],
         }
+        if self.questioned is not None:
+            out["questioned"] = self.questioned.to_dict()
+        return out
 
     @classmethod
     def from_dict(
@@ -71,6 +78,7 @@ class ImageProcessingPipelineConfig:
             ),
             seed=int(data.get("seed", 42)),
             steps=steps,
+            questioned=QuestionedProfile.from_dict(data.get("questioned")),
         )
 
     def to_json_string(self, indent: int = 2) -> str:

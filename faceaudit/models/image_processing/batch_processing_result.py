@@ -33,6 +33,9 @@ class BatchProcessingResult:
     # parquet, a cadeia de custódia, o manifesto e `images/` dentro.
     dataset_dir: Optional[Path] = None
     manifest_path: Optional[Path] = None
+    # Medidas de degradação: resumo do conjunto e, quando o pipeline traz
+    # a questionada, a comparação com ela (o mesmo bloco do manifesto).
+    degradation: Optional[dict] = None
 
     @property
     def succeeded(self) -> bool:

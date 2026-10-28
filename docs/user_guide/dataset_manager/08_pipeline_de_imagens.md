@@ -281,6 +281,58 @@ O cálculo roda num *worker* assíncrono. A UI continua responsiva
 durante o cálculo; enquanto ele roda, as células mostram `…` e a linha
 de status exibe *"Calculando scores…"*.
 
+## A imagem questionada como alvo
+
+O botão **📄 Questionada…** (no topo do Editor) carrega a imagem
+questionada que o pipeline deve reproduzir. O FaceAudit localiza a face
+nela, mede, e a partir daí:
+
+- ela aparece num **terceiro painel**, ao lado da processada;
+- o painel **Medidas de degradação** mostra, lado a lado, as medidas da
+  **original**, da **processada** e da **questionada**. A célula da
+  processada fica **verde** quando a medida está dentro da tolerância da
+  questionada e **âmbar** quando não está (a tolerância de cada uma está
+  na dica do mouse);
+- o pipeline guarda o **perfil da questionada** — nome, **SHA-256** e as
+  medidas. Ao reabrir o pipeline, a imagem é procurada no caminho
+  gravado e o SHA-256 é conferido; se o arquivo sumiu ou mudou, as
+  medidas gravadas continuam valendo e a linha de informação avisa.
+
+| Medida | O que diz | Tolerância |
+|---|---|---|
+| Distância entre os olhos | Resolução da face, em px | ± 10% |
+| Pretos (≤ 20) | Fração da região da face em preto | ± 5 pontos percentuais |
+| Brancos (≥ 235) | Fração em branco | ± 5 p.p. |
+| Meios-tons (60–195) | Fração em tons intermediários | ± 5 p.p. |
+| Grão (variância do laplaciano) | Energia de alta frequência: grão, ruído, nitidez | ± 30% |
+| Níveis de cinza distintos | Quantos dos 256 níveis aparecem | ± 25% |
+| Nível médio | Média dos cinzas (0–255) | ± 15 |
+| Tons de cinza | Se os três canais são iguais | igual |
+
+> 💡 As medidas são feitas na **região da face** — o fundo (papel
+> branco de uma cópia, fundo de documento) varia entre imagens e
+> dominaria as frações sem dizer nada sobre a face. Sem a posição da
+> face, a imagem inteira é medida e o painel avisa, porque as duas não
+> são comparáveis.
+
+> 💡 O **grão** depende da resolução: só compare com a mesma distância
+> entre os olhos (por isso o *Redimensionar* final vem antes da medida).
+
+### No Processar
+
+Toda imagem adaptada é medida. O `manifest.json` e a entrada **CREATE**
+da cadeia de custódia do dataset gerado registram:
+
+- a mediana, o P5 e o P95 de cada medida no conjunto;
+- quando o pipeline tem questionada: o nome e o SHA-256 dela e a
+  comparação, medida a medida, da questionada com a **mediana da base
+  adaptada** (dentro ou fora da tolerância).
+
+A janela de conclusão mostra essa comparação com ✓ e ✗. É o que permite
+escrever no laudo que a base de referência foi degradada até apresentar
+as mesmas características mensuráveis da questionada — e com quais
+números.
+
 ## Salvando e carregando
 
 Pipelines são salvos como JSON em
@@ -484,17 +536,21 @@ física — tom da copiadora, toner, meio-tom, digitalização:
 ```
 Pipeline "xerox_documento":
   1. Tons de cinza
-  2. Curva de tons      preto=90, branco=160, gama=1,0
-  3. Redimensionar      IPD 70 px          ← resolução em que a copiadora "pontilha"
-  4. Ganho de toner     raio 1 px          ← opcional
-  5. Meio-tom           difusão de erro
-  6. Redimensionar      IPD = o da questionada  ← digitalização
+  2. Curva de tons      preto=90, branco=160, gama=1,0   ← contraste da copiadora
+  3. Redimensionar      IPD 80 px                        ← resolução em que ela "pontilha"
+  4. Meio-tom           difusão de erro
+  5. Redimensionar      IPD = o da questionada           ← digitalização
+  6. Curva de tons      preto=30, branco=225, gama=1,0   ← contraste do scanner
 ```
 
-Os valores acima são ponto de partida, não receita: ajuste-os até as
-medidas da referência processada ficarem próximas das da questionada
-(fração de preto, de branco e de meios-tons; grão; distância entre os
-olhos).
+Carregue a questionada no Editor (**📄 Questionada…**) e ajuste os
+valores até as medidas da processada ficarem verdes. Os valores acima
+vieram de um caso real (questionada com distância entre os olhos de
+48,8 px): aplicados à base de fotos de documento, a mediana da base
+adaptada ficou dentro da tolerância nas **8 medidas**. São ponto de
+partida, não receita — cada cópia tem a sua copiadora e o seu scanner.
+O *Ganho de toner* entra quando as sombras da questionada são mais
+fechadas que as da base processada.
 
 ### Caso C — Investigar robustez do pipeline biométrico
 

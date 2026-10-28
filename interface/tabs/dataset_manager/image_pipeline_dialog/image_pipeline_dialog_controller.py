@@ -44,10 +44,16 @@ from faceaudit.models.image_processing.image_processing_step_config import (
 from faceaudit.pipelines.image_processing_pipeline import (
     ImageProcessingPipeline,
 )
+from faceaudit.services.hash_service import HashService
+from faceaudit.services.image_degradation_profile_service import (
+    measure,
+    read_image_bgr,
+)
 from faceaudit.services.image_pipeline_batch_service import geometria_do_registro
 
 from .image_pipeline_dialog_view import ImagePipelineDialogView
 from .workers.quality_scores_worker import QualityScoresWorker
+from .workers.questioned_load_worker import QuestionedLoadWorker
 
 
 class ImagePipelineDialogController:
@@ -95,6 +101,11 @@ class ImagePipelineDialogController:
         # que o pipeline devolve, convertida passo a passo.
         self._cached_face: Optional[ImageFaceGeometry] = None
         self._cached_processed_face: Optional[ImageFaceGeometry] = None
+        # Imagem questionada (pixels) — o perfil, com as medidas, mora em
+        # `_pipeline_config.questioned`. None quando não há questionada ou
+        # o arquivo não está mais no caminho gravado.
+        self._questioned_image: Optional[np.ndarray] = None
+        self._questioned_warning: Optional[str] = None
 
         # PR I3 — worker thread pra scores de qualidade. Mantém
         # referências fortes pra evitar GC durante a execução.
@@ -158,6 +169,10 @@ class ImagePipelineDialogController:
         self.view.image_compare.random_clicked.connect(self._on_random)
         self.view.image_compare.apply_clicked.connect(self._on_apply)
 
+        # Questionada
+        self.view.questioned_load_clicked.connect(self._on_questioned_load_clicked)
+        self.view.questioned_clear_clicked.connect(self._on_questioned_clear)
+
     def _sync_initial_state(self):
         # Topo
         self.view.set_pipeline_meta(
@@ -179,6 +194,8 @@ class ImagePipelineDialogController:
         self.view.steps_list.populate(self._pipeline_config.steps)
         # Config panel (lista vazia → nada selecionado)
         self.view.step_config.show_config(None)
+
+        self._render_questioned()
 
         # Imagem inicial
         if self._current_image_idx >= 0:
@@ -386,6 +403,7 @@ class ImagePipelineDialogController:
 
         self._cached_original = img
         self._cached_processed = None  # força re-aplicação
+        self.view.degradation_measures.set_original(measure(img, self._cached_face))
 
         pixmap = self._ndarray_to_pixmap(img)
         h, w = img.shape[:2]
@@ -424,6 +442,9 @@ class ImagePipelineDialogController:
             # Limpa scores em vez de calcular (pipeline vazio = scores
             # idênticos, não vale o custo de extrair embeddings 2×).
             self.view.quality_scores.clear()
+            self._cached_processed_face = self._cached_face
+            self.view.degradation_measures.set_processed(
+                measure(self._cached_processed, self._cached_face))
             return
 
         try:
@@ -443,6 +464,7 @@ class ImagePipelineDialogController:
                 f"Erro ao aplicar pipeline: {e}", is_error=True,
             )
             self.view.image_compare.show_processed(None)
+            self.view.degradation_measures.set_processed(None)
             return
 
         pixmap = self._ndarray_to_pixmap(self._cached_processed)
@@ -451,6 +473,8 @@ class ImagePipelineDialogController:
         self.view.image_compare.show_status(
             f"Pipeline aplicado: {len(self._pipeline_config.steps)} step(s)."
         )
+        self.view.degradation_measures.set_processed(
+            measure(self._cached_processed, self._cached_processed_face))
 
         # PR I3 — dispara worker pra calcular FIQA + ‖emb‖ + cosine.
         # Worker thread é cancelado/recriado a cada Apply pra refletir
@@ -640,6 +664,8 @@ class ImagePipelineDialogController:
             f"Pipeline '{chosen}' carregado. Clique ▶ Aplicar."
         )
 
+        self._reload_questioned_from_config()
+
         # Re-sincroniza UI
         self.view.set_pipeline_meta(
             self._pipeline_config.name,
@@ -660,6 +686,122 @@ class ImagePipelineDialogController:
         for ch in bad:
             out = out.replace(ch, "_")
         return out.strip() or "untitled"
+
+    # ── Questionada ───────────────────────────────────────────────────────
+
+    def _on_questioned_load_clicked(self):
+        anterior = self._pipeline_config.questioned
+        inicio = str(Path(anterior.source_path).parent) if anterior else ""
+        caminho, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self.view, "Imagem questionada", inicio,
+            "Imagens (*.png *.jpg *.jpeg *.jfif *.bmp *.tif *.tiff *.webp);;Todos (*)",
+        )
+        if not caminho:
+            return
+        self.view.btn_questioned.setEnabled(False)
+        self.view.image_compare.show_status("Medindo a imagem questionada…")
+
+        thread = QtCore.QThread()
+        worker = QuestionedLoadWorker(Path(caminho), self._ff_service)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_questioned_loaded)
+        worker.error.connect(self._on_questioned_error)
+        worker.finished.connect(thread.quit)
+        worker.error.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        worker.error.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        # Mantém a referência Python viva até a thread terminar (mesmo
+        # motivo do worker de scores: destruir QThread em execução aborta).
+        entrada = (thread, worker)
+        self._pending_quality_threads.append(entrada)
+        thread.finished.connect(lambda e=entrada: self._discard_pending_thread(e))
+        thread.start()
+
+    def _on_questioned_loaded(self, resultado):
+        perfil, imagem = resultado
+        self.view.btn_questioned.setEnabled(True)
+        self.apply_questioned(perfil, imagem)
+        if perfil.face is None:
+            self.view.image_compare.show_status(
+                "Questionada carregada, mas a face não foi localizada nela: as "
+                "medidas são da imagem inteira.", is_error=True)
+        else:
+            self.view.image_compare.show_status("Questionada carregada.")
+
+    def _on_questioned_error(self, msg: str):
+        self.view.btn_questioned.setEnabled(True)
+        self.view.image_compare.show_status(f"Falha ao ler a questionada: {msg}", is_error=True)
+
+    def apply_questioned(self, perfil, imagem: Optional[np.ndarray]):
+        """Põe a questionada no pipeline (perfil) e na tela (imagem)."""
+        self._pipeline_config.questioned = perfil
+        self._questioned_image = imagem
+        self._questioned_warning = None
+        self._render_questioned()
+        self._mark_dirty()
+
+    def _on_questioned_clear(self):
+        if self._pipeline_config.questioned is None:
+            return
+        self._pipeline_config.questioned = None
+        self._questioned_image = None
+        self._questioned_warning = None
+        self._render_questioned()
+        self._mark_dirty()
+
+    def _reload_questioned_from_config(self):
+        """Pipeline carregado: reabre a questionada pelo caminho gravado e
+        confere o SHA-256. As medidas valem as do perfil gravado mesmo se
+        o arquivo sumiu ou mudou — mas a tela diz qual dos casos é."""
+        self._questioned_image = None
+        self._questioned_warning = None
+        perfil = self._pipeline_config.questioned
+        if perfil is None:
+            self._render_questioned()
+            return
+        caminho = Path(perfil.source_path) if perfil.source_path else None
+        if caminho is None or not caminho.is_file():
+            self._questioned_warning = "arquivo não encontrado no caminho gravado"
+        else:
+            try:
+                atual = HashService().calculate_file_hash(caminho)
+                if atual != perfil.sha256:
+                    self._questioned_warning = (
+                        "o arquivo no caminho gravado MUDOU (SHA-256 diferente)")
+                else:
+                    self._questioned_image = read_image_bgr(caminho)
+            except Exception as e:  # noqa: BLE001
+                self._questioned_warning = f"falha ao ler o arquivo: {e}"
+        self._render_questioned()
+
+    def _render_questioned(self):
+        perfil = self._pipeline_config.questioned
+        compare = self.view.image_compare
+        if perfil is None:
+            compare.show_questioned(None, visible=False)
+            self.view.set_questioned_info(None)
+            self.view.degradation_measures.set_questioned(None)
+            return
+        m = perfil.measures
+        if self._questioned_image is not None:
+            h, w = self._questioned_image.shape[:2]
+            compare.show_questioned(
+                self._ndarray_to_pixmap(self._questioned_image), visible=True, dims=f"{w}×{h}")
+        else:
+            compare.show_questioned(
+                None, visible=True,
+                placeholder="(imagem indisponível —\nmedidas gravadas no pipeline)")
+        partes = [f"Questionada: {perfil.file_name}", f"SHA-256 {perfil.sha256[:16]}…"]
+        if perfil.face is not None and m is not None and m.ipd_px:
+            partes.append(f"face localizada, IPD {m.ipd_px:.1f} px".replace(".", ","))
+        else:
+            partes.append("face NÃO localizada — medidas na imagem inteira")
+        if self._questioned_warning:
+            partes.append(f"⚠ {self._questioned_warning}")
+        self.view.set_questioned_info(" · ".join(partes))
+        self.view.degradation_measures.set_questioned(m)
 
     # ── PR I6 — Canvas de máscara de oclusão ──────────────────────────────
 
