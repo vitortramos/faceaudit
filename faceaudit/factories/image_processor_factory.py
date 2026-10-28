@@ -29,7 +29,23 @@ from faceaudit.image_processors.occlusion_processor import OcclusionProcessor
 from faceaudit.image_processors.webp_compression_processor import (
     WebpCompressionProcessor,
 )
+from faceaudit.image_processors.copy_degradation_processors import (
+    GrayscaleProcessor,
+    HalftoneProcessor,
+    ResizeProcessor,
+    ToneCurveProcessor,
+    TonerGainProcessor,
+    TonerNoiseProcessor,
+)
 from faceaudit.models.image_processing.blur_config import BlurConfig
+from faceaudit.models.image_processing.copy_degradation_configs import (
+    GrayscaleConfig,
+    HalftoneConfig,
+    ResizeConfig,
+    ToneCurveConfig,
+    TonerGainConfig,
+    TonerNoiseConfig,
+)
 from faceaudit.models.image_processing.crop_config import CropConfig
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
@@ -56,6 +72,12 @@ class ImageProcessorFactory:
         ImageProcessingStepType.WEBP: WebpCompressionProcessor,  # PR I1
         ImageProcessingStepType.CROP: CropProcessor,             # PR I1
         ImageProcessingStepType.OCCLUSION: OcclusionProcessor,   # PR I1
+        ImageProcessingStepType.RESIZE: ResizeProcessor,
+        ImageProcessingStepType.GRAYSCALE: GrayscaleProcessor,
+        ImageProcessingStepType.TONE_CURVE: ToneCurveProcessor,
+        ImageProcessingStepType.TONER_GAIN: TonerGainProcessor,
+        ImageProcessingStepType.HALFTONE: HalftoneProcessor,
+        ImageProcessingStepType.TONER_NOISE: TonerNoiseProcessor,
     }
 
     # step_type → config class (pra deserialização polimórfica)
@@ -65,6 +87,12 @@ class ImageProcessorFactory:
         ImageProcessingStepType.WEBP: WebpCompressionConfig,     # PR I1
         ImageProcessingStepType.CROP: CropConfig,                # PR I1
         ImageProcessingStepType.OCCLUSION: OcclusionConfig,      # PR I1
+        ImageProcessingStepType.RESIZE: ResizeConfig,
+        ImageProcessingStepType.GRAYSCALE: GrayscaleConfig,
+        ImageProcessingStepType.TONE_CURVE: ToneCurveConfig,
+        ImageProcessingStepType.TONER_GAIN: TonerGainConfig,
+        ImageProcessingStepType.HALFTONE: HalftoneConfig,
+        ImageProcessingStepType.TONER_NOISE: TonerNoiseConfig,
     }
 
     @classmethod
@@ -97,8 +125,10 @@ class ImageProcessorFactory:
 
     @classmethod
     def available_step_types(cls) -> List[ImageProcessingStepType]:
-        """Tipos com processador registrado, na ordem do enum."""
-        return [t for t in ImageProcessingStepType if t in cls._PROCESSOR_REGISTRY]
+        """Tipos com processador registrado, agrupados pela categoria do
+        menu (e na ordem do enum dentro dela)."""
+        tipos = [t for t in ImageProcessingStepType if t in cls._PROCESSOR_REGISTRY]
+        return sorted(tipos, key=lambda t: t.category_order)
 
     @classmethod
     def new_config(cls, step_type: ImageProcessingStepType) -> ImageProcessingStepConfig:

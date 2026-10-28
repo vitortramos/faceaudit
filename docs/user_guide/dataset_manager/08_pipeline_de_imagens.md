@@ -16,7 +16,7 @@ biométrica se comporta.
 
 1. [Conceito de *pipeline de imagens*](#conceito)
 2. [O Editor — leiaute em três painéis](#o-editor)
-3. [Os 5 tipos de step](#os-5-tipos-de-step)
+3. [Os tipos de step](#os-tipos-de-step)
 4. [Configuração detalhada de cada step](#configuração-detalhada)
 5. [Métricas de qualidade ao vivo](#métricas-ao-vivo)
 6. [Salvando e carregando pipelines](#salvando-e-carregando)
@@ -57,8 +57,11 @@ O diálogo tem **três painéis principais**:
 | **Topo — Lista** | Steps na ordem de aplicação. Cada linha mostra `Nº.  Rótulo` (ex.: `1.  Desfoque`). Drag-drop pra reordenar. Botão ✕ vermelho remove |
 | **Base — Configuração** | Formulário dinâmico que reage ao step selecionado — campos variam conforme o tipo |
 
-Botão verde **➕ Adicionar** no topo abre um menu com os 5 tipos
-disponíveis.
+Botão verde **➕ Adicionar** no topo abre um menu com os tipos
+disponíveis, agrupados (Enquadramento, Tom, Impressão e cópia,
+Desfoque, Compressão, Oclusão). Cada linha da lista mostra um resumo
+dos parâmetros do passo — dois *Redimensionar* na mesma cadeia ficam
+distinguíveis.
 
 ### Painel direito superior — Image Compare (65%)
 
@@ -112,7 +115,7 @@ num *worker* separado pra não travar a UI.
 > explicativo. O título da janela mostra um `*` enquanto houver mudanças
 > não salvas, e fechar o editor com pendências pede confirmação.
 
-## Os 5 tipos de step
+## Os tipos de step
 
 Os steps aparecem na lista e no menu **➕ Adicionar** com os rótulos
 em português abaixo. Os nomes em maiúsculas (`BLUR`, `JPEG`, …) são os
@@ -126,12 +129,18 @@ tipo de step.
 | **Compressão WebP** | `WEBP` | Como JPEG mas no formato WebP (compressão moderna, melhor qualidade pelo mesmo bitrate) |
 | **Recorte** | `CROP` | Recorta a imagem. Modos centralizado (fixo) ou detectado por face (com padding) |
 | **Oclusão** | `OCCLUSION` | Adiciona oclusão (máscara desenhada à mão, retângulo preto ou círculo preto). Simula obstruções parciais |
+| **Redimensionar** | `RESIZE` | Muda a resolução — por **distância entre os olhos alvo** (iguala o tamanho da face entre fotos diferentes) ou por fator |
+| **Tons de cinza** | `GRAYSCALE` | Converte para tons de cinza |
+| **Curva de tons** | `TONE_CURVE` | Ponto de preto, ponto de branco e gama — o contraste estourado da copiadora |
+| **Ganho de toner** | `TONER_GAIN` | Expande as áreas escuras (o toner espalha) |
+| **Meio-tom** | `HALFTONE` | Reduz a preto e branco puros: difusão de erro, pontilhado ordenado ou retícula de pontos |
+| **Ruído de toner** | `TONER_NOISE` | Pontos escuros soltos (toner fora do lugar, poeira no vidro) |
 
-> 💡 Os 5 cobrem os cenários mais comuns de degradação realista.
-> A intenção do MVP é cobrir o caso pericial *"reproduza no
-> dataset de referência o que aconteceu na evidência"* — se a foto
-> do caso veio do WhatsApp, comprima a referência com JPEG; se a
-> identificação só mostra parte do rosto, oclua a referência.
+> 💡 A intenção é o caso pericial *"reproduza no dataset de
+> referência o que aconteceu na evidência"* — se a foto do caso veio
+> do WhatsApp, comprima a referência com JPEG; se a identificação só
+> mostra parte do rosto, oclua a referência; se veio de **xerox de
+> documento**, use a cadeia de impressão e cópia (veja o Caso E).
 
 ## Configuração detalhada
 
@@ -198,6 +207,33 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 > obstruções específicas (faixa de evidência, perda de resolução em
 > região específica). Com uma ou mais formas, o botão passa a mostrar
 > **🎨 Editar (N shapes)…**.
+
+### Passos de impressão e cópia
+
+| Passo | Campo | Faixa | Padrão | Notas |
+|---|---|---|---|---|
+| **Redimensionar** | Escala por | IPD / Fator fixo | IPD | |
+| | IPD alvo | 2 – 2000 px | 40 | Distância entre os centros dos olhos depois do passo. Meça na questionada |
+| | Fator | 0,01 – 20 | 0,5 | 0,5 = metade |
+| | Interpolação | Automática / área / bilinear / bicúbica / vizinho | Automática | Automática = área ao reduzir, bicúbica ao ampliar |
+| | Voltar ao tamanho original | sim / não | não | Perde resolução sem mudar as dimensões em pixels |
+| **Curva de tons** | Ponto de preto | 0 – 254 | 40 | Abaixo dele, tudo vira preto |
+| | Ponto de branco | 1 – 255 | 200 | Acima dele, tudo vira branco |
+| | Gama | 0,1 – 5 | 1,0 | > 1 escurece os meios-tons; < 1 clareia |
+| **Ganho de toner** | Raio | 0 – 20 px | 1 | Quanto o escuro avança, na resolução em que o passo roda |
+| | Intensidade | 0 – 1 | 1 | |
+| **Meio-tom** | Técnica | Difusão de erro / ordenado / retícula | Difusão de erro | |
+| | Tamanho da célula | 2 – 64 px | 6 | Só retícula |
+| | Ângulo | 0 – 180° | 45 | Só retícula |
+| **Ruído de toner** | Densidade | 0 – 0,05 | 0,002 | Fração dos pixels que recebe um ponto |
+| | Raio do ponto | 0 – 5 px | 0 | 0 = um pixel |
+
+> ⚠️ **O meio-tom produz preto e branco puros na resolução em que
+> roda.** Uma cópia digitalizada tem cinzas porque o scanner (ou a
+> redução) junta os pontos. Por isso o meio-tom vem **antes** do
+> *Redimensionar* que leva à resolução da questionada — e a
+> resolução em que o meio-tom roda controla o grão: quanto mais perto
+> da final, mais grosso.
 
 ### A posição da face
 
@@ -436,6 +472,29 @@ Pipeline "mask_lower_face":
 > mais preciso que uma barra retangular e não depende de detecção de
 > landmarks. Não existe posição `BOTTOM`/`TOP`: as posições geométricas
 > disponíveis são Centralizada, Aleatória, Sobre os olhos e Sobre a boca.
+
+### Caso E — Xerox de documento
+
+A questionada é a cópia (xerox) de um documento com foto: contraste
+estourado, sombras fechadas, grão de meio-tom, resolução baixa. A base
+mais fiel para adaptar é a de **fotos de documento** (o original da
+cópia era uma foto impressa no documento). A cadeia segue a ordem
+física — tom da copiadora, toner, meio-tom, digitalização:
+
+```
+Pipeline "xerox_documento":
+  1. Tons de cinza
+  2. Curva de tons      preto=90, branco=160, gama=1,0
+  3. Redimensionar      IPD 70 px          ← resolução em que a copiadora "pontilha"
+  4. Ganho de toner     raio 1 px          ← opcional
+  5. Meio-tom           difusão de erro
+  6. Redimensionar      IPD = o da questionada  ← digitalização
+```
+
+Os valores acima são ponto de partida, não receita: ajuste-os até as
+medidas da referência processada ficarem próximas das da questionada
+(fração de preto, de branco e de meios-tons; grão; distância entre os
+olhos).
 
 ### Caso C — Investigar robustez do pipeline biométrico
 
