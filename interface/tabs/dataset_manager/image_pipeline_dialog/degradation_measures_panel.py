@@ -33,6 +33,7 @@ class DegradationMeasuresPanel(QtWidgets.QWidget):
     """Tabela compacta. Emite `sample_requested` pelo botão da amostra."""
 
     sample_requested = QtCore.pyqtSignal()
+    fit_requested = QtCore.pyqtSignal()
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -52,6 +53,16 @@ class DegradationMeasuresPanel(QtWidgets.QWidget):
         )
         self.btn_sample.clicked.connect(self.sample_requested.emit)
         topo.addWidget(self.btn_sample)
+        self.btn_fit = QtWidgets.QPushButton("🎯 Ajustar à questionada", parent=self)
+        self.btn_fit.setToolTip(
+            "Procura os valores dos campos numéricos dos passos que deixam as "
+            "imagens da base, uma a uma, mais parecidas com a questionada. "
+            "Ajusta numa amostra e confere em outra, com imagens que o ajuste "
+            "não viu. A ordem dos passos e as escolhas de técnica não mudam. "
+            "Nada é aplicado sem confirmação."
+        )
+        self.btn_fit.clicked.connect(self.fit_requested.emit)
+        topo.addWidget(self.btn_fit)
         layout.addLayout(topo)
 
         self.table = QtWidgets.QTableWidget(len(MEASURES), 5, parent=self)
@@ -120,6 +131,13 @@ class DegradationMeasuresPanel(QtWidgets.QWidget):
         self._amostra_status = texto
         self.btn_sample.setEnabled(False)
         self._render()
+
+    def set_fit_running(self, rodando: bool):
+        self.btn_fit.setText("⏹ Cancelar ajuste" if rodando else "🎯 Ajustar à questionada")
+        self.btn_sample.setEnabled(not rodando)
+        if not rodando:
+            self._amostra_status = None
+            self._render()
 
     def mark_sample_stale(self):
         """O pipeline mudou depois da medição da amostra."""

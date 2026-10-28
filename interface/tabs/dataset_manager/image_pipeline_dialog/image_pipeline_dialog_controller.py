@@ -54,6 +54,7 @@ from faceaudit.services.image_pipeline_batch_service import geometria_do_registr
 from .image_pipeline_dialog_view import ImagePipelineDialogView
 from .workers.quality_scores_worker import QualityScoresWorker
 from .workers.questioned_load_worker import QuestionedLoadWorker
+from .workers.fit_worker import FitWorker
 from .workers.sample_evaluation_worker import SampleEvaluationWorker
 
 
@@ -110,6 +111,7 @@ class ImagePipelineDialogController:
         # Amostra da base para "Medir na base": carregada uma vez por origem
         # (foto original × face alinhada) e reaproveitada.
         self._sample_cache = None  # (ImageInputSource, List[SampleItem])
+        self._fit_worker: Optional[FitWorker] = None
 
         # PR I3 — worker thread pra scores de qualidade. Mantém
         # referências fortes pra evitar GC durante a execução.
@@ -177,6 +179,7 @@ class ImagePipelineDialogController:
         self.view.questioned_load_clicked.connect(self._on_questioned_load_clicked)
         self.view.questioned_clear_clicked.connect(self._on_questioned_clear)
         self.view.degradation_measures.sample_requested.connect(self._on_sample_requested)
+        self.view.degradation_measures.fit_requested.connect(self._on_fit_requested)
 
     def _sync_initial_state(self):
         # Topo
@@ -619,46 +622,47 @@ class ImagePipelineDialogController:
             if res != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
 
-        # Lista pipelines disponíveis
+        # Lista os pipelines da biblioteca + os modelos que vêm com o app
         from faceaudit.enums.global_library_folder import GlobalLibraryFolder
+        from faceaudit.models.image_processing.pipeline_templates import (
+            BUILTIN_TEMPLATES,
+        )
         pipelines_dir = (
             self._library_root / GlobalLibraryFolder.IMAGE_PIPELINES.value
         )
-        if not pipelines_dir.exists():
-            QtWidgets.QMessageBox.information(
-                self.view, "Sem pipelines",
-                "Nenhum pipeline salvo na biblioteca global ainda.",
-            )
-            return
-
-        files = sorted(pipelines_dir.glob("*.json"))
-        if not files:
-            QtWidgets.QMessageBox.information(
-                self.view, "Sem pipelines",
-                "Nenhum pipeline salvo na biblioteca global ainda.",
-            )
-            return
-
-        ids = [f.stem for f in files]
+        files = sorted(pipelines_dir.glob("*.json")) if pipelines_dir.exists() else []
+        prefixo = "[modelo] "
+        ids = [f.stem for f in files] + [prefixo + nome for nome in BUILTIN_TEMPLATES]
         chosen, ok = QtWidgets.QInputDialog.getItem(
             self.view,
             "Carregar pipeline",
-            f"Pipelines disponíveis em {pipelines_dir}:",
+            f"Pipelines em {pipelines_dir} e modelos do FaceAudit:",
             ids, 0, False,
         )
         if not ok:
             return
 
-        target = pipelines_dir / f"{chosen}.json"
-        try:
-            raw = target.read_text(encoding="utf-8")
-            new_config = ImageProcessingPipelineConfig.from_json_string(raw)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(
-                self.view, "Erro ao carregar",
-                f"Falha ao ler {target.name}: {e}",
-            )
-            return
+        if chosen.startswith(prefixo):
+            new_config = BUILTIN_TEMPLATES[chosen[len(prefixo):]]()
+        else:
+            target = pipelines_dir / f"{chosen}.json"
+            try:
+                raw = target.read_text(encoding="utf-8")
+                new_config = ImageProcessingPipelineConfig.from_json_string(raw)
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self.view, "Erro ao carregar",
+                    f"Falha ao ler {target.name}: {e}",
+                )
+                return
+
+        # Pipeline sem questionada herda a que já está carregada no editor —
+        # carregar um modelo depois de escolher a questionada é o fluxo
+        # natural, e perdê-la seria surpresa.
+        manteve_questionada = (
+            new_config.questioned is None and self._pipeline_config.questioned is not None)
+        if manteve_questionada:
+            new_config.questioned = self._pipeline_config.questioned
 
         # Substitui pipeline atual
         self._pipeline_config = new_config
@@ -671,7 +675,10 @@ class ImagePipelineDialogController:
             f"Pipeline '{chosen}' carregado. Clique ▶ Aplicar."
         )
 
-        self._reload_questioned_from_config()
+        if manteve_questionada:
+            self._render_questioned()  # a imagem já carregada continua valendo
+        else:
+            self._reload_questioned_from_config()
 
         # Re-sincroniza UI
         self.view.set_pipeline_meta(
@@ -683,6 +690,9 @@ class ImagePipelineDialogController:
         self.view.step_config.show_config(None)
 
         self._mark_clean()
+        if manteve_questionada or chosen.startswith(prefixo):
+            # Modelo, ou pipeline que ganhou a questionada: ainda não salvo.
+            self._mark_dirty()
 
     @staticmethod
     def _sanitize_id(raw: str) -> str:
@@ -736,6 +746,124 @@ class ImagePipelineDialogController:
     def _on_sample_error(self, msg: str):
         self.view.degradation_measures.set_sample(None)
         self.view.image_compare.show_status(f"Falha ao medir a amostra: {msg}", is_error=True)
+
+    # ── Ajuste automático ─────────────────────────────────────────────────
+
+    def _on_fit_requested(self):
+        if self._fit_worker is not None:
+            self._fit_worker.stop()
+            self.view.degradation_measures.set_sample_running("Cancelando o ajuste…")
+            return
+        q = self._pipeline_config.questioned
+        if q is None or q.measures is None:
+            QtWidgets.QMessageBox.information(
+                self.view, "Sem questionada",
+                "Carregue a imagem questionada (📄 Questionada…) antes de ajustar.")
+            return
+        from faceaudit.services.image_pipeline_fit_service import tunable_params
+
+        if not tunable_params(self._pipeline_config):
+            QtWidgets.QMessageBox.information(
+                self.view, "Nada a ajustar",
+                "Nenhum passo do pipeline tem campo numérico ajustável. O ajuste "
+                "mexe em valores como pontos da curva de tons, IPD, gama e "
+                "qualidade de compressão — não na ordem nem na técnica dos passos.")
+            return
+
+        config = ImageProcessingPipelineConfig.from_dict(self._pipeline_config.to_dict())
+        thread = QtCore.QThread()
+        worker = FitWorker(self._dataset, config, ff_service=self._ff_service)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.progress.connect(self.view.degradation_measures.set_sample_running)
+        worker.finished.connect(self._on_fit_done)
+        worker.cancelled.connect(self._on_fit_cancelled)
+        worker.error.connect(self._on_fit_error)
+        for sinal in (worker.finished, worker.cancelled, worker.error):
+            sinal.connect(thread.quit)
+            sinal.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        entrada = (thread, worker)
+        self._pending_quality_threads.append(entrada)
+        thread.finished.connect(lambda e=entrada: self._discard_pending_thread(e))
+        self._fit_worker = worker
+        self.view.degradation_measures.set_fit_running(True)
+        self.view.degradation_measures.set_sample_running("Iniciando o ajuste…")
+        thread.start()
+
+    def _fim_do_ajuste(self):
+        self._fit_worker = None
+        self.view.degradation_measures.set_fit_running(False)
+
+    def _on_fit_cancelled(self):
+        self._fim_do_ajuste()
+        self.view.image_compare.show_status("Ajuste cancelado. Nada foi alterado.")
+
+    def _on_fit_error(self, msg: str):
+        self._fim_do_ajuste()
+        self.view.image_compare.show_status(f"Falha no ajuste: {msg}", is_error=True)
+
+    @staticmethod
+    def _linha_de_concordancia(nome: str, ev) -> str:
+        a = None if ev is None else ev.agreement
+        if not a:
+            return f"  {nome}: —"
+        n = len(a["measures"])
+        return (f"  {nome}: {100 * a['all_close_fraction']:.0f}% das imagens com as {n} "
+                f"medidas dentro; {100 * a['all_but_one_close_fraction']:.0f}% com "
+                f"{n - 1} ou mais")
+
+    def _on_fit_done(self, resultado):
+        self._fim_do_ajuste()
+        if not resultado.changes:
+            self.view.degradation_measures.set_sample(resultado.train_after)
+            QtWidgets.QMessageBox.information(
+                self.view, "Ajuste concluído",
+                "Os valores atuais já eram os melhores encontrados. Nada mudou.")
+            return
+        mudancas = "\n".join(
+            f"  {c.step_index + 1}. {c.step_label} — {c.param_label}: "
+            f"{c.before:g} → {c.after:g}" for c in resultado.changes)
+        texto = (
+            f"O ajuste testou {resultado.n_evaluations} configurações.\n\n"
+            f"Mudanças propostas:\n{mudancas}\n\n"
+            "Validação (imagens que o ajuste NÃO usou):\n"
+            + self._linha_de_concordancia("antes ", resultado.validation_before) + "\n"
+            + self._linha_de_concordancia("depois", resultado.validation_after)
+            + "\n\nAplicar os valores ao pipeline?"
+        )
+        resp = QtWidgets.QMessageBox.question(
+            self.view, "Ajuste à questionada", texto,
+            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if resp != QtWidgets.QMessageBox.StandardButton.Yes:
+            self.view.degradation_measures.set_sample(None)
+            return
+        self.apply_fit(resultado)
+
+    def apply_fit(self, resultado):
+        """Aplica os valores ajustados e registra o ajuste na descrição."""
+        from datetime import datetime
+
+        self._pipeline_config.steps = resultado.config.steps
+        registro = (
+            f"Ajustado à questionada {self._pipeline_config.questioned.file_name} em "
+            f"{datetime.now():%d/%m/%Y %H:%M}: "
+            + "; ".join(f"{c.step_index + 1}. {c.param_label} {c.before:g}→{c.after:g}"
+                        for c in resultado.changes)
+        )
+        anterior = self._pipeline_config.description
+        self._pipeline_config.description = f"{anterior}\n{registro}" if anterior else registro
+        self.view.steps_list.populate(self._pipeline_config.steps)
+        idx = self._current_step_idx if 0 <= self._current_step_idx < len(
+            self._pipeline_config.steps) else -1
+        self.view.steps_list.select_index(idx)
+        self.view.step_config.show_config(
+            self._pipeline_config.steps[idx] if idx >= 0 else None)
+        self._mark_dirty()
+        self.view.degradation_measures.set_sample(
+            resultado.validation_after or resultado.train_after)
+        self._on_apply()
 
     # ── Questionada ───────────────────────────────────────────────────────
 
