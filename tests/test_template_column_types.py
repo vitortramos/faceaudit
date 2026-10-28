@@ -312,3 +312,30 @@ def test_decimal_redondo_com_vazio_continua_decimal(tmp_path):
     destino = tmp_path / "ds.parquet"
     FaceDataset(name="ds", faces=faces).to_parquet(destino)
     assert str(pq.read_schema(destino).field("medida").type) == "double"
+
+
+def test_tabela_mostra_inteiro_com_vazio_sem_casas_decimais(tmp_path, app):
+    """No arquivo a idade já era inteira; na tabela aparecia 45.00.
+
+    A tabela é montada por `to_pandas`, e o pandas faz decimal a coluna de
+    inteiros com vazio. Quem decide como exibir é o tipo do spec.
+    """
+    from faceaudit.models.face_dataset import FaceDataset
+    from faceaudit.models.face_info import FaceInfo
+    from interface.tabs.dataset_manager.table.dataset_table_model import DatasetTableModel
+
+    faces = [FaceInfo(image_path=f"{i}.png", identity=f"ID{i}") for i in range(3)]
+    for f, v in zip(faces, (45, None, 9)):
+        f.extra_data = {"idade": v, "medida": 2.5 if v else None}
+    destino = tmp_path / "ds.parquet"
+    FaceDataset(name="ds", faces=faces).to_parquet(destino)
+    ds = FaceDataset.from_parquet(destino)
+
+    modelo = DatasetTableModel(ds.to_pandas(include_embeddings=False))
+    modelo.set_column_specs(ds.column_specs)
+    chaves = [c.key for c in modelo.visible_columns]
+    col_idade, col_medida = chaves.index("idade"), chaves.index("medida")
+    exibido = [modelo.data(modelo.index(r, col_idade)) for r in range(3)]
+    assert exibido == ["45", "", "9"]
+    # coluna decimal continua com duas casas
+    assert modelo.data(modelo.index(0, col_medida)) == "2.50"
