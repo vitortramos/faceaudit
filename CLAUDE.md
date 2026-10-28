@@ -41,6 +41,7 @@ python -m pytest tests/test_jpeg_compression.py              # qualidade recuper
 # OFIQ: nomes de medida por versão e proveniência
 python -m pytest tests/test_ofiq_measure_names.py            # CSV real da v1.0.3 e da v1.2.0, mesma imagem
 python -m pytest tests/test_ofiq_provenance.py               # Version.txt, impressão digital dos modelos, versões misturadas
+python -m pytest tests/test_ofiq_staging_extensions.py      # cópia ao OFIQ com extensão que ele aceita (.jfif, .JPG, .bmp)
 python -m pytest tests/test_cuda_runtime_bootstrap.py        # DLLs do CUDA no Windows
 
 # Geometria da face: persistência, invariante e passada de preenchimento
@@ -50,7 +51,7 @@ python -m pytest tests/test_face_geometry_backfill.py        # passada que preen
 # Caminhos de imagem do dataset
 python -m pytest tests/test_dataset_concat_paths.py          # "Juntar" preserva a resolução das imagens
 python -m pytest tests/test_localization_anchor.py           # "Modificar Caminhos" ancora de imediato
-python -m pytest tests/test_template_column_types.py         # coluna de template nasce com o tipo escolhido
+python -m pytest tests/test_template_column_types.py         # coluna de template nasce com o tipo escolhido (inteiro com vazio inclusive)
 
 # Tabela de comparações e janela de confronto (Strategy Manager V2)
 python -m pytest tests/test_score_comparison_table.py        # seleção das linhas: caso completo vs extremos
@@ -472,6 +473,10 @@ Botões no header da seção:
 **OFIQ: os nomes das medidas mudam entre versões, e a tradução é uma tabela só.** Da v1.1.1 em diante o valor bruto ganhou o sufixo `.native` e oito medidas foram renomeadas (`HeadPoseYaw` → `HeadPoseYawFrontal`, `CompressionArtifacts` → `NoCompressionArtifacts`, os quatro de margem/recorte...). Com a tradução antiga, um CSV da v1.2.0 perdia TODOS os valores brutos e essas oito medidas — inclusive os ângulos que alimentam `ofiq_yaw/pitch/roll` — sem erro, porque o nome desconhecido caía em `_extra_metrics`. `faceaudit/models/ofiq_measure_names.py` (`field_for_column`) atende às três fontes: CSV do `OFIQSampleApp` v1.0.3, v1.2.x e os nomes do wrapper Python. Coluna que ainda sobrar é avisada no log, uma vez por nome. Medida nova do OFIQ entra NESSA tabela, nunca num mapeamento local.
 
 **OFIQ: toda métrica sabe de qual OFIQ veio.** A v1.0.3 é a implementação de referência da ISO/IEC 29794-5 e a v1.2.x uma implementação conforme — um laudo não pode confundi-las, e o `OFIQSampleApp` não informa a própria versão (sem `--version`). `ofiq_provenance_service.detect_ofiq_version` lê o `Version.txt` que toda instalação traz; `models_fingerprint` calcula o SHA-256 dos modelos (trocar um modelo muda as métricas sem mudar a versão), lido uma vez por sessão. Por face: colunas `ofiq_version` e `ofiq_backend` (hoje só `executable`; `library` é valor reservado). Na cadeia de custódia da criação e do enriquecimento: `ofiq_versions` (contagem de faces por origem) e, quando o OFIQ rodou NESSA operação, versão, modo e `ofiq_models_sha256`. Dataset com versões misturadas gera aviso na hora (`mixed_versions_message`), não só na custódia. `OFIQInfo.TEXT_FIELDS` impede que uma versão "1.2" vire o número 1.2.
+
+**OFIQ: a cópia temporária leva extensão que o executável aceita.** O `OFIQSampleApp` (medido na 1.0.3) escolhe os arquivos da pasta pela EXTENSÃO e só aceita `.jpg`, `.jpeg` e `.png`, em minúsculas — `.JPG` de câmera, `.jfif`, `.jpe`, `.bmp`, `.webp` e `.tif` são pulados sem aviso, e a face sai com "OFIQ não produziu resultado" (caso real: as 290 `.jfif` de um dataset de 487). O conteúdo não importa para ele. `extensao_para_ofiq` decide o nome da cópia: família JPEG vai como `.jpg` (mesmos bytes), PNG como `.png`, o resto é convertido para PNG (sem perda). O arquivo do dataset não é tocado. Extensão nova aceita na ingestão (`image_file_extensions`) tem de passar por `tests/test_ofiq_staging_extensions.py`, que simula o filtro do executável.
+
+**Coluna inteira com vazio continua inteira no parquet.** O pandas faz `float64` toda coluna de inteiros que tem vazio, e o parquet a gravava como decimal — a "idade" de template com `NC` (não cadastrado) perdia o tipo declarado. `_restaurar_inteiros_com_vazio` (no `to_parquet`) decide pelos valores ORIGINAIS das faces, não pelo DataFrame, onde 43 e 43.0 já não se distinguem: um decimal redondo continua decimal. Na leitura, `_ler_inteiros_com_vazio` devolve inteiro + `None`, porque o `to_parquet` substitui a metadata do pandas e o pyarrow sozinho entregaria `float64` de novo.
 
 **Caminho de executável externo: o backend resolve, a tela pergunta.** `OFIQService.resolve_exe_path` / `resolve_data_path` são estáticos e públicos, e o `ExifExtractionService` responde por `exiftool_version` / `backend_name`, para que o `ConfigDialog` **pergunte ao backend** onde a ferramenta será procurada e se resolve, em vez de a UI reimplementar a busca (o que faria tela e comportamento divergirem no primeiro ajuste de qualquer um dos dois). Campo vazio significa "procurar automaticamente", não "não configurado" — e a tela tem de dizer isso, senão dois campos em branco leem como configuração faltando.
 

@@ -17,6 +17,42 @@ from faceaudit.services.ofiq_provenance_service import (
 # Modo de chamada gravado em `OFIQInfo.backend`.
 BACKEND_EXECUTABLE = "executable"
 
+# O OFIQSampleApp (medido na 1.0.3) escolhe os arquivos da pasta pela
+# extensão e só aceita estas três, em minúsculas: `.JPG`, `.jfif`, `.jpe`,
+# `.bmp`, `.webp` e `.tif` são pulados sem aviso, e a face fica sem OFIQ.
+# O conteúdo não importa para ele — um JPEG chamado `.jfif` passa quando
+# chamado `.jpg`.
+_EXTENSOES_JPEG = frozenset({".jpg", ".jpeg", ".jpe", ".jfif", ".jfi", ".jif"})
+
+
+def extensao_para_ofiq(caminho: str):
+    """Extensão com que a cópia temporária vai ao OFIQ, e se precisa converter.
+
+    Família JPEG vai como `.jpg` (só o nome muda; os bytes são os mesmos).
+    PNG vai como `.png`. O resto é convertido para PNG, que é sem perda:
+    renomear um BMP para `.png` funcionaria por acaso de quem decodifica,
+    e converter não depende disso.
+    """
+    ext = os.path.splitext(caminho)[1].lower()
+    if ext in _EXTENSOES_JPEG or not ext:
+        return ".jpg", False
+    if ext == ".png":
+        return ".png", False
+    return ".png", True
+
+
+def _gravar_png_sem_perda(origem: str, destino: str) -> None:
+    import cv2
+    import numpy as np
+
+    img = cv2.imdecode(np.fromfile(origem, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"imagem ilegível: {origem}")
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise ValueError(f"falha ao converter para PNG: {origem}")
+    buf.tofile(destino)
+
 class OFIQService:
     """
     Serviço wrapper para execução eficiente da biblioteca OFIQ (Open Source Face Image Quality).
@@ -143,15 +179,19 @@ class OFIQService:
                 if not os.path.exists(src_path):
                     continue
 
-                ext = os.path.splitext(src_path)[1]
-                if not ext: ext = ".jpg"
-
-                # Nome simples para evitar problemas de encoding no C++
-                nome_temp = f"img_{idx:05d}{ext}"
+                # Nome simples para evitar problemas de encoding no C++, e
+                # extensão que o OFIQSampleApp aceita (ver
+                # `extensao_para_ofiq`): ele escolhe os arquivos da pasta
+                # pela extensão e pula os outros sem avisar.
+                ext_ofiq, converter = extensao_para_ofiq(src_path)
+                nome_temp = f"img_{idx:05d}{ext_ofiq}"
                 dest_path = os.path.join(dir_temp, nome_temp)
 
                 try:
-                    shutil.copy2(src_path, dest_path)
+                    if converter:
+                        _gravar_png_sem_perda(src_path, dest_path)
+                    else:
+                        shutil.copy2(src_path, dest_path)
                     imagens_validas.append(nome_temp)
                     mapa_temp_face[nome_temp] = face
                 except Exception as e:

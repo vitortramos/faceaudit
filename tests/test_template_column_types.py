@@ -255,3 +255,60 @@ def test_sugestao_de_tipo_pelo_nome():
     assert C._tipo_sugerido("ano_nascimento") == "int"
     assert C._tipo_sugerido("peso") == "float"
     assert C._tipo_sugerido("nome_da_pessoa") == "str"
+
+
+# ── Inteiro com vazio sobrevive ao parquet ───────────────────────────────
+
+def test_inteiro_com_vazio_continua_inteiro_no_parquet(tmp_path):
+    """Idade "NC" (não cadastrado) fica vazia, e a coluna continua inteira.
+
+    O pandas faz decimal toda coluna de inteiros com vazio (43 → 43.0), e o
+    parquet a gravava como decimal; reabrir também a devolvia decimal,
+    porque o FaceAudit troca a metadata do pandas pela própria.
+    """
+    import pyarrow.parquet as pq
+
+    from faceaudit.adapters.face_dataset_adapter import FaceDatasetAdapter
+    from faceaudit.models.column_catalog import ColumnDType
+    from faceaudit.models.face_dataset import FaceDataset
+
+    pasta = tmp_path / "fotos"
+    pasta.mkdir()
+    for nome in ("ID001_SINPA_43.png", "ID002_SINPA_NC.png", "ID003_SINPA_9.png"):
+        (pasta / nome).write_bytes(b"x")
+    t = DirTemplate(
+        name="t", custom_columns=["idade"], custom_column_types={"idade": "int"},
+        use_filename_separator=True, filename_separator="_",
+        filename_map={0: "identity", 1: "origin", 2: "idade"},
+    )
+    ds = FaceDatasetAdapter.dataset_from_dir(
+        dir_path=pasta, name="ds", recursive=False, template=t,
+    )
+    destino = tmp_path / "ds.parquet"
+    ds.to_parquet(destino)
+
+    assert str(pq.read_schema(destino).field("idade").type) == "int64"
+    relido = FaceDataset.from_parquet(destino)
+    assert relido.column_specs["idade"].dtype == ColumnDType.INT
+    idades = {f.identity: f.extra_data.get("idade") for f in relido.faces}
+    assert idades == {"ID001": 43, "ID002": None, "ID003": 9}
+    assert all(type(v) is int for v in idades.values() if v is not None)
+
+    # um segundo ciclo abrir → salvar não pode degradar a coluna
+    relido.to_parquet(destino)
+    assert str(pq.read_schema(destino).field("idade").type) == "int64"
+
+
+def test_decimal_redondo_com_vazio_continua_decimal(tmp_path):
+    """A decisão olha o valor original: 2.0 é decimal, não inteiro."""
+    import pyarrow.parquet as pq
+
+    from faceaudit.models.face_dataset import FaceDataset
+    from faceaudit.models.face_info import FaceInfo
+
+    faces = [FaceInfo(image_path=f"{i}.png", identity="x") for i in range(2)]
+    faces[0].extra_data = {"medida": 2.0}
+    faces[1].extra_data = {"medida": None}
+    destino = tmp_path / "ds.parquet"
+    FaceDataset(name="ds", faces=faces).to_parquet(destino)
+    assert str(pq.read_schema(destino).field("medida").type) == "double"
