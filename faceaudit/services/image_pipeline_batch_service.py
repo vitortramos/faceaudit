@@ -77,6 +77,7 @@ from faceaudit.services.dataset_localization_service import (
 from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_degradation_profile_service import (
     DegradationMeasures,
+    agreement,
     compare_summary,
     measure,
     summarize,
@@ -294,13 +295,15 @@ class ImagePipelineBatchService:
 
         questionada = pipeline_config.questioned
         resumo = summarize(medidas) if medidas else {}
+        alvo = None if questionada is None else questionada.measures
         degradacao = {
             "questioned": None if questionada is None else questionada.to_dict(),
             "n_measured": len(medidas),
             "summary": resumo,
-            "comparison": compare_summary(
-                None if questionada is None else questionada.measures, resumo,
-            ) if medidas else [],
+            "comparison": compare_summary(alvo, resumo, medidas) if medidas else [],
+            # Uma a uma: a mediana sozinha esconde um conjunto que mistura
+            # imagens claras e escuras demais.
+            "agreement": agreement(alvo, medidas),
         }
 
         manifest = {
@@ -408,6 +411,8 @@ class ImagePipelineBatchService:
             metadata["questioned_sha256"] = questionada.get("sha256")
         if degradacao.get("comparison"):
             metadata["degradation_comparison"] = degradacao["comparison"]
+        if degradacao.get("agreement"):
+            metadata["degradation_agreement"] = degradacao["agreement"]
         AuditLogService.append(
             parquet_path,
             AuditOperation.CREATE,

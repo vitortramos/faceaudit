@@ -2843,19 +2843,29 @@ class DatasetManagerController(QtCore.QObject):
         linhas = deg.get("comparison") or []
         if not questionada or not linhas:
             return ""
-        saida = [f"\n\nQuestionada {questionada.get('file_name')} × mediana da base adaptada:"]
-        n_perto = 0
+        saida = [
+            f"\n\nQuestionada {questionada.get('file_name')} × base adaptada "
+            "(mediana · imagens dentro da tolerância, uma a uma):"
+        ]
         for linha in linhas:
             m = MEASURES_BY_KEY.get(linha["measure"])
             if m is None:
                 continue
             marca = {True: "✓", False: "✗"}.get(linha.get("close"), "–")
-            n_perto += int(linha.get("close") is True)
+            frac = linha.get("images_close_fraction")
+            parcela = "" if frac is None else f" · {100 * frac:.0f}% das imagens"
             saida.append(
                 f"  {marca} {m.label}: {m.format(linha.get('questioned'))} × "
-                f"{m.format(linha.get('set_median'))}"
+                f"{m.format(linha.get('set_median'))}{parcela}"
             )
-        saida.append(f"  {n_perto} de {len(linhas)} medidas dentro da tolerância.")
+        conc = deg.get("agreement") or {}
+        if conc:
+            n_med = len(conc.get("measures", []))
+            saida.append(
+                f"  Imagens com as {n_med} medidas dentro: "
+                f"{100 * conc['all_close_fraction']:.0f}%; com {n_med - 1} ou mais: "
+                f"{100 * conc['all_but_one_close_fraction']:.0f}%."
+            )
         return "\n".join(saida)
 
     def _on_aplicar_image_pipeline_concluido(self, result):
