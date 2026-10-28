@@ -87,6 +87,53 @@ def _column_dtypes(df: pd.DataFrame) -> Dict[str, Any]:
     return dtypes
 
 
+def _restaurar_inteiros_com_vazio(df: pd.DataFrame, faces) -> pd.DataFrame:
+    """Devolve ao tipo inteiro as colunas que o pandas fez decimais.
+
+    Coluna de inteiros com algum vazio vira `float64` no DataFrame (43 →
+    43.0), e o parquet a gravava como decimal: uma coluna "idade" de
+    template, com "NC" (não cadastrado) em parte dos arquivos, perdia o
+    tipo que o template declarou. A decisão olha os valores ORIGINAIS das
+    faces, não o DataFrame — ali 43 e 43.0 já são indistinguíveis, e um
+    decimal que por acaso é redondo não pode virar inteiro.
+    """
+    candidatas = [c for c in df.columns if getattr(df[c].dtype, "kind", "") == "f"
+                  and df[c].isna().any()]
+    if not candidatas:
+        return df
+    linhas = [face.to_flat_dict(include_embeddings=False) for face in faces]
+    for coluna in candidatas:
+        viu_inteiro = False
+        for linha in linhas:
+            valor = linha.get(coluna)
+            if valor is None or (isinstance(valor, float) and np.isnan(valor)):
+                continue
+            if isinstance(valor, (bool, np.bool_)) or not isinstance(valor, (int, np.integer)):
+                viu_inteiro = False
+                break
+            viu_inteiro = True
+        if viu_inteiro:
+            df[coluna] = df[coluna].astype("Int64")
+    return df
+
+
+def _ler_inteiros_com_vazio(table, df: pd.DataFrame) -> pd.DataFrame:
+    """Coluna inteira com vazio volta como inteiro + None, não como decimal.
+
+    O `to_parquet` troca a metadata do pandas pela do FaceAudit, então o
+    pyarrow não sabe que a coluna era `Int64` e a entrega como `float64`.
+    """
+    import pyarrow as pa
+
+    for campo in table.schema:
+        if (pa.types.is_integer(campo.type) and campo.name in df.columns
+                and table.column(campo.name).null_count > 0):
+            df[campo.name] = pd.Series(
+                table.column(campo.name).to_pylist(), index=df.index, dtype=object,
+            )
+    return df
+
+
 # Quantos `image_path` testar em disco para decidir se uma âncora de
 # caminho relativo serve. Amostra pequena: a pergunta é "esta pasta é a
 # certa?", não "todas as imagens existem?".
@@ -825,7 +872,7 @@ class FaceDataset:
         is_aligned_raw = meta.get("faceaudit:is_aligned") or ""
         is_aligned = is_aligned_raw.strip().lower() in ("true", "1", "yes")
 
-        df = table.to_pandas()
+        df = _ler_inteiros_com_vazio(table, table.to_pandas())
         ds = cls.from_dataframe(df, name=ds_name, embedding_column=embedding_column)
         ds.description = ds_description
         # Cura parquets já em disco cujas colunas ficaram sem spec: como os
@@ -980,7 +1027,7 @@ class FaceDataset:
         if not path_obj.parent.exists():
             path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        df = self.to_pandas()
+        df = _restaurar_inteiros_com_vazio(self.to_pandas(), self.faces)
 
         # Rede de proteção: `path_root` é relativo à pasta do parquet, então
         # gravar num diretório diferente pode reancorá-lo onde as imagens
