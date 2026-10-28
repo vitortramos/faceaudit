@@ -17,7 +17,7 @@ Sem precisar tocar em mais nenhum arquivo.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Type
+from typing import Any, Dict, List, Type
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.image_processors.blur_processor import BlurProcessor
@@ -94,6 +94,19 @@ class ImageProcessorFactory:
                 f"{sorted(t.value for t in cls._PROCESSOR_REGISTRY)}."
             )
         return processor_cls(config, ff_service=ff_service)
+
+    @classmethod
+    def available_step_types(cls) -> List[ImageProcessingStepType]:
+        """Tipos com processador registrado, na ordem do enum."""
+        return [t for t in ImageProcessingStepType if t in cls._PROCESSOR_REGISTRY]
+
+    @classmethod
+    def new_config(cls, step_type: ImageProcessingStepType) -> ImageProcessingStepConfig:
+        """Config de um passo recém-adicionado no editor."""
+        config_cls = cls._CONFIG_REGISTRY.get(step_type)
+        if config_cls is None:
+            raise ValueError(f"Sem config registrado pra step_type={step_type.value}.")
+        return config_cls.editor_default()
 
     @classmethod
     def config_from_dict(

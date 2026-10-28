@@ -8,11 +8,15 @@ quality 85 — qualidade típica de mensageiros como WhatsApp.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from faceaudit.enums.image_processing_step_type import ImageProcessingStepType
 from faceaudit.models.image_processing.image_processing_step_config import (
     ImageProcessingStepConfig,
+)
+from faceaudit.models.image_processing.step_param_spec import (
+    StepParamKind,
+    StepParamSpec,
 )
 
 
@@ -40,6 +44,22 @@ class JpegCompressionConfig(ImageProcessingStepConfig):
             **super().to_dict(),
             "quality": int(self.quality),
         }
+
+    def param_specs(self) -> List[StepParamSpec]:
+        return [
+            StepParamSpec(
+                "quality", "Qualidade", StepParamKind.INT,
+                minimum=1, maximum=100, step=1, suffix=" / 100",
+                help="1 = destruição agressiva, 85 = mensageiros típicos, 100 = quase sem perda.",
+            ),
+        ]
+
+    @classmethod
+    def editor_default(cls) -> "JpegCompressionConfig":
+        return cls(quality=50)
+
+    def summary_pt(self) -> str:
+        return f"qualidade {int(self.quality)}"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "JpegCompressionConfig":
