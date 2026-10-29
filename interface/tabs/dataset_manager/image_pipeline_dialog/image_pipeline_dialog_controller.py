@@ -848,7 +848,8 @@ class ImagePipelineDialogController:
         else:
             veredito = "O ajuste melhorou nas imagens de validação."
         texto = (
-            f"O ajuste testou {resultado.n_evaluations} configurações.\n\n"
+            f"O ajuste testou {resultado.n_evaluations} configurações. O melhor "
+            f"resultado partiu de: {resultado.start}.\n\n"
             f"Mudanças propostas:\n{mudancas}\n\n"
             f"Validação ({n_val} imagens que o ajuste NÃO usou):\n"
             + self._linha_de_concordancia("antes ", resultado.validation_before) + "\n"
@@ -880,7 +881,7 @@ class ImagePipelineDialogController:
         self._pipeline_config.steps = resultado.config.steps
         registro = (
             f"Ajustado à questionada {self._pipeline_config.questioned.file_name} em "
-            f"{datetime.now():%d/%m/%Y %H:%M}: "
+            f"{datetime.now():%d/%m/%Y %H:%M} (partida: {resultado.start}): "
             + "; ".join(f"{c.step_index + 1}. {c.param_label} {c.before:g}→{c.after:g}"
                         for c in resultado.changes)
         )

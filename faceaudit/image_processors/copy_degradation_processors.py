@@ -111,9 +111,17 @@ class GrayscaleProcessor(ImageStepProcessorBase):
 
 # ── Curva de tons ──────────────────────────────────────────────────────────
 
-def tone_curve_lut(black: int, white: int, gamma: float) -> np.ndarray:
+def tone_curve_lut(black: int, white: int, gamma: float,
+                   input_levels: int = 256) -> np.ndarray:
+    """`input_levels` < 256: entre preto e branco a imagem tinha só esse
+    número de níveis quando o contraste foi esticado (digitalização de
+    pouco contraste esticada depois, em 8 bits) — a saída fica com no
+    máximo esse número de níveis, espaçados: o histograma em pente."""
     x = np.arange(256, dtype=np.float64)
     t = np.clip((x - black) / float(max(1, white - black)), 0.0, 1.0)
+    if input_levels < 256:
+        n = max(2, int(input_levels))
+        t = np.round(t * (n - 1)) / (n - 1)
     return np.round(255.0 * t ** float(gamma)).astype(np.uint8)
 
 
@@ -149,7 +157,8 @@ class ToneCurveProcessor(ImageStepProcessorBase):
 
     def _process(self, image, *, rng, face) -> np.ndarray:
         preto, branco = self.levels_for(image, face)
-        return cv2.LUT(image, tone_curve_lut(preto, branco, self._config.gamma))
+        return cv2.LUT(image, tone_curve_lut(preto, branco, self._config.gamma,
+                                             self._config.input_levels))
 
 
 # ── Ganho de toner ─────────────────────────────────────────────────────────
