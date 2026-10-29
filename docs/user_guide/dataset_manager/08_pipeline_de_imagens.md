@@ -530,16 +530,24 @@ caso de colisão:
 | `identity` | Preservado do dataset original |
 | `origin` / `ethnicity` / `gender` | Preservados do dataset original |
 | Colunas de template e manuais (ex.: `idade`) | Preservadas, com o tipo declarado |
+| `yaw` / `pitch` / `roll` | Pose da cabeça estimada pelo FF **na imagem de origem** |
 
 > ⚠️ **O que foi medido na imagem de origem é descartado** —
-> embeddings, `ff_info`/`ofiq_info`/`serfiq_info`, pose, qualidade,
-> geometria e metadados de captura (EXIF, qualidade JPEG estimada…). A
-> imagem mudou, e essas medidas deixaram de descrevê-la. O que descreve
-> a **pessoa** ou o **registro** (identidade, demografia, colunas de
-> template) é preservado. O `manifest.json` e a cadeia de custódia
-> listam as colunas levadas e as descartadas. Para ter embeddings e
-> métricas de qualidade no dataset processado, rode **Enriquecer**
-> ([capítulo 05](05_enriquecimento.md)) depois.
+> embeddings, IPD, idade e gênero estimados, `det_score`, `ofiq_info`/
+> `serfiq_info`, qualidade, geometria e metadados de captura (EXIF,
+> qualidade JPEG estimada…). A imagem mudou, e essas medidas deixaram
+> de descrevê-la. O que descreve a **pessoa** ou o **registro**
+> (identidade, demografia declarada, colunas de template) é preservado.
+>
+> A **pose** é a exceção: a cabeça não gira quando a imagem é degradada,
+> e nenhum passo do pipeline gira ou espelha a imagem — então `yaw`,
+> `pitch` e `roll` continuam verdadeiros e acompanham. Ao **Enriquecer**
+> o derivado ([capítulo 05](05_enriquecimento.md)), o FF calcula
+> embeddings, IPD, idade e gênero na imagem processada, mas a pose
+> herdada **prevalece** sobre a estimada nela (a estimativa numa cópia
+> degradada é pior que a da original). O `manifest.json` e a cadeia de
+> custódia listam as colunas levadas, as descartadas e a pose levada
+> (`pose_carried`).
 
 > ℹ️ **Face alinhada continua alinhada.** Se a origem já é um dataset
 > de faces alinhadas 112×112 (ou o pipeline usa *Origem = Face

@@ -230,6 +230,23 @@ def _aligned_keypoints_from_face(face) -> Optional[np.ndarray]:
     return None
 
 
+def _tem_extracao_previa(ff: Optional[FFInfo]) -> bool:
+    """O FFInfo veio de uma extração (detecção, atributos ou embedding).
+
+    Um FFInfo que só traz a pose — o que o Processar do pipeline de
+    imagens leva da imagem de origem para o derivado — NÃO é extração:
+    tratá-lo como tal mandaria o enriquecimento pelo caminho que só
+    calcula embedding, e o derivado ficaria sem IPD, idade, gênero e
+    det_score sem erro nenhum.
+    """
+    if ff is None:
+        return False
+    if any(getattr(ff, k, None) is not None for k in (
+            "ipd", "fiqa_score", "det_score", "gender", "age", "bbox", "keypoints")):
+        return True
+    return any(v is not None for k, v in vars(ff).items() if k.startswith("embedding"))
+
+
 def _tem_alinhada_em_cache(face) -> bool:
     """A face já traz o recorte alinhado 112×112 em memória (RGB)."""
     ff = getattr(face, "ff_info", None)
@@ -1201,6 +1218,10 @@ class FFService:
         # FIQA, yaw/pitch/roll, etc. — porque `face_info.ff_info = ff_data`
         # (linha final) substituía o objeto inteiro.
         ff_data: Optional[FFInfo] = face_info.ff_info
+        # Pose que veio de outra imagem do mesmo registro (Processar do
+        # pipeline de imagens) prevalece: a cabeça não girou, e a estimativa
+        # na imagem degradada é pior que a da original.
+        pose_herdada = ff_data is not None and not _tem_extracao_previa(ff_data)
 
         # A orientação é decidida UMA vez, na primeira passada, e vale para
         # todos os modelos da chamada: embeddings de modelos diferentes têm
@@ -1244,6 +1265,9 @@ class FFService:
                 ):
                     val = resultado.get(key)
                     if val is None:
+                        continue
+                    if (pose_herdada and key in ("yaw", "pitch", "roll")
+                            and getattr(ff_data, key, None) is not None):
                         continue
                     if rotacao_usada:
                         # Volta ao sistema de coordenadas do arquivo.
@@ -1396,7 +1420,7 @@ class FFService:
         )
         all_have_prior_ffinfo = (
             total_faces > 0
-            and all(f.ff_info is not None for f in dataset)
+            and all(_tem_extracao_previa(f.ff_info) for f in dataset)
         )
 
         if is_aligned:

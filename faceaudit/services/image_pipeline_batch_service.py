@@ -56,6 +56,7 @@ from faceaudit.enums.path_mode import PathMode
 from faceaudit.models.column_catalog import ColumnRole, ColumnSource
 from faceaudit.models.face_dataset import FaceDataset
 from faceaudit.models.face_info import FaceInfo
+from faceaudit.models.ff_info import FFInfo
 from faceaudit.models.image_processing.image_face_geometry import (
     ImageFaceGeometry,
 )
@@ -95,6 +96,13 @@ _ROLES_DA_IMAGEM = frozenset({
     ColumnRole.EMBEDDING, ColumnRole.QUALITY, ColumnRole.POSE,
     ColumnRole.GEOMETRY, ColumnRole.CAPTURE,
 })
+# Pose da cabeça estimada pelo FF na imagem de origem: a cabeça não gira
+# quando a imagem é degradada, e nenhum passo do pipeline gira ou espelha
+# a imagem — então a pose continua verdadeira no derivado. (Passo novo que
+# gire ou espelhe tem de rever isto.) Vai num FFInfo só com a pose; o
+# FFService reconhece esse registro como "sem extração" e não o confunde
+# com um dataset já enriquecido.
+POSE_LEVADA = ("yaw", "pitch", "roll")
 
 
 def colunas_que_acompanham(dataset: FaceDataset) -> Tuple[List[str], List[str]]:
@@ -323,6 +331,7 @@ class ImagePipelineBatchService:
             "source_parquet_sha256": source_sha,
             "columns_carried": levadas,
             "columns_dropped": descartadas,
+            "pose_carried": list(POSE_LEVADA),
             "degradation_measures": degradacao,
             "operator": AuditLogService.current_operator(),
             "pipeline_config": pipeline_config.to_dict(),
@@ -402,6 +411,7 @@ class ImagePipelineBatchService:
             "n_failed": manifest["n_failed"],
             "columns_carried": manifest["columns_carried"],
             "columns_dropped": manifest["columns_dropped"],
+            "pose_carried": manifest["pose_carried"],
             "is_aligned": bool(new_dataset.is_aligned),
         }
         degradacao = manifest.get("degradation_measures") or {}
@@ -534,10 +544,13 @@ class ImagePipelineBatchService:
         """FaceInfo do derivado: caminho relativo à pasta de imagens,
         hash do PNG, dados da pessoa e as colunas que a acompanham.
 
-        Descarta ff_info, ofiq_info, serfiq_info e o que foi medido na
-        imagem de origem — a imagem mudou (perito enriquece depois).
+        Descarta ofiq_info, serfiq_info e o que foi medido na imagem de
+        origem — a imagem mudou (perito enriquece depois). Do ff_info só a
+        pose da cabeça acompanha (`POSE_LEVADA`).
         """
         extra = face.extra_data or {}
+        ff = face.ff_info
+        pose = {k: getattr(ff, k, None) for k in POSE_LEVADA} if ff is not None else {}
         return FaceInfo(
             image_path=rel_image_path.replace("\\", "/"),
             file_name=Path(rel_image_path).name,
@@ -547,6 +560,7 @@ class ImagePipelineBatchService:
             ethnicity=face.ethnicity,
             gender=face.gender,
             extra_data={k: extra[k] for k in colunas_levadas if k in extra},
+            ff_info=FFInfo(**pose) if any(v is not None for v in pose.values()) else None,
         )
 
     @staticmethod
