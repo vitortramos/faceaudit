@@ -156,3 +156,35 @@ def test_cadeia_da_xerox_de_documento():
     # Reprodutível.
     de_novo = ImageProcessingPipeline(cfg).process(_foto(), seed_jitter="a.png", face=FACE)
     assert np.array_equal(out.image, de_novo.image)
+
+
+def test_curva_com_niveis_antes_do_contraste_reproduz_o_pente():
+    """Contraste esticado por último sobre imagem de 8 bits de pouco
+    contraste: toda a faixa 0–255 ocupada, com buracos regulares. Sem o
+    parâmetro, o número de níveis só mudaria movendo preto e branco."""
+    cheio = tone_curve_lut(24, 223, 1.09)
+    assert len(np.unique(cheio)) == 200  # (branco − preto + 1)
+    pente = tone_curve_lut(24, 223, 1.09, input_levels=150)
+    niveis = np.unique(pente)
+    assert len(niveis) == 150 and niveis[0] == 0 and niveis[-1] == 255
+    assert (np.diff(niveis) > 1).any()  # buracos, não faixa estreita
+    # Preto e branco não mudam com o número de níveis.
+    assert pente[24] == 0 and pente[223] == 255
+    # 256 = todos: a curva é exatamente a de antes (datasets já gerados
+    # continuam reproduzíveis pixel a pixel).
+    assert np.array_equal(tone_curve_lut(24, 223, 1.09, input_levels=256), cheio)
+
+
+def test_niveis_antes_do_contraste_viaja_no_json_e_tem_padrao():
+    cfg = ImageProcessorFactory.config_from_dict(
+        {"step_type": "tone_curve", "black_point": 24, "white_point": 223,
+         "input_levels": 150})
+    assert cfg.input_levels == 150 and "150 níveis" in cfg.summary_pt()
+    assert ImageProcessorFactory.config_from_dict(cfg.to_dict()).input_levels == 150
+    antigo = ImageProcessorFactory.config_from_dict({"step_type": "tone_curve"})
+    assert antigo.input_levels == 256 and "níveis" not in antigo.summary_pt()
+    spec = next(s for s in antigo.param_specs() if s.name == "input_levels")
+    assert spec.tunable and spec.is_visible(antigo)
+    out = _passo({"step_type": "tone_curve", "black_point": 0, "white_point": 255,
+                  "input_levels": 16}).apply(_gradiente())
+    assert len(np.unique(out)) <= 16

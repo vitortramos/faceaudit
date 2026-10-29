@@ -67,6 +67,12 @@ class ImageProcessingStepConfig:
         """True quando o passo precisa da geometria da face."""
         return False
 
+    def start_from_questioned(self, measures: Any) -> bool:
+        """Leva os campos ajustáveis a um ponto de partida calculado das
+        medidas da questionada (`DegradationMeasures`), para o ajuste
+        automático. Devolve True se mudou algo. Padrão: nada a fazer."""
+        return False
+
     def normalize(self) -> None:
         """Reaplica as correções de faixa após edição de um campo."""
         post = getattr(self, "__post_init__", None)

@@ -224,6 +224,7 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | | Percentil do preto | 0 – 99% | 20 | Percentis: os X% mais escuros da face viram preto |
 | | Percentil do branco | 1 – 100% | 60 | Percentis: acima deste percentil da face, branco |
 | | Gama | 0,1 – 5 | 1,0 | > 1 escurece os meios-tons; < 1 clareia |
+| | Níveis antes do contraste | 2 – 256 | 256 | Só em níveis fixos. 256 = todos. Menos reproduz o histograma em pente (ver abaixo) |
 | **Ganho de toner** | Raio | 0 – 20 px | 1 | Quanto o escuro avança, na resolução em que o passo roda |
 | | Intensidade | 0 – 1 | 1 | |
 | **Meio-tom** | Técnica | Difusão de erro / ordenado / retícula | Difusão de erro | |
@@ -241,6 +242,18 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 > imagem, na região da face: a mesma fração da face vira preto em todas
 > as fotos. Use este modo na primeira curva (a da copiadora) quando a
 > base mistura exposições.
+
+> 💡 **Histograma em pente e *Níveis antes do contraste*.** Muitas
+> questionadas usam toda a faixa 0–255, mas com buracos regulares entre
+> os níveis (ex.: 150 dos 256). É a marca de uma imagem de 8 bits com
+> pouco contraste cujo contraste foi esticado depois, no scanner ou num
+> editor. A curva sem esse campo produz sempre (branco − preto + 1)
+> níveis, e o número de níveis só mudaria movendo preto e branco, o que
+> estraga as frações de tom. Num caso real, a medida *Níveis de cinza
+> distintos* ficava fora em **todas** as imagens (150 na questionada,
+> 200–211 na base), e por isso nenhuma imagem alcançava as 9 medidas.
+> Com o campo liberado ao ajuste, a parcela com as 9 dentro subiu de 0%
+> para cerca de 24%. O padrão 256 deixa a curva exatamente como era.
 
 > ⚠️ **O meio-tom produz preto e branco puros na resolução em que
 > roda.** Uma cópia digitalizada tem cinzas porque o scanner (ou a
@@ -412,8 +425,25 @@ base, **uma a uma**, mais parecidas com a questionada.
 - **O que ele não muda:** a ordem dos passos, a técnica de meio-tom, o
   tipo de oclusão, qualquer escolha qualitativa. Essas são do perito.
 - **Como procura:** testa cada campo em valores em torno do atual,
-  guarda o que melhora, e repete com passos cada vez menores (~150
-  configurações, menos de um minuto). O objetivo é o **quanto cada
+  guarda o que melhora, e repete com passos cada vez menores. Faz isso
+  **duas vezes**, partindo de dois pontos, e fica com o que termina
+  melhor na amostra de ajuste (~340 configurações, cerca de 2 minutos):
+  - o **pipeline atual**, como está na tela;
+  - as **medidas da questionada**: a curva da copiadora põe em preto e
+    em branco as mesmas frações da face que a questionada tem, e a do
+    scanner começa neutra, com os níveis de cinza distintos dela.
+
+  As duas partidas existem porque a busca muda um campo por vez e fica
+  presa perto de onde começa. Num caso real, uma questionada muito
+  clara (nível médio 219, 52% de branco) chegava a 10% das imagens com
+  8 de 9 medidas dentro partindo do modelo pronto, e a 26% partindo das
+  medidas. Com outra questionada era o contrário. A janela final diz de
+  qual partida veio o resultado.
+- **Rodar de novo:** sem aplicar, o resultado é o mesmo (as amostras e
+  o sorteio são fixos). Depois de aplicar, a partida "pipeline atual"
+  continua de onde parou e às vezes ainda melhora. Se nada melhorar, a
+  janela diz que nada mudou. Cada ajuste aplicado acrescenta uma linha
+  à descrição do pipeline. O objetivo é o **quanto cada
   imagem passa da tolerância** em cada medida — o que já está dentro
   não conta. (Uma versão anterior minimizava a distância média e, num
   caso real, aproximou imagens que já estavam dentro enquanto empurrava

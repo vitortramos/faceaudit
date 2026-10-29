@@ -17,6 +17,11 @@ testado em 6 valores em torno do atual, e o passo cai à metade na rodada
 seguinte. Simples, determinística e auditável: o resultado lista o que
 mudou, de quanto para quanto.
 
+Duas partidas: o pipeline como está e um ponto calculado das medidas da
+questionada (`start_from_questioned`). A busca fica presa perto de onde
+começa, e nenhum dos dois pontos ganhou em todas as questionadas
+testadas; fica o que termina com menor excesso no TREINO.
+
 O que o ajuste NÃO decide: a ordem dos passos, a técnica de meio-tom, o
 tipo de oclusão, qualquer escolha qualitativa. Esses ficam com o perito.
 
@@ -85,6 +90,9 @@ class FitResult:
     n_evaluations: int
     validation_objective_before: Optional[float] = None
     validation_objective_after: Optional[float] = None
+    # De onde partiu a busca que venceu: "pipeline atual" ou "medidas da
+    # questionada" (ver `start_from_questioned`).
+    start: str = "pipeline atual"
 
     @property
     def improved_on_validation(self) -> Optional[bool]:
@@ -113,6 +121,7 @@ class FitResult:
             "validation_before": _r(self.validation_before),
             "validation_after": _r(self.validation_after),
             "n_evaluations": self.n_evaluations,
+            "start": self.start,
             "validation_objective_before": self.validation_objective_before,
             "validation_objective_after": self.validation_objective_after,
             "improved_on_validation": self.improved_on_validation,
@@ -181,6 +190,30 @@ def _com_valor(config, i: int, spec: StepParamSpec, valor) -> ImageProcessingPip
     return c
 
 
+def start_from_questioned(
+    config: ImageProcessingPipelineConfig,
+) -> Optional[ImageProcessingPipelineConfig]:
+    """Cópia do pipeline com os passos levados ao ponto de partida que as
+    medidas da questionada sugerem (`start_from_questioned` de cada
+    passo), ou None quando nenhum passo sabe partir delas.
+
+    Existe porque a busca por coordenadas muda um campo por vez e fica
+    presa perto de onde começa: numa questionada clara (nível médio 219,
+    52% de branco), partindo do modelo calibrado noutra cópia, o ajuste
+    chegava a 10% das imagens com 8 de 9 medidas dentro; partindo das
+    medidas, a 26%. Noutra questionada era o contrário — por isso o
+    ajuste parte dos DOIS e fica com o melhor no treino.
+    """
+    alvo = config.questioned.measures if config.questioned is not None else None
+    if alvo is None:
+        return None
+    copia = _copia(config)
+    mudou = False
+    for step in copia.steps:
+        mudou = step.start_from_questioned(alvo) or mudou
+    return copia if mudou else None
+
+
 def split_indices(n_total: int, n_train: int,
                   n_validation: int = DEFAULT_VALIDATION_MAX) -> Tuple[List[int], List[int]]:
     """Treino espaçado pela base; validação espaçada no que sobrou (todo o
@@ -245,22 +278,34 @@ def fit_to_questioned(
         ev = evaluate(train_sample, c, ff_service=ff_service)
         return ev, objective(ev, c, len(train_sample))
 
-    atual = _copia(config)
-    ev0, melhor = _avaliar(atual)
-    ev_atual = ev0
-    total_previsto = rounds * len(params) * 2 * _CANDIDATOS_POR_LADO
-    for rodada in range(rounds):
-        for i, spec in params:
-            valor_atual = getattr(atual.steps[i], spec.name)
-            for v in _candidatos(spec, float(valor_atual), rodada):
-                cand = _com_valor(atual, i, spec, v)
-                ev, o = _avaliar(cand)
-                if o < melhor - 1e-9:
-                    atual, melhor, ev_atual = cand, o, ev
-                _avisar(
-                    f"Rodada {rodada + 1}/{rounds} · {spec.label} · avaliação "
-                    f"{n_aval}/~{total_previsto} · distância média {melhor:.2f}"
-                )
+    partidas = [("pipeline atual", _copia(config))]
+    pelas_medidas = start_from_questioned(config)
+    if pelas_medidas is not None:
+        partidas.append(("medidas da questionada", pelas_medidas))
+    total_previsto = len(partidas) * rounds * len(params) * 2 * _CANDIDATOS_POR_LADO
+
+    ev0 = None
+    vencedor = None  # (objetivo, rótulo, config, avaliação)
+    for n_partida, (rotulo, atual) in enumerate(partidas, start=1):
+        ev_atual, melhor = _avaliar(atual)
+        if ev0 is None:
+            ev0 = ev_atual
+        for rodada in range(rounds):
+            for i, spec in params:
+                valor_atual = getattr(atual.steps[i], spec.name)
+                for v in _candidatos(spec, float(valor_atual), rodada):
+                    cand = _com_valor(atual, i, spec, v)
+                    ev, o = _avaliar(cand)
+                    if o < melhor - 1e-9:
+                        atual, melhor, ev_atual = cand, o, ev
+                    _avisar(
+                        f"Partida {n_partida}/{len(partidas)} ({rotulo}) · rodada "
+                        f"{rodada + 1}/{rounds} · {spec.label} · avaliação "
+                        f"{n_aval}/~{total_previsto} · excesso {melhor:.2f}"
+                    )
+        if vencedor is None or melhor < vencedor[0] - 1e-9:
+            vencedor = (melhor, rotulo, atual, ev_atual)
+    _, partida_vencedora, atual, ev_atual = vencedor
 
     mudancas = []
     for i, spec in params:
@@ -288,4 +333,5 @@ def fit_to_questioned(
         n_evaluations=n_aval,
         validation_objective_before=obj_antes,
         validation_objective_after=obj_depois,
+        start=partida_vencedora,
     )

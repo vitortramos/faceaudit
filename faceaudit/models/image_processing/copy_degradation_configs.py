@@ -174,6 +174,12 @@ class ToneCurveConfig(ImageProcessingStepConfig):
     `black_percentile` e `white_percentile` dos níveis de cinza da região
     da face, calculados em CADA imagem: a mesma fração da face vira preto
     em todas as fotos, qualquer que seja a exposição original.
+
+    `input_levels` < 256 reproduz o histograma em PENTE: toda a faixa
+    0–255 ocupada, com buracos regulares — a marca de contraste esticado
+    por último sobre uma imagem de 8 bits de pouco contraste. Sem ele, a
+    curva produz sempre (branco − preto + 1) níveis, e o número de níveis
+    só mudaria movendo preto e branco, o que estraga os tons.
     """
 
     step_type: ImageProcessingStepType = ImageProcessingStepType.TONE_CURVE
@@ -183,6 +189,7 @@ class ToneCurveConfig(ImageProcessingStepConfig):
     mode: ToneCurveMode = ToneCurveMode.FIXED_LEVELS
     black_percentile: float = 20.0
     white_percentile: float = 60.0
+    input_levels: int = 256
 
     @property
     def requires_face(self) -> bool:
@@ -198,6 +205,7 @@ class ToneCurveConfig(ImageProcessingStepConfig):
         self.white_percentile = _faixa(float(self.white_percentile), 1.0, 100.0)
         if self.white_percentile <= self.black_percentile:
             self.white_percentile = min(100.0, self.black_percentile + 1.0)
+        self.input_levels = int(_faixa(int(self.input_levels), 2, 256))
 
     def param_specs(self) -> List[StepParamSpec]:
         fixo = lambda c: c.mode == ToneCurveMode.FIXED_LEVELS  # noqa: E731
@@ -238,20 +246,51 @@ class ToneCurveConfig(ImageProcessingStepConfig):
                           tunable=True, search_min=0.5, search_max=2.0,
                           help="Maior que 1 escurece os meios-tons; menor que "
                                "1 clareia."),
+            StepParamSpec("input_levels", "Níveis antes do contraste", StepParamKind.INT,
+                          minimum=2, maximum=256, step=1, visible=fixo,
+                          tunable=True, search_min=64, search_max=256,
+                          help="Quantos níveis de cinza a imagem tinha entre o "
+                               "preto e o branco quando o contraste foi esticado. "
+                               "256 = todos. Menos que isso reproduz o histograma "
+                               "em pente (toda a faixa ocupada, com buracos "
+                               "regulares) de uma digitalização de pouco "
+                               "contraste esticada depois. Compare com a medida "
+                               "'Níveis de cinza distintos' da questionada."),
         ]
 
+    def start_from_questioned(self, measures) -> bool:
+        """Por percentis: a fração da face que vira preto e branco é a da
+        questionada. Níveis fixos: curva neutra, com os níveis distintos
+        da questionada. É ponto de PARTIDA — o ajuste parte daqui e do
+        pipeline atual e fica com o melhor."""
+        antes = self.to_dict()
+        if self.mode == ToneCurveMode.FACE_PERCENTILES:
+            if measures.black_fraction is not None:
+                self.black_percentile = round(100.0 * measures.black_fraction, 1)
+            if measures.white_fraction is not None:
+                self.white_percentile = round(100.0 * (1.0 - measures.white_fraction), 1)
+        else:
+            self.black_point, self.white_point = 0, 255
+            if measures.distinct_levels is not None:
+                self.input_levels = int(measures.distinct_levels)
+        self.gamma = 1.0
+        self.normalize()
+        return self.to_dict() != antes
+
     def summary_pt(self) -> str:
+        niveis = f", {self.input_levels} níveis" if self.input_levels < 256 else ""
         if self.mode == ToneCurveMode.FACE_PERCENTILES:
             return (f"face P{self.black_percentile:g}–P{self.white_percentile:g}, "
-                    f"γ {self.gamma:g}")
-        return f"{self.black_point}–{self.white_point}, γ {self.gamma:g}"
+                    f"γ {self.gamma:g}{niveis}")
+        return f"{self.black_point}–{self.white_point}, γ {self.gamma:g}{niveis}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {**super().to_dict(), "black_point": int(self.black_point),
                 "white_point": int(self.white_point), "gamma": float(self.gamma),
                 "mode": self.mode.value,
                 "black_percentile": float(self.black_percentile),
-                "white_percentile": float(self.white_percentile)}
+                "white_percentile": float(self.white_percentile),
+                "input_levels": int(self.input_levels)}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ToneCurveConfig":
@@ -260,7 +299,8 @@ class ToneCurveConfig(ImageProcessingStepConfig):
                    gamma=float(data.get("gamma", 1.0)),
                    mode=ToneCurveMode(data.get("mode", ToneCurveMode.FIXED_LEVELS.value)),
                    black_percentile=float(data.get("black_percentile", 20.0)),
-                   white_percentile=float(data.get("white_percentile", 60.0)))
+                   white_percentile=float(data.get("white_percentile", 60.0)),
+                   input_levels=int(data.get("input_levels", 256)))
 
 
 # ── Ganho de toner ─────────────────────────────────────────────────────────

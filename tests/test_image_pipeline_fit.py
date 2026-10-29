@@ -287,3 +287,37 @@ def test_sem_melhora_na_validacao_o_editor_recomenda_nao_aplicar(app, dataset):
     QtCore.QTimer.singleShot(0, lambda: _responder(QtWidgets.QMessageBox.StandardButton.Yes))
     c._on_fit_done(pior)
     assert c._is_dirty and "Ajustado à questionada" in c._pipeline_config.description
+
+
+def test_ponto_de_partida_pelas_medidas_da_questionada():
+    """A busca fica presa perto de onde começa; a segunda partida vem das
+    medidas: a curva da copiadora põe em preto e branco as frações da
+    questionada, a do scanner parte neutra com os níveis distintos dela."""
+    from faceaudit.services.image_degradation_profile_service import DegradationMeasures
+    from faceaudit.services.image_pipeline_fit_service import start_from_questioned
+    cfg = BUILTIN_TEMPLATES["Xerox de documento"]()
+    cfg.questioned = QuestionedProfile(
+        file_name="q.png", source_path="", sha256="0" * 64, measured_at="",
+        face=None, face_source=None,
+        measures=DegradationMeasures(
+            width=172, height=230, region="face", is_grayscale=True, ipd_px=48.0,
+            black_fraction=0.032, white_fraction=0.524, midtone_fraction=0.128,
+            distinct_levels=150, grain=18079.0, mean_level=218.6))
+    p = start_from_questioned(cfg)
+    copiadora, scanner = p.steps[1], p.steps[-1]
+    assert (copiadora.black_percentile, copiadora.white_percentile) == (3.2, 47.6)
+    assert (scanner.black_point, scanner.white_point, scanner.input_levels) == (0, 255, 150)
+    assert copiadora.gamma == scanner.gamma == 1.0
+    # O pipeline do perito não é tocado.
+    assert cfg.steps[1].black_percentile == 17.5 and cfg.steps[-1].input_levels == 256
+    # Sem passo que saiba partir das medidas: só a partida atual.
+    so_resize = _cfg([{"step_type": "resize", "mode": "factor", "factor": 0.5}],
+                     cfg.questioned)
+    assert start_from_questioned(so_resize) is None
+
+
+def test_ajuste_diz_de_que_partida_veio_o_resultado(dataset):
+    r = fit_to_questioned(_alvo_e_inicio(dataset), dataset, n_train=6,
+                          n_validation=6, rounds=1)
+    assert r.start in ("pipeline atual", "medidas da questionada")
+    assert r.to_dict()["start"] == r.start
