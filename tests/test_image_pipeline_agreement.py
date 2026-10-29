@@ -121,7 +121,14 @@ def test_processar_grava_a_concordancia(dataset, tmp_path):
                                         dataset_name="adaptado")
     conc = r.degradation["agreement"]
     assert conc["n_images"] == 6
-    assert all(l["images_close_fraction"] is not None for l in r.degradation["comparison"])
+    linhas = r.degradation["comparison"]
+    assert all(l["images_close_fraction"] is not None
+               for l in linhas if l["questioned"] is not None)
+    # Perfil sem a textura por faixa (gravado antes dela): a linha existe,
+    # com a mediana da base, mas não entra na concordância.
+    (textura,) = [l for l in linhas if l["measure"] == "texture_by_tone"]
+    assert textura["questioned"] is None and textura["images_close_fraction"] is None
+    assert "texture_by_tone" not in conc["measures"]
     manifesto = json.loads(r.manifest_path.read_text(encoding="utf-8"))
     assert manifesto["degradation_measures"]["agreement"] == conc
     (entrada,) = AuditLogService.load(r.parquet_path)

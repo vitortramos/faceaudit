@@ -22,6 +22,13 @@ adaptada acertou as 8 medidas da questionada enquanto apenas 5% das
 imagens, individualmente, se pareciam com ela — cópias escuras demais e
 claras demais se compensavam na mediana.
 
+A textura por faixa de tom (`texture_by_tone`) separa hipóteses que o
+grão total não separa: meio-tom concentra a textura nos tons médios e
+deixa preto e branco chapados limpos; ruído de toner põe textura nas
+áreas claras. No caso real (Q1), as duas hipóteses empatavam nas outras
+oito medidas e o formato do perfil favoreceu o meio-tom em 231 de 231
+imagens.
+
 Módulo de backend, sem Qt.
 """
 
@@ -46,6 +53,15 @@ PRETO_ATE = 20
 BRANCO_DESDE = 235
 MEIO_TOM = (60, 195)
 
+# Textura por faixa de tom: tom local = desfoque gaussiano (σ em px);
+# textura = RMS do que sobra além dele, por faixa de tom local. Faixa
+# com menos de `TEXTURA_MIN_PIXELS` pixels fica sem valor (None).
+FAIXAS_DE_TOM = (0, 50, 100, 150, 200, 256)
+TEXTURA_SIGMA_PX = 2.0
+TEXTURA_MIN_PIXELS = 30
+# Perfil só é comparável com pelo menos esta quantidade de faixas em comum.
+TEXTURA_MIN_FAIXAS = 3
+
 REGIAO_FACE = "face"
 REGIAO_IMAGEM = "imagem inteira"
 
@@ -65,12 +81,17 @@ class DegradationMeasures:
     distinct_levels: int
     grain: float
     mean_level: float
+    # Uma entrada por faixa de `FAIXAS_DE_TOM`; None em perfis gravados
+    # antes desta medida existir.
+    texture_by_tone: Optional[Tuple[Optional[float], ...]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         for k, v in d.items():
             if isinstance(v, float):
                 d[k] = round(v, 6)
+            elif isinstance(v, tuple):
+                d[k] = [None if x is None else round(float(x), 4) for x in v]
         return d
 
     @classmethod
@@ -78,7 +99,12 @@ class DegradationMeasures:
         if not data:
             return None
         nomes = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in nomes})
+        valores = {k: v for k, v in data.items() if k in nomes}
+        perfil = valores.get("texture_by_tone")
+        if perfil is not None:
+            valores["texture_by_tone"] = tuple(
+                None if x is None else float(x) for x in perfil)
+        return cls(**valores)
 
 
 @dataclass(frozen=True)
@@ -92,7 +118,10 @@ class MeasureSpec:
     # relativa (`rel_tol`, em razão: 0,3 = até 30% para mais ou menos).
     abs_tol: Optional[float] = None
     rel_tol: Optional[float] = None
-    kind: str = "float"  # float | fraction | int | bool | px
+    # profile: tupla por faixa de tom. `abs_tol` é a tolerância do
+    # FORMATO (perfil ÷ máximo, diferença média nas faixas) e `rel_tol` a
+    # do NÍVEL (razão média, como nas medidas relativas).
+    kind: str = "float"  # float | fraction | int | bool | px | profile
 
     def format(self, v: Any) -> str:
         if v is None:
@@ -105,9 +134,14 @@ class MeasureSpec:
             return f"{int(round(float(v)))}"
         if self.kind == "bool":
             return "sim" if v else "não"
+        if self.kind == "profile":
+            return " · ".join("—" if x is None else f"{float(x):.0f}" for x in v)
         return f"{float(v):,.0f}".replace(",", ".")
 
     def tolerance_text(self) -> str:
+        if self.kind == "profile":
+            return (f"formato ± {self.abs_tol:g}; nível ± {100 * self.rel_tol:g}%"
+                    .replace(".", ","))
         if self.abs_tol is not None:
             if self.kind == "fraction":
                 return f"± {100 * self.abs_tol:g} pontos percentuais".replace(".", ",")
@@ -122,6 +156,8 @@ class MeasureSpec:
             return None
         if self.kind == "bool":
             return 0.0 if bool(target) == bool(value) else 1e3
+        if self.kind == "profile":
+            return _profile_distance(target, value, self.abs_tol, self.rel_tol)
         t, v = float(target), float(value)
         if self.abs_tol is not None:
             return abs(v - t) / self.abs_tol
@@ -136,6 +172,9 @@ class MeasureSpec:
             return None
         if self.kind == "bool":
             return bool(target) == bool(value)
+        if self.kind == "profile":
+            d = self.distance(target, value)
+            return None if d is None else d <= 1.0
         t, v = float(target), float(value)
         if self.abs_tol is not None:
             return abs(v - t) <= self.abs_tol
@@ -144,6 +183,25 @@ class MeasureSpec:
                 return t == v
             return abs(math.log(v / t)) <= math.log1p(self.rel_tol)
         return t == v
+
+
+def _profile_distance(target, value, tol_formato: float, tol_nivel: float) -> Optional[float]:
+    """Distância entre dois perfis de textura, em múltiplos da tolerância:
+    o pior entre FORMATO e NÍVEL. None com menos de `TEXTURA_MIN_FAIXAS`
+    faixas válidas nos dois."""
+    pares = [(float(t), float(v)) for t, v in zip(target, value)
+             if t is not None and v is not None and t > 0 and v > 0]
+    if len(pares) < TEXTURA_MIN_FAIXAS:
+        return None
+    t = np.array([p[0] for p in pares])
+    v = np.array([p[1] for p in pares])
+    formato = float(np.mean(np.abs(v / v.max() - t / t.max())))
+    nivel = float(np.mean(np.abs(np.log(v / t))))
+    return max(formato / tol_formato, nivel / math.log1p(tol_nivel))
+
+
+def _rotulo_das_faixas() -> str:
+    return ", ".join(f"{a}–{b - 1}" for a, b in zip(FAIXAS_DE_TOM[:-1], FAIXAS_DE_TOM[1:]))
 
 
 MEASURES: Tuple[MeasureSpec, ...] = (
@@ -171,6 +229,15 @@ MEASURES: Tuple[MeasureSpec, ...] = (
                 abs_tol=15.0, kind="int"),
     MeasureSpec("is_grayscale", "Tons de cinza", "Se os três canais são iguais.",
                 kind="bool"),
+    MeasureSpec("texture_by_tone", "Textura por faixa de tom",
+                "Força da textura fina (RMS, em níveis de cinza, do que sobra "
+                f"além do tom local — desfoque σ {TEXTURA_SIGMA_PX:g} px) em cada "
+                f"faixa de tom local: {_rotulo_das_faixas()}. Meio-tom concentra "
+                "a textura nos tons médios e deixa preto e branco chapados "
+                "limpos; ruído de toner põe textura nas áreas claras. Compara "
+                "o FORMATO (perfil ÷ máximo) e o NÍVEL. Depende da resolução — "
+                "compare com a mesma distância entre os olhos.",
+                abs_tol=0.12, rel_tol=0.40, kind="profile"),
 )
 MEASURES_BY_KEY = {m.key: m for m in MEASURES}
 
@@ -185,6 +252,19 @@ def _regiao(gray: np.ndarray, face: Optional[ImageFaceGeometry]) -> Tuple[np.nda
             if x2 - x1 >= 4 and y2 - y1 >= 4:
                 return gray[y1:y2, x1:x2], REGIAO_FACE
     return gray, REGIAO_IMAGEM
+
+
+def texture_by_tone(regiao: np.ndarray) -> Tuple[Optional[float], ...]:
+    """RMS da textura fina por faixa de tom local (ver `FAIXAS_DE_TOM`)."""
+    reg = regiao.astype(np.float64)
+    tom = cv2.GaussianBlur(reg, (0, 0), TEXTURA_SIGMA_PX)
+    residuo2 = (reg - tom) ** 2
+    out: List[Optional[float]] = []
+    for a, b in zip(FAIXAS_DE_TOM[:-1], FAIXAS_DE_TOM[1:]):
+        m = (tom >= a) & (tom < b)
+        out.append(float(np.sqrt(residuo2[m].mean()))
+                   if int(m.sum()) >= TEXTURA_MIN_PIXELS else None)
+    return tuple(out)
 
 
 def measure(
@@ -213,6 +293,7 @@ def measure(
         distinct_levels=int((hist > 0).sum()),
         grain=float(cv2.Laplacian(regiao, cv2.CV_64F).var()),
         mean_level=float(regiao.mean()),
+        texture_by_tone=texture_by_tone(regiao),
     )
 
 
@@ -249,6 +330,9 @@ def summarize(medidas: Sequence[DegradationMeasures]) -> Dict[str, Dict[str, Any
             out[m.key] = {"fraction_true": round(float(np.mean([bool(v) for v in vals])), 6),
                           "n": len(vals)}
             continue
+        if m.kind == "profile":
+            out[m.key] = _summarize_profiles(vals)
+            continue
         arr = np.asarray(vals, dtype=np.float64)
         out[m.key] = {
             "median": round(float(np.median(arr)), 6),
@@ -261,6 +345,22 @@ def summarize(medidas: Sequence[DegradationMeasures]) -> Dict[str, Dict[str, Any
         regioes[x.region] = regioes.get(x.region, 0) + 1
     out["regions"] = regioes
     return out
+
+
+def _summarize_profiles(perfis) -> Dict[str, Any]:
+    """Mediana, P5 e P95 POR FAIXA (None na faixa sem valor em nenhuma)."""
+    arr = np.array([[np.nan if x is None else float(x) for x in p] for p in perfis])
+
+    def _por_faixa(f):
+        return [None if np.all(np.isnan(col)) else round(float(f(col[~np.isnan(col)])), 4)
+                for col in arr.T]
+
+    return {
+        "median": _por_faixa(np.median),
+        "p5": _por_faixa(lambda c: np.percentile(c, 5)),
+        "p95": _por_faixa(lambda c: np.percentile(c, 95)),
+        "n": len(perfis),
+    }
 
 
 def agreement(
@@ -343,6 +443,8 @@ def compare_summary(
             continue
         central = (r.get("fraction_true", 0) >= 0.5) if m.kind == "bool" else r.get("median")
         t = None if target is None else getattr(target, m.key)
+        if isinstance(t, tuple):
+            t = list(t)  # JSON-safe: a custódia relida tem de ser igual
         linhas.append({
             "measure": m.key,
             "label": m.label,
@@ -367,6 +469,25 @@ def read_image_bgr(path: Path) -> np.ndarray:
     if img is None:
         raise ValueError(f"Não foi possível decodificar a imagem {Path(path).name}.")
     return img
+
+
+def complete_questioned_measures(perfil, imagem_bgr: np.ndarray):
+    """Perfil gravado antes de uma medida existir: remede a questionada
+    (mesma imagem, mesma geometria gravada) e devolve o perfil com as
+    medidas que faltavam, ou o próprio perfil quando nada falta. As que já
+    estavam gravadas não mudam. Quem chama confere o SHA-256 antes —
+    remedir outra imagem sob o mesmo perfil seria trocar o alvo."""
+    import dataclasses
+
+    gravadas = perfil.measures
+    if gravadas is None:
+        return perfil
+    novas = measure(imagem_bgr, perfil.face)
+    faltam = {m.key: getattr(novas, m.key) for m in MEASURES
+              if getattr(gravadas, m.key) is None and getattr(novas, m.key) is not None}
+    if not faltam:
+        return perfil
+    return dataclasses.replace(perfil, measures=dataclasses.replace(gravadas, **faltam))
 
 
 def build_questioned_profile(path: Path, ff_service=None):

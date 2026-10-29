@@ -46,6 +46,7 @@ from faceaudit.pipelines.image_processing_pipeline import (
 )
 from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_degradation_profile_service import (
+    complete_questioned_measures,
     measure,
     read_image_bgr,
 )
@@ -675,10 +676,16 @@ class ImagePipelineDialogController:
             f"Pipeline '{chosen}' carregado. Clique ▶ Aplicar."
         )
 
+        completou = False
         if manteve_questionada:
             self._render_questioned()  # a imagem já carregada continua valendo
         else:
-            self._reload_questioned_from_config()
+            completou = self._reload_questioned_from_config()
+            if completou:
+                self.view.image_compare.show_status(
+                    f"Pipeline '{chosen}' carregado. A questionada foi remedida "
+                    "para as medidas que o perfil gravado não tinha — salve para "
+                    "gravá-las. Clique ▶ Aplicar.")
 
         # Re-sincroniza UI
         self.view.set_pipeline_meta(
@@ -690,8 +697,9 @@ class ImagePipelineDialogController:
         self.view.step_config.show_config(None)
 
         self._mark_clean()
-        if manteve_questionada or chosen.startswith(prefixo):
-            # Modelo, ou pipeline que ganhou a questionada: ainda não salvo.
+        if manteve_questionada or completou or chosen.startswith(prefixo):
+            # Modelo, pipeline que ganhou a questionada ou medidas novas na
+            # questionada: ainda não salvo.
             self._mark_dirty()
 
     @staticmethod
@@ -953,16 +961,20 @@ class ImagePipelineDialogController:
         self._render_questioned()
         self._mark_dirty()
 
-    def _reload_questioned_from_config(self):
+    def _reload_questioned_from_config(self) -> bool:
         """Pipeline carregado: reabre a questionada pelo caminho gravado e
         confere o SHA-256. As medidas valem as do perfil gravado mesmo se
-        o arquivo sumiu ou mudou — mas a tela diz qual dos casos é."""
+        o arquivo sumiu ou mudou — mas a tela diz qual dos casos é.
+
+        Perfil gravado antes de uma medida existir ganha a medida, mas SÓ
+        com o SHA-256 conferido. Devolve True quando isso aconteceu."""
         self._questioned_image = None
         self._questioned_warning = None
+        completou = False
         perfil = self._pipeline_config.questioned
         if perfil is None:
             self._render_questioned()
-            return
+            return completou
         caminho = Path(perfil.source_path) if perfil.source_path else None
         if caminho is None or not caminho.is_file():
             self._questioned_warning = "arquivo não encontrado no caminho gravado"
@@ -974,9 +986,14 @@ class ImagePipelineDialogController:
                         "o arquivo no caminho gravado MUDOU (SHA-256 diferente)")
                 else:
                     self._questioned_image = read_image_bgr(caminho)
+                    completo = complete_questioned_measures(perfil, self._questioned_image)
+                    if completo is not perfil:
+                        self._pipeline_config.questioned = completo
+                        completou = True
             except Exception as e:  # noqa: BLE001
                 self._questioned_warning = f"falha ao ler o arquivo: {e}"
         self._render_questioned()
+        return completou
 
     def _render_questioned(self):
         perfil = self._pipeline_config.questioned
