@@ -701,7 +701,16 @@ class FaceDataset:
                     SepaelModel.SEPAEL_V2.ffinfo_slot, emb_array,
                 )
 
-            if pd.notna(row.get('fiqa_score')) or embeddings_per_model:
+            # Atributo do FF sem embedding também conta: o derivado do
+            # Processar (pipeline de imagens) traz só a pose da origem, e
+            # exigir embedding aqui a apagava no primeiro abrir → salvar.
+            tem_atributo_ff = any(
+                pd.notna(row.get(c)) for c in (
+                    'det_score', 'yaw', 'pitch', 'roll', 'age_est', 'gender_est', 'ipd')
+            ) or any(
+                isinstance(row.get(c), (list, np.ndarray)) for c in ('bbox', 'keypoints')
+            )
+            if pd.notna(row.get('fiqa_score')) or embeddings_per_model or tem_atributo_ff:
                 face.ff_info = FFInfo(
                     fiqa_score=clean(row.get('fiqa_score')),
                     # `det_score` faltava aqui: a coluna era emitida por
