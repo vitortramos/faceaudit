@@ -32,12 +32,12 @@ def _xerox_de_documento() -> ImageProcessingPipelineConfig:
         "steps": [
             {"step_type": "grayscale"},
             {"step_type": "tone_curve", "mode": "face_percentiles",
-             "black_percentile": 15.0, "white_percentile": 70.0, "gamma": 1.15},
+             "black_percentile": 17.5, "white_percentile": 70.0, "gamma": 1.06},
             {"step_type": "resize", "mode": "target_ipd", "target_ipd_px": 84.0},
             {"step_type": "halftone", "mode": "error_diffusion"},
             {"step_type": "resize", "mode": "target_ipd", "use_questioned_ipd": True},
             {"step_type": "tone_curve", "black_point": 24, "white_point": 223,
-             "gamma": 1.12},
+             "gamma": 1.09},
         ],
     })
 

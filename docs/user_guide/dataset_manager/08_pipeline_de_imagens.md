@@ -322,6 +322,7 @@ nela, mede, e a partir daí:
 | Níveis de cinza distintos | Quantos dos 256 níveis aparecem | ± 25% |
 | Nível médio | Média dos cinzas (0–255) | ± 15 |
 | Tons de cinza | Se os três canais são iguais | igual |
+| Textura por faixa de tom | Força da textura fina em cada faixa de tom local (0–49, 50–99, 100–149, 150–199, 200–255) | formato ± 0,12; nível ± 40% |
 
 > 💡 As medidas são feitas na **região da face** — o fundo (papel
 > branco de uma cópia, fundo de documento) varia entre imagens e
@@ -331,6 +332,35 @@ nela, mede, e a partir daí:
 
 > 💡 O **grão** depende da resolução: só compare com a mesma distância
 > entre os olhos (por isso o *Redimensionar* final vem antes da medida).
+
+**Textura por faixa de tom.** O grão diz *quanta* textura fina há; esta
+medida diz *onde* ela está. A imagem é separada em tom local (a imagem
+desfocada, σ 2 px) e textura (o que sobra além dele), e a força da
+textura (RMS, em níveis de cinza) é medida em cinco faixas de tom local.
+A tela mostra os cinco valores, do escuro ao claro: `22 · 70 · 84 · 67 · 25`.
+Ela compara duas coisas, e só fica verde quando as duas estão dentro:
+
+- **formato** — o perfil dividido pelo seu máximo, diferença média nas
+  faixas (± 0,12);
+- **nível** — a razão entre os valores, em média (± 40%).
+
+Por que existe: hipóteses diferentes sobre a origem da textura empatam
+no grão total e se separam aqui. **Meio-tom** concentra a textura nos
+tons médios e deixa preto e branco chapados limpos (perfil com pico no
+meio); **ruído de toner** põe textura nas áreas claras (perfil que
+cresce para o claro); uma imagem **sem textura** tem pico no meio só
+pelas bordas do rosto, mas fraco. No caso real que motivou a medida
+(Q1, cópia digitalizada), meio-tom e ruído de toner empatavam nas
+outras oito medidas; o formato do perfil favoreceu o meio-tom em 231
+de 231 imagens. Isso permite escrever no laudo que a textura foi
+modelada como meio-tom **porque** o padrão da questionada é o de
+meio-tom, e não só porque é o mecanismo plausível da copiadora.
+
+Pipelines salvos antes desta medida abrem normalmente: se a questionada
+ainda está no caminho gravado com o **mesmo SHA-256**, o editor a
+remede, acrescenta a textura ao perfil (as medidas já gravadas não
+mudam) e marca o pipeline como alterado — salve para gravar. Se o
+arquivo sumiu ou mudou, a medida fica de fora da comparação.
 
 ### Medir na base, não numa face só
 
@@ -611,11 +641,11 @@ copiadora, meio-tom, digitalização:
 ```
 Modelo "Xerox de documento":
   1. Tons de cinza
-  2. Curva de tons      percentis da face P15–P70, gama 1,15  ← contraste da copiadora
-  3. Redimensionar      IPD 84 px                            ← resolução em que ela "pontilha"
+  2. Curva de tons      percentis da face P17,5–P70, gama 1,06 ← contraste da copiadora
+  3. Redimensionar      IPD 84 px                             ← resolução em que ela "pontilha"
   4. Meio-tom           difusão de erro
-  5. Redimensionar      IPD da questionada                   ← digitalização
-  6. Curva de tons      preto 39, branco 219, gama 0,97      ← contraste do scanner
+  5. Redimensionar      IPD da questionada                    ← digitalização
+  6. Curva de tons      preto 24, branco 223, gama 1,09       ← contraste do scanner
 ```
 
 Fluxo: carregue a questionada (**📄 Questionada…**), carregue o
@@ -628,8 +658,12 @@ A primeira versão desse caso usava curva de **níveis fixos** (90–160):
 a mediana da base acertava as 8 medidas, mas só ~5% das imagens tinham
 4 ou mais das 5 medidas de tom dentro. Com a curva por percentis e o
 ajuste, medido em 231 imagens que o ajuste não usou: 21% com as 8
-medidas dentro e 49% com 7 ou mais. Ajustar de novo a partir do modelo,
-com a mesma questionada, não melhora — e o editor diz isso. São ponto de partida, não receita — cada
+medidas dentro e 49% com 7 ou mais. Com a nona medida (textura por
+faixa de tom) o modelo foi reajustado: 16% com as 9 dentro e 44% com 8
+ou mais, nas mesmas 231 imagens. Nessa base o meio-tom ainda fica com
+textura mais fraca que a da Q1 nos tons médios (cerca de 54 contra 84):
+os pontos da cópia real parecem mais grossos ou mais contrastados que
+os simulados. São ponto de partida, não receita — cada
 cópia tem a sua copiadora e o seu scanner, e amostras de 40 imagens
 oscilam alguns pontos percentuais de uma para outra.
 O *Ganho de toner* entra quando as sombras da questionada são mais
