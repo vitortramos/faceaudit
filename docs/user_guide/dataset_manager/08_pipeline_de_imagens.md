@@ -225,6 +225,9 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | | Percentil do branco | 1 – 100% | 60 | Percentis: acima deste percentil da face, branco |
 | | Gama | 0,1 – 5 | 1,0 | > 1 escurece os meios-tons; < 1 clareia |
 | | Níveis antes do contraste | 2 – 256 | 256 | Só em níveis fixos. 256 = todos. Menos reproduz o histograma em pente (ver abaixo) |
+| | Ombro nos claros | sim / não | não | Só em níveis fixos. Comprime os quase-brancos num cinza claro (ver abaixo) |
+| | Início do ombro | 0,3 – 1 | 0,8 | Com ombro: fração da saída a partir da qual os claros são comprimidos |
+| | Força do ombro | 1 – 6 | 1 | Com ombro: maior = mais quase-brancos viram cinza claro |
 | **Ganho de toner** | Raio | 0 – 20 px | 1 | Quanto o escuro avança, na resolução em que o passo roda |
 | | Intensidade | 0 – 1 | 1 | |
 | **Meio-tom** | Técnica | Difusão de erro / ordenado / retícula | Difusão de erro | |
@@ -254,6 +257,19 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 > 200–211 na base), e por isso nenhuma imagem alcançava as 9 medidas.
 > Com o campo liberado ao ajuste, a parcela com as 9 dentro subiu de 0%
 > para cerca de 24%. O padrão 256 deixa a curva exatamente como era.
+
+> 💡 **Ombro nos claros — escolha do perito.** Algumas cópias têm,
+> logo abaixo do branco puro, uma faixa larga de cinzas muito claros
+> (papel e digitalização), que a curva comum não produz: ela leva esses
+> tons ao branco ou os deixa como pontos. Com a caixa **Ombro nos
+> claros** marcada, os quase-brancos são comprimidos num cinza claro e
+> só o branco pleno chega a 255; o **Ajustar à questionada** passa a
+> procurar o início e a força. Num caso real, numa questionada muito
+> clara (52% de branco), a parcela de imagens com 8 de 9 medidas dentro
+> subiu de 26% para 51%. Noutra questionada as medidas também subiram,
+> mas o resultado sem ombro pareceu visualmente mais fiel — por isso é
+> uma caixa, e não um ajuste automático: confira as imagens com e sem.
+> Desmarcada, a curva é exatamente a de sempre.
 
 > ⚠️ **O meio-tom produz preto e branco puros na resolução em que
 > roda.** Uma cópia digitalizada tem cinzas porque o scanner (ou a

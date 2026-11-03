@@ -112,7 +112,8 @@ class GrayscaleProcessor(ImageStepProcessorBase):
 # ── Curva de tons ──────────────────────────────────────────────────────────
 
 def tone_curve_lut(black: int, white: int, gamma: float,
-                   input_levels: int = 256) -> np.ndarray:
+                   input_levels: int = 256, shoulder_start: float = 0.8,
+                   shoulder_power: float = 1.0) -> np.ndarray:
     """`input_levels` < 256: entre preto e branco a imagem tinha só esse
     número de níveis quando o contraste foi esticado (digitalização de
     pouco contraste esticada depois, em 8 bits) — a saída fica com no
@@ -122,7 +123,15 @@ def tone_curve_lut(black: int, white: int, gamma: float,
     if input_levels < 256:
         n = max(2, int(input_levels))
         t = np.round(t * (n - 1)) / (n - 1)
-    return np.round(255.0 * t ** float(gamma)).astype(np.uint8)
+    y = t ** float(gamma)
+    s, p = float(shoulder_start), float(shoulder_power)
+    if s < 1.0 and p != 1.0:
+        # Ombro: acima de `s` os claros são comprimidos (p > 1) e só o
+        # branco pleno chega a 255 — quase-brancos viram cinza claro.
+        acima = y > s
+        y = y.copy()
+        y[acima] = s + (1.0 - s) * ((y[acima] - s) / (1.0 - s)) ** p
+    return np.round(255.0 * y).astype(np.uint8)
 
 
 def face_region_gray(image: np.ndarray, face: ImageFaceGeometry) -> np.ndarray:
@@ -157,8 +166,9 @@ class ToneCurveProcessor(ImageStepProcessorBase):
 
     def _process(self, image, *, rng, face) -> np.ndarray:
         preto, branco = self.levels_for(image, face)
-        return cv2.LUT(image, tone_curve_lut(preto, branco, self._config.gamma,
-                                             self._config.input_levels))
+        c = self._config
+        ombro = (c.shoulder_start, c.shoulder_power) if c.use_shoulder else (1.0, 1.0)
+        return cv2.LUT(image, tone_curve_lut(preto, branco, c.gamma, c.input_levels, *ombro))
 
 
 # ── Ganho de toner ─────────────────────────────────────────────────────────

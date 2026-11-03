@@ -188,3 +188,28 @@ def test_niveis_antes_do_contraste_viaja_no_json_e_tem_padrao():
     out = _passo({"step_type": "tone_curve", "black_point": 0, "white_point": 255,
                   "input_levels": 16}).apply(_gradiente())
     assert len(np.unique(out)) <= 16
+
+
+def test_ombro_nos_claros_e_escolha_do_perito():
+    """Desligado (padrão), a curva é a de sempre e o ajuste nem vê início
+    e força. Ligado, os quase-brancos viram cinza claro e só o branco
+    pleno chega a 255."""
+    base = {"step_type": "tone_curve", "black_point": 0, "white_point": 255}
+    sem = ImageProcessorFactory.config_from_dict(base)
+    assert sem.use_shoulder is False
+    visiveis = {s.name for s in sem.param_specs() if s.is_visible(sem)}
+    assert "use_shoulder" in visiveis
+    assert not {"shoulder_start", "shoulder_power"} & visiveis
+    # Valores de ombro gravados com a caixa desligada não têm efeito.
+    desligado = _passo({**base, "shoulder_start": 0.7, "shoulder_power": 3.0}).apply(_gradiente())
+    assert np.array_equal(desligado, _passo(base).apply(_gradiente()))
+
+    com = ImageProcessorFactory.config_from_dict(
+        {**base, "use_shoulder": True, "shoulder_start": 0.7, "shoulder_power": 3.0})
+    assert {"shoulder_start", "shoulder_power"} <= {
+        s.name for s in com.param_specs() if s.is_visible(com) and s.tunable}
+    assert ImageProcessorFactory.config_from_dict(com.to_dict()).use_shoulder is True
+    assert "ombro" in com.summary_pt()
+    lut = tone_curve_lut(0, 255, 1.0, 256, 0.7, 3.0)
+    assert lut[255] == 255 and lut[240] < 235 < 240  # quase-branco vira cinza claro
+    assert np.array_equal(lut[:170], tone_curve_lut(0, 255, 1.0)[:170])  # abaixo do início, igual
