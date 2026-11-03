@@ -190,6 +190,9 @@ class ToneCurveConfig(ImageProcessingStepConfig):
     black_percentile: float = 20.0
     white_percentile: float = 60.0
     input_levels: int = 256
+    use_shoulder: bool = False
+    shoulder_start: float = 0.8
+    shoulder_power: float = 1.0
 
     @property
     def requires_face(self) -> bool:
@@ -206,6 +209,8 @@ class ToneCurveConfig(ImageProcessingStepConfig):
         if self.white_percentile <= self.black_percentile:
             self.white_percentile = min(100.0, self.black_percentile + 1.0)
         self.input_levels = int(_faixa(int(self.input_levels), 2, 256))
+        self.shoulder_start = _faixa(float(self.shoulder_start), 0.3, 1.0)
+        self.shoulder_power = _faixa(float(self.shoulder_power), 1.0, 6.0)
 
     def param_specs(self) -> List[StepParamSpec]:
         fixo = lambda c: c.mode == ToneCurveMode.FIXED_LEVELS  # noqa: E731
@@ -256,6 +261,27 @@ class ToneCurveConfig(ImageProcessingStepConfig):
                                "regulares) de uma digitalização de pouco "
                                "contraste esticada depois. Compare com a medida "
                                "'Níveis de cinza distintos' da questionada."),
+            StepParamSpec("use_shoulder", "Ombro nos claros", StepParamKind.BOOL,
+                          visible=fixo,
+                          help="Comprime os quase-brancos numa faixa de cinza claro, "
+                               "e só o branco pleno chega a 255 — a faixa de "
+                               "cinzas claros do papel e da digitalização. Escolha "
+                               "do perito: ligado, o ajuste automático procura o "
+                               "início e a força; desligado, a curva é a de sempre. "
+                               "Numa questionada muito clara ajudou; noutra, o "
+                               "resultado sem ombro pareceu mais fiel."),
+            StepParamSpec("shoulder_start", "Início do ombro", StepParamKind.FLOAT,
+                          minimum=0.3, maximum=1.0, step=0.05, decimals=2,
+                          visible=lambda c: fixo(c) and c.use_shoulder,
+                          tunable=True, search_min=0.5, search_max=1.0,
+                          help="Fração da saída (0–1) a partir da qual os claros "
+                               "são comprimidos."),
+            StepParamSpec("shoulder_power", "Força do ombro", StepParamKind.FLOAT,
+                          minimum=1.0, maximum=6.0, step=0.1, decimals=2,
+                          visible=lambda c: fixo(c) and c.use_shoulder,
+                          tunable=True, search_min=1.0, search_max=4.0,
+                          help="1 = sem efeito. Maior: mais quase-brancos viram "
+                               "cinza claro."),
         ]
 
     def start_from_questioned(self, measures) -> bool:
@@ -282,7 +308,9 @@ class ToneCurveConfig(ImageProcessingStepConfig):
         if self.mode == ToneCurveMode.FACE_PERCENTILES:
             return (f"face P{self.black_percentile:g}–P{self.white_percentile:g}, "
                     f"γ {self.gamma:g}{niveis}")
-        return f"{self.black_point}–{self.white_point}, γ {self.gamma:g}{niveis}"
+        ombro = (f", ombro {self.shoulder_start:g}/{self.shoulder_power:g}"
+                 if self.use_shoulder else "")
+        return f"{self.black_point}–{self.white_point}, γ {self.gamma:g}{niveis}{ombro}"
 
     def to_dict(self) -> Dict[str, Any]:
         return {**super().to_dict(), "black_point": int(self.black_point),
@@ -290,7 +318,10 @@ class ToneCurveConfig(ImageProcessingStepConfig):
                 "mode": self.mode.value,
                 "black_percentile": float(self.black_percentile),
                 "white_percentile": float(self.white_percentile),
-                "input_levels": int(self.input_levels)}
+                "input_levels": int(self.input_levels),
+                "use_shoulder": bool(self.use_shoulder),
+                "shoulder_start": float(self.shoulder_start),
+                "shoulder_power": float(self.shoulder_power)}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ToneCurveConfig":
@@ -300,7 +331,10 @@ class ToneCurveConfig(ImageProcessingStepConfig):
                    mode=ToneCurveMode(data.get("mode", ToneCurveMode.FIXED_LEVELS.value)),
                    black_percentile=float(data.get("black_percentile", 20.0)),
                    white_percentile=float(data.get("white_percentile", 60.0)),
-                   input_levels=int(data.get("input_levels", 256)))
+                   input_levels=int(data.get("input_levels", 256)),
+                   use_shoulder=bool(data.get("use_shoulder", False)),
+                   shoulder_start=float(data.get("shoulder_start", 0.8)),
+                   shoulder_power=float(data.get("shoulder_power", 1.0)))
 
 
 # ── Ganho de toner ─────────────────────────────────────────────────────────
