@@ -160,7 +160,7 @@ def test_detection_containing_point_picks_clicked_not_largest():
 
 
 def test_imwrite_unicode_safe_accented_path_roundtrip(tmp_path):
-    p = tmp_path / "Política Federal" / "alvo_f0000001.png"
+    p = tmp_path / "Perícias Faciais" / "alvo_f0000001.png"
     img = (np.random.default_rng(0).integers(0, 255, (32, 32, 3))).astype(np.uint8)
     assert imwrite_unicode_safe(p, img) is True
     assert p.exists()

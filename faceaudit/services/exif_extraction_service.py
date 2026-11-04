@@ -196,7 +196,7 @@ class ExifExtractionService:
         Os caminhos NÃO vão na linha de comando: no Windows eles chegariam
         ao ExifTool na página de código do sistema, e todo caminho com
         acento viraria "File not found" — o que atingiria praticamente todos
-        os arquivos aqui, que vivem sob "Perícias". A forma suportada
+        os arquivos de quem trabalha em pastas como "Perícias". A forma suportada
         é a lista de argumentos em arquivo (`-@`), gravada em UTF-8 e lida
         com `-charset filename=UTF8`.
         """
