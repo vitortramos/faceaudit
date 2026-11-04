@@ -354,7 +354,7 @@ class ImagePipelineDialogController:
 
         # Lê imagem via open+imdecode (`cv2.imread` falha SILENCIOSAMENTE
         # em paths com chars não-ASCII no Windows — caminho típico do
-        # projeto contém `OneDrive/...`). Mesmo padrão
+        # projeto costuma ter acentos, como `Perícias/...`). Mesmo padrão
         # do `FFService._safe_read_image`.
         try:
             with open(img_path, "rb") as fh:

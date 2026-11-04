@@ -1,0 +1,21 @@
+{
+    "paths": {
+        "library": "data",
+        "dir_templates": "data/templates"
+    },
+    "ofiq": {
+        "ofiq_exe_path": "C:\OFIQ-1.0.3\install_x86_64\Release\bin\OFIQSampleApp.exe",
+        "ofiq_data_path": "C:\OFIQ-1.0.3\data"
+    },
+    "exiftool": {
+        "exiftool_exe_path": "exiftool"
+    },
+    "ff": {
+        "use_gpu": true,
+        "batch_size": 32,
+        "default_model": "sepaelv2"
+    },
+    "theme": {
+        "mode": "light"
+    }
+}

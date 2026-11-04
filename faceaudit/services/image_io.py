@@ -3,7 +3,7 @@
 
 `cv2.imwrite`/`cv2.imread` falham **silenciosamente** em caminhos com
 caracteres não-ASCII no Windows (a API C usa `fopen` com a codepage
-ANSI; caminhos como `OneDrive/...` quebram sem erro).
+ANSI; caminhos com acento, como `Perícias/...`, quebram sem erro).
 O workaround canônico — já usado em
 `FeatureExtractionPipeline._materialize_aligned_crops` — é codificar em
 memória (`cv2.imencode`) e gravar/ler os bytes via `pathlib`, que usa a
