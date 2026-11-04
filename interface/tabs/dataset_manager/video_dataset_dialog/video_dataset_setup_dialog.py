@@ -24,6 +24,9 @@ from faceaudit.services.video_frame_face_extraction_service import (
 )
 from faceaudit.models.video.video_extraction_config import VideoExtractionConfig
 from faceaudit.enums.sepael_model import SepaelModel
+from interface.tabs.dataset_manager.workers.anchor_click_worker import (
+    AnchorClickResult, AnchorClickWorker,
+)
 
 # Cores estáveis por alvo (índice → cor da caixa no quadro e da bolinha na
 # lista). Tons médios, legíveis sobre quadros de vídeo.
@@ -106,9 +109,16 @@ class _FrameView(QtWidgets.QGraphicsView):
         self._pix_item: Optional[QtWidgets.QGraphicsPixmapItem] = None
         self._rects: List[QtWidgets.QGraphicsRectItem] = []
         # Overlay de estado-vazio (mensagem centrada quando não há quadro).
+        # WA_TransparentForMouseEvents é obrigatório — no macOS o `.hide()`
+        # nem sempre remove o widget da hierarquia de hit-testing quando ele
+        # é filho de um QGraphicsView; sem esse atributo o overlay sequestra
+        # cliques mesmo hidden, fazendo os cliques na face serem descartados
+        # silenciosamente. Windows não reproduz o bug.
         self._empty = QtWidgets.QLabel("", self)
         self._empty.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
+        self._empty.setAttribute(
+            QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         apply_themed_stylesheet(
             self._empty,
             lambda t: "color:" + t("TEXT_MUTED") + "; font-size:14px; background:transparent;")
@@ -656,6 +666,12 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         # Assinatura (modelo, det_size, det_thresh) do serviço já construído —
         # evita recriar a FFService (recarregar modelos) ao só trocar de vídeo.
         self._service_sig: Optional[tuple] = None
+        # Clique de âncora em andamento (worker). Enquanto houver thread viva a
+        # janela ignora novos cliques na view — o alvo está sendo mutado fora
+        # da thread da interface e não pode receber um 2º clique concorrente.
+        self._anchor_thread: Optional[QtCore.QThread] = None
+        self._anchor_worker: Optional[AnchorClickWorker] = None
+        self._anchor_row: Optional[_TargetRowWidget] = None
 
         self._build_ui()
         self._add_target(activate=True)  # semeia o 1º alvo (caso single = "1 alvo")
@@ -1619,6 +1635,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         self._detect_current()
 
     def done(self, r: int):
+        # Um clique de âncora em andamento precisa terminar antes de destruir
+        # a janela: o worker ainda mutaria o alvo e emitiria para slots mortos.
+        self._wait_anchor_click()
         # Para o timer de scrub ANTES de liberar o capture — senão um
         # _on_scrub_timeout ainda na fila reabriria o capture logo após o release.
         self._scrub_timer.stop()
@@ -1781,6 +1800,9 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
     def _on_view_clicked(self, x: float, y: float):
         if not self._current_dets or not self._service:
             return
+        if self._anchor_click_busy():
+            # Um clique por vez: o anterior ainda está extraindo o embedding.
+            return
         row = self._active_row
         if row is None:
             QtWidgets.QMessageBox.information(
@@ -1789,34 +1811,86 @@ class VideoDatasetSetupDialog(QtWidgets.QDialog):
         model = self._selected_model()
         is_image = self._anchor_source_is_image
         src = self._current_anchor_source()
-        if row.has_anchor():
-            # Acrescenta âncora ao alvo ativo (multifonte: outro quadro/vídeo/foto).
-            before = row.video_target.anchor_embedding_count
-            res = self._service.add_anchor_from_click(
-                row.video_target, self._current_frame, x, y, model=model, source=src)
-            if res is None:
-                return
-            if row.video_target.anchor_embedding_count == before:
+        # Detecção + embedding rodam num worker: no macOS o encoder de
+        # recognition leva 2–4 s por âncora (lote fixo no CoreML) e, na
+        # thread da interface, a janela congelaria e o clique pareceria
+        # perdido. A view fica bloqueada para novos cliques até terminar.
+        worker = AnchorClickWorker(
+            self._service, self._current_frame, x, y,
+            model=model, source=src,
+            existing_target=row.video_target if row.has_anchor() else None,
+            label=row.label_text() or "alvo",
+            similarity_threshold=row.threshold(),
+            frame_index=(None if is_image else self.scrubber.current()),
+        )
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_anchor_click_finished)
+        worker.error.connect(self._on_anchor_click_error)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._on_anchor_thread_finished)
+
+        self._anchor_thread, self._anchor_worker, self._anchor_row = thread, worker, row
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.CursorShape.WaitCursor)
+        self._active_status_label().setText("Extraindo âncora…")
+        thread.start()
+
+    def _anchor_click_busy(self) -> bool:
+        t = self._anchor_thread
+        if t is None:
+            return False
+        try:
+            return t.isRunning()
+        except RuntimeError:      # QThread já destruído pelo deleteLater
+            return False
+
+    def _on_anchor_click_finished(self, result: object):
+        QtWidgets.QApplication.restoreOverrideCursor()
+        row = self._anchor_row
+        if not isinstance(result, AnchorClickResult) or row is None:
+            return                # erro já tratado em _on_anchor_click_error
+        if row not in self._target_rows:
+            return                # alvo removido enquanto a âncora era extraída
+        if not result.hit:
+            return                # nenhuma detecção contém o ponto
+        if result.created:
+            row.set_anchor(result.target, result.det_index)
+        else:
+            if result.target.anchor_embedding_count == result.anchors_before:
                 self._active_status_label().setText(
                     "Essa face já está ancorada — âncora não duplicada.")
             row.refresh_anchor_status()
-        else:
-            built = self._service.build_target_from_click(
-                self._current_frame, x, y, label=row.label_text() or "alvo",
-                similarity_threshold=row.threshold(), model=model,
-                frame_index=(None if is_image else self.scrubber.current()))
-            if built is None:
-                return
-            target, det_idx, _dets = built
-            # Registra a fonte real (vídeo ou foto) preservando bbox/det_index.
-            if target.anchor_sources:
-                merged = dict(target.anchor_sources[-1])
-                merged.update(src)
-                target.anchor_sources[-1] = merged
-            row.set_anchor(target, det_idx)
         self._redraw_boxes()
         self._refresh_targets_count()
         self._refresh_extract_enabled()
+
+    def _on_anchor_click_error(self, msg: str):
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self._active_status_label().setText("Falha ao extrair a âncora.")
+        QtWidgets.QMessageBox.critical(
+            self, "Âncora", f"Falha ao extrair a âncora da face clicada:\n{msg}")
+
+    def _on_anchor_thread_finished(self):
+        self._anchor_thread = None
+        self._anchor_worker = None
+        self._anchor_row = None
+
+    def _wait_anchor_click(self, timeout_ms: int = 30_000) -> bool:
+        """Aguarda o clique de âncora em andamento terminar E entrega os seus
+        sinais na thread da interface. Usado ao fechar a janela (não deixar
+        thread viva com a view destruída) e pelos testes, que clicam e
+        conferem o estado em seguida. Devolve False se estourou o tempo."""
+        deadline = QtCore.QDeadlineTimer(timeout_ms)
+        while self._anchor_thread is not None:
+            if deadline.hasExpired():
+                return False
+            QtWidgets.QApplication.processEvents(
+                QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 50)
+            QtCore.QThread.msleep(5)
+        return True
 
     def _current_anchor_source(self) -> dict:
         """Proveniência da fonte do quadro atualmente exibido (vídeo ou foto)."""
