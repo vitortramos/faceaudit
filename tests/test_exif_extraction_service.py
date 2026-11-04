@@ -2,7 +2,7 @@
 
 O que os testes travam:
 
-- **Caminho com acento funciona.** A árvore de trabalho inteira vive sob
+- **Caminho com acento funciona.** A árvore de trabalho inteira pode viver sob
   "Perícias"; passar os caminhos na linha de comando fazia o
   ExifTool responder "File not found" para todos eles, em silêncio. A
   correção é a lista de argumentos em arquivo UTF-8 (`-@`), e é isso que
@@ -122,7 +122,7 @@ def test_ordem_de_entrada_preservada(tmp_path):
 @pytest.mark.skipif(_SEM_EXIFTOOL, reason="ExifTool não disponível nesta máquina")
 def test_exiftool_le_caminho_com_acento(tmp_path):
     """O bug que motivou a lista de argumentos em arquivo."""
-    pasta = tmp_path / "Perícias" / "Comparação"
+    pasta = tmp_path / "Perícias Faciais" / "Comparação"
     arquivo = _imagem_com_exif(pasta / "EMISSÃO 26_08_2021.jpg")
     svc = ExifExtractionService("exiftool")
 
