@@ -37,6 +37,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from faceaudit.enums.audit_operation import AuditOperation
 from faceaudit.models.audit.audit_log_entry import AuditLogEntry
+from faceaudit.services.software_provenance_service import software_provenance
 
 
 @dataclass(frozen=True)
@@ -129,11 +130,15 @@ class AuditLogService:
         entries = cls.load(dataset_path)
         parent_hash = entries[-1].entry_hash if entries else None
         op_str = operator or cls.current_operator()
+        # Toda entrada diz qual FaceAudit a produziu (versão + commit) —
+        # dentro do metadata, portanto coberta pelo entry_hash.
+        meta = dict(metadata or {})
+        meta.setdefault("software", software_provenance())
         new_entry = AuditLogEntry.create(
             operation=operation,
             description=description,
             operator=op_str,
-            metadata=metadata,
+            metadata=meta,
             dataset_hash=dataset_hash,
             parent_entry_hash=parent_hash,
         )

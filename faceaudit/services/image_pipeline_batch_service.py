@@ -70,6 +70,7 @@ from faceaudit.pipelines.image_processing_pipeline import (
     ImageProcessingPipeline,
 )
 from faceaudit.services.audit_log_service import AuditLogService
+from faceaudit.services.software_provenance_service import software_provenance
 from faceaudit.services.dataset_localization_service import (
     SELF_CONTAINED_IMAGES_SUBDIR,
     sanitize_dir_name,
@@ -334,6 +335,7 @@ class ImagePipelineBatchService:
             "pose_carried": list(POSE_LEVADA),
             "degradation_measures": degradacao,
             "operator": AuditLogService.current_operator(),
+            "software": software_provenance(),
             "pipeline_config": pipeline_config.to_dict(),
         }
         manifest_path = dataset_dir / _MANIFEST_NAME

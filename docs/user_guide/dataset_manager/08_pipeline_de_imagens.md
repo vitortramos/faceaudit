@@ -611,13 +611,18 @@ tinha alterações não salvas, isso também fica registrado (o hash
 gravado descreve o arquivo, não o que estava em memória). O dataset de
 origem continua recebendo a sua entrada `COPY_IMAGES`.
 
+Como toda entrada de cadeia de custódia do FaceAudit, ela traz também
+`software`: a versão do FaceAudit, o commit do código que rodou e
+`git_dirty`, que é verdadeiro quando o código tinha alterações não
+commitadas — nesse caso o commit sozinho não reproduz o resultado.
+
 ### Manifesto e parquet de erros
 
 O `manifest.json` (na pasta do dataset) é a âncora forense da execução.
 Registra: nome/seed/origem do pipeline, tipos e número de steps,
 contagens (processadas / concluídas / puladas / falhas), timestamp de
-início, duração, dataset-fonte, operador e o **config completo do
-pipeline**. Ele **não** contém hashes por imagem — o SHA-256 de cada
+início, duração, dataset-fonte, operador, a versão e o commit do
+FaceAudit (`software`) e o **config completo do pipeline**. Ele **não** contém hashes por imagem — o SHA-256 de cada
 PNG vive na coluna `hash` do parquet derivado.
 
 Quando alguma face falha, é gravado `<nome>__errors.parquet` (na
