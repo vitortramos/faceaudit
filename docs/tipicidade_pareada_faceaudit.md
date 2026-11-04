@@ -14,6 +14,14 @@
 > - Rename `LOG_DENSITY_KNN` → `LOG_DENSITY_ESTIMATE` (universal).
 > - Validações runtime explícitas no executor.
 >
+> Também mudou desde então: a instrução de treino
+> `KNN_TYPICALITY_MODEL_TRAINING` citada abaixo não existe mais — foi
+> substituída por `TYPICALITY_MODEL_TRAINING`
+> (`docs/typicality_model_training_faceaudit.md`), e estratégias antigas
+> são migradas na abertura. O `LR_ARCHITECTURE_VECTORIZATION` casa os
+> pares de raridade pela chave orientada `(probe_hash, reference_hash)`,
+> independentemente do combinador.
+>
 > Preservado por valor histórico. Para a versão atual, ver o doc V2.15.
 
 ---
@@ -25,8 +33,8 @@
 > e exemplos.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `55c3d8a`
-> (branch `claude/read-claude-md-SgzIV`). Campos, fórmulas e enums conferidos
+> **Fonte documental:** repositório FaceAudit no commit `55c3d8a`.
+> Campos, fórmulas e enums conferidos
 > em `faceaudit/executors/instructions/typicality_pair_scoring_instruction_executor.py`,
 > `faceaudit/models/instructions/typicality_pair_scoring_instruction.py`,
 > `faceaudit/enums/typicality_combiner.py`,

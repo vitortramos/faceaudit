@@ -154,9 +154,10 @@ A V2.14 introduziu uma instrução declarativa irmã —
 `LR_ARCHITECTURE_VECTORIZATION` — que aplica o mesmo padrão arquitetural
 descrito aqui (sklearn `Pipeline` envolvendo um transformer fold-aware
 seguido de `StandardScaler` + `LogisticRegression`, com `GridSearchCV`
-sobre `c_grid`) mas para um **escopo distinto**: as 9 arquiteturas
-LR forenses canônicas que envolvem score base + raridade (do
-`COSINE_ONLY` ao `BILATERAL_FULL_CENTERED`). As duas integrações são
+sobre `c_grid`) mas para um **escopo distinto**: as 15 arquiteturas
+LR forenses declarativas que envolvem score base + raridade (9
+two-face, do `COSINE_ONLY` ao `BILATERAL_FULL_CENTERED`, e 6 da
+família `*_ONE_FACE`, que usam a raridade de uma única face). As duas integrações são
 ortogonais e podem coexistir:
 
 | Componente | Domínio | Transformer aprendido por fold | Output dim |
@@ -1071,10 +1072,12 @@ Em distribuições aproximadamente simétricas
 aproximadamente com as medianas observadas, e a distinção é
 cosmética; em distribuições assimétricas, o espelhamento é uma
 decisão de regularização não-trivial. A partir da V2.6, o nome
-canônico do enum é `AUTO_FROM_MIRRORED_MEDIANS`. O valor legado
-`AUTO_FROM_MEDIANS` continua aceito como alias de entrada por
-`from_str()` para compatibilidade com JSONs e pickles anteriores;
-novos artefatos persistem o nome canônico e registram
+canônico do membro do enum é `AUTO_FROM_MIRRORED_MEDIANS`. O nome
+legado `AUTO_FROM_MEDIANS` continua aceito como alias de entrada por
+`from_str()` e, para não quebrar JSONs e pickles anteriores, continua
+sendo o **valor serializado** do membro (`to_str()` devolve
+`"AUTO_FROM_MEDIANS"` no JSON da config e em `piecewise_knot_placement`).
+O que distingue os artefatos novos é
 `knot_placement_protocol_version = "auto_from_mirrored_medians_v1"`.
 
 **Default operacional.** Desde a V2.4, o construtor
@@ -1267,10 +1270,12 @@ contrato de auditoria** do componente.
 ### 7.4 Knots e suporte
 
 - `piecewise_knot_scale`: `"RAW"` ou `"AUX_LOG_LR"`.
-- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MIRRORED_MEDIANS"`
+- `piecewise_knot_placement`: `"MANUAL"` ou `"AUTO_FROM_MEDIANS"`
   (string serializada — o valor `AUTO_FROM_MEDIANS` é preservado
-  como tag retroativa mesmo após o rename do enum para
-  `AUTO_FROM_MIRRORED_MEDIANS` na V2.4).
+  para o membro `AUTO_FROM_MIRRORED_MEDIANS` mesmo após o rename do
+  enum na V2.6; ver `knot_placement_protocol_version` em §7.1).
+- `piecewise_knot_offsets`: offsets em escala de score (campo de
+  compatibilidade; mesmo conteúdo de `piecewise_knot_offsets_raw`).
 - `piecewise_knot_offsets_user`: offsets na escala do usuário.
 - `piecewise_knot_offsets_raw`: offsets em escala de score (sempre).
 - `piecewise_knots_absolute`: posições absolutas $k_j$ em escala de
@@ -1312,20 +1317,23 @@ contrato de auditoria** do componente.
 - `monotonicity_check`: descreve a política aplicada (
   `"strict_increasing_post_fit"`).
 
-> **Relação com `ConditionalMonotonicityRule`** (V1.5 da regra plugável,
-> `docs/conditional_monotonicity_rule_design.md`): a regra cobre, na
-> V1.5 atual, as **15 arquiteturas declarativas** de `LR_ARCHITECTURE_VECTORIZATION`
-> via `LRArchitectureDerivativeProvider`. O **piecewise univariado clássico
-> descrito neste documento** (com $K$ knots arbitrários, ajustado pelo
-> `PiecewiseLinearScoreTransformer`) **ainda não é coberto pela regra
-> plugável** — sua verificação de monotonicidade continua sendo feita
-> internamente pelo `LogisticRegressionCalibrationModel` via
-> `require_monotonicity` + `monotonicity_policy` (`segment_slopes_raw`,
-> `is_monotonic` acima). A cobertura do piecewise legado pela regra está
-> enfileirada como `PiecewiseLinearDerivativeProvider` na próxima iteração
-> — quando implementada, os mesmos campos `segment_slopes_raw` serão
-> consumidos por `MonotonicityRegionResult.slope_value` por segmento, e os
-> dois caminhos convergirão.
+> **Relação com `ConditionalMonotonicityRule`** (regra plugável,
+> `docs/conditional_monotonicity_rule_design.md`): a regra cobre as
+> **15 arquiteturas declarativas** de `LR_ARCHITECTURE_VECTORIZATION`
+> via `LRArchitectureDerivativeProvider` e, por despacho automático
+> (`piecewise_enabled` no metadata, sem `architecture_state`), também o
+> **piecewise univariado descrito neste documento**, via
+> `PiecewiseLinearDerivativeProvider`: esse provider lê
+> `piecewise_knots_absolute` e `segment_slopes_raw` e produz um
+> `MonotonicityRegionResult` por segmento ($K+1$ segmentos), com
+> `slope_value` constante. A verificação interna do
+> `LogisticRegressionCalibrationModel` (`require_monotonicity` +
+> `monotonicity_policy`, campos `segment_slopes_raw` e `is_monotonic`
+> acima) continua sendo a que roda no treino. A auditoria automática
+> pós-refit do executor de `CALIBRATION_MODEL_TRAINING` só é disparada
+> quando o calibrador tem `architecture_state`; para o piecewise
+> univariado, a regra só roda se for declarada como regra de validação
+> de uma instrução.
 
 ### 7.7 Ponto de cruzamento efetivo
 
@@ -1680,7 +1688,10 @@ de PLDA; mesmo nesses casos, a adequação empírica da escala deve
 ser avaliada no domínio operacional, pois mismatch, regularização e
 violações de gaussianidade podem justificar recalibração); estima a
 CDF empírica das duas classes com pesos
-$0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$; e mapeia o output via
+$0{,}5/(N_d+1)$ e $0{,}5/(N_p+1)$ (no FaceAudit, `gx_method` escolhe
+entre a CDF empírica linear por trechos do artigo, `EMPIRICAL_LINEAR`,
+e uma versão suavizada por KDE, `KDE_SMOOTHED`, que é o default da
+config); e mapeia o output via
 $F^{-1}(G(x))$ onde $F$ é a mistura paramétrica
 $0{,}5 \cdot \mathcal{N}(+\sigma^2/2, \sigma^2) + 0{,}5 \cdot
 \mathcal{N}(-\sigma^2/2, \sigma^2)$ com $\sigma$ derivado do
@@ -1891,7 +1902,13 @@ fluxo é:
    persistidos no metadata para auditoria (§7.10);
 6. quando **nenhum candidato** produz curva monotônica, o calibrador
    é rejeitado com erro listando cada $C$ testado e a violação
-   detectada.
+   detectada (com `monotonicity_policy = ERROR`; em `WARNING`, o
+   erro vira alerta no log e é usado o $C$ de melhor CV score, mesmo
+   não-monotônico).
+
+Nessa varredura o limiar de crescimento estrito é fixo em $10^{-8}$;
+o `min_allowed_slope` configurado é aplicado na validação do fit
+final (§3.3).
 
 Esse procedimento converte a rejeição por não-monotonicidade num
 filtro automático, elimina ajuste post-hoc do `c_grid`, e mantém
@@ -2030,9 +2047,9 @@ numericamente).
 A expansão piecewise-linear assume score 1D. Em pipelines de
 calibração multivariada (input `SCORE_VECTORIZATION` com $D > 1$),
 ativar `mode=PIECEWISE_LINEAR` resulta em erro. Para casos
-multivariados, usar `SCORE_INTERACTION_FEATURE` externo com
-calibrador linear, ou aplicar piecewise apenas após reduzir o vetor a
-1D.
+multivariados, usar `LR_ARCHITECTURE_VECTORIZATION` (arquiteturas com
+termos hinge) ou `SCORE_INTERACTION_FEATURE` externo com calibrador
+linear, ou aplicar piecewise apenas após reduzir o vetor a 1D.
 
 ### 10.5 Score sem tipicidade explícita
 

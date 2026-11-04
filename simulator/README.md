@@ -29,11 +29,12 @@ Em qualquer regime, é possível variar separadamente:
 pip install numpy pandas
 ```
 
-Para executar os testes:
+Para executar os testes (de dentro de `simulator/`; os testes do adapter e do Modo B exigem o
+pacote `faceaudit` instalado):
 
 ```bash
 pip install pytest
-python -m pytest -q
+python -m pytest tests/ -q
 ```
 
 ## Exemplo rápido
@@ -168,8 +169,9 @@ from adaface_embedding_simulator import (
     config_to_dict,
 )
 
-# 'manifest.json' é escrito por dataset.save_bundle(...) / simulator.save_manifest(...)
-config = config_from_manifest("synthetic_output/test/manifest.json")
+# 'test_manifest.json' é escrito por dataset.save_bundle("synthetic_output", "test")
+# (ou por dataset.save_manifest(...))
+config = config_from_manifest("synthetic_output/test_manifest.json")
 
 # Idempotência verificável: serializar -> desserializar -> serializar é estável.
 payload = config_to_dict(config)
@@ -177,8 +179,10 @@ assert config_to_dict(config_from_dict(payload)) == payload
 ```
 
 `config_from_dict` aceita o dicionário produzido por `config_to_dict` (enums como string,
-arrays como listas); chaves ausentes caem nos *defaults* do dataclass (compatível com
-configs antigas) e chaves desconhecidas levantam erro, expondo *version drift* cedo.
+arrays como listas); chaves ausentes dentro de cada bloco (e o bloco `coupling` inteiro)
+caem nos *defaults* do dataclass (compatível com configs antigas) e chaves desconhecidas
+levantam erro, expondo *version drift* cedo. `dimension`, `population`, `radial`,
+`directional` e `acquisition_domains` continuam obrigatórios no topo.
 
 ## Documentação
 

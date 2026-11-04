@@ -95,6 +95,11 @@ Aceitam **valores exatos** separados por vírgula:
 | `Male, Female` | OR entre valores |
 | Botão **▾** | Abre um seletor com todos os valores únicos da coluna no dataset (com checkboxes; **Marcar tudo** / **Desmarcar tudo**). Ao aceitar, preenche o campo com os valores marcados |
 
+A comparação é **exata e sensível a maiúsculas/minúsculas**: `m`
+não casa com `M`. O seletor ▾ lista primeiro os valores que existem
+no dataset e depois os do vocabulário da coluna que ainda não
+apareceram.
+
 > 💡 O seletor de valores únicos é **desabilitado** quando a
 > coluna tem mais de 500 valores distintos — evita travar a UI ao
 > renderizar uma lista enorme. Nesse caso, digite manualmente
@@ -103,8 +108,11 @@ Aceitam **valores exatos** separados por vírgula:
 ### Colunas booleanas
 
 Apenas uma checkbox: marcado = filtrar onde `true`; desmarcado =
-filtrar onde `false`. Para *"valor ausente"* (NaN), use uma
-condição extra sobre coluna numérica.
+filtrar onde `false`.
+
+> ⚠️ Em qualquer tipo de coluna, uma face com **valor ausente**
+> naquela coluna **nunca passa** na condição — nem com a caixa
+> desmarcada. Não há como selecionar "valor ausente" pelo filtro.
 
 ### Validação
 
@@ -114,7 +122,9 @@ Quando você clica **Aplicar**:
 |---|---|
 | Linha com coluna que **não existe** no dataset | Marcada em vermelho com ⚠; um aviso pergunta se você quer **continuar mesmo assim** — se sim, essas linhas são **ignoradas** na aplicação |
 | Valor malformado (ex.: texto onde se espera número) | **Descartado silenciosamente** — não marca a linha nem bloqueia. Só os tokens válidos entram no filtro |
+| Linha com coluna escolhida mas sem nenhum valor/faixa válido | **Ignorada** — não restringe nada |
 | Nenhuma linha preenchida | Equivalente a "sem filtro" — o filtro resultante casa todas as faces |
+| Filtro que não deixa **nenhuma** face | Aviso "Nenhum resultado encontrado com estes critérios." — o dataset na tela **não muda** |
 
 > ⚠️ Não há validação de "valor inválido para o tipo" que bloqueie
 > a aplicação. Tokens malformados são simplesmente ignorados, então
@@ -161,6 +171,13 @@ colunas.
 >
 > Isso preserva o original para auditoria.
 
+> ⚠️ Com filtro ativo, **💾 Salvar** (não o *Salvar Como*) grava o
+> **recorte** sobre o arquivo de onde o dataset foi aberto — as faces
+> fora do filtro deixam de existir nele. Para guardar o subset, use
+> **Salvar Como**: a entrada da cadeia de custódia registra que o
+> conteúdo gravado foi a vista filtrada (`content: filtered_view`) e o
+> critério do filtro.
+
 A barra de status reflete o filtro ativo com o sufixo **(Filtrado)**
 ao final da linha de badges:
 
@@ -169,8 +186,8 @@ ao final da linha de badges:
 ```
 
 O número de imagens/identidades passa a refletir o subset filtrado.
-Detalhes como `path` e `hash` do parquet aparecem no **tooltip** da
-barra, não na linha principal (ver [capítulo 04](04_navegando_dataset.md)).
+Detalhes como o caminho do parquet, o modo de path e o tamanho do
+arquivo aparecem no **tooltip** da barra, não na linha principal (ver [capítulo 04](04_navegando_dataset.md)).
 
 O botão 🔍 **Filtrar** (ribbon *Dataset*) muda para **amarelo**
 quando há filtro ativo, e o botão 🗑️ **Limpar Filtro** — desabilitado
@@ -190,14 +207,15 @@ Mostra **distribuições agregadas** em abas:
 | Aba | Conteúdo |
 |---|---|
 | 👤 **Identidades** | Cada identidade + quantas amostras + % do total |
-| ⚧️ **Gênero** | Male / Female / vazio + contagens |
+| ⚧️ **Gênero** | Cada valor de gênero (ex.: `M` / `F`) + contagens |
 | 🌍 **Etnia** | Cada etnia + contagens |
 | 💾 **Fonte** *(origem)* | Cada `origin` + contagens |
 
-Cada aba tem o **cabeçalho** com o número de valores únicos e uma
-**tabela** ordenada por contagem decrescente:
+Cada aba tem o **cabeçalho** com o número de valores únicos
+(*"Total de Identidades Únicos: N"*) e uma **tabela** ordenada por
+contagem decrescente, cuja primeira coluna leva o nome da aba:
 
-| Categoria | Quantidade | % Total |
+| Identidades | Quantidade | % Total |
 |---|---|---|
 | `n000009` | 1 | 25.0% |
 | `n000135` | 1 | 25.0% |
@@ -220,7 +238,8 @@ aplicam ao subset filtrado.
 
 Valores ausentes (NaN) viram a categoria `N/A` na tabela —
 visível como qualquer outra. Use isso pra detectar "buracos" no
-preenchimento de metadados.
+preenchimento de metadados. Texto vazio (`""`) **não** é contado
+nem entra no total que serve de base para a porcentagem.
 
 ## O diálogo *Colunas*
 
@@ -238,19 +257,19 @@ estatísticas de cobertura:
 | ☑️ **Visível** | Toggle de visibilidade na tabela principal — mudanças aplicam **imediatamente** e marcam o dataset como modificado (\*) |
 | **Coluna** | Nome técnico (ex: `ofiq_sharpness_scalar`) |
 | **Rótulo** | Nome amigável exibido no cabeçalho (ex: `Nitidez (OFIQ)`) |
-| **Role** | Papel semântico: `identity`, `image_path`, `file_hash`, `embedding`, `quality`, `pose`, `geometry`, `demographic`, `display`, `metadata`, `custom` |
-| **Source** | Origem: `manual`, `ff`, `ofiq`, `serfiq`, `derived`, `custom` |
+| **Role** | Papel semântico: `identity`, `image_path`, `file_hash`, `embedding`, `quality`, `pose`, `geometry`, `demographic`, `display`, `metadata`, `capture`, `custom` |
+| **Source** | Origem: `manual`, `ff`, `ofiq`, `serfiq`, `derived`, `exif`, `custom` |
 | **Tipo** | `str`, `int`, `float`, `bool`, `vector` (embeddings), `list` |
 | **Não-nulos** | Contagem de faces com valor preenchido |
 | **Total** | Contagem total de faces |
-| **Cobertura** | Porcentagem (com cor: 🟢 100%, 🟡 50–99%, 🔴 <50%, ⚪ 0%) |
+| **Cobertura** | Porcentagem; a linha inteira é pintada conforme ela: verde = 100%, amarelo = 50–99%, vermelho = < 50%, neutro = 0% |
 | **Min / Max / Média** | Para colunas numéricas |
 | **Distintos** | Contagem de valores únicos |
 | **Dim** | Dimensão (para embeddings) |
 
 ### Controles em lote
 
-Botões no topo:
+Botões acima da tabela (Mostrar/Ocultar) e no rodapé (Exportar/Fechar):
 
 | Botão | Função |
 |---|---|
@@ -273,7 +292,7 @@ Dataset**:
 |---|---|
 | **Colunas a exportar** | Uma **lista com checkbox por coluna**. Por padrão vêm marcadas as colunas visíveis, com os **embeddings desmarcados** (ficariam strings gigantes ilegíveis no CSV). Colunas de embedding são sinalizadas com `⚠ embedding (gigante em CSV)` |
 | **Todas / Nenhuma / Apenas visíveis / Sem embeddings** | Botões auxiliares que marcam/desmarcam em lote a lista de colunas |
-| **Formato** | CSV (`.csv`) ou Excel (`.xlsx`) |
+| **Formato** | CSV (`.csv`) ou Excel (`.xlsx` — exige o pacote `openpyxl` instalado) |
 | **Delimitador** *(só CSV)* | **Vírgula** `,` (default), **Ponto-e-vírgula** `;`, **Tab** ou **Pipe** `\|` |
 | **Exportar…** | Abre o seletor de arquivo para salvar |
 

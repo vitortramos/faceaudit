@@ -106,16 +106,21 @@ LR_ARCHITECTURE_VECTORIZATION(
 O executor consulta o `LRArchitectureSpec` daquela arquitetura no
 registry `LR_ARCHITECTURE_SPECS` e materializa a matriz de features
 via `ArchitectureFeatureBuilder.build(spec, state, base, r_F, r_P)`
-genericamente — zero `if-elif` por arquitetura.
+genericamente (função de módulo `architecture_feature_builder.build`)
+— zero `if-elif` por arquitetura.
 
 ### 0.3 Compatibilidade com o fluxo antigo
 
 A V2.14 **não obriga** migração. O encadeamento histórico
 `SCORE_INTERACTION_FEATURE` + `SCORE_VECTORIZATION` continua válido com
 `legacy_transform_typicality` para preservar tolerância numérica das
-estratégias V2.13. Calibradores antigos sem fingerprint podem ser
-carregados em `compatibility_mode = LEGACY_PERMISSIVE` (opt-in
-explícito no `SCORE_CALIBRATION`, com warning visível).
+estratégias V2.13. Calibradores antigos sem fingerprint aplicados a
+dataset também sem fingerprint passam com warning informativo; a
+combinação dataset novo + calibrador antigo é rejeitada no
+`SCORE_CALIBRATION`, que hoje sempre valida em `STRICT` (o modo
+`LEGACY_PERMISSIVE` existe em `CalibrationCompatibilityMode` e no
+`CalibrationModelMetadataService`, mas a instrução não expõe campo
+para escolhê-lo — vide §10.2).
 
 ---
 
@@ -140,15 +145,17 @@ SIMILARITY_SCORING (cosseno ou PLDA)        TYPICALITY_PAIR_SCORING (probe + ref
             CALIBRATION_MODEL_TRAINING (LogReg) → SCORE_CALIBRATION → STRATEGY_EVALUATION
 ```
 
-O output `SIMILARITY_SCORES vetorizado` traz, em cada item,
-`raw_score` D-dimensional (cosseno se `D=1`; vetor de features se
-`D>1`). O calibrador `LogisticRegressionCalibrationModel`
-[`docs/calibracao_faceaudit.md`] aceita score multivariado quando
-`standardize_features=True` e popula o pipeline `[StandardScaler →
-LogReg]` internamente.
+O output `SIMILARITY_SCORES vetorizado` preserva em cada item o
+`raw_score` escalar do base (compat com consumidores escalares) e
+carrega a matriz de features `(N, D)` no metadata
+(`is_score_vector=True`, `score_vector_matrix`, `score_vector_dim`).
+O calibrador `LogisticRegressionCalibrationModel`
+[`docs/calibracao_faceaudit.md`] consome essa matriz como score
+multivariado; com `standardize_features=True` popula o pipeline
+`[StandardScaler → LogReg]` internamente.
 
 O output `LR_ARCHITECTURE_RAW_INPUT` (opcional em FIT_FULL/MANUAL;
-obrigatório em FIT_PER_FOLD) carrega a matriz bruta `[base, r_F,
+necessário em FIT_PER_FOLD — vide §5.2) carrega a matriz bruta `[base, r_F,
 r_P]` + identidades — é o que o `CALIBRATION_MODEL_TRAINING` consome
 no FIT_PER_FOLD para ajustar s₀/r̄ **dentro** de cada fold do
 GridSearchCV interno.
@@ -273,14 +280,19 @@ distinguir quando apenas uma face contribui com tipicidade.
 `faceaudit/enums/lr_feature_term.py`
 
 Termos atômicos que compõem as 15 arquiteturas. Cada termo tem um
-`LRFeatureTermSpec` registrado em `LR_FEATURE_TERM_SPECS` com:
+`LRFeatureTermSpec` registrado em `LR_FEATURE_TERM_SPECS`
+(`faceaudit/models/lr/lr_feature_term_spec.py`) com:
 
-- `fn(state, base, r_F, r_P, r_single) → np.ndarray (N,)` — materializa a
-  coluna do termo.
-- `derivative_wrt_base(state, base, ...) → np.ndarray (N,)` —
-  derivada `∂φ_j/∂s` por par.
-- `left_slope_at_s_0`, `right_slope_at_s_0` — slopes nos kinks
-  (`s = s₀`) para `h⁺` e `h⁻`.
+- `build_fn(ctx: LRFeatureBuildContext) → np.ndarray (N,)` —
+  materializa a coluna do termo. O `LRFeatureBuildContext` traz `base`,
+  `s0`, `delta`, `hinge_positive`, `hinge_negative` e as raridades
+  brutas e centradas (probe, reference, single) já pré-calculadas.
+- `derivative_wrt_base_fn(ctx) → np.ndarray (N,)` — derivada
+  `∂φ_j/∂s` por par.
+- `handles_kink_at_s0` + `left_slope_at_s0_fn` / `right_slope_at_s0_fn`
+  (opcionais) — slopes laterais no kink (`s = s₀`) para os termos com
+  hinge.
+- `formula_version` — entra no fingerprint da arquitetura.
 
 ### 4.1 Termos two-face (13)
 
@@ -289,16 +301,16 @@ Termos atômicos que compõem as 15 arquiteturas. Cada termo tem um
 | `BASE_SCORE` | `s` | não | não | não |
 | `HINGE_POSITIVE` | `max(s − s₀, 0)` | sim | não | não |
 | `HINGE_NEGATIVE` | `max(s₀ − s, 0)` | sim | não | não |
-| `H_POS_TIMES_RARITY_PROBE` | `h⁺ · r_F` | sim | sim | não |
-| `H_POS_TIMES_RARITY_REFERENCE` | `h⁺ · r_P` | sim | não | sim |
-| `H_POS_TIMES_RARITY_PROBE_CENTERED` | `h⁺ · (r_F − r̄_F)` | sim | sim | não |
-| `H_POS_TIMES_RARITY_REFERENCE_CENTERED` | `h⁺ · (r_P − r̄_P)` | sim | não | sim |
-| `H_NEG_TIMES_RARITY_PROBE_CENTERED` | `h⁻ · (r_F − r̄_F)` | sim | sim | não |
-| `H_NEG_TIMES_RARITY_REFERENCE_CENTERED` | `h⁻ · (r_P − r̄_P)` | sim | não | sim |
-| `LINEAR_TIMES_RARITY_PROBE` | `(s − s₀) · r_F` | sim | sim | não |
-| `LINEAR_TIMES_RARITY_REFERENCE` | `(s − s₀) · r_P` | sim | não | sim |
-| `LINEAR_TIMES_RARITY_PROBE_CENTERED` | `(s − s₀) · (r_F − r̄_F)` | sim | sim | não |
-| `LINEAR_TIMES_RARITY_REFERENCE_CENTERED` | `(s − s₀) · (r_P − r̄_P)` | sim | não | sim |
+| `HINGE_POSITIVE_X_RARITY_PROBE_RAW` | `h⁺ · r_F` | sim | sim | não |
+| `HINGE_POSITIVE_X_RARITY_REFERENCE_RAW` | `h⁺ · r_P` | sim | não | sim |
+| `HINGE_POSITIVE_X_RARITY_PROBE_CENTERED_MEAN` | `h⁺ · (r_F − r̄_F)` | sim | sim | não |
+| `HINGE_POSITIVE_X_RARITY_REFERENCE_CENTERED_MEAN` | `h⁺ · (r_P − r̄_P)` | sim | não | sim |
+| `HINGE_NEGATIVE_X_RARITY_PROBE_CENTERED_MEAN` | `h⁻ · (r_F − r̄_F)` | sim | sim | não |
+| `HINGE_NEGATIVE_X_RARITY_REFERENCE_CENTERED_MEAN` | `h⁻ · (r_P − r̄_P)` | sim | não | sim |
+| `LINEAR_X_RARITY_PROBE_RAW` | `(s − s₀) · r_F` | sim | sim | não |
+| `LINEAR_X_RARITY_REFERENCE_RAW` | `(s − s₀) · r_P` | sim | não | sim |
+| `LINEAR_X_RARITY_PROBE_CENTERED_MEAN` | `(s − s₀) · (r_F − r̄_F)` | sim | sim | não |
+| `LINEAR_X_RARITY_REFERENCE_CENTERED_MEAN` | `(s − s₀) · (r_P − r̄_P)` | sim | não | sim |
 
 ### 4.2 Termos ONE_FACE (5, V2.14.1)
 
@@ -314,15 +326,16 @@ Espelham os two-face para um único `r_single`:
 
 ### 4.3 Derivadas analíticas
 
-Cada `LRFeatureTermSpec` declara `derivative_wrt_base(state, base,
-r_F, r_P)` — a derivada `∂φ_j/∂s` é consumida pela auditoria de
-monotonicidade (vide §13). Por exemplo:
+Cada `LRFeatureTermSpec` declara `derivative_wrt_base_fn(ctx)` — a
+derivada `∂φ_j/∂s` é consumida pela auditoria de monotonicidade (vide
+§13). Por exemplo:
 
-- `BASE_SCORE.derivative_wrt_base = 1` (constante).
-- `HINGE_POSITIVE.derivative_wrt_base = 1[s > s₀]` (1 acima de s₀, 0
-  abaixo). Em `s = s₀` usa derivada à direita (= 1).
-- `H_POS_TIMES_RARITY_PROBE_CENTERED.derivative_wrt_base = (r_F −
-  r̄_F) · 1[s > s₀]`.
+- `BASE_SCORE`: `1` (constante).
+- `HINGE_POSITIVE`: `1[s > s₀]` (1 acima de s₀, 0 abaixo; o indicador
+  é estrito, então em `s = s₀` exato vale 0).
+- `HINGE_NEGATIVE`: `−1[s < s₀]`.
+- `HINGE_POSITIVE_X_RARITY_PROBE_CENTERED_MEAN`: `(r_F − r̄_F) ·
+  1[s > s₀]`.
 
 A linearidade da derivada em `β_raw · ∂φ/∂s` permite que
 `LRArchitectureDerivativeProvider` (auditoria
@@ -350,12 +363,23 @@ para avaliação honesta, usar holdout externo com INHERIT.
 
 ### 5.2 `FIT_PER_FOLD` (V2.14 / PR 3)
 
-Não estima `s₀` upstream. Em vez disso:
+A instrução não faz o ajuste definitivo de `s₀`/r̄. Ela:
 
 1. Emite o `LR_ARCHITECTURE_RAW_INPUT` com a matriz crua `[s, r_F,
    r_P]` + identidades dos dois lados.
 2. Marca o dataset vetorizado com `defer_to_calibrator_per_fold = True`
    no metadata.
+3. Para preservar o contrato do dataset vetorizado, ainda materializa
+   a matriz com `s₀`/r̄ **provisórios**, estimados sobre todo D_cal pelo
+   mesmo procedimento do modo legado (o state já sai com `fit_scope =
+   PER_FOLD_REFIT_FULL_CALIBRATION`). O calibrador ignora essa matriz e
+   usa o raw input.
+
+O `CALIBRATION_MODEL_TRAINING` só assume o caminho por fold quando o
+calibrador é LogReg **e** o metadata traz `raw_input_resource_id` — ou
+seja, quando `output_raw_input_resource_id` foi preenchido. O DTO não
+obriga esse campo: sem ele, o calibrador treina sobre a matriz
+provisória como no modo legado, sem aviso.
 
 O `CALIBRATION_MODEL_TRAINING` detecta a flag e monta o pipeline:
 
@@ -368,7 +392,8 @@ Pipeline([
 ```
 
 Dentro de `GridSearchCV(cv=IdentityDisjointPairKFold(probe_identities=...,
-reference_identities=...))`, o `arch_vec` ajusta `s₀` (via
+reference_identities=...))` — sempre esse splitter neste caminho,
+independentemente de `gridsearch_cv_mode` —, o `arch_vec` ajusta `s₀` (via
 LogReg auxiliar fold-aware) e `r̄_F`, `r̄_P` **dentro de cada train
 fold** — eliminando o leakage residual do FIT_FULL.
 
@@ -395,7 +420,8 @@ A obrigatoriedade dos campos depende da arquitetura:
 
 **Obrigatório em VALIDATION e CASEWORK** (vide §9). Lê o
 `LRArchitectureState` completo de um recurso vetorizado já produzido
-(de uma execução anterior na PREPARATION). Sem recálculo.
+(de uma execução anterior na PREPARATION). Sem recálculo. Também é
+aceito em PREPARATION, sem aviso.
 
 Validações:
 
@@ -403,11 +429,13 @@ Validações:
   deve ter `architecture_state` no metadata.
 - O `architecture` declarado na instrução deve coincidir com o do
   state herdado.
-- `pair_role_orientation`, `pair_key_mode`, score types da raridade
-  devem ser compatíveis (`architecture_state_compat_service.validate_state_compatibility`).
+- `base_score_kind`, `pair_role_orientation` (quando a arquitetura é
+  ordenada) e a proveniência da raridade devem ser compatíveis
+  (`architecture_state_compat_service.validate_state_compatibility`,
+  vide §12.3).
 
-Em VALIDATION/CASEWORK sem `InstructionExecutionFrame` injetado, o
-executor levanta `MissingExecutionFrameError` (fail-closed).
+Sem `InstructionExecutionFrame` injetado, o executor levanta
+`MissingExecutionFrameError` (fail-closed), em qualquer fase.
 
 ---
 
@@ -425,22 +453,29 @@ executor levanta `MissingExecutionFrameError` (fail-closed).
   (centragem MEAN).
 - `r0_single: Optional[float]` — para arquiteturas ONE_FACE V2.14.1.
 
-Persistidos em hex via `hexify_float` para preservação bit-a-bit
-(`hexify_float(0.4566)` → `"0x1.d3a92a30553260p-2"`).
+Entram nos fingerprints em hex via `hexify_float` (= `float.hex`)
+para preservação bit-a-bit (`hexify_float(0.4566)` →
+`"0x1.d38ef34d6a162p-2"`).
 
 ### 6.2 Proveniência
 
 - `architecture: LRCalibrationArchitecture`.
-- `feature_terms: Tuple[LRFeatureTerm, ...]` — duplicado do spec para
-  validação de integridade.
+- `formula_version`, `architecture_spec_fingerprint` — versão e
+  fingerprint do `LRArchitectureSpec`.
+- `feature_terms: Tuple[LRFeatureTerm, ...]`, `feature_names`,
+  `output_dim` — duplicados do spec para validação de integridade.
 - `centering_mode: RarityCenteringMode` — `NONE` ou `MEAN`.
-- `base_score_kind: str` — `"cosine"`, `"plda_simple"`, etc.
+- `base_score_kind: str` — lido de `score_kind` no metadata do base;
+  o `SIMILARITY_SCORING` grava `"cosine"` ou `"plda"` (default
+  `"cosine"` quando ausente).
 - `pair_role_orientation: PairRoleOrientation` — semântica do par.
-- `pair_key_mode: PairKeyMode` — chave da chave do par
+- `pair_key_mode: PairKeyMode` — tratamento da chave do par
   (`ORDERED`/`UNORDERED`).
 - `rarity_probe_score_type`, `rarity_reference_score_type`,
-  `rarity_single_score_type`: enum `TypicalityScoreType` propagados
-  da raridade upstream.
+  `rarity_single_score_type`: strings (valor do score type da
+  tipicidade) propagadas da raridade upstream.
+- `rarity_*_combiner`, `rarity_*_transform_formula_version`,
+  `rarity_*_transform_fingerprint`, `rarity_*_model_resource_id`.
 - `rarity_probe_transform_id`, `rarity_reference_transform_id`,
   `rarity_single_transform_id`: IDs estáveis do
   `RarityTransformRegistry`.
@@ -448,10 +483,12 @@ Persistidos em hex via `hexify_float` para preservação bit-a-bit
   `rarity_reference_model_fingerprint`,
   `rarity_single_model_fingerprint`: `model_contract_fingerprint` do
   modelo de tipicidade upstream (PR 3 do plano de tipicidade).
-- `fit_scope: ArchitectureFitScope` — `FULL_CALIBRATION_LEGACY` ou
-  `PER_FOLD_REFIT_FULL_CALIBRATION`.
+- `fit_scope: ArchitectureFitScope` — `FULL_CALIBRATION_LEGACY`,
+  `PER_FOLD_REFIT_FULL_CALIBRATION`, `MANUAL` ou `NOT_APPLICABLE`.
 - `s0_resolution_method: S0ResolutionMethod` —
-  `AUTO_LOGREG`/`MANUAL`/`INHERIT`/`NOT_APPLICABLE`.
+  `AUTO_LOGREG`/`MANUAL`/`NOT_APPLICABLE`. INHERIT não é um método:
+  o state herdado mantém o `fit_scope` e o `s0_resolution_method` do
+  ajuste original.
 
 ### 6.3 Fingerprints (2 camadas)
 
@@ -489,12 +526,13 @@ Não comparado na aplicação — apenas para rastreamento forense.
 
 ### 6.4 Enums associados
 
-- `ArchitectureFitScope`: `FULL_CALIBRATION_LEGACY` /
-  `PER_FOLD_REFIT_FULL_CALIBRATION`. Tem propriedade
+- `ArchitectureFitScope`: `NOT_APPLICABLE` / `FULL_CALIBRATION_LEGACY`
+  / `PER_FOLD_REFIT_FULL_CALIBRATION` / `MANUAL`. O enum tem
+  `has_leakage_risk` (True em `FULL_CALIBRATION_LEGACY`); o state tem
   `has_internal_cv_parameter_leakage_risk` (True em
-  `FULL_CALIBRATION_LEGACY`).
-- `S0ResolutionMethod`: `AUTO_LOGREG` / `MANUAL` / `INHERIT` /
-  `NOT_APPLICABLE`.
+  `FULL_CALIBRATION_LEGACY` quando a arquitetura usa algum parâmetro
+  ajustado).
+- `S0ResolutionMethod`: `NOT_APPLICABLE` / `AUTO_LOGREG` / `MANUAL`.
 - `RarityCenteringMode`: `NONE` / `MEAN`.
 - `PairRoleOrientation`: `PROBE_REFERENCE` / `REFERENCE_PROBE` /
   `NOT_APPLICABLE` (arquiteturas simétricas).
@@ -567,18 +605,20 @@ PREPARATION + VALIDATION.
 
 `LRArchitectureRawFeatureSchema` declara:
 
-- `column_names: tuple[str, ...]` — ordem das colunas.
+- `schema_version: str` — versão do contrato (hoje `"1.0"`).
+- `columns: tuple[str, ...]` — ordem das colunas.
 - `base_score_column: int` — índice da coluna do score base.
 - `rarity_probe_column`, `rarity_reference_column: Optional[int]` —
   índices das colunas de raridade two-face.
 - `rarity_single_column: Optional[int]` — índice da coluna de
   raridade ONE_FACE (V2.14.1). **Mutuamente exclusivo** com
   `rarity_probe_column` + `rarity_reference_column`.
-- `formula_version: str` — versão do contrato.
 - `fingerprint(): str` — hash do contrato.
 
-Helper `schema_for_base_and_single_rarity()` constrói o schema
-2-coluna `[base_score, rarity_single]` para ONE_FACE.
+Helpers: `schema_for_base_only()` (1 coluna, arquiteturas sem
+raridade), `schema_for_base_and_rarities()` (3 colunas two-face) e
+`schema_for_base_and_single_rarity()` (2 colunas `[base_score,
+rarity_single]` para ONE_FACE).
 
 ---
 
@@ -586,7 +626,9 @@ Helper `schema_for_base_and_single_rarity()` constrói o schema
 
 `faceaudit/services/architecture_feature_builder.py`
 
-Builder **puro**, sem `if-elif` por arquitetura. Consulta os
+Builder **puro**, exposto como funções de módulo (não há classe
+`ArchitectureFeatureBuilder`; o nome designa o módulo), sem `if-elif`
+por arquitetura. Consulta os
 `LRFeatureTermSpec` e materializa a matriz aplicando os termos
 declarados no `LRArchitectureSpec`.
 
@@ -597,7 +639,6 @@ def build(
     spec: LRArchitectureSpec,
     state: LRArchitectureState,
     base: np.ndarray,
-    *,
     rarity_probe: Optional[np.ndarray] = None,
     rarity_reference: Optional[np.ndarray] = None,
     rarity_single: Optional[np.ndarray] = None,
@@ -608,33 +649,36 @@ def derivative_matrix_wrt_base(
     spec: LRArchitectureSpec,
     state: LRArchitectureState,
     base: np.ndarray,
-    *,
     rarity_probe: Optional[np.ndarray] = None,
     rarity_reference: Optional[np.ndarray] = None,
     rarity_single: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Matriz (D, N) com ∂φ_j/∂s para auditoria CONDITIONAL_MONOTONICITY."""
+    """Matriz (N, D) com ∂φ_j/∂s para auditoria CONDITIONAL_MONOTONICITY."""
 ```
 
 ### 8.2 Aplicação
 
 Para cada `feature_term ∈ spec.feature_terms`:
 
-1. Consulta `LR_FEATURE_TERM_SPECS[feature_term]`.
-2. Chama `term_spec.fn(state, base, rarity_probe, rarity_reference,
-   rarity_single)` → coluna `(N,)`.
-3. Empilha colunas em uma matriz `(N, D)`.
+1. Monta uma vez o `LRFeatureBuildContext` (delta, hinges, raridades
+   brutas e centradas) a partir de `state`, `base` e raridades.
+2. Consulta `LR_FEATURE_TERM_SPECS[feature_term]` e chama
+   `term_spec.build_fn(ctx)` → coluna `(N,)`.
+3. Empilha colunas em uma matriz `(N, D)` e confere o shape contra
+   `spec.output_dim`.
 
 Result: zero if-elif por arquitetura no executor. Toda a lógica da
 matemática vive nos `LRFeatureTermSpec`.
 
 ### 8.3 Slopes em `s = s_0`
 
-`derivative_matrix_wrt_base` usa derivada à direita para `s = s_0`
-(consistente com `right_slope_at_s_0` dos termos), mas
-`LRArchitectureDerivativeProvider` da auditoria consulta tanto
-`left_slope_at_s_0` quanto `right_slope_at_s_0` separadamente para
-avaliar a continuidade do log-LR no kink.
+`derivative_matrix_wrt_base` usa as derivadas pontuais dos termos, com
+indicadores estritos (`1[s > s₀]`, `−1[s < s₀]`): em `s = s₀` exato
+as duas hinges dão 0. O `LRArchitectureDerivativeProvider` da
+auditoria não consulta os slopes laterais — ele separa os pares nas
+regiões `s_gt_s0` (`s > s₀`) e `s_le_s0` (`s ≤ s₀`) e avalia cada
+uma. Os `left_slope_at_s0_fn` / `right_slope_at_s0_fn` ficam
+disponíveis no `LRFeatureTermSpec` para inspeção direta do kink.
 
 ---
 
@@ -644,68 +688,84 @@ avaliar a continuidade do log-LR no kink.
 
 Etapas (estado normal):
 
-1. **Validação estrutural** (`validate(...)`):
+1. **Validação estrutural** (`_validate_instruction_specifics`):
    - Instrução é do tipo correto.
-   - `base_score_resource_id` definido e existe no contexto.
-   - `output_resource_id` definido.
-   - Resources de raridade exigidos pela arquitetura estão presentes
+   - `context.frame` presente; ausente → `MissingExecutionFrameError`
+     (fail-closed, em qualquer fase).
+   - `architecture` registrada em `LR_ARCHITECTURE_SPECS`.
+   - Em VALIDATION/CASEWORK: `parameter_mode = INHERIT` obrigatório.
+   - `base_score_resource_id` e `output_resource_id` definidos.
+   - Resources de raridade exigidos pela arquitetura definidos
      (consulta `spec.requires_typicality_probe`, etc.).
    - Em ONE_FACE: `rarity_resource_id` definido **e**
      `rarity_probe_resource_id` / `rarity_reference_resource_id`
-     ausentes (mutuamente exclusivos).
-   - Em VALIDATION/CASEWORK: `parameter_mode = INHERIT` obrigatório.
+     ausentes (mutuamente exclusivos); fora de ONE_FACE,
+     `rarity_resource_id` é rejeitado.
+   - MANUAL: campos `manual_*` exigidos pela arquitetura; INHERIT:
+     `inherit_architecture_state_from_resource_id` definido.
 
 2. **`InstructionExecutionFrame` no contexto**:
    - O `StrategyExecutor` injeta `InstructionExecutionFrame(phase,
      instruction_id, definition_id)` no `StrategyExecutionContext`
      antes do `execute()`. O executor consulta `context.frame` para
      derivar `StrategyPhase`.
-   - Em VALIDATION/CASEWORK sem frame: `MissingExecutionFrameError`
-     (fail-closed).
 
-3. **Hidrata recursos**:
-   - `base_score_resource = ctx.ensure_payload(base_score_resource_id)`.
-   - Análogo para raridade.
+3. **Hidrata recursos**: `context.ensure_payload(...)` no base e nas
+   raridades; recurso exigido ausente → falha.
 
-4. **Constrói `LRArchitectureRawInputPayload`** via
-   `LRArchitectureRawInputPayloadFactory.create(...)`:
-   - Extrai `base_score`, `rarity_*` de cada `SimilarityScoreSample`.
-   - Alinha por `(probe_hash, reference_hash)` orientado.
-   - Extrai identidades dos dois lados.
-   - Computa `pair_key_order_hash` e `pair_label_hash`.
-   - Canonicaliza a matriz para `<f8` C-contíguo read-only.
+4. **Alinha os inputs** (`_align_inputs`):
+   - Lê `raw_score` de cada item do base, na ordem do base.
+   - Busca a raridade de cada par por `(probe_hash, reference_hash)`
+     orientado; par ausente → erro.
+   - Extrai identidades dos dois lados e `same_person` (None se algum
+     item não tiver rótulo).
 
-5. **Resolve s₀, r̄_F, r̄_P (ou r̄_single)** conforme `parameter_mode`:
+5. **Resolve o state** (s₀, r̄_F, r̄_P ou r̄_single) conforme
+   `parameter_mode`, via `LRArchitectureStateFactory.create(...)`
+   (que calcula `vectorization_contract_fingerprint` e
+   `provenance_record_fingerprint`):
    - `FIT_FULL_CALIBRATION_LEGACY`: chama
-     `s0_resolution_service.resolve_s0_auto_logreg` sobre todo D_cal +
-     `np.mean(rarity_probe)`, `np.mean(rarity_reference)`.
-   - `FIT_PER_FOLD`: **não estima** upstream. Persiste `s0=None,
-     r0_*=None` no state; marca `defer_to_calibrator_per_fold=True`
-     no dataset vetorizado e emite o
-     `LR_ARCHITECTURE_RAW_INPUT`. O calibrador estima por fold.
-   - `MANUAL`: usa `manual_s0`, `manual_r0_*`.
-   - `INHERIT`: lê do recurso herdado via
+     `s0_resolution_service.resolve_s0_auto_logreg` sobre todo D_cal
+     (exige `same_person`) + médias das raridades quando
+     `centering_mode = MEAN`.
+   - `FIT_PER_FOLD`: mesmo cálculo, com valores **provisórios** e
+     `fit_scope = PER_FOLD_REFIT_FULL_CALIBRATION`; marca
+     `defer_to_calibrator_per_fold=True` no dataset vetorizado. O
+     calibrador reestima por fold (vide §5.2).
+   - `MANUAL`: usa `manual_s0`, `manual_r0_*` (`fit_scope = MANUAL`).
+   - `INHERIT`: `LRArchitectureStateFactory.from_dict` sobre o
+     `architecture_state` do recurso herdado +
      `architecture_state_compat_service.validate_state_compatibility`.
 
-6. **Constrói `LRArchitectureState`** via
-   `LRArchitectureStateFactory.create(...)`. Recalcula
-   `vectorization_contract_fingerprint` e
-   `provenance_record_fingerprint`.
+6. **Materializa matriz** via
+   `architecture_feature_builder.build(spec, state, base, r_F, r_P,
+   r_single)`.
 
-7. **Materializa matriz** via
-   `ArchitectureFeatureBuilder.build(spec, state, base, r_F, r_P)` (ou
-   variantes ONE_FACE com `r_single`).
+7. **Constrói `LRArchitectureRawInputPayload`** via
+   `LRArchitectureRawInputPayloadFactory.create(..., phase=phase)`:
+   empilha `[base, r_F, r_P]` (ou `[base, r_single]`), canonicaliza
+   para `<f8` C-contíguo read-only, computa `pair_key_order_hash`,
+   `pair_label_hash` e `raw_input_matrix_fingerprint`, e exige
+   `same_person` + identidades fora de CASEWORK.
 
-8. **Emite dois outputs**:
-   - `SimilarityScoreDataset vetorizado` com `raw_score` D-dimensional
-     por par + metadata enriquecido (`architecture_state`,
-     `defer_to_calibrator_per_fold` se FIT_PER_FOLD).
-   - `LR_ARCHITECTURE_RAW_INPUT` (opcional em FIT_FULL/MANUAL;
-     obrigatório em FIT_PER_FOLD).
+8. **Emite os outputs**:
+   - `SimilarityScoreDataset vetorizado`: mesmos items do base
+     (`raw_score` escalar preservado) + metadata com
+     `score_vector_matrix`, `architecture_state`,
+     `vectorization_contract_fingerprint`,
+     `score_vector_numeric_fingerprint`,
+     `score_vector_contract_fingerprint`,
+     `raw_input_matrix_fingerprint`, `pair_key_order_hash`,
+     `raw_input_resource_id` e `defer_to_calibrator_per_fold` se
+     FIT_PER_FOLD.
+   - `LR_ARCHITECTURE_RAW_INPUT`, só quando
+     `output_raw_input_resource_id` está preenchido (necessário em
+     FIT_PER_FOLD).
 
 9. **Auditoria runtime** no `CALIBRATION_MODEL_TRAINING` downstream:
    - `_bind_training_raw_input` localiza o raw_input cujo
-     `raw_input_matrix_fingerprint` bate com o do calibrador.
+     `raw_input_matrix_fingerprint` bate com o do calibrador (com
+     fallbacks; vide §13).
    - `_run_monotonicity_audit` instancia
      `ConditionalMonotonicityRule` e roda sobre o calibrador
      recém-treinado. Vide §13.
@@ -720,15 +780,19 @@ Etapas (estado normal):
 
 ```python
 CalibrationModelMetadataService.bind_architecture_state(
-    trained_model, dataset_metadata
+    model_metadata, dataset_metadata
 )
 ```
 
-Chamado pelo executor de `CALIBRATION_MODEL_TRAINING` após o refit
-final. Persiste no `calibrator.metadata`:
+Chamado pelo executor de `CALIBRATION_MODEL_TRAINING` após o treino
+(em todos os caminhos, inclusive FIT_PER_FOLD). No-op se o dataset
+não tem `vectorization_contract_fingerprint`. Copia para o
+`calibrator.metadata`:
 
-- `architecture_state` (dict completo do `LRArchitectureState`).
-- `vectorization_contract_fingerprint`.
+- `architecture_state` (dict completo do `LRArchitectureState` do
+  dataset vetorizado).
+- `vectorization_contract_fingerprint`, `lr_architecture`,
+  `lr_architecture_formula_version`, `architecture_spec_fingerprint`.
 - `training_score_vector_contract_fingerprint`,
   `training_score_vector_numeric_fingerprint`,
   `training_raw_input_matrix_fingerprint`,
@@ -739,19 +803,29 @@ final. Persiste no `calibrator.metadata`:
 
 ```python
 CalibrationModelMetadataService.validate_compatibility(
-    dataset_metadata, calibrator_metadata,
-    mode: CalibrationCompatibilityMode,
-) → ValidationResult
+    model_metadata, dataset_metadata,
+    *, compatibility_mode: CalibrationCompatibilityMode = STRICT,
+) → List[CompatibilityIssue]
 ```
+
+Chamado pelo executor de `SCORE_CALIBRATION`; issue `error` bloqueia
+a calibração, `warning` vai para o log. Tabela:
+
+| Dataset | Calibrador | Resultado |
+|---|---|---|
+| sem fingerprint | sem fingerprint | OK com warning informativo (ambos legados) |
+| com fingerprint | com fingerprint, igual | OK |
+| com fingerprint | com fingerprint, diferente | **erro** em qualquer modo |
+| com fingerprint | sem fingerprint | erro em `STRICT`; warning em `LEGACY_PERMISSIVE` |
+| sem fingerprint | com fingerprint | **erro** em qualquer modo |
 
 `CalibrationCompatibilityMode`:
 
-- **`STRICT`** (default): exige
-  `dataset.vectorization_contract_fingerprint ==
-  calibrator.vectorization_contract_fingerprint`.
-- **`LEGACY_PERMISSIVE`** (opt-in pelo campo `compatibility_mode` em
-  `SCORE_CALIBRATION`): aceita mismatch com warning visível. Útil
-  para rodar híbridos antigos + novos durante migrações de pipeline.
+- **`STRICT`** (default).
+- **`LEGACY_PERMISSIVE`**: só relaxa o caso "dataset novo +
+  calibrador legado". **Nota:** o `SCORE_CALIBRATION` chama o serviço
+  sem passar o modo e não tem campo `compatibility_mode` — na prática
+  a validação é sempre `STRICT`.
 
 ### 10.3 INHERIT downstream
 
@@ -764,11 +838,12 @@ INHERIT`, o executor:
    `StateIntegrityError` em qualquer mismatch detectando tampering).
 3. Valida compatibilidade contra o contexto atual via
    `architecture_state_compat_service.validate_state_compatibility`
-   (verifica architecture, base_score_kind, pair_role_orientation,
-   pair_key_mode, modelos de tipicidade por fingerprint,
-   transformações de raridade).
+   (verifica architecture, spec, base_score_kind,
+   pair_role_orientation, centragem, modelos de tipicidade por
+   fingerprint, transformações de raridade — vide §12.3).
 
-Issues `error` abortam; `warning` apenas registram divergência.
+Issues `error` abortam. O serviço admite severidade `warning`, mas
+hoje todas as checagens emitem `error`.
 
 ---
 
@@ -785,30 +860,36 @@ from sklearn.linear_model import LogisticRegression
 
 pipeline = Pipeline([
     ("arch_vec", ArchitectureVectorizerTransformer(
-        architecture=instr.architecture,
-        schema=raw_input_payload.schema,
-        s0_logreg_config=instr.s0_logreg_config_override,
+        architecture=arch,                       # de metadata["lr_architecture"]
+        schema=raw_payload.schema,
+        s0_logreg_config=state_dict.get("s0_logreg_config"),  # override persistido no state
+        base_score_kind=..., pair_role_orientation=...,
+        rarity_probe_score_type=..., rarity_reference_score_type=...,
+        rarity_single_score_type=...,
     )),
     ("scaler", StandardScaler()),
-    ("logreg", LogisticRegression(C=..., ...)),
+    ("logreg", LogisticRegression(solver=..., class_weight=..., max_iter=...)),
 ])
 ```
 
-Dentro de `GridSearchCV`:
+Dentro de `GridSearchCV` (código em
+`CalibrationModelTrainingInstructionExecutor._train_logreg_per_fold_with_transformer`):
 
 ```python
 gs = GridSearchCV(
-    pipeline,
-    param_grid={"logreg__C": c_grid},
+    estimator=pipeline,
+    param_grid={"logreg__C": list(c_grid)},
     cv=IdentityDisjointPairKFold(
-        n_splits=...,
-        probe_identities=raw_input.probe_identity_ids,
-        reference_identities=raw_input.reference_identity_ids,
+        probe_identities=list(raw_payload.probe_identity_ids),
+        reference_identities=list(raw_payload.reference_identity_ids),
+        n_splits=cv_folds,          # logreg_config.cv_folds (mínimo 2)
+        random_state=42,
     ),
-    scoring="neg_cllr_balanced",
+    scoring=scoring_obj,            # logreg_config.scoring; default NEG_CLLR_BALANCED
     refit=True,
+    n_jobs=1,
 )
-gs.fit(raw_input_matrix, same_person)
+gs.fit(raw_payload.matrix, same_person)
 ```
 
 ### 11.2 Como elimina o leakage residual
@@ -830,9 +911,14 @@ train aos pares de validação — sem leakage.
 
 Após `refit=True`, o `GridSearchCV` chama `pipeline.fit(X_all,
 y_all)` com o C escolhido — o `arch_vec.state_` final reflete refit
-em D_cal completo. Esse state é persistido com `fit_scope =
-PER_FOLD_REFIT_FULL_CALIBRATION` e `final_refit_on_full_calibration =
-True` no metadata.
+em D_cal completo. Esse state é gravado no metadata do calibrador com
+`fit_scope = PER_FOLD_REFIT_FULL_CALIBRATION`, junto de
+`fit_per_fold = True`, `inner_cv_splitter`, `inner_cv_fold_count`,
+`final_refit_on_full_calibration = True`, `selected_C` e os
+coeficientes em escala bruta (`raw_scale_coefficients`,
+`raw_scale_intercept`). Em seguida o `bind_architecture_state` (§10.1)
+copia para o metadata o `architecture_state` e o
+`vectorization_contract_fingerprint` do dataset vetorizado.
 
 ### 11.3 `IdentityDisjointPairKFold` recebe identidades dos dois lados
 
@@ -850,9 +936,11 @@ Resultado: train fold preserva ≈((K−1)/K)² do `H_d` original; teste
 não contém pares de identidades que apareceram no train. Sem
 leakage cross-fold.
 
-Quando `STRICT_IDENTITY` no `LogisticRegressionCalibrationModelConfig`,
-o calibrador lê `metadata["lookalike_clusters"]` opcional (V2.11.2) e
-propaga ao splitter como super-ids. Vide
+No caminho FIT_PER_FOLD o splitter é montado diretamente pelo executor,
+sem `lookalike_clusters`. O suporte a clusters de sósias (V2.11.2 —
+`metadata["lookalike_clusters"]` propagado como super-ids) existe no
+caminho comum do `LogisticRegressionCalibrationModel` com
+`gridsearch_cv_mode = STRICT_IDENTITY`. Vide
 `docs/piecewise_linear_calibration.md` §4.4.
 
 ---
@@ -875,40 +963,42 @@ Demais validações dependem do contexto e ocorrem no executor.
 - Recursos de raridade exigidos pela arquitetura estão definidos.
 - ONE_FACE rejeita `rarity_probe/reference_resource_id`
   simultaneamente; two-face rejeita `rarity_resource_id`.
-- `parameter_mode = INHERIT` em PREPARATION → warning (compat); em
+- `parameter_mode = INHERIT` em PREPARATION → aceito sem aviso; em
   VALIDATION/CASEWORK → obrigatório.
 - `parameter_mode = MANUAL` exige `manual_s0` e `manual_r0_*`
   conforme arquitetura.
 - `architecture` que exige `requires_ordered_pair_roles` precisa que
-  o metadata do base score tenha `pair_role_orientation` explícito
-  (`PROBE_REFERENCE` ou `REFERENCE_PROBE`); ausência → erro.
-- Em PREPARATION, `same_person` é obrigatório nos resources
-  (validação supervisionada).
-- Em CASEWORK, `same_person` pode ser None.
+  o metadata do base score tenha `pair_role_orientation` (ou
+  `pair_orientation`) explícito; ausência → erro. O executor aceita
+  qualquer valor explícito reconhecido pelo enum.
+- Em PREPARATION e VALIDATION, `same_person` e as identidades dos dois
+  lados são obrigatórios (`LRArchitectureRawInputPayloadFactory`);
+  FIT_FULL_CALIBRATION_LEGACY/FIT_PER_FOLD também exigem `same_person`
+  para o AUTO_LOGREG.
+- Em CASEWORK, `same_person` e identidades podem ser None.
 
 ### 12.3 `_validate_state_compatibility` em INHERIT
 
 `architecture_state_compat_service.validate_state_compatibility`
-checa 20+ cenários:
+checa (tabela de 20+ cenários em
+`tests/test_architecture_state_compat_service.py`):
 
-- `architecture` idêntica.
+- `architecture`, `formula_version`, `architecture_spec_fingerprint`,
+  `feature_terms`, `output_dim` e `centering_mode` idênticos ao spec.
 - `base_score_kind` idêntico.
-- `pair_role_orientation` idêntico ou ambos `NOT_APPLICABLE`.
-- `pair_key_mode` idêntico.
-- `rarity_*_score_type` (enum) idêntico.
-- `rarity_*_transform_id` idêntico.
-- `rarity_*_transform_formula_version` idêntico (warning se
-  divergente).
-- `rarity_*_model_fingerprint` idêntico (entra no contract fp).
+- `pair_role_orientation` idêntico, só em arquiteturas ordenadas.
+- Por lado de raridade exigido (probe, reference ou single): metadata
+  presente e `score_type`, `transform_id`,
+  `transform_formula_version`, `transform_fingerprint`, `combiner` e
+  `model_fingerprint` idênticos.
 
-Issues `error` abortam; `warning` registram no log.
+`pair_key_mode` não é verificado. Todas as divergências são `error` e
+abortam o INHERIT.
 
 ### 12.4 `MissingExecutionFrameError`
 
-Executor levanta `MissingExecutionFrameError` quando:
-
-- Fase é VALIDATION ou CASEWORK.
-- `context.frame` é `None` ou `phase` não está derivada.
+Executor levanta `MissingExecutionFrameError` quando `context.frame` é
+`None`, em qualquer fase — sem frame não há como derivar a fase.
 
 Fail-closed: previne execução acidental em fase errada.
 
@@ -922,8 +1012,10 @@ Após o refit final do calibrador upstream, o
 `CALIBRATION_MODEL_TRAINING` executor:
 
 1. Localiza o `LR_ARCHITECTURE_RAW_INPUT` cujo
-   `raw_input_matrix_fingerprint` bate com o do treino (fallback:
-   `vectorization_contract_fingerprint`).
+   `raw_input_matrix_fingerprint` bate com o do treino (fallbacks, nesta
+   ordem: `vectorization_contract_fingerprint`, `schema.fingerprint()`,
+   único `LR_ARCHITECTURE_RAW_INPUT` no contexto) e grava o id em
+   `calibrator.metadata["training_raw_input_resource_id"]`.
 2. Instancia `ConditionalMonotonicityRule` via factory.
 3. Roda `validate()` sobre o calibrador.
 
@@ -939,8 +1031,14 @@ analiticamente `∂log_LR/∂s = β_raw · ∂φ/∂s` em:
 `audit_status`:
 
 - **OK**: slope > 0 em todas as regiões.
-- **WARNING**: slope ≤ 0 apenas no `central_box` (P5-P95).
+- **WARNING**: slope ≤ 0 apenas no `central_box` (P5-P95), ou slope
+  mínimo observado abaixo de `operational_min_slope` (quando
+  configurado).
 - **CRITICAL**: slope ≤ 0 em `observed_rows` ou `reportable_box`.
+- **NOT_AUDITED**: auditoria não pôde rodar (ex.: nenhum raw input
+  encontrado, sem `training_raw_input_resource_id` no calibrador).
+  Calibrador sem `architecture_state` (KDE, BiGauss, LogReg legado)
+  nem chega a ser auditado.
 
 Persistido em `calibrator.metadata["monotonicity_audit"]` para
 auditoria. Vide `docs/conditional_monotonicity_rule_design.md` para o
@@ -964,13 +1062,18 @@ roadmap V1/V1.5/V2 + projeto paralelo `TYPICALITY_EFFECT_AUDIT`.
 | `manual_r0_reference` | `Optional[float]` | `None` | r̄_P manual. |
 | `s0_logreg_config_override` | `Optional[Dict]` | `None` | Override do LogReg auxiliar. |
 | `output_resource_id` | `Optional[str]` | `None` | SIMILARITY_SCORES vetorizado de saída. |
-| `output_raw_input_resource_id` | `Optional[str]` | `None` | LR_ARCHITECTURE_RAW_INPUT (obrigatório em FIT_PER_FOLD). |
+| `output_raw_input_resource_id` | `Optional[str]` | `None` | LR_ARCHITECTURE_RAW_INPUT (necessário em FIT_PER_FOLD; não validado pelo DTO). |
 
 ### 14.1 Visibilidade dinâmica
 
 `get_hidden_fields()` retorna o conjunto de campos a esconder. UI
 rebuilda o form quando `architecture` ou `parameter_mode` muda
 (`REACTIVE_FIELDS = ("architecture", "parameter_mode")`).
+`s0_logreg_config_override` só aparece em
+`FIT_FULL_CALIBRATION_LEGACY` com arquitetura que usa s₀, embora o
+valor também seja lido em FIT_PER_FOLD quando definido no JSON. O
+seletor de `inherit_architecture_state_from_resource_id` lista apenas
+recursos `SIMILARITY_SCORES`.
 
 ---
 
@@ -991,9 +1094,9 @@ LR_ARCHITECTURE_VECTORIZATION(
 ```
 
 `CALIBRATION_MODEL_TRAINING` downstream detecta
-`defer_to_calibrator_per_fold = True` e monta o pipeline `Pipeline
-+ GridSearchCV + IdentityDisjointPairKFold` com
-`arch_vec.fit` por fold.
+`defer_to_calibrator_per_fold = True` (e o `raw_input_resource_id`)
+e monta o pipeline `Pipeline + GridSearchCV + IdentityDisjointPairKFold`
+com `arch_vec.fit` por fold.
 
 ### 15.2 VALIDATION — INHERIT do state da preparação
 
@@ -1041,9 +1144,10 @@ LR_ARCHITECTURE_VECTORIZATION(
 3. **Mantenha o mesmo modelo de tipicidade upstream em PREPARATION
    e VALIDATION/CASEWORK.** O `rarity_*_model_fingerprint` entra no
    `vectorization_contract_fingerprint`; mudanças invalidam o INHERIT.
-4. **Use `compatibility_mode = STRICT` em produção.** O modo
-   `LEGACY_PERMISSIVE` é opt-in apenas para migrações com warning
-   visível.
+4. **Não misture vetor novo com calibrador legado.** O
+   `SCORE_CALIBRATION` valida em `STRICT` e rejeita essa combinação;
+   `LEGACY_PERMISSIVE` existe no serviço, mas não está exposto na
+   instrução.
 5. **Registre `vectorization_contract_fingerprint` no laudo
    forense.** Permite re-validação independente da pipeline.
 6. **Não troque de arquitetura em meio à validação.** A escolha de
@@ -1066,22 +1170,26 @@ futuro". Avaliação honesta exige holdout externo com INHERIT.
 
 ### 17.2 INHERIT recusou meu state. O que mudou?
 
-Provavelmente o `vectorization_contract_fingerprint` do recurso
-herdado difere do esperado. Causas comuns:
+O `validate_state_compatibility` encontrou divergência entre o state
+herdado e o contexto atual (a mensagem de erro nomeia o campo).
+Causas comuns:
 
 - Trocou modelo de tipicidade upstream (mudou `unit_norm_policy`,
   `population_weighting_mode`, etc. → mudou
   `model_contract_fingerprint` → mudou `rarity_*_model_fingerprint`).
 - Trocou `rarity_*_transform_id` (não esperado se o
   `typicality_score_type` continua o mesmo).
-- Re-treinou o calibrador com `parameter_mode` diferente
+- Trocou o score base (cosseno ↔ PLDA muda `base_score_kind`) ou a
+  orientação dos pares numa arquitetura ordenada.
+- Re-treinou com `parameter_mode` diferente
   (`FIT_FULL_CALIBRATION_LEGACY` → `FIT_PER_FOLD` muda
   `fit_scope` no state, mas isso entra no
   `provenance_record_fingerprint`, não no
-  `vectorization_contract_fingerprint`).
+  `vectorization_contract_fingerprint`) — isso, sozinho, não causa
+  recusa.
 
-Use `STRICT` para a comparação e LEGACY_PERMISSIVE como opt-in se
-realmente quiser tolerar o mismatch.
+Não há modo permissivo para o INHERIT: corrija a divergência ou
+refaça a preparação.
 
 ### 17.3 Posso comparar `BILATERAL_FULL_CENTERED` com
 `BILATERAL_FULL_CENTERED_ONE_FACE` na mesma estratégia?
@@ -1094,18 +1202,20 @@ finais.
 
 ### 17.4 Preciso do `LR_ARCHITECTURE_RAW_INPUT` em FIT_FULL?
 
-Não. É opcional em FIT_FULL/MANUAL e obrigatório apenas em
-FIT_PER_FOLD. Em FIT_FULL pode ser útil como artefato de auditoria
-(raw_input_matrix_fingerprint preservado).
+Para o cálculo, não: é opcional em FIT_FULL/MANUAL e necessário
+apenas em FIT_PER_FOLD. Mas a auditoria `CONDITIONAL_MONOTONICITY`
+precisa localizar um raw input no contexto; sem ele o calibrador sai
+com `audit_status = NOT_AUDITED`.
 
 ### 17.5 Pode usar PLDA como score base?
 
-Sim. `base_score_kind` aceita `cosine`, `plda_simple`,
-`plda_two_covariance`, etc. — propagado do recurso `SIMILARITY_SCORES`.
+Sim. `base_score_kind` é propagado do `score_kind` do recurso
+`SIMILARITY_SCORES` — o `SIMILARITY_SCORING` grava `cosine` ou `plda`
+(sem distinguir a variante PLDA).
 **Atenção**: combinar PLDA + interação cosseno × raridade é
 double-counting potencial (B-covariance do PLDA já encoda tipicidade
-da população). Compare modelos 8 e 9 da janela de Comparação no
-relatório principal antes de adotar.
+da população). Compare, na janela de Comparação, uma estratégia com
+PLDA puro e outra com PLDA + interação antes de adotar.
 
 ---
 
@@ -1114,19 +1224,21 @@ relatório principal antes de adotar.
 - **`architecture`**. Uma das 15 entradas de `LRCalibrationArchitecture`.
 - **`base_score`**. Score de similaridade por par (cosseno ou PLDA).
 - **`build`**. Materialização da matriz de features via
-  `ArchitectureFeatureBuilder.build(spec, state, base, r_F, r_P)`.
+  `architecture_feature_builder.build(spec, state, base, r_F, r_P,
+  r_single)`.
 - **`defer_to_calibrator_per_fold`**. Flag no metadata do dataset
   vetorizado quando `parameter_mode = FIT_PER_FOLD`. Calibrador
   downstream detecta e monta o pipeline com `arch_vec`.
 - **`feature_term`**. Termo elementar `LRFeatureTerm`; 18 disponíveis.
 - **`fit_scope`**. Como o state foi originalmente ajustado:
-  `FULL_CALIBRATION_LEGACY` ou `PER_FOLD_REFIT_FULL_CALIBRATION`.
+  `FULL_CALIBRATION_LEGACY`, `PER_FOLD_REFIT_FULL_CALIBRATION`,
+  `MANUAL` ou `NOT_APPLICABLE`.
 - **`h⁺`, `h⁻`**. Hinges positivo e negativo: `max(s − s₀, 0)` e
   `max(s₀ − s, 0)`. Identidade: `h⁺ + h⁻ = |s − s₀|`.
 - **INHERIT**. `parameter_mode` que lê state de execução anterior.
-- **`MissingExecutionFrameError`**. Erro quando executor é chamado em
-  VALIDATION/CASEWORK sem frame injetado.
-- **`pair_key_order_hash`**. SHA-256 dos pair_keys ordenados.
+- **`MissingExecutionFrameError`**. Erro quando executor é chamado sem
+  frame injetado (qualquer fase).
+- **`pair_key_order_hash`**. SHA-256 dos pair_keys na ordem dos pares.
 - **`parameter_mode`**. Como obter s₀/r̄: FIT_FULL_CALIBRATION_LEGACY
   / FIT_PER_FOLD / MANUAL / INHERIT.
 - **`r̄_F`, `r̄_P`, `r̄`**. Médias de raridade usadas para centragem MEAN.
@@ -1235,7 +1347,8 @@ Antes de declarar uma `LR_ARCHITECTURE_VECTORIZATION`:
 - [ ] `inherit_architecture_state_from_resource_id` aponta para
       recurso vetorizado da PREPARATION em `INHERIT`.
 - [ ] `pair_role_orientation` no metadata do base score consistente
-      com a arquitetura ordenada (warning em
+      com a arquitetura ordenada (ausência é erro no executor;
+      divergência com o state herdado é erro no
       `architecture_state_compat_service`).
 - [ ] `MIN_CALIBRATION_PAIRS` ajustado conforme tamanho de D_cal.
 

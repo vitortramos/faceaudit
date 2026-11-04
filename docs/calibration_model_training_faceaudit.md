@@ -182,8 +182,11 @@ Um `StrategyResource` do tipo `SIMILARITY_SCORES` (ou genérico
 `ARTIFACT`) contendo:
 
 - `SimilarityScoreDataset` com `raw_score` por par, `same_person`
-  rotulado (1 = genuíno, 0 = impostor), e opcionalmente identidades
-  `probe_identity` / `reference_identity` no metadata dos samples;
+  rotulado (1 = genuíno, 0 = impostor), e as identidades de cada
+  amostra (`probe.identity` / `reference.identity`), que o executor
+  extrai e injeta no calibrador como `train_probe_identities` /
+  `train_reference_identities` para o splitter do GridSearch e os
+  diagnósticos por trecho;
 - `metadata` com:
   - `vectorization_contract_fingerprint` (quando vetorizado por
     `LR_ARCHITECTURE_VECTORIZATION` ou `SCORE_VECTORIZATION`);
@@ -241,7 +244,7 @@ execute(instruction, context)
 
 ## 2. Configuração do DTO
 
-`CalibrationModelTrainingInstruction` (apêndice A) tem cinco campos
+`CalibrationModelTrainingInstruction` (apêndice A) tem seis campos
 relevantes:
 
 | Campo | Tipo | Default | Função |
@@ -274,7 +277,7 @@ diretamente. Cada propriedade reflete `calibration_model_type`.
 |---|---|---|---|
 | **LOGISTIC_REGRESSION** (default) | Default operacional. Robusto em datasets pequenos a grandes. Defensável forensicamente — parcimonioso, monotonicidade testável. | Único que suporta multi-D, FIT_PER_FOLD, piecewise-linear, GridSearch de C com `IdentityDisjointPairKFold`. | Modelo afim ou afim-piecewise — não captura curvatura complexa. |
 | **KDE** | Calibração não-paramétrica univariada. Útil quando a distribuição de scores tem múltiplas modas ou caudas pesadas e há ≥ 50k pares por classe. | Mais flexível que LogReg em score 1D. Adapta-se a distribuições não-gaussianas. | Alta capacidade → overfitting fácil. Cllr CV − in-sample tende a ser grande. Não suporta multi-D nem FIT_PER_FOLD. |
-| **BI_GAUSSIANIZED** | Calibração 1D quando se quer um modelo paramétrico com forma fechada. Mais robusto que KDE em datasets pequenos. | Forma fechada (sem GridSearch). Menos overfitting que KDE. | Assume gaussianas em duas escalas (Fisher-z + linear). Inadequado para PLDA com caudas pesadas. |
+| **BI_GAUSSIANIZED** | Calibração 1D pelo algoritmo de Morrison (2024): mapeia a saída de um calibrador inicial para um sistema bi-gaussiano alvo. | Sem GridSearch de `C`; alvo paramétrico com σ² derivado do Cllr ou do EER. | A CDF empírica das classes é sensível ao N da amostra nas caudas. Apenas score 1D. |
 
 A escolha é declarada via `calibration_model_type`. O default
 `LOGISTIC_REGRESSION` é o caminho mais defensável forensicamente
@@ -404,22 +407,29 @@ O calibrador persiste no metadata:
 - `cv_strict_*` — mapping id→fold, balance loads, contagens por
   fold, `fold_health`.
 
-Esses campos são auditados pelo `ResourceInfoWidget` e propagados
-para `STRATEGY_EVALUATION` via `SCORE_CALIBRATION`.
+Esses campos ficam no metadata do calibrador (pickle), para auditoria.
+Não são propagados por `SCORE_CALIBRATION` (que repassa só a
+telemetria de Cllr, §12.3) nem exibidos pelo `ResourceInfoWidget`.
 
 ### 5.4 Seleção de `C` sob restrição de monotonicidade
 
-`_select_monotonic_C` (em `LogisticRegressionCalibrationModel`)
-itera o grid em ordem decrescente por CV score. Para cada `C` faz
-fit completo da pipeline e verifica monotonicidade estrita por
-trecho via `_validate_monotonicity_and_persist_diagnostics`. O
-primeiro `C` válido é o escolhido — `piecewise_selection_policy =
-"best_valid_candidate_by_cv_score"`.
+Só no caminho piecewise-linear (`piecewise_linear_config.mode =
+PIECEWISE_LINEAR`, §7). `_select_monotonic_C` (em
+`LogisticRegressionCalibrationModel`) roda `GridSearchCV(refit=False)`
+e itera o grid em ordem decrescente por CV score. Para cada `C` faz
+fit completo da pipeline e verifica crescimento estrito por trecho
+(`_compute_pipeline_slopes`, slope > 1e-8). O primeiro `C` válido é
+o escolhido — `piecewise_selection_policy =
+"best_valid_candidate_by_cv_score"`. O fit final passa ainda por
+`_validate_monotonicity_and_persist_diagnostics`.
 
 > Garante que o calibrador final é monotônico na escala bruta,
 > mesmo quando o `C` com melhor CV score produz curva não
 > monotônica (situação típica em datasets ruidosos onde a
 > regularização mais forte é preferível).
+
+No LogReg afim (sem piecewise) o `GridSearchCV` usa `refit=True` e
+escolhe `C` só pelo CV score; não há filtro de monotonicidade.
 
 ---
 
@@ -438,10 +448,12 @@ O fit aprende `μ`, `σ` por feature em D_cal. A predição transforma
 `X_test = (X − μ) / σ` antes de aplicar o LogReg. `μ`/`σ` são
 persistidos no calibrador.
 
-Em modo `STRICT_IDENTITY` + multi-D + `standardize_features=True`,
-a `StandardScaler` vai **dentro** da `sklearn.Pipeline` usada como
-estimator do `GridSearchCV`. Cada fold aprende seu próprio `μ`/`σ`
-em `X_train`, evitando leakage da média/desvio do held-out.
+Desde a V2.13, com multi-D + `standardize_features=True` (em qualquer
+`gridsearch_cv_mode`), a `StandardScaler` vai **dentro** da
+`sklearn.Pipeline` usada como estimator do `GridSearchCV`. Cada fold
+aprende seu próprio `μ`/`σ` em `X_train`, evitando leakage da
+média/desvio do held-out. Sem GridSearch a mesma Pipeline é usada no
+fit único.
 
 ### 6.3 Auditoria
 
@@ -492,7 +504,7 @@ no GridSearchCV — sem leakage.
 | `hinge_anchor_manual_value` | None | Valor manual de `s₀` quando `MANUAL`. |
 | `knot_offsets` | `[0.0]` | Offsets das dobras em relação a `s₀`, na unidade definida por `knot_scale`. |
 | `knot_scale` | `AUX_LOG_LR` | `AUX_LOG_LR` (unidades de log-LR do auxiliar) ou `RAW` (domínio do score). |
-| `knot_placement` | `MANUAL` | `MANUAL` ou `AUTO_FROM_MIRRORED_MEDIANS` (heurística experimental — vide memória). |
+| `knot_placement` | `MANUAL` | `MANUAL` ou `AUTO_FROM_MIRRORED_MEDIANS` (heurística experimental — vide `docs/piecewise_linear_calibration.md` §6.2). |
 | `require_monotonicity` | `True` | Valida que todas as inclinações cumulativas na escala bruta são > `min_allowed_slope`. |
 | `monotonicity_policy` | `ERROR` | `ERROR` (rejeita) ou `WARNING` (alerta com diagnóstico). |
 | `min_allowed_slope` | `1e-8` | Inclinação mínima aceita por trecho. |
@@ -520,12 +532,14 @@ O calibrador armazena no metadata:
 
 - `piecewise_enabled = True`;
 - `hinge_anchor_s0` (aprendido);
-- `knot_offsets`, `knot_offsets_user`, `knot_offsets_raw`,
-  `knot_scale`, `knot_placement`;
-- `knots_absolute` (posições absolutas);
+- `piecewise_knot_offsets`, `piecewise_knot_offsets_user`,
+  `piecewise_knot_offsets_raw`, `piecewise_knot_scale`,
+  `piecewise_knot_placement`;
+- `piecewise_knots_absolute` (posições absolutas);
 - `segment_slopes_raw` (inclinações por trecho);
-- `auto_log_lr_hp_p50`, `auto_log_lr_hd_p50` (medianas log-LR do
-  auxiliar — usadas pelo placement `AUTO_FROM_MIRRORED_MEDIANS`);
+- `piecewise_auto_log_lr_hp_p50`, `piecewise_auto_log_lr_hd_p50`
+  (medianas log-LR do auxiliar — usadas pelo placement
+  `AUTO_FROM_MIRRORED_MEDIANS`);
 - `calibrator_coef_raw`, `calibrator_intercept_raw` (coeficientes
   pós-denormalização da `StandardScaler` interna — usado pelo plot
   da `STRATEGY_EVALUATION`).
@@ -559,12 +573,15 @@ Calibração não-paramétrica univariada. Apropriado quando:
 | `max_grid_expansions` | `2` | Tentativas de expandir o grid se o melhor cair na borda. |
 | `min_bandwidth_abs` | `1e-3` | Bandwidth mínimo absoluto no espaço transformado. |
 
-### 8.3 Fisher transformation interna
+### 8.3 Normalização z-score interna
 
-Os scores genuínos e impostores são transformados via Fisher z
-(`arctanh`) antes do KDE — distribuições mais próximas de
-gaussianas no espaço transformado. O log-LR resultante é computado
-como `log(f_gen / f_imp)` e **clipado** em
+Os scores genuínos e impostores são normalizados por z-score
+(`(x − μ) / σ`, com `μ`/`σ` aprendidos sobre todos os scores de
+treino concatenados) antes do KDE — funciona para qualquer escala de
+score, sem assumir o intervalo [−1, 1] que a transformação de Fisher
+usada em versões antigas exigia. `μ`/`σ` são persistidos e aplicados
+em validação/casework (`metadata["transform"] = "z_score"`). O log-LR
+resultante é computado como `log(f_gen / f_imp)` e **clipado** em
 `[min_log_lr, max_log_lr]` para evitar log-LR explosivo nas caudas
 onde a densidade KDE é numericamente nula.
 
@@ -588,29 +605,32 @@ indicador de generalização limitada.
 
 ### 9.1 Quando usar
 
-Calibração 1D quando se quer um modelo paramétrico com forma
-fechada (sem GridSearch) e maior robustez que KDE em datasets
-pequenos. Apropriado quando:
-- a distribuição de scores genuínos é razoavelmente unimodal e
-  simétrica após Fisher-z;
-- a distribuição de scores impostores é razoavelmente unimodal e
-  simétrica em escala linear (ou Fisher-z, dependendo da config);
-- o uso operacional exige LR estável nas caudas.
+Calibração 1D quando se quer que a saída se comporte como a de um
+sistema bi-gaussiano perfeitamente calibrado, sem GridSearch de `C`.
+Apropriado quando há amostra de treino representativa e grande o
+bastante para que a CDF empírica das classes esteja bem resolvida
+nas caudas.
 
 ### 9.2 Modelo
 
-`BiGaussianizedCalibrationModel` ajusta dois `N(μ, σ²)` — um para
-cada classe — após transformação opcional (Fisher-z para genuínos,
-linear ou Fisher-z para impostores). LR é a razão de densidades
-gaussianas; log-LR é polinômio de grau 2 no score transformado.
+`BiGaussianizedCalibrationModel` implementa o algoritmo de Morrison
+(2024): (1) aplica um calibrador inicial (LogReg, KDE ou nenhum,
+quando os scores já são tratados como log-LR); (2) calcula o Cllr ou
+o EER dessa saída e resolve o σ² do sistema bi-gaussiano alvo;
+(3) constrói a CDF G(x) das duas classes com pesos 0,5/(N_d+1) e
+0,5/(N_p+1); (4) mapeia ln(LR) = F⁻¹(G(x)), onde F é a mistura
+0,5·N(+σ²/2, σ²) + 0,5·N(−σ²/2, σ²).
 
 ### 9.3 Hiperparâmetros principais
 
 Consultar `bi_gaussianized_calibration_model_config.py` para a
-lista completa. Campos principais incluem: parâmetros de
-gaussianização independentes por classe, regularização de
-variância mínima, clipping de log-LR, e CV diagnóstico
-(`k_folds`).
+lista completa. Campos principais: `target_metric` (CLLR default, ou
+EER), `initial_calibrator` (LOGREG default, KDE ou NONE),
+`sigma_estimation_mode` (CROSS_FITTED default, ou IN_SAMPLE),
+`sigma_shrinkage_factor`, `gx_method` (KDE_SMOOTHED default, ou
+EMPIRICAL_LINEAR, a do artigo), `inversion_method` (INTERP1D ou
+BRENT_ROOT), clipping opcional de log-LR (`enable_clipping`, default
+`False`, com `min_log_lr`/`max_log_lr`) e CV diagnóstico (`k_folds`).
 
 ### 9.4 Limitações
 
@@ -659,8 +679,16 @@ Acontece quando:
        ("logreg",   LogisticRegression(solver=..., class_weight=...)),
    ])
    ```
+   Como `LogisticRegressionCalibrationModelConfig` não tem campos
+   `solver`/`class_weight`/`max_iter`, valem os defaults do executor:
+   `solver="liblinear"`, `class_weight="balanced"`, `max_iter=1000`.
 5. **Instancia o splitter `IdentityDisjointPairKFold`** com
-   identidades dos dois lados (probe + reference).
+   identidades dos dois lados (probe + reference), `n_splits =
+   cv_folds` e `random_state=42`. Neste caminho o splitter é sempre
+   esse: `gridsearch_cv_mode`, `use_gridsearch` e
+   `standardize_features` do config não são consultados (a
+   `StandardScaler` está sempre na Pipeline), `lookalike_clusters`
+   não é repassado e não há o filtro de monotonicidade do §5.4.
 6. **Roda `GridSearchCV`** com `scoring = neg_cllr_balanced` (ou
    override do config), `refit=True`. Cada fold treina o
    transformer (s₀ via AUTO_LOGREG, r̄ por média) em `X_train`
@@ -825,9 +853,18 @@ bandwidths do KDE, etc.). Anexa:
   "calibrator_cv_gap":             cllr_cv − cllr_train,
   "cv_folds_effective":            k_folds_real,
   "cv_split_mode":                 cv_split_mode.value,
-  "cv_hyperparameter_mode":        "frozen_from_production_model",
+  "cv_hyperparameter_mode":        "FROZEN",
+  "cv_hyperparameter_selection_scope": "FULL_CALIBRATION_SET",
+  # contagens para auditoria: cv_n_gen_total, cv_n_imp_total,
+  # cv_fold_train_gen_min, cv_fold_train_imp_min,
+  # cv_groups_total, cv_groups_min_test
 }
 ```
+
+`FROZEN` significa que a seleção de hiperparâmetros foi feita no
+conjunto de calibração completo antes do CV — não é nested CV. Com
+`cv_split_mode = STRATIFIED_GROUP` e alguma amostra sem identidade de
+probe, o executor recai em `STRATIFIED_PAIR` e avisa no log.
 
 > O Cllr CV mede generalização **dentro do domínio de calibração**,
 > não performance em validação externa. Para LogReg, o gap CV −
@@ -907,24 +944,29 @@ A regra:
 
 - `OK` 🛡️ — monotonicidade preservada em todas as regiões e
   pontos amostrados.
-- `WARNING` ⚠ — slope marginalmente negativa em região central
-  (P5–P95), feature degenerada (variância zero numa coluna), ou
-  outro sinal de risco. Não bloqueia, mas exige atenção.
-- `CRITICAL` ❌ — slope negativa em região central ou no
-  `reportable_box`. Em V2, violação no `reportable_box` é sempre
-  CRITICAL — o domínio operacional foi declarado explicitamente
-  pela política de reportabilidade.
-- `NOT_AUDITED` — calibrador sem `architecture_state` ou erro
-  recuperável (logado, não bloqueia).
+- `WARNING` ⚠ — slope ≤ 0 apenas em canto da `central_box`
+  (P5–P95), com os pares observados monotônicos; ou slope mínimo
+  observado abaixo de `operational_min_slope`, quando configurado.
+  Não bloqueia, mas exige atenção. Feature degenerada (variância zero
+  numa coluna) gera aviso adicional, sem mudar o status.
+- `CRITICAL` ❌ — slope ≤ 0 em algum par observado de D_cal
+  (`observed_rows`) ou no `reportable_box`. Em V2, violação no
+  `reportable_box` é sempre CRITICAL — o domínio operacional foi
+  declarado explicitamente pela política de reportabilidade.
+- `NOT_AUDITED` — auditoria não realizada (ex.: calibrador sem
+  `training_raw_input_resource_id` resolvido); logado, não bloqueia.
+  Calibrador sem `architecture_state` nem chega à auditoria (§13.2).
 
 ### 13.5 Não bloqueia o treino
 
 A auditoria é informativa — falha não impede a persistência do
 calibrador. O perito decide se o status `CRITICAL` justifica
-descartar o calibrador. Em V2, a regra `CONDITIONAL_MONOTONICITY`
-pode ser adicionada manualmente como regra de validação na UI
-(via `AddValidationRuleDialog`) para bloquear o uso downstream em
-`STRATEGY_EVALUATION` quando o status não é `OK`.
+descartar o calibrador. Para bloquear o uso downstream, a regra
+`CONDITIONAL_MONOTONICITY` pode ser declarada em
+`validation_rule_configs` de uma instrução posterior (param
+`calibrator_resource_id`); ela não está entre os tipos oferecidos
+pelo diálogo "➕ Adicionar Regra" (`AddValidationRuleDialog`), então
+a declaração é feita no JSON da estratégia.
 
 ---
 
@@ -941,9 +983,10 @@ quando `input_resource_id` está definido E
 
 `CONDITIONAL_MONOTONICITY` não está nos defaults — ela depende do
 calibrador refitado para avaliar, então roda **programaticamente**
-no executor após o refit (vide §13). Usuários que queiram opt-in
-da regra como validação pré-execução do `SCORE_CALIBRATION`/
-`STRATEGY_EVALUATION` ainda podem adicioná-la manualmente.
+no executor após o refit (vide §13). Quem quiser a regra como
+validação pré-execução do `SCORE_CALIBRATION`/`STRATEGY_EVALUATION`
+precisa declará-la em `validation_rule_configs` (§13.5) — o diálogo
+"➕ Adicionar Regra" não a oferece.
 
 Se o usuário deleta uma regra via UI (🗑), o flag
 `validation_rules_user_managed` vira `True` e os defaults param de
@@ -1007,7 +1050,11 @@ O executor detecta `defer_to_calibrator_per_fold=True` no metadata
 do dataset vetorizado e despacha para
 `_train_logreg_per_fold_with_transformer`. `s₀`, `r̄_F`, `r̄_P` são
 ajustados POR FOLD. State final reflete refit em D_cal completo.
-Auditoria `CONDITIONAL_MONOTONICITY` roda sobre o resultado.
+Auditoria `CONDITIONAL_MONOTONICITY` roda sobre o resultado. Nesse
+caminho `gridsearch_cv_mode` e `standardize_features` não têm efeito
+(o splitter é sempre `IdentityDisjointPairKFold` e a `StandardScaler`
+está sempre na Pipeline, §10.2); ficam no exemplo apenas como
+documentação da intenção.
 
 ### 15.3 Calibrador LogReg piecewise-linear sobre score PLDA 1D
 
@@ -1080,7 +1127,7 @@ plena. Cllr CV − in-sample geralmente > LogReg.
    isso, a L2 do sklearn distorce a contribuição relativa.
 4. **Piecewise-linear consciente**: ative apenas quando há evidência
    empírica de slope assimétrico (vide
-   `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md`).
+   `docs/piecewise_linear_calibration.md`, §6 e §8).
    Default `knot_offsets=[0.0]` (dobra única em `s₀`) é o cenário
    parcimonioso recomendado.
 5. **FIT_PER_FOLD**: prefira-o sempre que estiver usando
@@ -1094,9 +1141,11 @@ plena. Cllr CV − in-sample geralmente > LogReg.
    generalização DENTRO do domínio de calibração — não substitui
    validação externa.
 2. **Monotonicity audit**: sempre verifique
-   `monotonicity_audit.audit_status` no `ResourceInfoWidget` após
-   treinar com `LR_ARCHITECTURE_VECTORIZATION`. Status `CRITICAL`
-   exige investigação antes de uso operacional.
+   `monotonicity_audit.audit_status` após treinar com
+   `LR_ARCHITECTURE_VECTORIZATION` — o status sai no log da execução
+   (🛡️ / ⚠ / ❌) e fica no metadata do calibrador; o
+   `ResourceInfoWidget` não o exibe. Status `CRITICAL` exige
+   investigação antes de uso operacional.
 3. **Cllr in-sample baixo + Cllr CV alto = overfitting**. Em LogReg,
    tente `C` menor (regularização mais forte). Em KDE, aumente
    bandwidth ou subamostre mais. Em BiGauss, considere maior
@@ -1153,8 +1202,8 @@ incorporam quebra em `s₀` via termos hinge `h⁺`, `h⁻`.
 
 Não. Auditoria é informativa — falha não impede a persistência do
 calibrador. Para bloquear o uso downstream em validação/casework,
-adicione manualmente a regra `CONDITIONAL_MONOTONICITY` na UI da
-instrução `SCORE_CALIBRATION` ou `STRATEGY_EVALUATION`.
+declare a regra `CONDITIONAL_MONOTONICITY` em `validation_rule_configs`
+da instrução `SCORE_CALIBRATION` ou `STRATEGY_EVALUATION` (§13.5).
 
 **P6: O que é `defer_to_calibrator_per_fold` e quem o seta?**
 
@@ -1175,8 +1224,10 @@ não casa com o protocolo Pipeline+GridSearchCV+Transformer.
 
 **P8: Como vejo o `best_C` selecionado pelo GridSearch?**
 
-`trained_model.best_C_` (atributo) e `metadata["best_C"]` /
-`metadata["selected_C"]`. O `ResourceInfoWidget` exibe na seção
+`trained_model.best_C_` (atributo). No metadata do calibrador:
+`piecewise_selected_c` (caminho piecewise) ou `selected_C` (caminho
+`FIT_PER_FOLD`); o resultado da execução da instrução traz
+`best_C`. O `ResourceInfoWidget` exibe como "C (efetivo)" na seção
 "Detalhes do Modelo de Calibração".
 
 ---
@@ -1226,8 +1277,6 @@ não casa com o protocolo Pipeline+GridSearchCV+Transformer.
   aplica o calibrador a um dataset de scores brutos.
 - `docs/vetorizacao_scores_faceaudit.md` — vetorização explícita
   via `SCORE_VECTORIZATION` (legado).
-- `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md` —
-  fundamentação técnico-forense da piecewise-linear.
 
 ### 19.2 Bibliografia técnica
 
@@ -1287,17 +1336,17 @@ Choice field spec:
 
 | Aspecto | LOGISTIC_REGRESSION | KDE | BI_GAUSSIANIZED |
 |---|---|---|---|
-| Modelo | Afim (com hinge piecewise opt-in) | Não-paramétrico (duas densidades estimadas) | Paramétrico (duas gaussianas gaussianizadas) |
+| Modelo | Afim (com hinge piecewise opt-in) | Não-paramétrico (duas densidades estimadas) | Calibrador inicial + mapeamento para sistema bi-gaussiano alvo (Morrison 2024) |
 | Suporta multi-D (`D > 1`) | ✅ | ❌ | ❌ |
 | Suporta `FIT_PER_FOLD` | ✅ (V2.14) | ❌ | ❌ |
 | Suporta piecewise-linear interna | ✅ (V1, score 1D) | ❌ | ❌ |
-| GridSearchCV para hyperparam | ✅ (`C` via `c_grid` + `cv_folds`) | ✅ (bandwidth via GridSearch + expansão) | ❌ (forma fechada) |
+| GridSearchCV para hyperparam | ✅ (`C` via `c_grid` + `cv_folds`) | ✅ (bandwidth via GridSearch + expansão) | ❌ (σ² derivado do Cllr/EER) |
 | CV diagnóstico (`k_folds`) | ✅ | ✅ | ✅ |
 | `standardize_features` | ✅ (multi-D) | n/a | n/a |
-| Persiste `architecture_state` | ✅ (quando `FIT_PER_FOLD`) | ❌ | ❌ |
+| Persiste `architecture_state` | ✅ (quando treinado sobre saída de `LR_ARCHITECTURE_VECTORIZATION`) | ❌ | ❌ |
 | Auditoria `CONDITIONAL_MONOTONICITY` pós-refit | ✅ (quando `architecture_state` presente) | ⏭ (skip silencioso) | ⏭ (skip silencioso) |
 | Risco de overfitting | Baixo (afim) | Alto (alta capacidade) | Médio |
-| Defensibilidade forense | Alta (parcimonioso, monotonicidade auditável) | Média (paramétrico mas alta capacidade) | Média (assume gaussianas) |
+| Defensibilidade forense | Alta (parcimonioso, monotonicidade auditável) | Média (não-paramétrico, alta capacidade) | Média (sensível ao N nas caudas da CDF empírica) |
 | Recomendação padrão | ✅ default operacional | Apenas em score 1D com ≥ 50k pares/classe | Apenas em score 1D quando se quer paramétrico parcimonioso |
 
 ---
@@ -1319,7 +1368,7 @@ Antes de treinar:
 - [ ] Em `LR_ARCHITECTURE_VECTORIZATION` upstream, escolheu
       `FIT_PER_FOLD` (e não `FIT_FULL_CALIBRATION_LEGACY`)?
 - [ ] Em piecewise-linear, justificou empiricamente a quebra (vide
-      relatório integrado)?
+      `docs/piecewise_linear_calibration.md`)?
 
 Após treinar:
 

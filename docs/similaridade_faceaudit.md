@@ -5,9 +5,8 @@
 > comparação facial — cosseno e PLDA (todas as variantes), com foco em PLDA.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `9a02d46`
-> (branch `claude/read-claude-md-SgzIV`). Defaults, fórmulas e enums
-> conferidos em `faceaudit/models/similarity/`,
+> **Fonte documental:** código atual do repositório FaceAudit. Defaults,
+> fórmulas e enums conferidos em `faceaudit/models/similarity/`,
 > `faceaudit/services/two_covariance_plda_service.py`,
 > `faceaudit/services/shrinkage_two_covariance_plda_service.py`,
 > `faceaudit/services/cross_condition_two_covariance_plda_service.py`,
@@ -357,8 +356,11 @@ Antes de treinar, `_extract_training_arrays` aplica:
    1 amostra — porque a variância intra-classe não é estimável a partir de uma
    única amostra. (No cross-condition, singletons são preservados — §9.)
 
-Se restarem menos de 2 amostras ou menos de 2 classes com $\ge 2$ amostras, o
-treino levanta `ValueError`.
+Se restarem menos de 2 amostras, o treino levanta `ValueError`. Nas variantes
+two-covariance o serviço de treino exige também pelo menos 2 classes com
+$\ge 2$ amostras (`ValueError` caso contrário); na SIMPLE essa checagem não é
+feita no modelo — quem a garante antes do treino é a regra
+`MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES` (§11).
 
 ---
 
@@ -459,8 +461,10 @@ $$
 $$
 
 Os kernels $Q$, $P$ e `const` são cacheados em `fit()`/`load()`
-(`self._two_cov_kernels`) e reusados em todas as chamadas de scoring —
-`score_matrix` os aplica vetorizadamente via `einsum`. A simetria
+(`self._two_cov_kernels`) e reusados por `score_matrix`, que os aplica
+vetorizadamente via `einsum`. O caminho unitário (`score_vectors`, via
+`score_two_covariance_pair`) recomputa os kernels a cada chamada — por isso,
+em lote, use sempre `score_matrix`. A simetria
 $\mathrm{LR}(x_1,x_2)=\mathrm{LR}(x_2,x_1)$ decorre de $P$ ser simétrica.
 
 ### 7.3 Regularização (Tikhonov)
@@ -728,6 +732,9 @@ O **cosseno não popula regras** (stateless).
 
 **`SIMILARITY_SCORING`** constrói em runtime (não persistidas):
 
+- `EmbeddingsCompleteRule` — sobre o probe e, se houver, sobre a referência:
+  face sem embedding barra o cálculo, qualquer que seja o modelo (a regra
+  existe mesmo antes de o modelo ser escolhido);
 - `ModelFittedRule` — o modelo selecionado tem `is_fitted=True`;
 - `EmbeddingDimMatchesModelRule` — sobre o probe e, se cross-comparison,
   também sobre a referência. Modelos sem `input_dimension` (cosseno) passam.
@@ -840,7 +847,8 @@ Combinar **PLDA + `SCORE_INTERACTION_FEATURE`** (a feature que modula
 similaridade por raridade derivada de um modelo de tipicidade) pode **contar a
 tipicidade duas vezes**. A documentação do módulo de interação alerta
 explicitamente para isso: a combinação exige uma comparação A/B explícita
-(modelos 8 e 9 da janela de Comparação) para verificar se a feature de
+(PLDA sozinho contra PLDA + interação, lado a lado na janela de Comparação)
+para verificar se a feature de
 raridade ainda agrega informação além do que o $B$ do PLDA já captura.
 
 Com **cosseno** o risco não existe (o cosseno não modela tipicidade), e a
@@ -1184,11 +1192,13 @@ Acesse os campos opcionais via `getattr` (compat com pickles antigos).
 | `MinIdentitiesWithMultipleSamplesRule` | `MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES` | treino PLDA (primário; +secundário em cross) | $n_{\text{multi}}\ge 2$ (CRÍTICA); warning se $<10$ |
 | `DatasetsEmbeddingCompatRule` | `DATASETS_EMBEDDING_COMPAT` | cross-condition (primário×secundário) | mesma coluna de embedding e dimensão |
 | `DatasetOverlapRequiredRule` | `DATASET_OVERLAP_REQUIRED` | cross-condition (primário×secundário) | $\ge$ N identidades comuns; warning abaixo do ratio |
+| `EmbeddingsCompleteRule` | `EMBEDDINGS_COMPLETE` (dinâmica) | scoring (probe; +referência em cross) | toda face tem embedding |
 | `ModelFittedRule` | `MODEL_FITTED` (dinâmica) | scoring | `is_fitted=True` |
 | `EmbeddingDimMatchesModelRule` | `EMBEDDING_DIM_MATCHES_MODEL` (dinâmica) | scoring (probe; +referência em cross) | `dataset.embedding_dim == model.input_dimension`; cosseno passa |
 
 As duas primeiras são **defaults persistentes** (editáveis/removíveis na UI;
-flag `validation_rules_user_managed`); as duas últimas são **dinâmicas**
+flag `validation_rules_user_managed`), assim como as duas seguintes no modo
+cross-condition; as três últimas são **dinâmicas**
 (construídas em runtime, não persistidas, não removíveis).
 
 ---

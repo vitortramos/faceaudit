@@ -122,8 +122,9 @@ CALIBRATION_MODEL_TRAINING → SCORE_CALIBRATION → STRATEGY_EVALUATION
 
 A enumeração de pares é **idêntica** à de `SIMILARITY_SCORING` (self ou
 cross com os mesmos índices). Isso garante que o `SCORE_VECTORIZATION`
-ou o builder de arquitetura LR consiga combinar pares-a-pares com os
-scores de cosseno.
+ou o builder de arquitetura LR encontre, para cada par de cosseno, o
+par de tipicidade correspondente (o casamento é feito pelos
+`face_hash` das duas faces — ver §9.3).
 
 ---
 
@@ -166,6 +167,8 @@ class TypicalityScoringModelProtocol(Protocol):
     def embedding_dim(self) -> int: ...
     @property
     def sample_count(self) -> int: ...
+    @property
+    def reference_score_basis_type(self) -> TypicalityScoreType: ...
     @property
     def model_state_fingerprint(self) -> str: ...
     @property
@@ -386,7 +389,11 @@ Tentar `batch.scores[0] = 999` levanta `ValueError`.
 
 - `scores.ndim == 1`.
 - `n == arr.shape[0]`.
-- Em `TYPICALITY_PERCENTILE`: `percentile_basis_score_type` obrigatório.
+- Todos os scores finitos (sem NaN/inf); `embedding_dim > 0`;
+  `model_state_fingerprint` e `model_contract_fingerprint` não vazios.
+- Em `TYPICALITY_PERCENTILE`: `percentile_basis_score_type` e
+  `reference_score_distribution_fingerprint` obrigatórios, e valores
+  dentro de [0, 100].
 - Em outros score types: `percentile_basis_score_type` e
   `reference_score_distribution_fingerprint` são silenciosamente
   zerados (limpeza defensiva).
@@ -397,7 +404,9 @@ SHA-256 de `scores.tobytes() + score_type + score_semantics_id +
 percentile_basis + reference_score_distribution_fingerprint +
 model_type + model_state_fingerprint + model_contract_fingerprint`.
 
-Detecta divergência exata em comparações cross-execução.
+Detecta divergência exata em comparações cross-execução. Se o chamador
+passar um `batch_fingerprint` que não bate com o canônico recalculado,
+o `__post_init__` levanta `ValueError`.
 
 ---
 
@@ -432,12 +441,18 @@ metadata = {
 }
 ```
 
-### 8.2 Campos adicionais em cross com dual models
+### 8.2 Campos adicionais em cross-comparison
+
+Presentes em toda cross-comparison. Com modelo único,
+`uses_dual_typicality_models` é `False`, o
+`source_typicality_model_reference_resource_id` fica `None` e os
+fingerprints `*_reference_*` são os do modelo do probe (o modelo
+efetivamente aplicado às faces do reference).
 
 ```python
 metadata.update({
     "reference_dataset_name": ...,
-    "uses_dual_typicality_models": True,
+    "uses_dual_typicality_models": True | False,
     "source_typicality_model_reference_resource_id": ...,
     "source_typicality_model_reference_type": "KNN" | "MOVMF",
     "source_typicality_model_reference_contract_fingerprint": "...",
@@ -468,7 +483,7 @@ Suficiente para reconstruir o cálculo do combiner via auditoria.
 
 A enumeração é **deterministicamente idêntica** à de `SIMILARITY_SCORING`
 para que o `SCORE_VECTORIZATION` (ou `LR_ARCHITECTURE_VECTORIZATION`)
-consiga alinhar pares-a-pares por índice.
+encontre exatamente o mesmo conjunto de pares.
 
 ### 9.1 Self
 
@@ -492,10 +507,22 @@ Total: `n_probe * n_ref` pares.
 
 ### 9.3 Por que mesmo ordem importa
 
-O `LR_ARCHITECTURE_VECTORIZATION` alinha o dataset de tipicidade
-pareada com o de cosseno via `pair_key_order_hash` (hash da sequência
-ordenada `(probe_hash, reference_hash)`). Hashs iguais → pares
-alinhados; hashs diferentes → executor levanta erro de alinhamento.
+O alinhamento não é por posição, e sim por chave de par:
+
+- `LR_ARCHITECTURE_VECTORIZATION` indexa o dataset de tipicidade
+  pareada pela chave **orientada** `(probe.face_hash,
+  reference.face_hash)` e percorre os pares na ordem do dataset base
+  (cosseno). Chave duplicada no dataset de raridade, ou par do base sem
+  correspondente, levanta erro ("pares de base não encontrados —
+  verifique alinhamento"). O `pair_key_order_hash` é calculado sobre a
+  sequência de chaves do **base** e entra nos fingerprints do payload,
+  não no casamento.
+- `SCORE_VECTORIZATION` casa pela chave simétrica
+  `frozenset({probe_hash, reference_hash})`.
+
+Por isso a enumeração precisa produzir o mesmo **conjunto** de pares
+(mesmos datasets, mesmo modo self/cross, mesma orientação
+probe/reference) que o `SIMILARITY_SCORING` correspondente.
 
 ---
 
@@ -535,10 +562,20 @@ casework (precisam de ground truth); `CASEWORK_VISUALIZATION` exige.
 ### 12.1 Validações estruturais (`_validate_instruction_specifics`)
 
 - `typicality_model_probe_resource_id` definido e existe no contexto.
-- `typicality_model_reference_resource_id` (se definido) existe.
+- `typicality_model_reference_resource_id` (se definido) existe. Se
+  estiver definido sem `reference_dataset_resource_id`, é só um
+  **warning** (o campo é ignorado em auto-comparação).
 - `probe_dataset_resource_id` definido e existe.
 - `reference_dataset_resource_id` (se definido) existe.
 - `output_scores_resource_id` definido.
+
+Regras intrínsecas (`build_validation_rules`, não removíveis):
+`MODEL_FITTED` no modelo do probe (e no do reference, quando
+definido) e `EMBEDDING_DIM_MATCHES_MODEL` de cada dataset contra o
+modelo efetivamente aplicado a ele.
+
+A estratégia precisa ter `embedding_column` definida; sem ela a
+execução falha antes de calcular qualquer tipicidade.
 
 ### 12.2 Validações runtime no executor (PR 3)
 
@@ -788,8 +825,12 @@ Definição em
 
 ### Value specs
 
-- `output_scores_name`: campo de texto opcional.
-- `is_casework`: checkbox.
+- `is_casework`: checkbox ("Modo Casework (sem ground truth)").
+
+`output_scores_name` existe no DTO (e no JSON), mas não tem campo no
+formulário; quando vazio, o nome é composto automaticamente
+(`<dataset>_TypicalityPairScores` ou
+`<probe>_<reference>_TypicalityPairScores`).
 
 ### Sync de I/O
 
@@ -805,7 +846,7 @@ probe dataset + ref model se cross + ref dataset se cross) e
 
 | Método | Retorno | Notas |
 |---|---|---|
-| `combiner.combine(t_p, t_r)` | `float` | Para os simétricos. Levanta `NotImplementedError` em `REFERENCE_ONLY`/`PROBE_ONLY`. |
+| `combiner.combine(t_p, t_r)` | `float` | Para os simétricos. Levanta `ValueError` em `REFERENCE_ONLY`/`PROBE_ONLY`. |
 | `combiner.is_symmetric` | `bool` | True nos 5 simétricos. |
 | `combiner.to_str()` | `str` | Valor string (estável em JSON). |
 

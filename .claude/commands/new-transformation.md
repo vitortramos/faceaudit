@@ -22,12 +22,13 @@ Se a transformação tiver parâmetros configuráveis, crie o DTO:
 - Manter o DTO focado **apenas nos parâmetros da transformação**
 
 ### 3. Enum rico — `faceaudit/enums/transformation_type.py`
-Adicione o novo membro ao enum `TransformationType`. O construtor exige **exatamente 10 argumentos** na ordem:
+Adicione o novo membro ao enum `TransformationType`. O construtor (`__new__`) exige **exatamente 11 argumentos** na ordem:
 
 ```python
 NOME_TRANSFORMATION = (
     "NOME_TRANSFORMATION",        # value — string de serialização (deve bater com o nome do membro)
-    "Nome Legível",               # label — exibido na UI
+    "Readable Name",              # label — rótulo técnico em inglês
+    "Nome Legível",               # label_pt — rótulo em português exibido na UI
     "Abrev",                      # summary_name — abreviação para o resumo do pipeline
     "Descrição da operação.",     # description — tooltip/ajuda
     "🔤",                         # icon — emoji para a UI
@@ -39,10 +40,10 @@ NOME_TRANSFORMATION = (
 )
 ```
 
-Se houver DTO, adicione o import no topo do arquivo (junto dos outros DTOs importados). O `dto_class` é o que alimenta o factory em `TransformatorConfig.from_dict()` — sem ele a desserialização do JSON quebra silenciosamente.
+Se houver DTO, adicione o import no topo do arquivo (junto dos outros DTOs importados). O `dto_class` é o que alimenta o factory em `TransformatorConfig.from_dict()` — sem ele a desserialização do JSON quebra silenciosamente. O editor de pipeline (`interface/tabs/strategy_manager/pipeline_creator/pipeline_creator_controller.py`) itera `TransformationType` e passa a oferecer o novo step sem mudança na UI.
 
 ### 4. Implementação — `faceaudit/transformators/<nome>_transformation.py`
-Crie a classe implementando `EmbeddingTransformationProtocol`.
+Crie a classe implementando `EmbeddingTransformationProtocol` (`faceaudit/protocols/embedding_transformation_protocol.py`; o pipeline a enxerga pelo contrato equivalente `EmbeddingTransformationStepProtocol`).
 
 **Propriedades obrigatórias:**
 - `name: str` — nome amigável para logs e auditoria
@@ -76,11 +77,11 @@ Adicione o import no topo do arquivo, junto dos outros imports de transformadore
 ## Passos condicionais
 
 ### 6. Registro na arquitetura antiga — `faceaudit/pipelines/transformation_pipeline.py`
-Execute **somente se for necessário manter compatibilidade com a arquitetura antiga**. Adicione a entrada no `_TRANSFORMATOR_MAP` seguindo o mesmo padrão do passo 5.
+Execute **somente se for necessário manter compatibilidade com a arquitetura antiga** (`TransformationPipeline`, ainda exportada por `faceaudit/__init__.py`). Adicione a entrada no `_TRANSFORMATOR_MAP` seguindo o mesmo padrão do passo 5.
 
 ### 7. Política de treino DUAL — apenas se `requires_target_dataset = True` ou se a transformação puder usar o target opcionalmente no modo DUAL
 
-Se a nova transformação pode se beneficiar do `target_dataset` durante o treino no modo DUAL (como Whitening e LDA fazem opcionalmente, ou como CORAL faz obrigatoriamente):
+Se a nova transformação pode se beneficiar do `target_dataset` durante o treino no modo DUAL (como Whitening, LDA e WCCN fazem opcionalmente, ou como CORAL faz obrigatoriamente):
 
 **7a.** Em `faceaudit/models/pipeline/pipeline_training_policy.py`, adicione o campo:
 ```python

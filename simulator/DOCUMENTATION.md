@@ -207,11 +207,12 @@ except ImportError as exc:
 ```
 
 O núcleo gerador (`adaface_embedding_simulator.py`) e os testes do núcleo só exigem `numpy` +
-`pandas`. As funcionalidades de **ancoragem em dataset real** (`faceaudit_seed.py`, modo MoVMF)
-e o **adapter**
-(`faceaudit_concrete_adapter.py`) importam, sob demanda, classes do projeto hospedeiro
-FaceAudit (`MoVMFTypicalityModel`, `EmbeddingDataset`, `EmbeddingInfo`) — esses imports só são
-acionados quando você usa essas funções específicas, então o núcleo permanece autossuficiente.
+`pandas`. A **ancoragem em dataset real** (`faceaudit_seed.py`) importa o
+`MoVMFTypicalityModel` do projeto hospedeiro FaceAudit **sob demanda**, só dentro do Modo B
+(`population_config_from_dataset` / `simulator_config_from_dataset`); a extração de centros, o
+Modo A e os helpers anti-vazamento não precisam do FaceAudit. Já o **adapter**
+(`faceaudit_concrete_adapter.py`) importa `EmbeddingDataset` e `EmbeddingInfo` **no topo do
+módulo**: importá-lo já exige o FaceAudit instalado. O núcleo permanece autossuficiente.
 
 ### Instalação
 
@@ -294,14 +295,17 @@ simulator/
 ├── example_generate_adaface_embeddings.py  ← Script executável de ponta a ponta
 ├── conftest.py                        ← Insere a pasta no sys.path para os imports planos
 ├── DOCUMENTATION.md                   ← Documentação técnica de referência
+├── QUICKSTART.md                      ← Porta de entrada operacional
 ├── README.md                          ← Visão de entrada do pacote
+├── CHANGELOG.md                       ← Histórico de versões
 └── tests/
     ├── test_adaface_embedding_simulator.py   ← Núcleo: geometria, dataset, escores
     ├── test_config_roundtrip.py              ← Serialização config → dict → config / manifesto
-    ├── test_core_population_injection.py     ← Injeção de centros/componentes na população
+    ├── test_core_population_injection.py     ← Injeção de centros, extração, Modo A, disjunção
     ├── test_idperturb_cap.py                 ← Calota cosseno-uniforme + guarda de overlap
-    ├── test_faceaudit_seed.py                ← Ancoragem em dataset real (A e B), disjunção
-    └── test_faceaudit_concrete_adapter.py    ← Adapter contra os DTOs reais
+    ├── test_faceaudit_seed.py                ← Modo B (MoVMF) e round-trip com DTO real
+    ├── test_faceaudit_concrete_adapter.py    ← Adapter contra os DTOs reais
+    └── test_manifest_environment.py          ← Bloco `environment` do manifesto
 ```
 
 ### Papel de cada módulo
@@ -335,10 +339,13 @@ simulator/
   recomendado para alimentar uma estratégia FaceAudit com dados sintéticos. Detalhado na
   Seção 19.
 
-- **`example_generate_adaface_embeddings.py` (exemplo executável).** Script de ponta a ponta
-  que demonstra os fluxos principais — split train/dev/test via `sample_dataset` +
-  `save_bundle`, demo de calota, e ancoragem em dataset real. Executável diretamente
-  (`python example_generate_adaface_embeddings.py`).
+- **`example_generate_adaface_embeddings.py` (exemplo executável).** Script de ponta a ponta,
+  só com `numpy` + `pandas` (não importa o FaceAudit), em quatro blocos: split train/dev/test via
+  `sample_dataset` + `save_bundle`, demo de calota (`make_idperturb_cap_config`), round-trip
+  `save_manifest` → `config_from_manifest`, e ancoragem por injeção de centros
+  (`sample_identity_population(centers=...)`, com uma matriz sintética no lugar dos centros
+  reais). Executável diretamente (`python example_generate_adaface_embeddings.py`); grava em
+  `synthetic_adaface_output/`.
 
 - **`conftest.py`.** Apenas insere a pasta no `sys.path` para que os módulos planos resolvam
   sob pytest (ver Seção 2).
@@ -1394,7 +1401,7 @@ Isso tem duas consequências de reprodutibilidade que devem ser entendidas:
 1. **O caminho amostrado permanece bit-a-bit idêntico.** Como a injeção desvia antes de tocar o `rng` para centros, a sequência de consumo do gerador no caminho sorteado (`identity_count=`) é exatamente a mesma independentemente de a feature de injeção existir.
 2. **O `rng` da população ainda avança após os centros.** Mesmo no caminho injetado, o gerador é usado em seguida para `identity_specific_nuisance_bases` e para os vieses domínio×identidade. Portanto, populações injetadas continuam determinísticas e auditáveis sob a mesma `structural_seed` + `stream_name`, mas seu estado de RNG difere do caminho sorteado a partir do ponto em que os centros teriam sido consumidos.
 
-Recomendação de laudo: registre sempre a `structural_seed`, os `stream_name` usados e (para Modo A/B) a proveniência da base-âncora, junto com o `source_sha256` do manifesto. Esses cinco itens reconstroem o experimento integralmente.
+Recomendação de laudo: registre sempre a `structural_seed`, os `stream_name` usados e (para Modo A/B) a proveniência da base-âncora, junto com o `source_sha256` do manifesto. Esses itens, com o bloco `environment` do manifesto, reconstroem o experimento integralmente.
 
 ---
 
@@ -1566,7 +1573,7 @@ faceaudit_datasets = cross_condition_to_embedding_datasets(datasets_by_domain)
 
 ## 14. População ancorada em dataset real
 
-Os centros sorteados por uma MoVMF genérica não respeitam a geometria empírica fina dos embeddings faciais reais. O módulo `simulator/faceaudit_seed.py` é a ponte que alimenta a população a partir de um `EmbeddingDataset` real do FaceAudit, em dois modos. Para que `import simulator.faceaudit_seed` funcione sem o FaceAudit instalado, `faceaudit` é importado preguiçosamente apenas dentro das funções que dele precisam.
+Os centros sorteados por uma MoVMF genérica não respeitam a geometria empírica fina dos embeddings faciais reais. O módulo `simulator/faceaudit_seed.py` é a ponte que alimenta a população a partir de um `EmbeddingDataset` real do FaceAudit, em dois modos. Para que `import faceaudit_seed` funcione sem o FaceAudit instalado, `faceaudit` é importado preguiçosamente apenas dentro das funções do Modo B, que dele precisam.
 
 > **Caveat de vazamento — proeminente.** Em ambos os modos, a base usada para ancorar/ajustar **deve ser disjunta em identidades** de qualquer conjunto de avaliação. Use `assert_disjoint_source_identities` (Seção 14.5). O Modo A **não é anonimização**.
 
@@ -2098,7 +2105,8 @@ config_from_disk = config_from_manifest("run_manifest.json")  # lê o bloco "con
   permanecem como string (os DTOs e o simulador aceitam ambos).
   - **Chaves faltantes caem em default**: a reconstrução usa os defaults do dataclass para chaves
     ausentes (por exemplo o bloco `coupling` inteiro é opcional). Isso torna a leitura tolerante a
-    configurações escritas com menos campos.
+    configurações escritas com menos campos. No topo, `dimension`, `population`, `radial`,
+    `directional` e `acquisition_domains` continuam obrigatórios (ausência levanta `KeyError`).
   - **Chaves desconhecidas erram**: passar uma chave que nenhum dataclass reconhece levanta
     `TypeError`, surfaceando incompatibilidades cedo em vez de ignorá-las silenciosamente.
 - **`config_from_manifest(path)`** — abre um manifesto JSON escrito por `save_manifest`, extrai o
@@ -2172,7 +2180,7 @@ reais do `EmbeddingInfo` (`EmbeddingInfo(embedding, face_hash, image_path, ident
 #### `to_embedding_dataset`
 
 ```python
-from simulator.faceaudit_concrete_adapter import to_embedding_dataset
+from faceaudit_concrete_adapter import to_embedding_dataset
 
 fa_dataset = to_embedding_dataset(
     test,
@@ -2200,8 +2208,10 @@ Mapeamento de campos (covariáveis forensicamente acionáveis preservadas):
 - **`embedding`** ← `raw_embeddings` (padrão, norma preservada) ou `normalized_embeddings`,
   **cast para `float32`** por padrão para casar com datasets reais extraídos.
 - **`identity`** ← `str(identity_id)`.
-- **`quality_scores[quality_key]`** ← `latent_quality` (bucket `"generic"` por padrão, que é o que
-  a property `quality_score` e o balanceamento BY_QUALITY do FaceAudit leem).
+- **`quality_scores[quality_key]`** ← `latent_quality` (bucket `"generic"` por padrão, que a
+  property `quality_score` do FaceAudit lê como último recurso, depois de `fiqa`/`ofiq`/`serfiq`).
+  O balanceamento BY_QUALITY lê só a chave da métrica escolhida (`fiqa`, `ofiq` ou `serfiq`): para
+  alimentá-lo, passe `quality_key` com essa chave.
 - **`source`** ← `acquisition_domain` (handle por amostra usado em splits cross-condition).
 - **`origin`** ← tag de proveniência (`"adaface_simulator"` por padrão).
 - **`face_hash`** ← **SHA-256 determinístico** de `(split, identity_id, sample_index,
@@ -2222,7 +2232,7 @@ recuperável a partir do embedding bruto.
 #### `cross_condition_to_embedding_datasets`
 
 ```python
-from simulator.faceaudit_concrete_adapter import cross_condition_to_embedding_datasets
+from faceaudit_concrete_adapter import cross_condition_to_embedding_datasets
 
 fa_by_domain = cross_condition_to_embedding_datasets(
     datasets_by_domain,        # saída de sample_cross_condition_datasets
@@ -2534,7 +2544,7 @@ Para atribuir causalmente cada mudança de desempenho, cruze este eixo
 experimental com a matriz de acoplamentos e modos de dispersão descrita na
 Seção 9 (`CouplingConfig` + `intra_class_sampling_mode`). O cruzamento
 recomendado para um relatório completo é `{VMF, IDPERTURB_CAP, HYBRID_VMF_CAP} ×
-{A0, A4, A6}`, reportando por célula as métricas da Seção 20.3 mais os percentis
+{totalmente acoplado, ablações isoladas da Seção 9.3, totalmente desacoplado}`, reportando por célula as métricas da Seção 20.3 mais os percentis
 de `cap_lower_bound_effective` nos modos de calota.
 
 ---
@@ -2783,12 +2793,14 @@ métrica subsequente. As colunas de proveniência `source_identity` e
 Executar a partir da raiz do repositório:
 
 ```bash
-.venv/Scripts/python.exe -m pytest simulator/tests/ -q
+python -m pytest simulator/tests/ -q
 ```
 
-A suíte está organizada em sete módulos. Os módulos de Modo B e do adapter
-concreto fazem `pytest.importorskip("faceaudit")` e são automaticamente pulados
-quando o FaceAudit não está instalado; os demais rodam sem o host.
+A suíte está organizada em sete módulos. O módulo do Modo B
+(`test_faceaudit_seed.py`) faz `pytest.importorskip("faceaudit")` e é pulado
+quando o FaceAudit não está instalado; o do adapter concreto
+(`test_faceaudit_concrete_adapter.py`) importa o FaceAudit no topo e, sem ele,
+falha na coleta. Os demais rodam sem o host.
 
 ### 23.1 `test_adaface_embedding_simulator.py` — núcleo
 
@@ -2891,7 +2903,7 @@ Requer FaceAudit (`MoVMFTypicalityModel` + `EmbeddingDataset`):
 
 ### 23.6 `test_faceaudit_concrete_adapter.py` — adapter concreto
 
-Requer FaceAudit:
+Requer FaceAudit (sem `importorskip`: sem o host, a coleta falha):
 
 - mapeamento básico para `EmbeddingInfo`/`EmbeddingDataset` (identity, quality,
   source, origin, pose vazio, dtype `float32`);
@@ -2900,6 +2912,15 @@ Requer FaceAudit:
 - filtro de domínio;
 - round-trip por parquet;
 - cross-condition compartilha identidades entre condições.
+
+### 23.7 `test_manifest_environment.py` — bloco `environment` do manifesto
+
+Roda com ou sem FaceAudit:
+
+- o manifesto traz `environment` com exatamente `python`, `numpy`, `pandas` e
+  `faceaudit` (este último `None` quando o pacote não é importável);
+- `environment` é chave de topo, nunca dentro de `config`;
+- o bloco não quebra o round-trip `config_from_manifest`.
 
 Para produção, acrescente testes específicos do seu pipeline FaceAudit.
 

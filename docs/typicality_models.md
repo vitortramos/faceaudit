@@ -57,6 +57,9 @@ metadata do `SimilarityScoreDataset`.
 - **MoVMF default**: `LOG_DENSITY_ESTIMATE` (log-likelihood — k-NN T_k
   não tem análogo paramétrico).
 
+Hoje cada backend implementa **só** a sua base: o `__post_init__` do
+config recusa (com `ValueError`) a base do outro backend.
+
 ## 3. `UnitNormPolicy` (PR 4)
 
 Modelos esféricos assumem `‖x‖₂ = 1`. Embeddings com norma fora de
@@ -130,8 +133,9 @@ modo `FACE_LEVEL_RAW` isso degenera para o `1/k` tradicional.
   em vez de contagem unitária — `n_k = Σ_i w_i · r_ik`, e a média
   ponderada da log-likelihood entra em `_train_avg_log_likelihood`.
   CDF de referência também ponderada (cumsum dos pesos ordenados por
-  LL). Inicialização do k-means++ permanece não-ponderada na V2.15 —
-  P2 conhecido, ver §10.
+  LL). A inicialização k-means++ esférica também é ponderada
+  (`prob_i ∝ w_i · (1 − cos)_i`), para que identidades
+  super-representadas não dominem a escolha das sementes.
   **Atenção forense:** AIC/BIC retornam `None` neste modo (P1-R2-6
   da revisão externa round 2): a definição formal de N efetivo
   ponderado ainda está em aberto e o valor ingênuo (N = n_faces)
@@ -144,17 +148,17 @@ modo `FACE_LEVEL_RAW` isso degenera para o `1/k` tradicional.
 
 | Modo | Default | Comportamento |
 |---|---|---|
-| `CROSS_FIT_IDENTITY` | ✅ recomendado (MoVMF) | K-fold por identidade; CDF construída com scores OOF; refit final em D. |
-| `IN_SAMPLE_LEGACY` | ✅ k-NN (compat V2.14) | CDF construída sobre o mesmo conjunto do fit. Otimista. |
+| `CROSS_FIT_IDENTITY` | ✅ k-NN e MoVMF (estratégias novas) | K-fold por identidade; CDF construída com scores OOF; refit final em D. `cv_n_folds = 0` no config k-NN é sentinela: o `__post_init__` do config o troca por 5 (o default do MoVMF já é 5). |
+| `IN_SAMPLE_LEGACY` | — (gravado pela migração V2.14) | CDF construída sobre o mesmo conjunto do fit (LOO de imagem no k-NN). Otimista. |
 
 ### 5.1 Protocolo `CROSS_FIT_IDENTITY`
 
 Procedimento de duas etapas (formalização explícita do plano):
 
-1. **Splits identitários disjuntos.** Particiona identidades únicas em
-   K folds via `sklearn.model_selection.KFold` (ou similar
-   determinístico via `random_state`). Persistir mapeamento
-   `identity → fold_index` no fingerprint do split.
+1. **Splits identitários disjuntos.** Embaralha as identidades únicas
+   com `np.random.default_rng(random_state)` e as particiona em K folds
+   via `np.array_split`. O mapeamento `identity → fold_index` entra
+   (como JSON canônico) no `split_fingerprint`.
 2. **Para cada fold**: treina o backend nos folds de treino (faces
    cujas identidades estão nos folds train). Pontua identidades do
    fold test (faces cujas identidades estão no fold test). Coleta os
@@ -309,13 +313,13 @@ vistas.
 
 ## 6. Fingerprints (PR 4 endurece)
 
-Três camadas por modelo (espelha V2.14 do LR):
+Camadas por modelo:
 
 | Camada | Conteúdo | Uso |
 |---|---|---|
 | `model_state_fingerprint` | μ/κ/π (canonicalizados) + CDF + threshold + reference_score_weights | Hash de estado numérico exato |
-| `model_contract_fingerprint` | model_type + score_semantics_ids + population_weighting_mode + unit_norm_policy + reference_score_calibration_mode + upstream_embedding_fingerprint | Entra no `vectorization_contract_fingerprint` downstream — INHERIT compara este |
-| `model_provenance_fingerprint` | Resource IDs + timestamps + seeds + warnings + commit hash | Auditoria — não comparado na aplicação |
+| `model_contract_fingerprint` | model_type + score_semantics_ids + dim + ood_quantile + population_weighting_mode + unit_norm_policy + unit_norm_tolerance + reference_score_calibration_mode; no k-NN também `reference_mode`, `k` e `weighted_T_k_formula_id`; no MoVMF também `centering`, `n_components` ajustado e `population_label` | Entra no `vectorization_contract_fingerprint` downstream — INHERIT compara este |
+| `audit_metrics_fingerprint` | Métricas OOF do cross-fit (PLL por fold, thresholds por fold, contagens, seeds, `split_fingerprint`) | Auditoria — validado no `from_dict` quando há payload OOF |
 
 ### 6.1 Canonicalização de componentes MoVMF
 
@@ -336,26 +340,27 @@ permutar componentes → mesmo `model_contract_fingerprint`.
 
 ## 7. Health checks MoVMF (PR 4)
 
-`MoVMFTypicalityModel.summary_protocol()` retorna
+`MoVMFTypicalityModel.summary()` (antes `summary_protocol()`; o dict
+antigo sobrevive como `summary_legacy()`) retorna
 `TypicalityModelSummary` com `health_status ∈ {OK, WARNING, CRITICAL}`
-e `warnings: tuple[str, ...]` cobrindo:
+e `warnings: tuple[str, ...]`. Checagens implementadas hoje:
 
-1. `n_components <= effective_population_size`.
-2. Cada componente com **suporte mínimo** (faces atribuídas).
+1. `n_components <= sample_count` (CRITICAL se violado —
+   super-parametrização).
+2. Componentes degenerados (`get_degenerate_components`: peso
+   < 1e-3 ou κ no teto) → WARNING.
 3. Nenhum peso abaixo de `min_component_weight` após o ajuste.
-4. Nenhum κ saturou `max_kappa` sem warning.
-5. log-likelihood finita.
-6. Convergência em **pelo menos uma inicialização**
-   (`converged_at_least_one_init`).
-7. `best_init_index` documentado entre `n_init`.
-8. Responsabilidades não degeneradas (não há componente com
-   `argmax(r_ik) ≡ vazio`).
-9. CDF OOF com tamanho mínimo (`n_oof_samples ≥ min_oof_required`)
-   quando `reference_score_calibration_mode = CROSS_FIT_IDENTITY`.
-10. Folds OOF com identidades disjuntas (`identity_overlap_between_folds = 0`).
+4. Nenhum κ saturou `max_kappa`.
+5. log-likelihood média de treino finita (CRITICAL se não).
+6. Convergência do EM na inicialização final (`converged`).
 
-Persiste também: `random_state`, `init_seeds`, `best_init_index`,
-`fold_seeds`, `cross_fit_identity_split_fingerprint`.
+A disjunção de identidades entre folds e o tamanho da CDF OOF são
+verificados no serviço de cross-fit e na re-validação estrutural do
+`from_dict` (§5.2), não no `summary()`.
+
+`backend_details` traz também: `random_state`, `n_init_used`,
+`fold_seeds`, `n_folds_used`, `audit_metrics_fingerprint`; o
+`split_fingerprint` é persistido no estado do modelo (`to_dict`).
 
 ## 8. Validações pendentes para promover MoVMF a STABLE
 
@@ -390,8 +395,9 @@ indicado em `docs/conditional_monotonicity_rule_design.md` §7
 
 A migração preservativa (`LegacyStrategyMigrationService`) detecta e
 converte automaticamente em memória; o JSON original é mantido
-intacto e a UI grava uma cópia `*.v2_15.fa` lado a lado sob ação
-explícita do usuário.
+intacto. A cópia `*.v2_15.fa` lado a lado é gravada só por chamada
+explícita a `LegacyStrategyMigrationService.write_side_by_side_copy`
+(hoje não há ação na interface que a dispare).
 
 ### Mapeamento de defaults históricos (literais)
 

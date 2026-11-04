@@ -40,7 +40,7 @@ Com um dataset carregado, a tela divide-se em três áreas:
 
 O divisor entre tabela e detalhes é **arrastável** — clique e
 arraste para redistribuir a largura. O painel de detalhes tem uma
-**largura mínima** e **não pode ser colapsado**: o divisor apenas
+**largura mínima** (260 px) e **não pode ser colapsado**: o divisor apenas
 redistribui o espaço entre a tabela e os detalhes, sem nunca fazer
 o painel direito desaparecer.
 
@@ -57,7 +57,7 @@ do dataset:
 | Atributo | O que controla |
 |---|---|
 | **Label** | Texto exibido no cabeçalho (pode diferir do nome técnico — ex: `Identidade` para a coluna `identity`) |
-| **Role** | Papel da coluna: `IDENTITY`, `QUALITY`, `DEMOGRAPHIC`, `POSE`, `EMBEDDING`, `CUSTOM`, etc. — afeta como o app trata a coluna |
+| **Role** | Papel da coluna: `IDENTITY`, `IMAGE_PATH`, `QUALITY`, `DEMOGRAPHIC`, `POSE`, `GEOMETRY`, `EMBEDDING`, `CAPTURE`, `CUSTOM`, etc. — afeta como o app trata a coluna |
 | **Editable** | Se a célula pode ser editada na UI (algumas colunas como `embedding_v2` são read-only) |
 | **Visible default** | Se a coluna aparece por padrão (você pode ligar/desligar via diálogo **Colunas** ou pelo submenu *Mostrar/Ocultar Colunas* do cabeçalho) |
 | **Vocabulary** | Lista fechada de valores válidos (ex: `("M", "F", "Outro", "Desconhecido")` para `gender`) — a edição vira um combo box |
@@ -71,6 +71,7 @@ cabeçalho):
 
 | Coluna | Rótulo | Conteúdo |
 |---|---|---|
+| `image_path` | Caminho da Imagem | Caminho gravado no parquet (somente-leitura) |
 | `file_name` | Nome do Arquivo | Nome do arquivo |
 | `identity` | Identidade | Identidade (editável) |
 | `gender` | Gênero | Gênero — combo `M / F / Outro / Desconhecido` |
@@ -81,26 +82,30 @@ cabeçalho):
 | `ofiq_score` | OFIQ Score | Score OFIQ unificado |
 | `serfiq_score` | SER-FIQ Score | Score SER-FIQ de robustez |
 | `error`, `error_stage`, `error_message` | Erro, Estágio do Erro, Mensagem do Erro | Rastreamento de falhas — `error=True` marca a face; as outras duas detalham onde e por quê |
+| `capture_datetime_raw` | Data/hora da captura (como gravada) | Só quando os metadados EXIF/XMP foram extraídos — as demais colunas de captura nascem ocultas |
 
 > 💡 As três colunas de erro (`error` / `error_stage` / `error_message`)
 > aparecem sempre, mas só têm conteúdo útil quando alguma face falhou na
 > última criação/enriquecimento. Filtre por `error=True` na tabela para
 > ver só as falhas.
 
-Colunas como `embedding_v2`…`embedding_v6`, `serfiq_score`... e demais
-embeddings, `roll` (FF), `det_score` (Det. Confidence), `ofiq_*_raw`,
-`ipd`, `bbox` e `keypoints` ficam **ocultas por padrão** — você pode
+Colunas como `embedding_v2`…`embedding_v6` e demais embeddings,
+`roll` (FF), `det_score` (Det. Confidence), `ofiq_*_raw`, `ipd`,
+`bbox`, `keypoints`, `hash` e as demais colunas de captura ficam
+**ocultas por padrão** — você pode
 ligá-las pelo diálogo **Colunas** (botão 📋 **Colunas** na ribbon
 `Exibir`; ver [capítulo 06](06_filtros_e_estatisticas.md)) ou pelo
 submenu **Mostrar/Ocultar Colunas** do menu de contexto do cabeçalho.
 
 ### Tooltips de miniatura
 
-**Ao passar o mouse** sobre uma linha, aparece um tooltip mostrando
-**a miniatura da face**. Isso permite varredura visual rápida sem
-precisar selecionar cada linha. O cache de miniaturas é mantido em
-memória (lazy + LRU), então a primeira passagem por uma linha é
-ligeiramente mais lenta.
+**Ao passar o mouse** sobre qualquer célula de uma linha, aparece um
+tooltip mostrando **a miniatura da face** (até 200 px no lado maior;
+quando a imagem não é encontrada, o tooltip mostra o caminho). Isso
+permite varredura visual rápida sem precisar selecionar cada linha.
+Cada miniatura é gerada sob demanda e guardada em memória até o
+dataset trocar, então a primeira passagem por uma linha é ligeiramente
+mais lenta.
 
 ### Ordenação
 
@@ -135,8 +140,8 @@ Pressione `Enter` para confirmar ou `Esc` para cancelar.
 > pertence à lista fechada e provavelmente precisa de correção.
 
 > ⚠️ As edições ficam **em memória** até você clicar 💾 **Salvar**.
-> A janela mostra um indicador *(modificado)* no título quando há
-> mudanças não salvas.
+> A barra de status mostra um `*` logo após o nome do dataset quando
+> há mudanças não salvas.
 
 ## A barra de status
 
@@ -166,9 +171,12 @@ Ao passar o mouse, um tooltip rich-text detalha:
 - **Enriquecimento** com contagem e percentual por estágio:
   `FF n/N (x%), OFIQ n/N (x%), SER-FIQ n/N (x%)`
 - **Balanceamento** (CV, ratio, min/max/média/mediana de amostras por ID)
+- **Erros**, quando houver faces marcadas
+- **Tamanho** e data de modificação do parquet, quando ele existe em disco
 
-> 💡 O **hash** do parquet e o caminho completo aparecem apenas no
-> tooltip, nunca na linha principal.
+> 💡 O caminho completo aparece apenas no tooltip, nunca na linha
+> principal. O SHA-256 do parquet fica registrado na cadeia de custódia
+> (📜 **Custódia**).
 
 ## O painel de detalhes
 
@@ -176,7 +184,9 @@ Selecione uma linha na tabela e o painel direito popula-se:
 
 ### Topo: thumbnail
 
-A miniatura da face selecionada, dimensionada pra caber no painel.
+A miniatura da face selecionada, dimensionada pra caber no painel e
+exibida com a orientação EXIF aplicada (a foto aparece de pé, como o
+detector a viu).
 Quando a imagem não existe no disco (caminho quebrado), aparece um
 placeholder cinza com o texto **Imagem não encontrada** — use
 *Modificar Caminhos* ([capítulo 03](03_carregando_e_localizando.md)) pra
@@ -211,18 +221,19 @@ Mostra **exclusivamente** os indicadores **OFIQ** (colunas
 `ofiq_*_scalar`) como **barras visuais** — FIQA aparece na aba
 *Geral / Bio* e SER-FIQ não é renderizado neste painel.
 
-| Grupo | Indicadores OFIQ |
-|---|---|
-| **Geral** | Unified Quality Score, Sharpness, Background Uniformity, Illumination Uniformity, Natural Colour, Compression Artifacts |
-| **Exposição** | Luminance Mean, Luminance Variance, Under/Over Exposure, Dynamic Range |
-| **Pose** | Head Pose Yaw / Pitch / Roll |
-| **Face** | Single Face Present, Eyes Open / Visible, Mouth Closed / Occlusion, Face Occlusion, Expression Neutrality, No Head Coverings |
-| **Enquadramento** | Inter Eye Distance, Head Size, Margins (Above / Below / Left / Right) |
+As barras aparecem **em ordem alfabética**, uma por coluna
+`ofiq_*_scalar` presente no dataset, com o nome derivado da coluna
+(`ofiq_illumination_uniformity_scalar` → *Illumination Uniformity*).
+Cobrem, entre outros, qualidade unificada, nitidez, uniformidade de
+fundo e de iluminação, exposição (luminância, sub/superexposição, faixa
+dinâmica), compressão, pose da cabeça, olhos abertos/visíveis, boca,
+oclusão, expressão, cobertura da cabeça, distância entre os olhos,
+tamanho da cabeça e margens do recorte.
 
 Cada barra mostra **um único valor** — o score OFIQ *scalar* (0–100,
 comparável entre métricas), formatado com duas casas decimais, com a
-cor proporcional ao valor: ✅ verde alto → ⚠️ amarelo médio →
-❌ vermelho baixo.
+cor pela faixa do valor: ✅ verde (≥ 70) → ⚠️ laranja (40–70) →
+❌ vermelho (< 40).
 
 Quando o dataset ainda não tem métricas OFIQ, a aba exibe apenas o
 texto **Dados OFIQ não calculados.**
@@ -231,6 +242,16 @@ texto **Dados OFIQ não calculados.**
 > que uma imagem específica está com `error=True` ou foi rejeitada
 > por um filtro de qualidade — os indicadores OFIQ mostram exatamente
 > qual atributo está fraco.
+
+### Aba *Metadados*
+
+Árvore com **todas** as tags EXIF/XMP/IPTC lidas da foto original,
+agrupadas por origem (EXIF, XMP, File, MakerNotes…; tags sem prefixo
+caem em *Outros*), com colunas *Tag* e *Valor* e um campo *"Filtrar por
+tag ou valor…"*. Um rodapé lembra que são **declarações do arquivo,
+não medições** — metadado embutido pode ser editado ou forjado. A aba
+só tem conteúdo quando o dataset foi criado ou enriquecido com
+*Extrair EXIF/XMP da imagem* ([capítulo 02](02_criando_dataset.md#grupo-4)).
 
 ## A galeria de thumbnails
 
@@ -242,13 +263,15 @@ para uma **grade de miniaturas**. Útil para:
 - Triagem visual antes de uma seleção/exclusão em massa
 
 Limitações:
-- Sem filtros nem ordenação — a ordem é a do parquet
+- Sem ordenação própria — a ordem é a do dataset; com filtro ativo, a
+  galeria mostra só o recorte filtrado
 - Performance cai com datasets grandes (> 10 mil imagens) — use
   a tabela com filtro nesses casos
 - Edição inline (clique-duplo) não funciona na galeria — mas há um
   **menu de contexto** com ações de seleção em massa (veja abaixo)
 
-Para voltar à tabela, clique no mesmo botão (o ícone alterna).
+Para voltar à tabela, clique no mesmo botão — em modo galeria ele
+passa a se chamar ▦ **Tabela**.
 
 ### Menu de contexto da galeria
 
@@ -261,21 +284,27 @@ selecionadas:
 | **⚖️ Comparar este par lado a lado…** | Apenas com **exatamente 2** selecionadas | Abre a janela de comparação lado a lado das duas faces. Com outra contagem, o item aparece esmaecido como `⚖️ Comparar par (selecione 2 — N)` |
 | **✏️ Definir valor de coluna… (N)** | `N ≥ 1` | Edita em lote o valor de uma coluna para todas as faces selecionadas |
 | **🧩 Criar dataset a partir da seleção… (N)** | `N ≥ 1` | Cria um novo dataset (subconjunto) apenas com as faces selecionadas |
-| **🗑️ Remover do dataset (N)** | `N ≥ 1` | Remove as faces selecionadas do dataset — **não apaga os arquivos de imagem** |
+| **🗑️ Remover do dataset (N)** | `N ≥ 1` | Remove as faces selecionadas do dataset — **não apaga os arquivos de imagem**. Mesmo fluxo do botão **Excluir Selecionados** |
 
 > ⚠️ **Remover do dataset** é uma operação **não destrutiva** no disco:
 > ela retira as faces da tabela do dataset, mas os arquivos de imagem
-> originais permanecem. A remoção só é persistida quando você clica
-> 💾 **Salvar**.
+> originais permanecem. Antes de remover, o diálogo *Excluir registros do
+> dataset* pede uma **justificativa**, que fica registrada na cadeia de
+> custódia junto com a contagem e os identificadores das faces. A
+> remoção só é persistida quando você clica 💾 **Salvar**. Com filtro
+> ativo, as faces saem também do dataset de origem — *Limpar Filtro*
+> não as traz de volta.
 
 ## Menu de contexto da tabela
 
 **Clique-direito numa célula** abre o menu de contexto. `N` é o número
-de células selecionadas:
+de registros (linhas) ou de células selecionadas, conforme o item:
 
 | Item | Quando aparece | Função |
 |---|---|---|
 | **Selecionar Toda Coluna '…'** | Sempre | Seleciona verticalmente todas as células da coluna clicada |
+| **🧩 Salvar seleção como novo dataset… (N)** | Sempre (ativo com `N ≥ 1` registros) | Grava os registros selecionados como dataset novo, sem trocar o que está aberto — mesmo fluxo de **Salvar Selecionados** |
+| **🗑️ Excluir registros selecionados (N)** | Sempre (ativo com `N ≥ 1` registros) | Mesmo fluxo de **Excluir Selecionados** / *Remover do dataset* da galeria (com justificativa para a custódia) |
 | **✏️ Definir Valor (N células)…** | Só em colunas **editáveis** | Aplica um mesmo valor a todas as células selecionadas |
 | **🔄 Substituir (N células)…** | Só em colunas **editáveis** | Substitui um valor por outro nas células selecionadas |
 | **🔒 Coluna '…' não é editável** | Em colunas **não editáveis** | Item desabilitado — só informa que a coluna é somente-leitura |

@@ -7,17 +7,17 @@
 > controles metodológicos.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `a60088e`
-> (branch `claude/read-claude-md-SgzIV`). Campos, fórmulas e enums conferidos
-> em `faceaudit/executors/instructions/score_interaction_feature_instruction_executor.py`,
+> **Fonte documental:** código atual do repositório FaceAudit. Campos, fórmulas
+> e enums conferidos em `faceaudit/executors/instructions/score_interaction_feature_instruction_executor.py`,
 > `faceaudit/models/instructions/score_interaction_feature_instruction.py`,
 > `faceaudit/models/calibration/logreg_s0_config.py`,
 > `faceaudit/enums/score_interaction_mode.py`,
 > `faceaudit/enums/s0_mode.py`.
 >
 > **⚠️ V2.14 — substituto declarativo para as arquiteturas LR canônicas.**
-> A partir de V2.14, a forma recomendada de montar uma das 9 arquiteturas LR
-> forenses canônicas (`COSINE_ONLY` → `BILATERAL_FULL_CENTERED`) é a instrução
+> A partir de V2.14, a forma recomendada de montar uma das arquiteturas LR
+> forenses canônicas (15 no registry: as 9 two-face `COSINE_ONLY` →
+> `BILATERAL_FULL_CENTERED` e as 6 variantes ONE_FACE da V2.14.1) é a instrução
 > única **`LR_ARCHITECTURE_VECTORIZATION`**, que dispensa o encadeamento
 > manual `SCORE_INTERACTION_FEATURE × N + SCORE_VECTORIZATION` e adiciona o
 > modo `parameter_mode=FIT_PER_FOLD` — s₀ e r̄ ajustados POR FOLD dentro do
@@ -85,7 +85,7 @@ formal na matemática, exaustivo nas tabelas de configuração.
 
 ### 0.3 Escopo
 
-**Incluído:** a construção da feature de interação `(base − s0)·rarity`, os três
+**Incluído:** a construção da feature de interação `(base − s0)·rarity`, os cinco
 modos de fórmula, a resolução e o congelamento de `s0`, a conversão
 tipicidade→raridade, a centralização opcional da raridade, o alinhamento de
 pares, o protocolo casework e a auditoria.
@@ -189,7 +189,7 @@ calibração e congelado** para validação e casework (§6, §12).
 | Papel | Campo | Tipo | Conteúdo |
 |---|---|---|---|
 | **base** | `base_score_resource_id` | `SimilarityScoreDataset` | score puro por par (cosseno recomendado; PLDA experimental). Lê `raw_score`. |
-| **modifier** | `modifier_score_resource_id` | `SimilarityScoreDataset` | tipicidade pareada — output de `TYPICALITY_PAIR_SCORING`. Ignorado em `HINGE_BASE`. |
+| **modifier** | `modifier_score_resource_id` | `SimilarityScoreDataset` | tipicidade pareada — output de `TYPICALITY_PAIR_SCORING`. Ignorado em `HINGE_BASE` e `HINGE_BASE_NEGATIVE`. |
 | **herança** | `inherit_s0_from_resource_id` | `SimilarityScoreDataset` | de onde herdar `s0` (só em `s0_mode=INHERIT`). |
 | **saída** | `output_resource_id` | `SimilarityScoreDataset` | `raw_score` 1D = a feature derivada. |
 
@@ -211,7 +211,10 @@ deve ser score puro (cosseno/PLDA).
 
 O modifier deve ser da **família tipicidade**: metadata com
 `score_kind=typicality_pair` ou `score_type` em `{TYPICALITY_PERCENTILE,
-MEAN_KNN_SIMILARITY, LOG_DENSITY_KNN}`. Caso contrário, erro.
+MEAN_KNN_SIMILARITY, LOG_DENSITY_ESTIMATE}` (este último é o antigo
+`LOG_DENSITY_KNN`, renomeado). Caso contrário, erro. Além disso, o modifier
+precisa trazer `score_type` no metadata — sem ele a inversão
+tipicidade→raridade fica ambígua e a execução falha.
 
 ---
 
@@ -221,7 +224,8 @@ A ordem exata executada por `execute()`:
 
 1. **Valida** a instrução (estrutural + plugável + dinâmica + específica).
 2. **Busca o base** e rejeita se for recursivo.
-3. **Busca o modifier** (exceto em `HINGE_BASE`) e valida a família tipicidade.
+3. **Busca o modifier** (exceto nos modos só-hinge, `HINGE_BASE` e
+   `HINGE_BASE_NEGATIVE`) e valida a família tipicidade.
 4. **Alinha os pares** entre base e modifier (§9): chave orientada vs
    frozenset, detecção de duplicatas, reordenação, consistência de
    `same_person` (fora de casework).
@@ -251,6 +255,8 @@ O campo `interaction_mode` (`ScoreInteractionMode`) define a fórmula. Seja a
 | `ONE_SIDED_POSITIVE` (default) | $\mathrm{feature} = \max(\mathrm{base}-s_0,\,0)\cdot \mathrm{rarity} = h\cdot\mathrm{rarity}$ | conservador/defensável |
 | `LINEAR` | $\mathrm{feature} = (\mathrm{base}-s_0)\cdot \mathrm{rarity}$ | bilateral; experimental |
 | `HINGE_BASE` | $\mathrm{feature} = \max(\mathrm{base}-s_0,\,0) = h$ | controle do A/B; sem raridade |
+| `ONE_SIDED_NEGATIVE` (V2.13) | $\mathrm{feature} = \max(s_0-\mathrm{base},\,0)\cdot \mathrm{rarity} = h_-\cdot\mathrm{rarity}$ | espelho do positivo abaixo de $s_0$; experimental |
+| `HINGE_BASE_NEGATIVE` (V2.13) | $\mathrm{feature} = \max(s_0-\mathrm{base},\,0) = h_-$ | companheira do modelo bilateral; sem raridade |
 
 ### 5.1 `ONE_SIDED_POSITIVE` (default)
 
@@ -272,6 +278,20 @@ Produz apenas a hinge, ignorando o modifier (por isso `modifier_score_resource_i
 é opcional neste modo). É a **feature-companheira** para montar o modelo
 plenamente geral (§10) e o **controle do A/B**: se a hinge sozinha já bate o
 baseline, o ganho veio da não-linearidade, não da raridade.
+
+### 5.4 `ONE_SIDED_NEGATIVE` e `HINGE_BASE_NEGATIVE` (V2.13)
+
+Espelhos exatos dos modos positivos para a região **abaixo** de $s_0$, com
+$h_- = \max(s_0-\mathrm{base},\,0)$. `ONE_SIDED_NEGATIVE` faz a raridade modular
+só a evidência **negativa**; `HINGE_BASE_NEGATIVE` produz só a hinge negativa e,
+como `HINGE_BASE`, ignora o modifier. Pareados com os positivos, formam o modelo
+bilateral plenamente geral $[\,\mathrm{base},\,h,\,h_-,\,h\cdot\mathrm{rarity},\,
+h_-\cdot\mathrm{rarity}\,]$, e valem as identidades $h + h_- =
+|\mathrm{base}-s_0|$ e $h\cdot\mathrm{rarity} + h_-\cdot\mathrm{rarity} =
+|\mathrm{base}-s_0|\cdot\mathrm{rarity}$. `ONE_SIDED_NEGATIVE` é **apenas
+experimental**: a afirmação de que a raridade reforça evidência contra a mesma
+origem ainda exige validação. Nesses modos, `fraction_hinge_active` é a fração
+de pares **abaixo** de $s_0$.
 
 ---
 
@@ -341,7 +361,7 @@ O modifier carrega **tipicidade** (quão típica a face é); a feature precisa d
 |---|---|---|---|
 | `TYPICALITY_PERCENTILE` | já em $[0,1]$ | $1 - v$ | `1 - percentile_0_1` |
 | `MEAN_KNN_SIMILARITY` | $[-1,1]$ | $-v$ | `−mean_knn_similarity` |
-| `LOG_DENSITY_KNN` | $\mathbb{R}$ | $-v$ | `−log_density_knn` |
+| `LOG_DENSITY_ESTIMATE` (antigo `LOG_DENSITY_KNN`) | $\mathbb{R}$ | $-v$ | `−log_density_knn` |
 
 A inversão garante que **número maior = face mais rara**. Com
 `invert_rarity=False`, é passthrough da tipicidade — útil quando se quer que o
@@ -367,7 +387,9 @@ $$
 $r_0$ é resolvido em paralelo a $s_0$ (mesmo `s0_mode`): em `AUTO_LOGREG`,
 $r_0 = \mathrm{mean}(\mathrm{rarity})$ no dataset atual; em `INHERIT`, lê
 `interaction_r0` da mesma fonte. `MANUAL` não suporta centralização
-($r_0$ ficaria indefinido). Sem efeito em `HINGE_BASE`.
+($r_0$ ficaria indefinido) — a combinação `center_rarity=True` +
+`s0_mode=MANUAL` dá erro na execução. Sem efeito nos modos só-hinge
+(`HINGE_BASE`, `HINGE_BASE_NEGATIVE`).
 
 ### 8.1 Por que centrar — princípio hierárquico de Tukey
 
@@ -459,7 +481,7 @@ a face está). Combinar PLDA + interação de raridade pode **contar a tipicidad
 duas vezes**.
 
 Recomendação: com base PLDA, exija o **A/B explícito** (compare o modelo só-PLDA
-contra PLDA + interação — modelos 8 e 9 da janela de Comparação) para verificar
+contra PLDA + interação — M7 vs M8 da matriz A/B do Apêndice H.5) para verificar
 se a raridade externa ainda agrega informação além do que $B$ já captura. Com
 base **cosseno**, o risco não existe — o cosseno não modela tipicidade — e a
 interação tende a agregar genuinamente.
@@ -487,17 +509,18 @@ próprio caso.
 | Validação | Quando | Severidade |
 |---|---|---|
 | `base_score_resource_id` definido e presente | sempre | erro |
-| `modifier_score_resource_id` definido e presente | exceto `HINGE_BASE` | erro |
+| `modifier_score_resource_id` definido e presente | exceto `HINGE_BASE`/`HINGE_BASE_NEGATIVE` | erro |
 | `output_resource_id` definido | sempre | erro |
 | base é `SimilarityScoreDataset` e não-recursivo | sempre | erro |
-| modifier é da família tipicidade | exceto `HINGE_BASE` | erro |
+| modifier é da família tipicidade | exceto `HINGE_BASE`/`HINGE_BASE_NEGATIVE` | erro |
 | `MANUAL` exige `s0_manual_value` | `s0_mode=MANUAL` | erro |
 | `INHERIT` exige recurso com `interaction_s0` no metadata | `s0_mode=INHERIT` | erro |
 | base herdado ≠ base atual (tipo/modelo/coluna) | `s0_mode=INHERIT` | warning |
 | `AUTO_LOGREG` + `is_casework` | combinação | erro |
 | `AUTO_LOGREG` com < 1000 pares | `s0_mode=AUTO_LOGREG` | warning |
 | `MIN_CALIBRATION_PAIRS` sobre o base | `s0_mode=AUTO_LOGREG` (default persistente) | configurável |
-| `ScoreVectorPairCompatibilityRule` base × modifier | dinâmica (exceto `HINGE_BASE`) | erro |
+| `ScoreVectorPairCompatibilityRule` base × modifier | dinâmica (exceto `HINGE_BASE`/`HINGE_BASE_NEGATIVE`) | erro |
+| `center_rarity=True` com `s0_mode=MANUAL` | runtime | erro |
 
 Além disso, em runtime: `coef ≈ 0` ou `coef < 0` no `AUTO_LOGREG` → erro; `s0`
 fora do intervalo dos scores → warning de extrapolação.
@@ -513,7 +536,8 @@ O dataset de saída persiste, entre outras chaves: `is_interaction_feature`,
 `interaction_s0_source_resource_id`, `interaction_s0_training_method`,
 `fraction_scores_above_s0`, `fraction_hinge_active`, `invert_rarity`,
 `rarity_transform`, `modifier_score_type`, `modifier_combiner`,
-`alignment_orientation`, `base_score_type`/`base_score_name`/
+`alignment_orientation`, `base_source_resource_id`,
+`modifier_source_resource_id`, `base_score_type`/`base_score_name`/
 `base_similarity_model_resource_id`/`base_embedding_column`,
 `interaction_base_score_min`/`interaction_base_score_max`, `is_casework`,
 `score_kind` (= `interaction_feature`), e — quando `center_rarity=True` —
@@ -591,7 +615,8 @@ explícito (§11).
 
 **O que acontece com a raridade quando o score está abaixo de $s_0$?**
 Em `ONE_SIDED_POSITIVE` e `HINGE_BASE`, a feature é zero — raridade não age. Em
-`LINEAR`, a raridade modula também essa região (bilateral).
+`LINEAR`, a raridade modula também essa região (bilateral). Os modos
+`ONE_SIDED_NEGATIVE`/`HINGE_BASE_NEGATIVE` agem **só** nessa região (§5.4).
 
 **Por que `AUTO_LOGREG` é bloqueado em casework?**
 Porque não há ground truth para ajustar o calibrador auxiliar. Em casework,
@@ -645,6 +670,8 @@ $$
 - `ONE_SIDED_POSITIVE`: $\mathrm{feature}=h\cdot \mathrm{rarity}$.
 - `LINEAR`: $\mathrm{feature}=(\mathrm{base}-s_0)\cdot \mathrm{rarity}$.
 - `HINGE_BASE`: $\mathrm{feature}=h$.
+- `ONE_SIDED_NEGATIVE`: $\mathrm{feature}=h_-\cdot \mathrm{rarity}$, com $h_-=\max(s_0-\mathrm{base},\,0)$.
+- `HINGE_BASE_NEGATIVE`: $\mathrm{feature}=h_-$.
 
 **Centralização da raridade (`center_rarity=True`):**
 
@@ -652,7 +679,8 @@ $$
 \mathrm{feature}=h\cdot(\mathrm{rarity}-r_0),\qquad r_0=\mathrm{mean}(\mathrm{rarity}).
 $$
 
-com $r_0$ obtido via `AUTO_LOGREG` (ou herdado via `INHERIT`).
+com $r_0$ calculado no dataset atual quando `s0_mode=AUTO_LOGREG` (ou herdado
+via `INHERIT`).
 
 **$s_0$ via `AUTO_LOGREG`:**
 
@@ -664,7 +692,7 @@ $$
 **Conversão tipicidade → raridade (`invert_rarity=True`):**
 
 - `TYPICALITY_PERCENTILE` (com $v\in[0,1]$): $\mathrm{rarity}=1-v$.
-- `MEAN_KNN_SIMILARITY` / `LOG_DENSITY_KNN`: $\mathrm{rarity}=-v$.
+- `MEAN_KNN_SIMILARITY` / `LOG_DENSITY_ESTIMATE`: $\mathrm{rarity}=-v$.
 
 **Modelo multivariado a jusante (caso geral):**
 
@@ -681,21 +709,21 @@ Arquivo: `faceaudit/models/instructions/score_interaction_feature_instruction.py
 | Campo | Tipo | Default | Interpretação | Restrição / observação |
 |---|---|---|---|---|
 | `base_score_resource_id` | `Optional[str]` | `None` | score base (cosseno/PLDA) | obrigatório; não pode ser interaction feature |
-| `modifier_score_resource_id` | `Optional[str]` | `None` | tipicidade pareada | obrigatório exceto em `HINGE_BASE` |
+| `modifier_score_resource_id` | `Optional[str]` | `None` | tipicidade pareada | obrigatório exceto em `HINGE_BASE`/`HINGE_BASE_NEGATIVE` |
 | `interaction_mode` | `ScoreInteractionMode` | `ONE_SIDED_POSITIVE` | fórmula da feature | ver Apêndice D |
 | `s0_mode` | `S0Mode` | `AUTO_LOGREG` | resolução de `s0` | ver Apêndice D |
 | `s0_manual_value` | `Optional[float]` | `None` | `s0` fixo | obrigatório em `MANUAL` |
 | `inherit_s0_from_resource_id` | `Optional[str]` | `None` | fonte de herança de `s0` | obrigatório em `INHERIT` |
 | `s0_logreg_config_override` | `Optional[LogRegS0Config]` | `None` | config do LogReg auxiliar | só em `AUTO_LOGREG`; Apêndice C |
 | `invert_rarity` | `bool` | `True` | tipicidade → raridade | por `score_type` do modifier |
-| `center_rarity` | `bool` | `False` | usa `(rarity − r0)` | sem efeito em `HINGE_BASE`; `MANUAL` não suporta |
+| `center_rarity` | `bool` | `False` | usa `(rarity − r0)` | sem efeito nos modos só-hinge; `MANUAL` não suporta |
 | `output_resource_id` | `Optional[str]` | `None` | dataset de saída | obrigatório |
 | `output_dataset_name` | `Optional[str]` | `None` | nome amigável | — |
 | `is_casework` | `bool` | `False` | zera `same_person` | exige `s0_mode=INHERIT` |
 
 Specs de formulário: `base_score_resource_id` dispara rebuild (a regra default
-`MIN_CALIBRATION_PAIRS` depende dele). O dropdown do modifier só aparece fora de
-`HINGE_BASE`; o de herança só em `INHERIT`; o campo `s0_manual_value` só em
+`MIN_CALIBRATION_PAIRS` depende dele). O dropdown do modifier só aparece fora dos
+modos só-hinge (`HINGE_BASE`, `HINGE_BASE_NEGATIVE`); o de herança só em `INHERIT`; o campo `s0_manual_value` só em
 `MANUAL`.
 
 ---
@@ -727,9 +755,13 @@ pode usar GridSearch de `C`). Persistido no metadata (`interaction_s0_C`,
 | `ONE_SIDED_POSITIVE` (default) | $h\cdot\mathrm{rarity}$ | True |
 | `LINEAR` | $(\mathrm{base}-s_0)\cdot\mathrm{rarity}$ | True |
 | `HINGE_BASE` | $h$ | **False** |
+| `ONE_SIDED_NEGATIVE` (V2.13) | $h_-\cdot\mathrm{rarity}$ | True |
+| `HINGE_BASE_NEGATIVE` (V2.13) | $h_-$ | **False** |
 
 `from_str` defaulta `ONE_SIDED_POSITIVE`. A property `requires_modifier`
-controla se o validador exige o dropdown do modifier.
+controla se o validador exige o dropdown do modifier; `is_negative_side` marca
+os dois modos espelhados e `is_hinge_only` agrupa `HINGE_BASE` e
+`HINGE_BASE_NEGATIVE`.
 
 **`S0Mode`** (`faceaudit/enums/s0_mode.py`):
 
@@ -760,10 +792,11 @@ Chaves persistidas em `SimilarityScoreDataset.metadata` (auditoria):
 | `interaction_s0_source_resource_id` | fonte (em `INHERIT`) |
 | `interaction_s0_inside_score_range` | `s0` dentro de `[min, max]`? |
 | `fraction_scores_above_s0` | fração de pares com `base > s0` |
-| `fraction_hinge_active` | fração de pares com hinge ativa |
+| `fraction_hinge_active` | fração de pares com hinge ativa (acima de `s0` nos modos positivos, abaixo nos negativos, `1.0` em `LINEAR`) |
 | `invert_rarity` / `rarity_transform` | tratamento da raridade |
 | `modifier_score_type` / `modifier_combiner` | origem da tipicidade |
 | `alignment_orientation` | `ordered` / `unordered` |
+| `base_source_resource_id` / `modifier_source_resource_id` | ids dos recursos de entrada |
 | `base_score_type` / `base_score_name` | identificação do base |
 | `base_similarity_model_resource_id` / `base_embedding_column` | proveniência do base |
 | `interaction_base_score_min` / `_max` | intervalo dos scores base |
@@ -774,7 +807,7 @@ Chaves persistidas em `SimilarityScoreDataset.metadata` (auditoria):
 
 ## Apêndice F — Checklist de revisão documental
 
-- [ ] As três fórmulas de `interaction_mode` conferem com `_build_feature`?
+- [ ] As cinco fórmulas de `interaction_mode` conferem com `_build_feature`?
 - [ ] A fórmula `s0 = −intercept/coef` confere com `_resolve_s0` (`AUTO_LOGREG`)?
 - [ ] A tabela de conversão tipicidade→raridade confere com `_to_rarity`
       (incluindo o bugfix do percentil já normalizado)?
@@ -900,14 +933,19 @@ houver inclinação condicional negativa na faixa operacional.**
 > e avalia a inclinação `∂log_LR/∂s` (i) em **todos os pares observados em
 > $D_{\text{cal}}$** (`observed_rows` — supera o "4 cantos" porque cobre a
 > nuvem real) e (ii) nos **cantos do retângulo $[P_5, P_{95}]$** das raridades
-> observadas (`central_box` — implementa diretamente a recomendação acima).
-> Status é persistido em `calibrator.metadata["monotonicity_audit"]`. Detalhes
-> em `docs/conditional_monotonicity_rule_design.md`. O encadeamento legado via
-> `SCORE_INTERACTION_FEATURE + SCORE_VECTORIZATION` (que produz o calibrador
-> piecewise univariado clássico) **ainda não é coberto pela regra plugável**
-> — esse caminho continua usando `monotonicity_policy` interno do
-> `LogisticRegressionCalibrationModel`; cobertura via `PiecewiseLinearDerivativeProvider`
-> está enfileirada para próxima iteração.
+> observadas (`central_box` — implementa diretamente a recomendação acima);
+> desde a V2 (`RULE_VERSION = "2.0"`) avalia também os cantos de uma
+> `reportable_box` opcional — o domínio operacional declarado, onde violação é
+> CRITICAL. Status é persistido em `calibrator.metadata["monotonicity_audit"]`.
+> Detalhes em `docs/conditional_monotonicity_rule_design.md`. O
+> `PiecewiseLinearDerivativeProvider` já existe, mas cobre só o
+> `LogisticRegressionCalibrationModel` 1D com `piecewise_linear_config`
+> (expansão piecewise interna), e a regra só o audita quando adicionada como
+> regra plugável — a auditoria automática pós-refit exige `architecture_state`.
+> O encadeamento legado `SCORE_INTERACTION_FEATURE + SCORE_VECTORIZATION`
+> (calibrador LogReg multivariado sem `architecture_state` nem
+> `piecewise_enabled`) **não é coberto pela regra**: nele, o gate dos 4 cantos
+> descrito acima continua sendo verificação manual do perito.
 
 ### H.4 Refinamento 3 — orientação na vetorização
 
@@ -923,8 +961,8 @@ O `SCORE_INTERACTION_FEATURE` usa alinhamento **orientado**
   fontes — o que não ocorre no fluxo canônico.
 - **Hardening recomendado** para uso operacional/auditável: a vetorização deve
   detectar `alignment_orientation`, usar chave orientada quando algum input for
-  direcional, e persistir a orientação efetiva. Rastreado em
-  **issue #2** (`vitortramos/faceaudit`).
+  direcional, e persistir a orientação efetiva. Ainda não implementado: o
+  `SCORE_VECTORIZATION` continua alinhando só por `frozenset`.
 
 ### H.5 Refinamento 4 — matriz A/B e diagnósticos
 

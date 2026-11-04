@@ -9,7 +9,7 @@
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
 > **Documentos relacionados:** `docs/typicality_models.md` (matemática
-> dos dois backends), `docs/tipicidade_pareada_faceaudit.md`
+> dos dois backends), `docs/typicality_pair_scoring_faceaudit.md`
 > (`TYPICALITY_PAIR_SCORING` downstream),
 > `docs/interacao_score_raridade_faceaudit.md` (consumo do score em
 > `SCORE_INTERACTION_FEATURE` / `LR_ARCHITECTURE_VECTORIZATION`).
@@ -71,7 +71,9 @@ padrão de `SIMILARITY_MODEL_TRAINING` (Cosine / PLDA):
 - Um config polimórfico (`typicality_model_config`) carrega os
   hiperparâmetros embutidos. O tipo concreto do config é decidido pelo
   tipo do backend.
-- O executor despacha via `TypicalityModelBackendRegistry`.
+- O executor escolhe o backend pelo tipo concreto do config (§3.3); o
+  `TypicalityModelBackendRegistry` mapeia tipo ↔ classe para a
+  desserialização (`TypicalityModelFactory.from_dict`).
 
 `KNN_TYPICALITY_MODEL_TRAINING` foi **removido** do runtime. Estratégias
 V2.14 são migradas automaticamente pelo
@@ -88,8 +90,9 @@ Três motivos práticos:
    para os dois permite ablações com pipeline idêntico ao redor.
 2. **Extensibilidade.** Novos backends (Power Spherical,
    FAISS-acelerado, etc.) entram registrando-se no
-   `TypicalityModelBackendRegistry` — sem mudança na instrução nem no
-   executor.
+   `TypicalityModelBackendRegistry`. Hoje isso ainda exige também um
+   config DTO novo, um ramo em `_expected_config_class` na instrução e
+   um ramo em `_trainer_factory_for` no executor.
 3. **Contrato declarativo único.** As regras de validação (`MIN_SAMPLES`,
    `MAX_SAMPLES_WARNING`) e o fingerprint downstream
    (`vectorization_contract_fingerprint` no LR) tratam ambos backends
@@ -174,8 +177,10 @@ o dropdown com tooltips.
 ### 3.2 O registry
 
 `TypicalityModelBackendRegistry` (em
-`faceaudit/services/typicality_model_backend_registry.py`) é o **único
-ponto de verdade** para o mapeamento backend ↔ classe ↔ config DTO.
+`faceaudit/services/typicality_model_backend_registry.py`) registra o
+mapeamento backend ↔ classe ↔ config DTO. Hoje é consultado pela
+`TypicalityModelFactory` (envelope de serialização); o executor de
+treino não passa por ele (§3.3).
 
 ```python
 @dataclass(frozen=True)
@@ -198,13 +203,16 @@ distinção importante:
 - **Efetivo** depende do estado pós-fit da instância (MoVMF treinado
   sem CDF de referência não pode produzir `TYPICALITY_PERCENTILE`).
 
-A UI usa o potencial **antes** do treinamento; o executor de
-`TYPICALITY_PAIR_SCORING` valida o efetivo da instância treinada.
+O executor de `TYPICALITY_PAIR_SCORING` valida o efetivo da
+instância treinada. (`potential_score_types` existe no registry, mas
+nenhuma tela o consulta hoje.)
 
 ### 3.3 Dispatch no executor
 
-O `TypicalityModelTrainingInstructionExecutor` resolve um
-`trainer_factory()` consultando o tipo do config no DTO da instrução.
+O `TypicalityModelTrainingInstructionExecutor._trainer_factory_for`
+resolve um `trainer_factory()` por `isinstance` sobre o config
+embutido no DTO da instrução (`KNNTypicalityModelConfig` ou
+`MoVMFTypicalityModelConfig`).
 Cada `trainer_factory()` é um callable sem argumentos que retorna uma
 instância nova do backend concreto com os hiperparâmetros já fixados.
 O serviço de calibração de referência consome esse callable uma ou
@@ -222,11 +230,11 @@ Os dois configs polimórficos compartilham um conjunto de campos:
 | `population_weighting_mode` | `PopulationWeightingMode` | `IDENTITY_CENTROIDS` | Como ponderar a referência populacional (face × identidade). |
 | `unit_norm_policy` | `UnitNormPolicy` | `ERROR` | Como reagir a embeddings com norma fora de `‖x‖₂ = 1 ± tolerância`. |
 | `unit_norm_tolerance` | `float` | `1e-4` | Tolerância da política. |
-| `percentile_basis_score_type` | `TypicalityPercentileBasis` | k-NN: `MEAN_KNN_SIMILARITY`; MoVMF: `LOG_DENSITY_ESTIMATE` | Base sobre a qual o percentil é calculado. |
+| `percentile_basis_score_type` | `TypicalityPercentileBasis` | k-NN: `MEAN_KNN_SIMILARITY`; MoVMF: `LOG_DENSITY_ESTIMATE` | Base sobre a qual o percentil é calculado. Hoje cada backend aceita **só** o seu default: o `__post_init__` recusa a outra base com `ValueError`. |
 | `reference_score_calibration_mode` | `ReferenceScoreCalibrationMode` | `CROSS_FIT_IDENTITY` (default em estratégias novas tanto para k-NN quanto para MoVMF; pickles V2.14 migrados literais preservam `IN_SAMPLE_LEGACY`) | Como construir CDF de referência e threshold OOD. |
-| `cv_n_folds` | `int` | `5` (CROSS_FIT) ou `0` (IN_SAMPLE) | Número de folds do cross-fit; ignorado em `IN_SAMPLE_LEGACY`. |
+| `cv_n_folds` | `int` | k-NN: `0` (sentinela, vira `5` em CROSS_FIT); MoVMF: `5` | Número de folds do cross-fit; ignorado em `IN_SAMPLE_LEGACY`. |
 | `ood_quantile` | `float` | `0.01` (k-NN); `0.001` (MoVMF) | Quantil que define o threshold OOD. |
-| `population_label` | `Optional[str]` | `None` | Rótulo opcional da população (vai no fingerprint). |
+| `population_label` | `Optional[str]` | `None` | Rótulo opcional da população. Entra no `model_contract_fingerprint` do MoVMF; o executor não o repassa ao k-NN, cujo contrato não o inclui. |
 | `embedding_column` | `Optional[str]` | `None` (usa a da estratégia) | Override da coluna de embedding. |
 
 A semântica detalhada está em `docs/typicality_models.md` §3–§5.
@@ -258,6 +266,8 @@ faz sentido nesse modo.
 - `unit_norm_tolerance > 0`.
 - `cv_n_folds >= 0`. Em `CROSS_FIT_IDENTITY` com `cv_n_folds = 0` o
   config recebe automaticamente `cv_n_folds = 5` como sentinela.
+- `percentile_basis_score_type == MEAN_KNN_SIMILARITY` (única base
+  implementada no k-NN).
 
 ### 5.4 Exemplo
 
@@ -318,7 +328,10 @@ Além das comuns (§5.3 adaptadas), o MoVMF valida:
 - `n_components >= 1`, `n_init >= 1`.
 - `centering` ∈ {`none`, `frechet`, `euclidean_legacy`}.
 - `convergence_patience >= 1`, `max_iter >= 1`.
-- `CROSS_FIT_IDENTITY` exige `cv_n_folds >= 2`.
+- `CROSS_FIT_IDENTITY` exige `cv_n_folds >= 2` (aqui não há sentinela:
+  `0` é erro).
+- `percentile_basis_score_type == LOG_DENSITY_ESTIMATE` (única base
+  implementada no MoVMF).
 
 ### 6.4 `n_components` como hiperparâmetro científico
 
@@ -368,7 +381,8 @@ Caminho default migratório do k-NN.
 
 1. Treina o backend em todo o dataset.
 2. CDF empírica = LOO de imagem (o próprio k-NN nativo faz internamente).
-3. Threshold OOD = `np.quantile(loo_T_k_sorted, ood_quantile)`.
+3. Threshold OOD = `np.quantile(loo_T_k_sorted, ood_quantile)` (em
+   `INVERSE_IDENTITY_FREQUENCY`, quantil ponderado via `searchsorted`).
 
 **Otimista**: a face que ajudou a definir a CDF aparece com rank
 artificialmente "central". Preservado por compatibilidade V2.14.
@@ -378,21 +392,29 @@ artificialmente "central". Preservado por compatibilidade V2.14.
 Procedimento defensável forense de duas etapas:
 
 1. Particiona identidades únicas em `cv_n_folds` folds disjuntos
-   (semente `random_state`).
+   (embaralhamento com semente `random_state`; o config k-NN não tem
+   `random_state`, e o executor usa `0` nesse caso).
 2. Para cada fold:
    - Treina backend nos folds train (faces cujas identidades estão nos
      folds train).
-   - Pontua faces do fold test (`LOG_DENSITY_ESTIMATE` quando disponível,
-     `MEAN_KNN_SIMILARITY` como fallback). Scores OOF.
-3. Concatena scores OOF, ordena → CDF empírica.
-4. Threshold OOD = `np.quantile(oof_sorted, ood_quantile)`.
+   - Pontua o fold test na base de referência do backend
+     (`reference_score_basis_type`: `MEAN_KNN_SIMILARITY` no k-NN,
+     `LOG_DENSITY_ESTIMATE` no MoVMF). Em `IDENTITY_CENTROIDS` pontua o
+     centróide de cada identidade de teste. Scores OOF.
+3. Concatena scores OOF, ordena → CDF empírica ponderada.
+4. Threshold OOD = primeiro score cuja CDF ponderada atinge
+   `ood_quantile` (`np.searchsorted(cdf, q, side="left")`, sem
+   interpolação); `None` quando `ood_quantile = 0`.
 5. **Refit final** em toda a população: o modelo persistido é este
-   refit.
+   refit, com a referência OOF já instalada.
 
 Resultado: `ReferenceScoreCalibrationResult` com `refit_model`,
-`oof_cdf`, `ood_threshold`, `split_fingerprint`, `fold_seeds`,
-`n_folds_used`. O `split_fingerprint` é SHA-256 do mapeamento
-identidade → fold; estável para mesmo `random_state`.
+`oof_reference_scores_sorted` (o antigo `oof_cdf`, mantido como alias
+depreciado), `oof_reference_weights_sorted`, `oof_reference_cdf`,
+`ood_threshold`, `split_fingerprint`, `fold_seeds`, `n_folds_used` e as
+métricas preditivas OOF por fold (`docs/typicality_models.md` §5.2). O
+`split_fingerprint` é SHA-256 do mapeamento identidade → fold; estável
+para mesmo `random_state`.
 
 **Validações**:
 
@@ -423,14 +445,17 @@ Etapas (estado normal, sem erro):
    `_extract_embeddings_and_identities(payload, embedding_column,
    need_identities=...)`. `need_identities` é True quando
    `population_weighting_mode != FACE_LEVEL_RAW`.
-4. **Constrói `trainer_factory`** consultando o registry:
+4. **Constrói `trainer_factory`** (`_trainer_factory_for`, por tipo do
+   config):
    - `KNNTypicalityModelConfig` → callable que instancia
      `KNNTypicalityModel(k, ood_quantile, reference_mode,
      unit_norm_policy, unit_norm_tolerance,
-     population_weighting_mode)`.
+     population_weighting_mode)`; `reference_mode` é derivado
+     (`PER_IDENTITY` em `IDENTITY_CENTROIDS`, `PER_FACE` nos demais).
    - `MoVMFTypicalityModelConfig` → callable que instancia
-     `MoVMFTypicalityModel(n_components, centering, ...,
-     unit_norm_policy, population_weighting_mode)`.
+     `MoVMFTypicalityModel(population_label, n_components, centering,
+     ..., unit_norm_policy, unit_norm_tolerance,
+     population_weighting_mode)`.
 5. **Chama o serviço de calibração**:
    `ReferenceScoreCalibrationService.calibrate(backend=..., mode=...,
    trainer_factory=..., embeddings=..., identity_ids=...,
@@ -439,14 +464,16 @@ Etapas (estado normal, sem erro):
 6. **Registra o modelo** como recurso `TRAINED_TYPICALITY_MODEL` no
    contexto.
 7. **Persiste metadata** no `InstructionExecutionResult`:
-   - `instruction_id`, `instruction_name`, identifiers do dataset.
+   - `instruction_id`, `instruction_name`, `input_dataset_resource_id`,
+     `trained_typicality_model_resource_id`.
    - `typicality_model_type`, `reference_score_calibration_mode`.
    - `model_contract_fingerprint`, `model_state_fingerprint`.
    - `enabled_score_types` da instância pós-fit.
-   - `embedding_column`, dimensões.
+   - `embedding_column`, `n_input_faces`, `embedding_dim`.
 
-O metadata persistido é o que o `TYPICALITY_PAIR_SCORING` consulta
-downstream para propagar proveniência.
+Downstream, o `TYPICALITY_PAIR_SCORING` não lê esse metadata: a
+proveniência que ele propaga vem do próprio modelo, via
+`TypicalityScoreBatch`.
 
 ---
 
@@ -499,7 +526,7 @@ fingerprint (espelha o padrão V2.14 do LR architecture):
 | Fingerprint | Conteúdo | Uso downstream |
 |---|---|---|
 | `model_state_fingerprint` | SHA-256 do estado numérico: parâmetros ajustados (μ/κ/π ordenados canonicamente no MoVMF; reference matrix + CDF no k-NN), threshold OOD, `reference_score_weights` (quando `INVERSE_IDENTITY_FREQUENCY`). | Reproduzibilidade numérica exata. Não comparado entre execuções. |
-| `model_contract_fingerprint` | SHA-256 do contrato semântico: `model_type`, score semantics IDs habilitados, `population_weighting_mode`, `unit_norm_policy` (e `weighted_T_k_formula_id` no k-NN), centering (MoVMF). | **Entra no `vectorization_contract_fingerprint`** do `LR_ARCHITECTURE_VECTORIZATION` downstream. Mudança aqui propaga e INHERIT rejeita state divergente. |
+| `model_contract_fingerprint` | SHA-256 do contrato semântico: `model_type`, score semantics IDs habilitados, `dim`, `ood_quantile`, `population_weighting_mode`, `unit_norm_policy`, `unit_norm_tolerance`, `reference_score_calibration_mode`; no k-NN também `reference_mode`, `k` e `weighted_T_k_formula_id`; no MoVMF também `centering`, `n_components` ajustado e `population_label`. | **Entra no `vectorization_contract_fingerprint`** do `LR_ARCHITECTURE_VECTORIZATION` downstream. Mudança aqui propaga e INHERIT rejeita state divergente. |
 | `model_provenance_fingerprint` (futuro) | SHA-256 de resource IDs, timestamps, seeds, commit hash. | Auditoria forense não-comparativa. |
 
 ### 10.1 Canonicalização de componentes MoVMF
@@ -529,9 +556,9 @@ altera fingerprint.
 - **Original intocado**: o JSON `.fa` da V2.14 nunca é mutado em disco.
 - **Conversão pura em memória**: `LRStrategyDefinition.from_dict()`
   chama `detect()` + `convert_in_memory()` antes do dispatcher polimórfico.
-- **Cópia opt-in**: o writer `write_side_by_side_copy()` é acionado
-  pela UI/CLI quando o usuário aciona "Salvar cópia convertida". Gera
-  `nome.v2_15.fa` lado-a-lado.
+- **Cópia opt-in**: o writer `write_side_by_side_copy()` gera
+  `nome.v2_15.fa` lado-a-lado. Hoje só é acionado por chamada explícita
+  ao serviço (§14.5); não há botão na interface para isso.
 - **Modo estrito**: `LRStrategyDefinition.from_dict(data,
   allow_legacy_auto_migration=False)` levanta
   `LegacyStrategyVersionRejected` quando detecta sinal legado. Útil em
@@ -581,7 +608,8 @@ Cenário canônico do FaceAudit:
 typicality_model_type = KNN
 population_weighting_mode = IDENTITY_CENTROIDS
 unit_norm_policy = ERROR                          (default forense)
-reference_score_calibration_mode = IN_SAMPLE_LEGACY
+reference_score_calibration_mode = CROSS_FIT_IDENTITY   (default)
+cv_n_folds = 5
 percentile_basis_score_type = MEAN_KNN_SIMILARITY
 k = 50
 ood_quantile = 0.01
@@ -589,7 +617,9 @@ ood_quantile = 0.01
 
 Defensável como ranking não-paramétrico ("X é mais típico que 73% da
 população de identidades de referência"). Estatística sem suposições
-distribucionais. Preserva comportamento histórico V2.14.
+distribucionais. Para reproduzir o comportamento histórico V2.14, use
+`reference_score_calibration_mode = IN_SAMPLE_LEGACY` (é o que a
+migração grava).
 
 ### 12.2 Cenário científico-comparativo — MoVMF EXPERIMENTAL
 
@@ -631,18 +661,20 @@ MoVMF (`n_k = Σ w_i · r_ik`). Detalhes matemáticos em
 
 1. **Sempre declare `population_label`** quando há mais de uma
    subpopulação relevante no projeto (frontal vs lateral, etnia,
-   faixa etária). O label entra no `model_contract_fingerprint` e
-   permite distinguir modelos de mesma config.
-2. **Use `UnitNormPolicy.ERROR` em produção**. O default é
-   `NORMALIZE_SILENTLY` apenas porque a migração V2.14 precisa
-   preservar o comportamento histórico — mas um pipeline novo que
-   declara explicitamente o pré-processamento deve falhar se a
-   normalização falhou silenciosamente.
+   faixa etária). No MoVMF o label entra no
+   `model_contract_fingerprint` e permite distinguir modelos de mesma
+   config; no k-NN hoje ele não chega ao modelo (fica só no config da
+   instrução).
+2. **Use `UnitNormPolicy.ERROR` em produção**. É o default dos dois
+   configs; só as estratégias migradas da V2.14 recebem
+   `NORMALIZE_SILENTLY`, para preservar o comportamento histórico — e
+   um pipeline novo que declara explicitamente o pré-processamento deve
+   falhar se a normalização falhou silenciosamente.
 3. **Em casework, prefira `IDENTITY_CENTROIDS`**. É o modo defensável
    forense por construção: uma pessoa, uma observação.
-4. **Use `CROSS_FIT_IDENTITY` no MoVMF**. O `IN_SAMPLE_LEGACY` está
-   ali por compat; novas estratégias devem usar cross-fit para CDF
-   defensável.
+4. **Use `CROSS_FIT_IDENTITY`** (default nos dois backends). O
+   `IN_SAMPLE_LEGACY` está ali por compat; novas estratégias devem usar
+   cross-fit para CDF defensável.
 5. **Justifique `n_components` externamente**. Não compare K na mesma
    execução escolhendo o melhor — rode estratégias separadas com K
    fixo por execução e tabule a **PLL OOF**
@@ -667,9 +699,9 @@ MoVMF (`n_k = Σ w_i · r_ik`). Detalhes matemáticos em
 Não é matemática — é processo. As 6 validações científicas listadas em
 `docs/typicality_models.md` §8 (estabilidade entre seeds, comparação
 controlada k-NN × MoVMF, sensibilidade a K, invariância sob duplicação,
-etc.) ainda não foram executadas como benchmark formal. O k-NN passou
-por validação científica no relatório principal V2.14; o MoVMF é novo
-no fluxo declarativo da V2.15.
+etc.) ainda não foram executadas como benchmark formal. O k-NN já era
+o backend em uso e avaliado na V2.14; o MoVMF é novo no fluxo
+declarativo da V2.15.
 
 ### 14.2 Posso usar `MoVMF` em casework agora?
 
@@ -753,7 +785,7 @@ if plan.is_needed:
 - FaceAudit interno:
   - `docs/typicality_models.md` (matemática completa dos dois
     backends).
-  - `docs/tipicidade_pareada_faceaudit.md`
+  - `docs/typicality_pair_scoring_faceaudit.md`
     (`TYPICALITY_PAIR_SCORING`).
   - `docs/interacao_score_raridade_faceaudit.md`
     (`SCORE_INTERACTION_FEATURE`).
@@ -798,7 +830,7 @@ Definição em
 - `get_choice_field_specs()`: gera dropdown "Tipo do Backend"
   populado por `TypicalityModelType.choices_with_description()`.
 - `get_resource_field_specs()`: gera dropdowns "Dataset de
-  Referência" (`DATASET`) e "Modelo Treinado"
+  Referência" (`DATASET`) e "Modelo de Tipicidade Treinado"
   (`TRAINED_TYPICALITY_MODEL`, `is_output=True`).
 - `get_value_field_specs()`: (nenhum direto; os valores ficam no
   `NestedDTOInlineWidget` do config).
@@ -881,7 +913,7 @@ Antes de declarar uma `TYPICALITY_MODEL_TRAINING` válida:
       `population_weighting_mode != FACE_LEVEL_RAW`.
 - [ ] `unit_norm_policy = ERROR` quando o pipeline upstream
       garante L2-normalização. Caso contrário, justifique
-      `NORMALIZE_*` no campo `notes` da estratégia.
+      `NORMALIZE_*` no campo `description` da estratégia.
 - [ ] `embedding_column` consistente com os datasets downstream
       (`TYPICALITY_PAIR_SCORING` precisa ler a mesma coluna).
 - [ ] `k` (k-NN) ou `n_components` (MoVMF) justificado
@@ -897,9 +929,10 @@ Antes de declarar uma `TYPICALITY_MODEL_TRAINING` válida:
 
 Em casework forense, adicione:
 
-- [ ] Modelo trinado com `unit_norm_policy = ERROR` (rastreabilidade).
+- [ ] Modelo treinado com `unit_norm_policy = ERROR` (rastreabilidade).
 - [ ] `reference_score_calibration_mode = CROSS_FIT_IDENTITY`
-      (MoVMF) ou `IN_SAMPLE_LEGACY` (k-NN com LOO nativo).
+      (default nos dois backends); `IN_SAMPLE_LEGACY` (LOO de imagem
+      no k-NN) só para reproduzir estratégia V2.14.
 - [ ] `model_contract_fingerprint` registrado no laudo para
       comparação com a re-execução.
 

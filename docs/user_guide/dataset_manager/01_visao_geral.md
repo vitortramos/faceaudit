@@ -17,6 +17,8 @@ cálculos forenses:
 - **Pose facial** estimada (yaw, pitch, roll).
 - **Metadados administrativos** — identidade, gênero, etnia, origem,
   hash SHA-256 de cada imagem, caminho no disco.
+- **Metadados de captura** (opcional) — EXIF/XMP da foto original:
+  data, câmera, exposição, GPS.
 
 Há **duas origens** possíveis para um dataset: uma **pasta de imagens**
 (fluxo clássico — [capítulo 02](02_criando_dataset.md)) ou a **extração
@@ -64,7 +66,7 @@ A janela divide-se em três blocos:
 |---|---|---|
 | **Toolbar (Ribbon)** | Faixa superior, ~130 px de altura | 4 abas (Arquivo / Dataset / Exibir / Imagens) + barra de status |
 | **Tabela** | Painel esquerdo, ~70 % da largura | Uma linha por imagem; colunas configuráveis |
-| **Painel de detalhes** | Painel direito, ~30 % da largura | Thumbnail + abas *Geral / Bio* e *Qualidade ISO* |
+| **Painel de detalhes** | Painel direito, ~30 % da largura | Thumbnail + abas *Geral / Bio*, *Qualidade ISO* e *Metadados* |
 
 O divisor entre tabela e detalhes é arrastável; a tabela tem
 *stretch-factor* maior para que ela ocupe a maior parte do espaço quando
@@ -89,13 +91,14 @@ Operações de **ciclo de vida** do dataset:
 | 📥 **Importar extração de vídeo** | Reaproveita uma pasta de extração de vídeo já produzida (revisar + gerar dataset) |
 | 📂 **Abrir** | Lê um `.parquet` existente do disco |
 | 💾 **Salvar** / **Salvar Como…** | Sobrescreve o arquivo carregado / salva em outro caminho |
+| 🧩 **Salvar Selecionados** | Grava os registros selecionados como um dataset novo, sem trocar o que está aberto (com opção de copiar as imagens junto) |
 | 📚 **Biblioteca** | Copia o dataset para a biblioteca global (reusável entre projetos) |
 | 🎯 **→ Estratégia** | Envia o dataset ao Gerenciador de Estratégias |
 | ❌ **Fechar** | Descarta o dataset atual |
 
 ### Aba *Dataset*
 
-![Ribbon Dataset: Auditar, Filtrar, Modificar Caminhos, Enriquecer, Coluna, Metadados, Juntar, Dividir, Balancear, Comparar, Estatísticas, Custódia](assets/20_ribbon_1_dataset.png)
+![Ribbon Dataset: Auditar, Filtrar, Limpar Filtro, Excluir Selecionados, Modificar Caminhos, Enriquecer, Coluna, Metadados, Juntar, Dividir, Balancear, Comparar, Estatísticas, Custódia](assets/20_ribbon_1_dataset.png)
 
 Operações que **agem sobre o conteúdo**:
 
@@ -103,6 +106,7 @@ Operações que **agem sobre o conteúdo**:
 |---|---|---|
 | **Auditoria** | 🔎 *Auditar* | Análise de integridade biométrica + visualizações forenses |
 | **Filtragem** | 🔍 *Filtrar* / 🗑️ *Limpar Filtro* | Subconjuntos por expressão; o filtro vira a visão ativa da tabela |
+| **Exclusão** | 🗑️ *Excluir Selecionados* | Remove do dataset os registros selecionados, com a justificativa informada registrada na cadeia de custódia; nenhum arquivo de imagem é apagado e a exclusão é efetivada ao salvar |
 | **Caminhos** | 🗂 *Modificar Caminhos* | Corrige `path_root`/`image_path` quebrado e/ou empacota o dataset em pasta portátil ([capítulo 03](03_carregando_e_localizando.md)) |
 | **Enriquecimento** | 💎 *Enriquecer* / ➕📋 *Coluna* / 🏷️ *Metadados* | Adicionar/recalcular embeddings, FIQA e OFIQ, pose e demografia; coluna custom; editar rótulos e vocabulários |
 | **Estrutural** | 🔗 *Juntar* / ✂️ *Dividir* / ⚖ *Balancear* | Concatenar; particionar por identidade ou índice; balancear amostras |
@@ -118,28 +122,32 @@ Controla **como o dataset é apresentado** — sem alterar o conteúdo:
 | Botão | Função |
 |---|---|
 | 🖼 **Galeria** | Alterna entre tabela e galeria de thumbnails |
-| 📋 **Colunas** | Abre o *Relatório de Esquema*: cobertura, NaNs, mín/máx por coluna; exporta para CSV/Excel |
+| 📋 **Colunas** | Abre o painel de colunas (*Relatório de Esquema*): quais ficam visíveis na tabela, cobertura, NaNs, mín/máx por coluna; exporta para CSV/Excel |
 
 ### Aba *Imagens*
 
-![Ribbon Imagens: Editor, Processar](assets/20_ribbon_3_imagens.png)
+![Ribbon Imagens: Gerar Imagens, Editor, Processar](assets/20_ribbon_3_imagens.png)
 
-Pipelines de **processamento de imagem** (rotação, recorte, watermark,
-alinhamento, etc.) que podem ser aplicados em lote a todas as imagens
-do dataset:
+Pipelines de **processamento de imagem** (desfoque, compressão JPEG/WebP,
+recorte, oclusão, redimensionamento e passos de impressão/cópia como
+curva de tons e meio-tom) que podem ser aplicados em lote a todas as
+imagens do dataset:
 
 | Botão | Função |
 |---|---|
+| ✂️ **Gerar Imagens** | Gera, numa pasta nova, a face de cada imagem de uma pasta escolhida — recortada com margem ou alinhada — com um manifesto de procedência. Não cria dataset e não exige dataset aberto |
 | 🎨 **Editor** | Monta o pipeline interativamente com pré-visualização |
-| 🌀 **Processar** | Aplica o pipeline a todas as imagens, gerando novos arquivos e atualizando os caminhos |
+| 🌀 **Processar** | Aplica o pipeline a todas as imagens, gerando um **dataset novo**, autocontido, com as imagens processadas e o manifesto |
 
 ## A barra de status
 
 Logo abaixo do ribbon, uma barra fina exibe o **status** do dataset
-carregado: número de faces, número visível após o filtro atual, hash
-SHA-256 do parquet, presença de erros. Passe o mouse para ver um
-tooltip rich-text com metadados extras (caminho completo, descrição
-do dataset, cobertura por métrica de qualidade).
+carregado: nome (com `*` quando há alterações não salvas), número de
+imagens e de identidades, a marca *alinhado* quando for o caso, quantas
+faces têm ForensicFace/OFIQ/SER-FIQ, o veredito de balanceamento e o
+número de erros; com filtro ativo, a linha termina em *(Filtrado)*. Passe o mouse para ver um tooltip rich-text com metadados extras
+(caminho do parquet, descrição, modo de caminho, cobertura por métrica,
+detalhes do balanceamento, tamanho e data de modificação do arquivo).
 
 Quando um filtro está ativo, o botão **Filtrar** muda para a cor
 amarela e **Limpar Filtro** é habilitado.
@@ -152,15 +160,18 @@ dataset: cada coluna tem **rótulo** legível, **role** (identidade,
 metadado ou derivada), **vocabulário** (para colunas tipo enum) e
 **visibilidade-padrão**. Por isso:
 
-- A primeira coluna **não** é o `image_path` cru; ela mostra a
-  miniatura da imagem ao **passar o mouse** sobre as linhas.
+- Ao **passar o mouse** sobre qualquer célula de uma linha, a dica
+  mostra a miniatura da imagem (ou o caminho, quando a imagem não é
+  encontrada).
 - Colunas com vocabulário definido (gênero, etnia, origem) abrem um
   *combo box* na edição em vez de campo de texto livre.
 - A ordenação por clique em cabeçalho funciona para colunas
   numéricas e ordenáveis; embeddings e estruturas complexas são
   ocultados por padrão.
 - Clique-direito numa **célula** abre um menu de contexto (selecionar a
-  coluna inteira, definir/substituir valores em lote, comparar um par);
+  coluna inteira, salvar a seleção como novo dataset, excluir os
+  registros selecionados, definir/substituir valores em lote, comparar
+  um par);
   clique-direito no **cabeçalho** oferece **Propriedades da Coluna**,
   **Remover Coluna** e **Mostrar/Ocultar Colunas**. Na **galeria** de
   miniaturas o clique-direito tem seu próprio menu de triagem. Todos
@@ -172,7 +183,7 @@ Quando uma linha é selecionada, o painel direito mostra:
 
 - **Topo:** miniatura grande da imagem (somente leitura).
 - **Aba *Geral / Bio*:** arquivo, identidade, hash SHA-256, idade e
-  gênero estimados, pose (Y/P/R), **FIQA Score** e **Score de detecção**:
+  gênero estimados, pose (Y/P/R), **FIQA Score** e **Detecção Score**:
 
 ![Aba Geral/Bio do painel de detalhes](assets/12_detail_geral_bio.png)
 
@@ -182,7 +193,13 @@ Quando uma linha é selecionada, o painel direito mostra:
 
 ![Aba Qualidade ISO do painel de detalhes, com as métricas OFIQ](assets/12_detail_quality_iso.png)
 
-> ⚠️ Se a miniatura aparece em branco (placeholder) mesmo com o
+- **Aba *Metadados*:** árvore com todas as tags EXIF/XMP/IPTC lidas da
+  foto original, agrupadas por origem, com um campo *"Filtrar por tag ou
+  valor…"*. São declarações do arquivo, não medições — metadado
+  embutido pode ser editado ou forjado. Só tem conteúdo quando o dataset
+  foi criado (ou enriquecido) com a extração de EXIF/XMP ligada.
+
+> ⚠️ Se a miniatura mostra *"Imagem não encontrada"* mesmo com o
 > dataset carregado, é provável que o caminho `image_path` esteja
 > quebrado — o parquet foi gerado em outra máquina (ou foi
 > *commitado* sem as imagens). Use a função **Modificar Caminhos**
