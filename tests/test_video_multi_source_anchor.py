@@ -117,6 +117,13 @@ def _dlg_with_fake():
     return dlg
 
 
+def _click(dlg, x, y):
+    """Clique na view + espera o worker de âncora terminar (o handler é
+    assíncrono: detecção + embedding rodam fora da thread da interface)."""
+    dlg._on_view_clicked(x, y)
+    assert dlg._wait_anchor_click(), "clique de âncora não terminou a tempo"
+
+
 def test_current_anchor_source_video_vs_image(app):
     dlg = _dlg_with_fake()
     dlg._video_path = "C:/v/clip.mp4"
@@ -132,10 +139,10 @@ def test_current_anchor_source_video_vs_image(app):
 def test_second_click_adds_anchor_aggregated(app):
     dlg = _dlg_with_fake()
     row = dlg._active_row
-    dlg._on_view_clicked(5, 5)
+    _click(dlg, 5, 5)
     assert row.has_anchor() and row.video_target.anchor_embedding_count == 1
     assert row.video_target.anchor_policy == "SINGLE"
-    dlg._on_view_clicked(6, 6)
+    _click(dlg, 6, 6)
     assert row.video_target.anchor_embedding_count == 2
     assert row.video_target.anchor_policy == "AGGREGATED"
     assert row.video_target.anchor_source_counts() == (2, 0)
@@ -225,7 +232,7 @@ def test_reference_image_adds_photo_anchor(app, monkeypatch, tmp_path):
     row = dlg._active_row
     dlg._load_ref_image(str(p))
     assert dlg._anchor_source_is_image is True
-    dlg._on_view_clicked(5, 5)                  # clica na face da foto
+    _click(dlg, 5, 5)                  # clica na face da foto
     assert row.has_anchor()
     n_vid, n_img = row.video_target.anchor_source_counts()
     assert n_img == 1 and n_vid == 0
@@ -235,10 +242,10 @@ def test_reference_image_adds_photo_anchor(app, monkeypatch, tmp_path):
 def test_clicking_same_face_does_not_duplicate(app):
     dlg = _dlg_with_fake()
     row = dlg._active_row
-    dlg._on_view_clicked(5, 5)                  # 1ª âncora
+    _click(dlg, 5, 5)                  # 1ª âncora
     assert row.video_target.anchor_embedding_count == 1
     dlg._service.force_duplicate = True
-    dlg._on_view_clicked(5, 5)                  # MESMA face → não duplica
+    _click(dlg, 5, 5)                  # MESMA face → não duplica
     assert row.video_target.anchor_embedding_count == 1
     assert "não duplicada" in dlg.lbl_frame.text()
 
@@ -251,13 +258,13 @@ def test_anchors_button_is_a_real_button(app):
 def test_video_anchor_then_photo_anchor_mix(app, monkeypatch, tmp_path):
     dlg = _dlg_with_fake()
     row = dlg._active_row
-    dlg._on_view_clicked(5, 5)                  # 1ª âncora: vídeo
+    _click(dlg, 5, 5)                  # 1ª âncora: vídeo
     p = tmp_path / "ref.png"
     imwrite_unicode_safe(p, np.full((30, 30, 3), 80, np.uint8))
     monkeypatch.setattr(QtWidgets.QFileDialog, "getOpenFileName",
                         staticmethod(lambda *a, **k: (str(p), "")))
     dlg._load_ref_image(str(p))
-    dlg._on_view_clicked(5, 5)                  # 2ª âncora: foto
+    _click(dlg, 5, 5)                  # 2ª âncora: foto
     assert row.video_target.anchor_source_counts() == (1, 1)
     assert "1 vídeo" in row.lbl_status.text() and "1 foto" in row.lbl_status.text()
 
@@ -275,7 +282,7 @@ def test_reference_image_without_loading_video(app, monkeypatch, tmp_path):
     row = dlg._active_row
     dlg._load_ref_image(str(p))               # constrói serviço sob demanda
     assert dlg._service is fake
-    dlg._on_view_clicked(5, 5)
+    _click(dlg, 5, 5)
     assert row.has_anchor() and row.video_target.anchor_source_counts() == (0, 1)
     assert dlg.btn_extract.isEnabled()
 
@@ -540,7 +547,7 @@ def test_anchors_button_disabled_until_anchor(app):
     dlg = _dlg_with_fake()
     row = dlg._active_row
     assert not row.btn_anchors.isEnabled()
-    dlg._on_view_clicked(5, 5)
+    _click(dlg, 5, 5)
     assert row.btn_anchors.isEnabled()
 
 
@@ -548,7 +555,7 @@ def test_edit_anchors_clears_row_when_all_removed(app, monkeypatch):
     import interface.tabs.dataset_manager.video_dataset_dialog.video_dataset_setup_dialog as mod
     dlg = _dlg_with_fake()
     row = dlg._active_row
-    dlg._on_view_clicked(5, 5)
+    _click(dlg, 5, 5)
     assert row.has_anchor() and dlg.btn_extract.isEnabled()
 
     def fake_exec(self):                         # simula remover todas no diálogo
@@ -614,3 +621,49 @@ def test_loaded_label_states(app):
     assert "Imagem carregada" in dlg.lbl_loaded.text() and "foto.jpg" in dlg.lbl_loaded.text()
     dlg._set_loaded_label(None)
     assert "Nenhum" in dlg.lbl_loaded.text()
+
+
+# ───────────────────────── clique assíncrono (worker) ─────────────────────────
+def test_click_runs_service_off_gui_thread(app):
+    # O embedding da âncora é extraído num worker: o serviço NÃO pode rodar na
+    # thread da interface (no macOS leva 2–4 s por âncora e congelaria a janela).
+    import threading
+    dlg = _dlg_with_fake()
+    seen = []
+    svc = dlg._service
+    orig = svc.build_target_from_click
+
+    def spy(*a, **k):
+        seen.append(threading.current_thread())
+        return orig(*a, **k)
+
+    svc.build_target_from_click = spy
+    _click(dlg, 5, 5)
+    assert seen and seen[0] is not threading.main_thread()
+    assert dlg._active_row.has_anchor()
+    assert dlg._anchor_thread is None            # estado limpo após terminar
+
+
+def test_second_click_while_busy_is_ignored(app):
+    # Enquanto o worker extrai a âncora, um 2º clique é descartado — o alvo
+    # está sendo mutado fora da thread da interface e não aceita concorrência.
+    import threading
+    dlg = _dlg_with_fake()
+    svc = dlg._service
+    gate = threading.Event()
+    calls = []
+    orig = svc.build_target_from_click
+
+    def slow(*a, **k):
+        calls.append(1)
+        gate.wait(5.0)
+        return orig(*a, **k)
+
+    svc.build_target_from_click = slow
+    dlg._on_view_clicked(5, 5)
+    assert dlg._anchor_click_busy()
+    dlg._on_view_clicked(6, 6)                   # ignorado
+    gate.set()
+    assert dlg._wait_anchor_click()
+    assert calls == [1]
+    assert dlg._active_row.video_target.anchor_embedding_count == 1
