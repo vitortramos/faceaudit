@@ -1,9 +1,10 @@
 import pandas as pd
 import os
+import sys
 import numpy as np
 
-# Caminho exato que apareceu no seu log de erro anterior
-FILE_PATH = r"C:\Users\perito\OneDrive\Ferramentas\Reconhecimento Facial\faceaudit\data\datasets\BFW_Base_filtered_frontais.parquet"
+# Parquet a inspecionar: primeiro argumento da linha de comando.
+FILE_PATH = sys.argv[1] if len(sys.argv) > 1 else "dataset.parquet"
 
 def inspect_parquet(path):
     print(f"🔍 Inspecionando: {path}")

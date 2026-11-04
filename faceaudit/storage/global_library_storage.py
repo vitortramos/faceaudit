@@ -141,6 +141,11 @@ class GlobalLibraryStorage(ArtifactStorageProtocol):
         if not src.exists():
             raise FileNotFoundError(f"Arquivo de origem não encontrado: {src}")
 
+        if artifact_type == StrategyArtifactType.GLOBAL_DATASET:
+            # Dataset não é arquivo qualquer: os caminhos de imagem podem
+            # depender da pasta do parquet. Ver `import_dataset`.
+            return self.import_dataset(src, **kwargs)
+
         file_type = GlobalLibraryFileType.for_artifact(artifact_type)
         relative_path = file_type.build_path(**kwargs)
         abs_dest = self._root / relative_path
@@ -152,6 +157,48 @@ class GlobalLibraryStorage(ArtifactStorageProtocol):
 
         return StrategyArtifactReference(
             artifact_type=artifact_type,
+            path=str(relative_path),
+            hash=file_hash,
+        )
+
+    def import_dataset(
+        self,
+        source_path: Union[str, Path],
+        dataset_id: str,
+    ) -> StrategyArtifactReference:
+        """Copia um parquet de dataset para a biblioteca sem perder as imagens.
+
+        Um dataset RELATIVE (autocontido, por exemplo, com
+        `path_root="images"`) resolve as imagens a partir da pasta DO
+        PARQUET. Copiado byte a byte para `<biblioteca>/datasets/`, o mesmo
+        `path_root` passaria a apontar para `<biblioteca>/datasets/images/`,
+        onde as imagens não estão: o dataset abriria, listaria as faces e não
+        acharia imagem nenhuma.
+
+        Mesmo tratamento do "→ Estratégia"
+        (`LocalProjectArtifactStorage.import_dataset`): os caminhos são
+        regravados como ABSOLUTOS, apontando para as imagens onde elas estão.
+        Nenhuma imagem é copiada. Dataset já ABSOLUTE é copiado como está.
+        """
+        from faceaudit.services.dataset_path_absolutizer import (
+            absolutize_parquet_paths,
+        )
+
+        src = Path(source_path)
+        if not src.exists():
+            raise FileNotFoundError(f"Arquivo de origem não encontrado: {src}")
+
+        file_type = GlobalLibraryFileType.for_artifact(
+            StrategyArtifactType.GLOBAL_DATASET,
+        )
+        relative_path = file_type.build_path(dataset_id=dataset_id)
+        abs_dest = self._root / relative_path
+
+        absolutize_parquet_paths(src, abs_dest)
+
+        file_hash = self._hash.calculate_file_hash(abs_dest)
+        return StrategyArtifactReference(
+            artifact_type=StrategyArtifactType.GLOBAL_DATASET,
             path=str(relative_path),
             hash=file_hash,
         )

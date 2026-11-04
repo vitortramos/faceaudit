@@ -5,9 +5,8 @@
 > verossimilhança (log-LR), avaliação, seleção e auditoria.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `c39919f`
-> (branch `claude/read-claude-md-SgzIV`). Defaults, fórmulas e enums
-> conferidos em `faceaudit/models/calibration/`, `faceaudit/enums/`,
+> **Fonte documental:** código atual do repositório FaceAudit. Defaults,
+> fórmulas e enums conferidos em `faceaudit/models/calibration/`, `faceaudit/enums/`,
 > `faceaudit/services/cllr_math.py`, `faceaudit/services/validation_math_service.py`,
 > `faceaudit/protocols/calibration_model_protocol.py`.
 
@@ -86,13 +85,11 @@ metodológica, manutenção interna e evidência empírica, consulte:
 | Documento | Escopo | Relação com este |
 |---|---|---|
 | `docs/calibracao_faceaudit.md` (este arquivo) | fundamentos gerais, visão integrada das famílias de calibradores, configurações, métricas e diagnósticos, protocolo de seleção e validação, integração com o pipeline, rastreabilidade | guarda-chuva |
-| `docs/piecewise_linear_calibration.md` | comportamento interno da expansão piecewise-linear, parâmetros, regras de implementação, validações específicas | especificação interna |
-| `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md` | fundamentação forense, função hinge, âncora e escalas, escolha de knots, risco de cherry-picking, parcimônia, benchmark sintético, estudo de caso, protocolo operacional, perguntas críticas previsíveis | aprofundamento técnico-forense da piecewise-linear |
-| `experiments/calibration/RELATORIO_comparacao_calibradores.md` | comparação empírica, cenários sintéticos com oráculo conhecido, limitações observadas | evidência experimental |
+| `docs/piecewise_linear_calibration.md` | fundamentação forense, comportamento interno da expansão piecewise-linear, âncora e escalas, posicionamento dos knots, treino sem leakage, protocolo de validação, reportabilidade, limitações | especificação interna e aprofundamento da piecewise-linear |
 | `docs/vetorizacao_scores_faceaudit.md` (§1.6) + `CLAUDE.md` (seção "Arquitetura LR declarativa") | árvore de decisão `SCORE_VECTORIZATION` × `LR_ARCHITECTURE_VECTORIZATION` (V2.14) e descrição do modo `parameter_mode=FIT_PER_FOLD` consumido por este calibrador | substituto declarativo para arquiteturas LR canônicas + caminho per-fold do LogReg |
 
 Quando a piecewise-linear for tratada aqui, será apenas em nível resumido,
-remetendo ao relatório integrado para o aprofundamento.
+remetendo a `docs/piecewise_linear_calibration.md` para o aprofundamento.
 
 ---
 
@@ -395,13 +392,17 @@ fallback é neutro `(cllr_original, 1, 0)`.
 | Condição | Interpretação |
 |---|---|
 | $a\approx 1,\ b\approx 0$ | sistema bem calibrado afinamente |
-| $a>1$ | LRs **excessivamente confiantes** (precisam ser puxados para zero) |
-| $a<1$ | LRs **tímidos** (precisam ser amplificados) |
+| $a<1$ | LRs **excessivamente confiantes** (a recalibração os puxa para zero) |
+| $a>1$ | LRs **tímidos** (a recalibração os amplifica) |
 | $b\ne 0$ | viés sistemático numa direção |
 
-> **Convenção exata.** A docstring do código (`_compute_affine_calibration`)
-> deixa explícito que `a > 1` corresponde a *over-confident* e `a < 1` a
-> *under-confident*. Esta documentação adota a mesma convenção.
+> **Convenção exata.** Como a recalibração é $a\cdot\ell+b$, $a<1$ comprime
+> os log-LRs (o sistema estava *over-confident*) e $a>1$ os expande (estava
+> *under-confident*). É a convenção usada nos gráficos e nas dicas da
+> interface (`validation_result_plot.py`, `validation_result_widget.py`).
+> A docstring de `_compute_affine_calibration` em
+> `validation_math_service.py` traz os dois rótulos trocados; vale a
+> matemática acima.
 
 ### 3.8 ECE (Empirical Cross-Entropy)
 
@@ -579,7 +580,8 @@ Quando o dataset vetorizado vem de `LR_ARCHITECTURE_VECTORIZATION` com
 `defer_to_calibrator_per_fold=True` no metadata e usa um caminho separado:
 
 - Carrega o `LR_ARCHITECTURE_RAW_INPUT` cru (matriz `<f8` C-contiguous read-only
-  com colunas `[base, r_F, r_P]`) referenciado pelo dataset vetorizado.
+  com colunas `[base, r_F, r_P]`, ou `[base, r_single]` nas arquiteturas
+  ONE_FACE) referenciado pelo dataset vetorizado.
 - Constrói `Pipeline([ArchitectureVectorizerTransformer → StandardScaler →
   LogisticRegression])` e roda `GridSearchCV(cv=IdentityDisjointPairKFold(
   probe_identities=..., reference_identities=...))` sobre `c_grid`. O
@@ -612,10 +614,9 @@ nos testes `tests/test_per_fold_transformer.py`.
 ### 4.2 Expansão piecewise-linear monotônica
 
 Esta seção fornece o resumo necessário ao posicionamento dentro do guia. O
-aprofundamento metodológico — seleção de knots, anti-cherry-picking,
-parcimônia, benchmark sintético, estudo de caso, perguntas críticas — está em
-`calibracao_piecewise_linear_faceaudit_relatorio_integrado.md`. Os detalhes
-internos de implementação estão em `docs/piecewise_linear_calibration.md`.
+aprofundamento metodológico e os detalhes internos de implementação —
+âncora, escalas, posicionamento dos knots, treino sem leakage, protocolo de
+validação, reportabilidade — estão em `docs/piecewise_linear_calibration.md`.
 
 #### 4.2.1 Papel no documento
 
@@ -785,8 +786,9 @@ arquiteturas — incluindo as ONE_FACE V2.14.1) recebem **auditoria adicional p�
 embutida no `CalibrationModelTrainingInstructionExecutor`. A regra:
 
 - Verifica `∂ log_LR / ∂ s > 0` em **todos os pares observados em $D_{\text{cal}}$**
-  (`observed_rows`) e nos **cantos do retângulo $[P_5, P_{95}]$** das raridades
-  observadas (`central_box`).
+  (`observed_rows`), nos **cantos do retângulo $[P_5, P_{95}]$** das raridades
+  observadas (`central_box`) e, quando declarada, na `reportable_box`
+  (domínio operacional; violação ali é CRITICAL).
 - Cobre arquiteturas com derivada multivariada que dependem de raridades
   $(\tilde r_F, \tilde r_P)$ ou $\tilde r_{\text{single}}$ — caso onde
   `monotonicity_policy` univariado não se aplica.
@@ -795,17 +797,27 @@ embutida no `CalibrationModelTrainingInstructionExecutor`. A regra:
   e pior canto da caixa central.
 - Reportado no CLI durante o `CALIBRATION_MODEL_TRAINING` (`🛡️ OK / ⚠ WARNING / ❌ CRITICAL`).
 
-O suporte ao piecewise univariado legado (com $K$ knots arbitrários) pela mesma
-regra está enfileirado como `PiecewiseLinearDerivativeProvider` na próxima
-iteração. Detalhes em `docs/conditional_monotonicity_rule_design.md`.
+A mesma regra também audita o piecewise univariado (com $K$ knots
+arbitrários): quando o metadata do calibrador traz `piecewise_enabled`, ela
+usa o `PiecewiseLinearDerivativeProvider`, que lê `piecewise_knots_absolute`
+e `segment_slopes_raw`. A auditoria **automática** pós-refit, porém, só roda
+quando o calibrador tem `architecture_state`; para o piecewise univariado a
+regra precisa ser acrescentada como regra configurável da instrução (o
+`monotonicity_policy` acima já cobre a checagem no próprio ajuste). Detalhes
+em `docs/conditional_monotonicity_rule_design.md`.
 
 #### 4.2.10 Parcimônia
 
 Cada knot adiciona um parâmetro. Mais knots não significam, automaticamente,
-melhor calibração. O benchmark sintético do FaceAudit (cenários com verdade
-conhecida) mostra que **knots além do necessário não melhoram** e podem
-**desestabilizar caudas** com pouco suporte (segmentos com poucos pares
-produzem inclinações instáveis).
+melhor calibração. Num benchmark sintético (cenários com verdade conhecida,
+medindo o regret de Cllr em relação ao oráculo), **knots além do necessário
+não melhoraram** — a configuração com 5 knots nunca foi a escolhida — e
+chegaram a **desestabilizar caudas** com pouco suporte (num cenário, um
+segmento extremo sem nenhum par $H_d$ produziu inclinação ≈ 23). As
+configurações com mais knots também tiveram mais ajustes inadmissíveis em
+amostras pequenas (100–500 pares por classe): mais dobras só ficam seguras
+com mais dados. Num domínio limitado e saturado (cosseno perto das bordas),
+os knots laterais geraram segmentos com uma classe ausente.
 
 A regra de seleção operacional é:
 
@@ -820,18 +832,17 @@ de extensão **aninhada**, não de família independente.
 
 O FaceAudit persiste, por segmento, os health checks que sustentam essa
 disciplina (`segment_counts_hp`, `segment_counts_hd`,
-`segment_support_warnings`, `min_segment_slope`).
+`segment_support_warnings`, `segment_slopes_raw`; e, por fold do GridSearch,
+`cv_fold_min_segment_slopes`).
 
 #### 4.2.11 Ponteiros para aprofundamento
 
-- **Seleção de knots e prevenção de cherry-picking:**
-  `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md`, §7.
-- **Benchmark sintético** (cenários com oráculo, escada de knots,
-  parcimônia, sweep de N): mesmo relatório, §9; e
-  `experiments/calibration/RELATORIO_comparacao_calibradores.md`.
-- **Estudo de caso** (desenvolvimento × validação externa): mesmo
-  relatório, §10.
-- **Especificação interna e validações**: `docs/piecewise_linear_calibration.md`.
+- **Posicionamento dos knots** (manual e automático experimental):
+  `docs/piecewise_linear_calibration.md`, §5–§6.
+- **Treino sem leakage e folds por identidade**: mesmo documento, §4.
+- **Protocolo de validação** (desenvolvimento × validação externa): mesmo
+  documento, §8.
+- **Reportabilidade, extrapolação e limitações**: mesmo documento, §9–§10.
 
 #### 4.2.12 Parâmetros principais
 
@@ -1242,8 +1253,12 @@ Procedimento defensável:
    por segmento, monotonicidade, slopes, clipping efetivo).
 4. Aplicar a **regra de parcimônia**: selecionar o candidato mais simples
    admissível dentro de uma margem prática de Cllr (ex.: $\varepsilon=0{,}001$
-   bit). Detalhes em
-   `experiments/calibration/RELATORIO_comparacao_calibradores.md` §3.5.
+   bit) em relação ao melhor candidato admissível. A admissibilidade vem
+   antes da comparação de Cllr: descarta-se o candidato com algum segmento
+   sem uma das classes ou com inclinação de cauda implausível, ainda que a
+   curva seja monotônica. Como os candidatos não formam uma escada aninhada
+   (`[-δ, +δ]` não contém `[0]`), a regra compara cada um com o melhor, e
+   não pares consecutivos.
 5. **Congelar** o calibrador (incluindo seu hash, paths e config completa).
 6. Avaliar **uma única vez** em $D_{\mathrm{val}}$.
 7. Aplicar ao caso.
@@ -1312,7 +1327,8 @@ Treina um calibrador a partir de scores rotulados.
 - **Entrada:** `input_resource_id` apontando para um
   `SimilarityScoreDataset` com `raw_score` e `same_person`. Identidades de
   probe/reference (quando presentes) são também extraídas — são consumidas
-  pela CV de $C$ da LogReg piecewise para fold por identidade.
+  pela CV de $C$ da LogReg (`gridsearch_cv_mode`, §4.1.7) para fold por
+  identidade.
 - **Seleção da configuração:** `calibration_model_type` $\in$
   $\{$`LOGISTIC_REGRESSION`, `KDE`, `BI_GAUSSIANIZED`$\}$ (default LogReg);
   só a config correspondente é usada (`logreg_config`, `kde_config`,
@@ -1353,10 +1369,9 @@ def save(self, path: str) -> None: ...
 def load(self, path: str) -> None: ...
 ```
 
-E expõe:
-
-- `name`, `is_fitted`, `requires_training` (propriedades);
-- `metadata` (dicionário de telemetria e auditoria).
+E expõe as propriedades `name`, `is_fitted` e `requires_training`. Fora do
+protocolo, os três calibradores concretos também têm `metadata` (dicionário
+de telemetria e auditoria), que o executor de treino garante existir.
 
 ### 8.5 Fronteira de escopo
 
@@ -1556,7 +1571,7 @@ afim.
 Quando há evidência *reproduzível em $D_{\mathrm{dev}}$* de mudança
 monotônica de inclinação ao longo do domínio, com suporte amostral
 suficiente nos segmentos relevantes. Aprofundamento em
-`calibracao_piecewise_linear_faceaudit_relatorio_integrado.md` §7.
+`docs/piecewise_linear_calibration.md` §5–§6.
 
 **Escolher knots conforme o domínio é cherry-picking?**
 Não, se a escolha for feita por procedimento previamente definido, em
@@ -1670,11 +1685,8 @@ aplicado ao caso sem retuning.
 - Hastie, T., Tibshirani, R., & Friedman, J. (2009). *The Elements of
   Statistical Learning*, §5.2 (bases piecewise e splines).
 - Referências internas do FaceAudit:
-  - `docs/piecewise_linear_calibration.md` — especificação interna.
-  - `calibracao_piecewise_linear_faceaudit_relatorio_integrado.md` —
-    relatório técnico aprofundado.
-  - `experiments/calibration/RELATORIO_comparacao_calibradores.md` —
-    benchmark comparativo.
+  - `docs/piecewise_linear_calibration.md` — especificação interna e
+    aprofundamento da piecewise-linear.
 
 ---
 
@@ -1940,7 +1952,7 @@ Antes de circular o documento:
       correspondentes;
 - [ ] caminhos do código registrados (Apêndices B–F);
 - [ ] commit informado no cabeçalho;
-- [ ] referências internas (`docs/`, `experiments/`) válidas;
+- [ ] referências internas (`docs/`) válidas;
 - [ ] terminologia uniforme (LR, log-LR, Cllr, $H_p$, $H_d$);
 - [ ] exemplos numéricos recalculados e consistentes;
 - [ ] distinção explícita entre fundamento matemático, implementação,

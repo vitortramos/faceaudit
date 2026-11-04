@@ -71,9 +71,14 @@ para captura de telas; nunca para criar datasets reais.
 - **Comparar** (`fluxo_comparar`) não é capturado porque exige dois
   datasets carregados simultaneamente. Para incluí-lo na documentação,
   carregue dois parquets diferentes e adapte o script.
-- **Mesclar** (`fluxo_merge`) abre um `QFileDialog` direto (sem diálogo
-  próprio); o monkey-patch retorna string vazia e o fluxo aborta.
-- A aba **Recomendações** do diálogo de Auditoria aparece vazia porque
-  o worker assíncrono não roda durante a captura. Para captar com
-  resultados, é necessário aguardar o worker — não implementado neste
-  script.
+- **Juntar** (`fluxo_merge`) abre um `QFileDialog` direto (sem diálogo
+  próprio) e não é chamado pelo script.
+- A árvore de auditorias do diálogo **Auditoria Forense** aparece vazia
+  porque o worker assíncrono não roda durante a captura. Para captar
+  com resultados, é necessário aguardar o worker — não implementado
+  neste script.
+- A captura cobre também a janela principal (`00_main_*`, `10_*`,
+  `11_*`, `12_*`), as ribbons (`20_ribbon_*`) e o **Audit Log**
+  (`43_audit_log`).
+- O PDF do manual não é versionado: gere-o localmente com
+  `../build_pdf.py`.

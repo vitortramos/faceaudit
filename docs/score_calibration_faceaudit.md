@@ -22,7 +22,8 @@
 > declarativa que produz o `vectorization_contract_fingerprint`
 > consumido aqui),
 > `docs/conditional_monotonicity_rule_design.md` (auditoria do
-> calibrador, persistida em metadata propagado por esta instrução).
+> calibrador, persistida no metadata do próprio calibrador — esta
+> instrução não a copia para o output).
 > **Fontes-código:** `faceaudit/models/instructions/score_calibration_instruction.py`,
 > `faceaudit/executors/instructions/score_calibration_instruction_executor.py`,
 > `faceaudit/services/calibration_model_metadata_service.py`,
@@ -388,14 +389,21 @@ datasets novos vetorizados com warning visível.
 
 ### 6.3 Por que a assimetria
 
-A combinação "dataset com fp + calibrador sem fp" é proibida
+A combinação "dataset sem fp + calibrador com fp" é proibida
 mesmo em `LEGACY_PERMISSIVE` porque o calibrador é o **artefato
 contratual**. Ele foi treinado com expectativa específica sobre
-as features (cosseno 1D direto, ou matriz vetorizada `(N, 7)` com
-ordem `[base, h⁺, h⁻, h⁺·r̃_F, h⁻·r̃_F, h⁺·r̃_P, h⁻·r̃_P]`, etc.).
-Se o calibrador é legado, ele assume formato 1D — submeter
-matriz `(N, 7)` produziria comportamento indefinido. Bloquear
-sempre é a única opção segura.
+as features (por exemplo, a matriz vetorizada `(N, 7)` da
+`BILATERAL_FULL_CENTERED`, na ordem
+`[base, h⁺, h⁻, h⁺·r̃_F, h⁺·r̃_P, h⁻·r̃_F, h⁻·r̃_P]`) e declara
+isso no fingerprint. Um dataset sem fingerprint não tem como
+provar que entrega essas features — bloquear sempre é a única
+opção segura.
+
+A combinação inversa ("dataset com fp + calibrador sem fp") é
+erro em `STRICT` e só passa, com warning forte, em
+`LEGACY_PERMISSIVE`: o calibrador legado não declara o que espera,
+e quem opta pelo modo permissivo assume a responsabilidade de
+garantir que as features coincidem.
 
 ---
 
@@ -731,8 +739,9 @@ Diagnóstico rápido — se `mean_log_lr_gen ≤ mean_log_lr_imp`, o
 calibrador está invertido (raríssimo) ou o input não tinha
 `same_person` correto.
 
-Em casework (`labels_arr` todo zero), `mean_log_lr_genuines`
-fica `None`.
+Em casework os pares não têm rótulo (`labels` devolve `-1`), e
+`mean_log_lr_genuines` e `mean_log_lr_impostors` ficam ambos
+`None`.
 
 ---
 
@@ -746,13 +755,17 @@ Layout típico do parquet de saída:
 
 | Coluna | Tipo | Origem |
 |---|---|---|
-| `probe_hash` | str | Sample original |
-| `reference_hash` | str | Sample original |
+| `similarity_score_dataset_name` | str | Nome do dataset |
+| `similarity_score_dataset_description` | str | Descrição (só quando há) |
 | `probe_identity` | str | Sample original |
 | `reference_identity` | str | Sample original |
-| `same_person` | int8 (0/1) | Sample original (ausente em casework) |
+| `probe_face_hash` | str | Sample original |
+| `reference_face_hash` | str | Sample original |
+| `same_person` | bool | Sample original (nulo em casework) |
+| `label` | int8 (1/0, `-1` sem rótulo) | Sample original |
 | `raw_score` | float64 | Sample original |
 | `log_lr` | float64 | **Adicionado por `SCORE_CALIBRATION`** |
+| `score_vector_0` … `score_vector_{D-1}` | float64 | Matriz `(N, D)`, só em dataset vetorizado |
 
 A coluna `log_lr` é o output canônico. Todas as instruções
 downstream (`STRATEGY_EVALUATION`, `CASEWORK_VISUALIZATION`) leem
@@ -778,7 +791,8 @@ SCORE_CALIBRATION(
 
 Calibrador LogReg afim aplicado a dataset 1D de cosseno. O
 parquet de saída ganha coluna `log_lr` nativa. Nenhum
-fingerprint comparado (calibrador legado).
+fingerprint comparado (dataset e calibrador sem fingerprint —
+o serviço emite o warning informativo de §14.4).
 
 ### 14.2 Calibração de matriz vetorizada com fingerprint
 
@@ -917,9 +931,11 @@ significado.
 "legado" (sem)?**
 
 Cheque `calibrator.metadata.get("vectorization_contract_fingerprint")`.
-Calibradores treinados via `LR_ARCHITECTURE_VECTORIZATION` em
-qualquer `parameter_mode` exceto legado expõem o fingerprint.
-Calibradores pré-V2.14 não.
+Calibradores treinados sobre dataset de
+`LR_ARCHITECTURE_VECTORIZATION` expõem o fingerprint em qualquer
+`parameter_mode` (inclusive `FIT_FULL_CALIBRATION_LEGACY`).
+Calibradores treinados sobre score 1D, sobre
+`SCORE_VECTORIZATION` ou antes da V2.14 não.
 
 **P4: O dataset de saída tem `raw_score` preservado?**
 
@@ -950,8 +966,8 @@ perda de precisão.
 Comportamento indefinido — o executor não filtra `nan` no
 output. Downstream (`STRATEGY_EVALUATION`, `CASEWORK_VISUALIZATION`)
 pode quebrar ou produzir métricas inválidas. Em prática, o
-calibrador piecewise tem `monotonicity_audit` que detectaria
-inclinações zero/negativas antes; e KDE tem clipping
+calibrador piecewise rejeita inclinações zero/negativas já no
+ajuste (`monotonicity_policy`); e KDE tem clipping
 `min_log_lr`/`max_log_lr`. Mas se você suspeita de `nan`,
 verifique o input com `np.isnan(raw_scores).any()`.
 
@@ -984,7 +1000,7 @@ dataset de validação).
 | `calibrator_coef_raw` | Coeficientes do LogReg denormalizados da `StandardScaler` interna. Propagado ao output para plots analíticos. |
 | `calibrator_intercept_raw` | Intercept denormalizado. Propagado ao output. |
 | `piecewise_*` | Campos de state da expansão piecewise-linear (V1). Propagados ao output para plot analítico. |
-| `score_vector_source_resources` | Lista ordenada dos sistemas-fonte das colunas da matriz `(N, D)`. Propagado ao output para `SCORE_VECTOR_ORDER_CONSISTENCY` downstream. |
+| `score_vector_source_resources` | Lista ordenada dos recursos-fonte das colunas da matriz `(N, D)`. Propagado ao output para os gráficos do `STRATEGY_EVALUATION`. (A regra `SCORE_VECTOR_ORDER_CONSISTENCY` compara outro campo, `score_vector_model_ids`, no input.) |
 
 ---
 
@@ -1002,8 +1018,8 @@ dataset de validação).
 - `docs/piecewise_linear_calibration.md` — especificação da
   expansão piecewise-linear (campos de state propagados aqui).
 - `docs/conditional_monotonicity_rule_design.md` — auditoria do
-  calibrador (metadata `monotonicity_audit` propagado por
-  `bind_architecture_state`).
+  calibrador (metadata `monotonicity_audit`, gravado no calibrador
+  pelo `CALIBRATION_MODEL_TRAINING` após o refit).
 - `docs/vetorizacao_scores_faceaudit.md` — vetorização explícita
   via `SCORE_VECTORIZATION` (legado).
 
@@ -1079,14 +1095,14 @@ O dataset de saída (`CALIBRATED_SCORES`) ganha no metadata:
 
 | Campo | Origem | Significado |
 |---|---|---|
-| `calibrator_cllr_train` | `bind_architecture_state` | Cllr in-sample do calibrador |
+| `calibrator_cllr_train` | metadata do calibrador, gravado pelo `CALIBRATION_MODEL_TRAINING` | Cllr in-sample do calibrador |
 | `calibrator_cllr_train_gen` / `calibrator_cllr_train_imp` | idem | Componentes |
 | `calibrator_cllr_cv` | idem (quando `k_folds > 0`) | Cllr CV out-of-fold |
 | `calibrator_cllr_cv_gen` / `calibrator_cllr_cv_imp` | idem | Componentes |
 | `calibrator_cv_gap` | idem | `cllr_cv − cllr_train` |
 | `cv_folds_effective` | idem | Folds usados |
 | `cv_split_mode` | idem | `STRATIFIED_PAIR` ou `STRATIFIED_GROUP` |
-| `cv_hyperparameter_mode` | idem | `"frozen_from_production_model"` |
+| `cv_hyperparameter_mode` | idem | `"FROZEN"` (hiperparâmetros congelados do modelo de produção; não é nested CV) |
 
 ### C.3 Score vector (quando `is_score_vector=True`)
 
@@ -1138,7 +1154,7 @@ Após aplicar:
 - [ ] `log_lr` populado em todos os samples do output?
 - [ ] `n_samples = n_genuine + n_impostor` (exceto casework)?
 - [ ] `mean_log_lr_genuines > mean_log_lr_impostors` (sanity
-      check; em casework, `mean_log_lr_genuines` é `None`)?
+      check; em casework, ambos são `None`)?
 - [ ] Metadata do output preservou `is_casework` corretamente?
 - [ ] Metadata do output propagou `calibrator_cllr_*` quando
       presente no calibrador?
@@ -1154,6 +1170,6 @@ Em laudo:
       `STRICT`)?
 - [ ] Cita `calibrator_cllr_train` e `calibrator_cllr_cv` do
       calibrador para auditoria de generalização?
-- [ ] Cita `monotonicity_audit.audit_status` do calibrador (vem
-      via `architecture_state` propagado por
-      `bind_architecture_state`)?
+- [ ] Cita `monotonicity_audit.audit_status` do calibrador (lido
+      do metadata do calibrador; gravado pelo
+      `CALIBRATION_MODEL_TRAINING` quando há `architecture_state`)?

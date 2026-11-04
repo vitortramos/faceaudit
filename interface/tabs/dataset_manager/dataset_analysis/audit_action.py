@@ -36,6 +36,15 @@ class AuditActionRecord:
     description: str
     identity_changes: Dict[str, str] = field(default_factory=dict)
     deleted_faces: List["FaceInfo"] = field(default_factory=list)
+    # Cadeia de custódia: o diálogo registra, ao fechar, as ações que
+    # continuam aplicadas — cada uma com o porquê e o instante em que foi
+    # aplicada. `kind` ∈ {"delete", "rename", "merge"}.
+    kind: str = ""
+    justification: str = ""
+    applied_at: str = ""
+    old_identities: List[str] = field(default_factory=list)
+    new_identity: str = ""
+    changed_identifiers: List[str] = field(default_factory=list)
 
     def apply_undo(self, dataset: "FaceDataset") -> None:
         """Reverte a operação no `dataset`. Idempotente — chamar duas vezes

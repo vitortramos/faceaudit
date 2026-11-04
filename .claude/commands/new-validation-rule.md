@@ -8,12 +8,14 @@ Na nova arquitetura, regras de validação vivem em `faceaudit/validation_rules/
 - Campos obrigatórios do protocolo (`rule_id`, `name`, `description`, `default_severity`) via construtor
 - Helper `_get_or_compute_stats(resource_id, context) → Optional[DatasetStats]` — busca `"{resource_id}_stats"` no contexto ou computa via `DatasetStatsService` e armazena em cache para a execução. Use este helper para qualquer regra que precise de `identity_set`, `n_ids`, `embedding_dim` de um dataset.
 
-As regras são:
-- Registradas no `StrategyExecutor` via `StrategyExecutorFactory.build(validation_rules={...})`
-- Referenciadas por `rule_id` na `LRStrategyDefinition.validation_rule_ids` (validação global, antes de qualquer instrução) ou em `StrategyInstructionDefinition.validation_rule_ids` (validação antes de uma instrução específica)
-- Executadas com `validate(target, context)` onde `target` é a estratégia ou instrução que declarou a regra
+As regras chegam à execução por três caminhos:
+- **Plugável (persistida)** — a instrução carrega `validation_rule_configs: List[ValidationRuleConfig]` (`rule_type: ValidationRuleType` + `params: dict`), e a `ValidationRuleFactory.create(config, instruction_id)` instancia a regra concreta em runtime. É o caminho de regras com limiares que o usuário pode ajustar, apagar ou adicionar pela UI.
+- **Dinâmica (intrínseca)** — o DTO da instrução a constrói em `build_validation_rules()` a cada validação; não é persistida nem removível.
+- **Global da estratégia** — registrada no `StrategyExecutor` via `StrategyExecutorFactory.build(validation_rules={...})` e referenciada por `rule_id` em `LRStrategyDefinition.validation_rule_ids`; roda uma vez antes de qualquer fase. (O antigo `StrategyInstructionDefinition.validation_rule_ids` foi extinto — é descartado ao ler JSON antigo.)
 
-## Passo único — crie o arquivo da regra
+Em todos os casos a regra é executada com `validate(target, context)`, onde `target` é a estratégia ou a instrução.
+
+## Passo 1 — crie o arquivo da regra
 
 Crie `faceaudit/validation_rules/<nome_snake_case>_rule.py`. A classe deve:
 
@@ -139,22 +141,39 @@ class NomeRule(ValidationRuleBase):
         return result
 ```
 
-## Como registrar e usar a nova regra
+## Passo 2 — torne a regra plugável (se for configurável por instrução)
+
+1. **Enum** — `faceaudit/enums/validation_rule_type.py`: adicione o membro ao `ValidationRuleType`. Cada membro é uma tupla `(value, label, description)` — `value` igual ao nome do membro, `label` já em PT-BR (exibido na UI), `description` longa. `from_str()` é genérico.
+2. **Factory** — `faceaudit/factories/validation_rule_factory.py`: em `ValidationRuleFactory.create()`, adicione um bloco `if rule_type == ValidationRuleType.NOVA:` com import lazy da classe, passando `rule_id=rule_id` (gerado por `_make_rule_id`) e lendo os parâmetros de `params` — obrigatórios via `_req_str(params, "chave", rule_type)`, opcionais via `params.get("chave", default)`.
+3. **Defaults no DTO** (opcional) — se a regra deve vir por padrão numa instrução, acrescente o `ValidationRuleConfig` no `_ensure_default_validation_rules()` do DTO (respeitando o early-return quando a lista não está vazia ou `validation_rules_user_managed=True`).
+4. **UI** (opcional, para o usuário poder adicioná-la e ver um resumo):
+   - `_RULE_PARAM_SCHEMAS` em `interface/tabs/strategy_manager_v2/strategy_editor/add_validation_rule_dialog.py` — declara os campos do formulário (`_RuleParamSpec` com `kind` ∈ `resource`/`resource_multi`/`int`/`float`/`enum_choice`). Só os tipos presentes ali aparecem no diálogo "➕ Adicionar Regra".
+   - `_summarize_rule_params` em `instruction_config_panel.py` — sumário HTML dos parâmetros na seção "Regras de Validação".
+
+Regras intrínsecas (que não fazem sentido desligadas) não passam pelos itens 3–4: o DTO as instancia diretamente em `build_validation_rules()`.
+
+## Exemplos de uso
 
 ```python
-# Na montagem do executor (ex: em um serviço ou script de uso):
+from faceaudit.models.validation.validation_rule_config import ValidationRuleConfig
+from faceaudit.enums.validation_rule_type import ValidationRuleType
+
+# Plugável numa instrução (persistida no JSON da estratégia):
+instruction.validation_rule_configs.append(ValidationRuleConfig(
+    rule_type=ValidationRuleType.NOVA,
+    params={"dataset_resource_id": "ds_treino", "limiar": 100},
+))
+
+# Global da estratégia:
 executor = StrategyExecutorFactory.build(validation_rules={
     "minha_regra_id": MinhaRule(rule_id="minha_regra_id", dataset_resource_id="ds_treino"),
 })
-
-# Na LRStrategyDefinition (validação global):
 definition.validation_rule_ids.append("minha_regra_id")
-
-# Ou em uma instrução específica:
-instruction.validation_rule_ids.append("minha_regra_id")
 ```
 
 ## Regras já implementadas (para referência)
+
+Há 24 regras em `faceaudit/validation_rules/` (uma por arquivo `*_rule.py`): 23 com tipo em `ValidationRuleType` e a `StrategyEmbeddingConsistencyRule`, global e sempre ligada por `StrategyExecutorFactory.build_default_validation_rules()`. Alguns exemplos:
 
 | Arquivo | Regra | Verifica |
 |---|---|---|
@@ -163,9 +182,13 @@ instruction.validation_rule_ids.append("minha_regra_id")
 | `fisher_rule.py` | `FisherRule` | n_identidades > embedding_dim para PLDA |
 | `min_calibration_pairs_rule.py` | `MinCalibrationPairsRule` | Mínimo de pares genuínos/impostores para calibração |
 | `holdout_leakage_rule.py` | `HoldoutLeakageRule` | Hold-out disjunto de todos os datasets de treino |
+| `min_identities_rule.py` | `MinIdentitiesRule` | Mínimo de identidades no dataset |
+| `model_fitted_rule.py` | `ModelFittedRule` | Modelo/pipeline treinado (`is_fitted`) — regra intrínseca |
+| `conditional_monotonicity_rule.py` | `ConditionalMonotonicityRule` | ∂log_LR/∂s > 0 no calibrador treinado |
 
 ## Verificação final
 - [ ] Arquivo criado em `faceaudit/validation_rules/`
+- [ ] Se plugável: membro em `ValidationRuleType` + bloco em `ValidationRuleFactory.create()` (e, se quiser na UI, entrada em `_RULE_PARAM_SCHEMAS` e `_summarize_rule_params`)
 - [ ] Herda de `ValidationRuleBase`, não de `ValidationRuleProtocol`
 - [ ] Todos os parâmetros configuráveis são do construtor (sem hard-code de limiares)
 - [ ] Regra é stateless

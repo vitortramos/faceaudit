@@ -57,7 +57,8 @@ def _controlador(tmp_path, *, filtrado):
     inteiro.to_parquet(origem)
     AuditLogService.append(origem, AuditOperation.CREATE, "criado")
     AuditLogService.append(origem, AuditOperation.REMOVE_FACES, "1 excluída",
-                           metadata={"pending_until_save": True})
+                           metadata={"pending_until_save": True,
+                                     "justification": "duplicada"})
     filtro = FilterConfig(name="fiqa", filters=[NumericColumnFilter(
         column_name="fiqa_score", data_type=ColumnFilterDataType.NUMERIC,
         ranges=[(1.6, float("inf"))])])
@@ -70,7 +71,8 @@ def _controlador(tmp_path, *, filtrado):
         set_dirty=lambda *a: None,
         carregar_dataset_na_tela=lambda *a, **k: None,
     )
-    for nome in ("_audit", "_descrever_conteudo_salvo"):
+    for nome in ("_audit", "_descrever_conteudo_salvo",
+                 "_escrever_pendencias_de_custodia"):
         setattr(ctrl, nome, getattr(DatasetManagerController, nome).__get__(ctrl))
     return ctrl, origem
 

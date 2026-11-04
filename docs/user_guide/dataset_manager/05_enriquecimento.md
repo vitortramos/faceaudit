@@ -5,8 +5,8 @@ um dataset *já existente*. Diferente do *Novo Dataset* (que parte de
 imagens cruas), o Enriquecer trabalha sobre o parquet em memória —
 ideal para:
 
-- Completar um dataset parcialmente enriquecido (faltou rodar OFIQ
-  ou SER-FIQ, por exemplo)
+- Completar um dataset parcialmente enriquecido (faltou rodar OFIQ,
+  FIQA ou extrair os metadados EXIF/XMP, por exemplo)
 - Adicionar um **segundo embedding** (`embedding_v4` numa base que
   já tinha só `embedding_v2`)
 - Retentar faces que falharam (`error=True`)
@@ -52,7 +52,7 @@ O dataset já está em memória, então o pipeline só executa *Transform* e
 |---|---|
 | **Texto de informação** (topo) | Resumo: *"N face(s) · fotos originais. Os selos mostram o que já existe; marque o que deseja adicionar."* |
 | **1 · Configurações ForensicFace** | GPU, *batch size*, *det size* + o override *Imagens são faces já alinhadas 112×112* |
-| **2 · Conteúdo a adicionar** | Embeddings / Qualidade / Pose / Outros — cada item com um **selo de status** |
+| **2 · Conteúdo a adicionar** | Embeddings / Qualidade / Pose / Outros — cada item com um **selo de status** — e Metadados (EXIF/XMP) |
 | **Reprocessar mesmo as faces já enriquecidas** | Toggle global de idempotência |
 | **Iniciar processamento** | Botão que dispara o enriquecimento |
 
@@ -99,6 +99,7 @@ seu selo de status**:
 | **Qualidade:** | **FIQA** · **OFIQ (qualidade ISO)** (exige a foto original; some em faces alinhadas) |
 | **Pose:** | **Yaw**, **Pitch**, **Roll** (cobertura independente por item; somem em faces alinhadas) |
 | **Outros:** | **Det Conf**, **IPD**, **Gênero**, **Idade** (somem em faces alinhadas) |
+| **Metadados:** | **Extrair EXIF/XMP da imagem** (sem selo) — lê os metadados embutidos no arquivo; só faz sentido em foto original (em faces alinhadas a opção é ignorada) |
 
 > 💡 Adicionar **pose/gênero/idade** a faces que **já têm embedding** roda
 > só o **detector** — não recalcula o embedding (rápido). **FIQA** exige o
@@ -118,7 +119,7 @@ A checkbox **"Imagens são faces já alinhadas 112×112"** no grupo
 *1 · Configurações ForensicFace* é especial:
 
 - **Pré-preenchida** com o valor atual de `dataset.is_aligned`
-- Quando marcada, o ForensicFace usa `process_face_aligned()` —
+- Quando marcada, o ForensicFace manda a imagem direto ao encoder —
   pula a etapa de detect+align (~50% mais rápido)
 - O valor que você deixar **é persistido** na metadata do parquet
   ao final do enriquecimento
@@ -136,24 +137,29 @@ A checkbox **"Imagens são faces já alinhadas 112×112"** no grupo
 
 ## Idempotência
 
-A checkbox **"Reprocessar mesmo as faces já enriquecidas"** (no
-topo do diálogo, abaixo dos extractors) tem o seguinte
-comportamento:
+A checkbox **"Reprocessar mesmo as faces já enriquecidas"** (abaixo
+do grupo *2 · Conteúdo a adicionar*, logo acima dos botões) tem o
+seguinte comportamento:
 
 | Configuração | Comportamento |
 |---|---|
-| ☐ **Desmarcado** *(padrão)* | Cada extractor filtra as faces que **já têm** o resultado e processa só as que estão faltando. Faces com `error=True` mas com `*_info` populado **não são retentadas** |
+| ☐ **Desmarcado** *(padrão)* | Cada extractor filtra as faces que **já têm** o resultado e processa só as que estão faltando. Faces com `error=True` que já têm o resultado pedido **não são retentadas** |
 | ☑️ **Marcado** | Reprocessa **todas as faces**, sobrescrevendo resultados anteriores. Use quando mudou parâmetros (det_size diferente, T diferente, etc.) |
 
 ### Idempotência por modelo (Forensic Face)
 
 A filtragem do FF é mais granular: ele verifica não só se `ff_info`
-existe, mas também se o **modelo específico** está populado:
+existe, mas também se o **modelo específico** e cada **atributo**
+pedido estão populados:
 
 ```
 Face tem ff_info com embedding_sepaelv2 mas não sepaelv4
 + usuário marcou sepaelv4 no diálogo
 → Face é incluída no processamento (FF preencherá só sepaelv4)
+
+Face já tem todos os embeddings pedidos, mas falta pose/gênero/idade/
+Det Conf/IPD pedido
+→ roda só o detector, sem recalcular o embedding
 ```
 
 Isso significa: você pode rodar enriquecimento progressivamente
@@ -163,14 +169,29 @@ tem.
 ### Retentar faces falhadas
 
 A coluna `error=True` é **independente** da checagem de
-idempotência. Faces marcadas como falhadas mas com `ff_info=None`
-(ou outro extractor ausente) **são reprocessadas** mesmo com a
-flag desmarcada — porque o teste é sobre o `*_info`, não sobre
-`error`.
+idempotência: o teste é sobre o dado pedido (o embedding do modelo
+marcado, o FIQA, o atributo, o `*_info` do OFIQ), não sobre `error`.
+Uma face que falhou e continua sem o dado pedido **é reprocessada**
+mesmo com a flag desmarcada; uma que já tem o dado pedido só é
+reprocessada com `Reprocessar` marcado.
 
-Faces marcadas como falhadas mas com `ff_info` parcialmente
-populado (por exemplo, o ForensicFace gerou embedding mas falhou
-na pose) só são reprocessadas com `Reprocessar` marcado.
+### Faces que continuam sem biometria
+
+Se, ao fim do estágio ForensicFace, alguma face continuar sem
+embedding, abre-se a janela *Faces sem biometria neste
+enriquecimento* (não acontece em datasets de faces já alinhadas). Ela
+**não** decide inclusão — a face já está no dataset e continua nele;
+para removê-la use **Excluir Selecionados**, que exige justificativa.
+O que a janela oferece é inspecionar as imagens e repetir a detecção
+numa resolução maior (640, 960 ou 1280 px). As recuperadas ganham a
+biometria e passam pelos estágios que já tinham rodado antes da
+gravação.
+
+> 💡 Em datasets de **recortes de vídeo** que gravaram a geometria da
+> extração, o enriquecimento realinha a face pelos pontos gravados em
+> vez de detectar de novo no recorte (onde a detecção falha em face
+> pequena), e avisa quantas faces têm parte da face fora do recorte.
+> Veja o [capítulo 02b](02b_criando_dataset_de_video.md).
 
 ## Cenários práticos
 
@@ -223,7 +244,11 @@ porque a detecção falhou em Det size = 320.
 Algumas das 47 antes falhadas agora detectam. A coluna `error` é
 recalculada — `error=True` permanece só nas que ainda falharem.
 
-> 💡 Alternativa mais rápida: filtre o dataset por `error=True`
+> 💡 Sem *Reprocessar*, só as 47 faces sem embedding vão ao detector, e
+> as que continuarem sem face aparecem na janela *Faces sem biometria
+> neste enriquecimento*, onde dá para tentar 640/960/1280 só nelas.
+
+> 💡 Outra alternativa: filtre o dataset por `error=True`
 > ([capítulo 06](06_filtros_e_estatisticas.md)), salve como
 > dataset separado, rode Enriquecer nele, depois mescle de volta
 > com *Juntar* ([capítulo 07](07_operacoes_estruturais.md)).
@@ -248,13 +273,15 @@ já vem com a flag correta.
 
 ## O que muda no parquet
 
-Após o enriquecimento, o parquet é **regravado no mesmo caminho**
-(sobrescreve o arquivo original — não cria backup automático).
+Após o enriquecimento, o parquet é **regravado na pasta de onde foi
+aberto**, como `{nome do dataset}.parquet` (sobrescreve o arquivo
+original — não cria backup automático).
 
 | Tipo de mudança | Detalhes |
 |---|---|
 | Colunas FF preenchidas/atualizadas | `embedding_v2`/`embedding_v4`, `fiqa_score`, `det_score`, `gender_est`, `age_est`, `yaw`/`pitch`/`roll`, `ipd`, `bbox`, `keypoints` |
-| Colunas OFIQ preenchidas/atualizadas | ~40 colunas `ofiq_*` (scalar + raw) |
+| Colunas OFIQ preenchidas/atualizadas | ~40 colunas `ofiq_*` (scalar + raw), mais `ofiq_version` e `ofiq_backend` (de qual OFIQ veio cada medida) |
+| Colunas de captura (se *Extrair EXIF/XMP* marcado) | data/hora (`capture_datetime_raw`, `capture_datetime`…), câmera, exposição, compressão e o dump completo em `exif_json`, exibido na aba **Metadados** |
 | Colunas SER-FIQ preenchidas/atualizadas | `serfiq_score`, `serfiq_t`, `serfiq_alpha` |
 | Colunas de erro recalculadas | `error`, `error_stage`, `error_message` |
 | Metadados do dataset | `is_aligned` persistido se houve override |
@@ -279,7 +306,8 @@ de progresso mostra:
 Ao **cancelar**, o sistema:
 1. Sinaliza interrupção ao pipeline
 2. Espera a face atual terminar (não corta no meio)
-3. **Salva o parquet parcial** antes de abortar
+3. **Salva o parquet parcial** antes de abortar (sem abrir a revisão
+   das faces sem biometria)
 4. Mostra mensagem informando que o resultado é parcial
 
 Você pode retomar onde parou apenas rodando *Enriquecer* novamente
@@ -294,7 +322,7 @@ processado.
 | `Erro ao salvar pós-enriquecimento` | Parquet aberto em outro programa, ou disco read-only | Feche o arquivo em outro lugar; verifique permissões |
 | `OFIQ não produziu resultado` | Binário OFIQ não acessível ou pasta `data/` ausente | Confira `config.json → ofiq.ofiq_exe_path` e `ofiq_data_path` |
 | GPU OOM (Out of Memory) | **Det size** alto + dois modelos simultâneos | Marque só um modelo, baixe **Det size** ou o **Batch size** |
-| `nenhum embedding gerado` em várias faces | Detecção falhou (rosto pequeno demais ou marcado como já alinhado erroneamente) | Aumente **Det size**, ou verifique o override *Imagens são faces já alinhadas* |
+| `nenhum embedding gerado para …` em várias faces | Detecção falhou (rosto pequeno demais ou marcado como já alinhado erroneamente) | Tente de novo em resolução maior na janela *Faces sem biometria*, aumente **Det size**, ou verifique o override *Imagens são faces já alinhadas* |
 | `0/N faces — FALHA TOTAL` | Pipeline configurado errado (modelo wrong path, GPU off, etc.) | Cheque logs do worker no terminal — costuma ter detalhes |
 | Dataset com `is_aligned` virou `True` sozinho | Você marcou a checkbox sem perceber | Re-rode o Enriquecer com a flag desmarcada e Reprocessar marcado |
 

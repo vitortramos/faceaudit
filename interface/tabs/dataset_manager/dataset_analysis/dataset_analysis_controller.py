@@ -23,6 +23,12 @@ from faceaudit.services.dataset_audit_service import (
     DatasetAuditService,
 )
 
+from faceaudit.services.audit_log_service import (
+    JustificationRequiredError,
+    require_justification,
+)
+from faceaudit.services.dataset_custody_service import face_identifier
+
 from .audit_action import AuditActionRecord
 from .dataset_analysis_view import DatasetAnalysisView
 from interface.tabs.dataset_manager.workers.biometric_audit_worker import (
@@ -34,6 +40,11 @@ from interface.tabs.dataset_manager.workers.dataset_analysis_worker import (
 from interface.tabs.dataset_manager.workers.worker_progress_runner import (
     WorkerProgressRunner,
 )
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 class DatasetAnalysisController(QtCore.QObject):
@@ -101,6 +112,11 @@ class DatasetAnalysisController(QtCore.QObject):
         # PR 14: pilha de ações reversíveis (LIFO). Cada AuditActionRecord
         # guarda o que precisa fazer pra reverter aquela operação.
         self._action_history: List[AuditActionRecord] = []
+        # Quantas ações foram desfeitas nesta sessão do diálogo — vai junto
+        # das entradas de custódia (o que foi desfeito não chega ao arquivo,
+        # mas o registro diz que houve reversões).
+        self._undone_count = 0
+        self.session_id = str(uuid.uuid4())
 
         self.view = DatasetAnalysisView(
             dataset_name=dataset.name or "Dataset",
@@ -133,6 +149,46 @@ class DatasetAnalysisController(QtCore.QObject):
     def exec(self):
         """Exibe o diálogo modalmente."""
         return self.view.exec()
+
+    # ── Cadeia de custódia ──────────────────────────────────────────────
+
+    def applied_actions(self) -> List[AuditActionRecord]:
+        """Ações que CONTINUAM aplicadas, na ordem em que foram feitas.
+
+        É o que o controller pai registra na cadeia quando o diálogo fecha:
+        o que foi desfeito não chega ao dataset e por isso não vira entrada.
+        """
+        return list(self._action_history)
+
+    def undone_count(self) -> int:
+        return self._undone_count
+
+    def _pedir_justificativa_exclusao(self, n_faces: int) -> Optional[str]:
+        from interface.tabs.dataset_manager.remove_faces_dialog import (
+            RemoveFacesDialog,
+        )
+        dlg = RemoveFacesDialog(
+            self.view, n_faces=n_faces, nome_dataset=self.dataset.name or "",
+        )
+        return self._colher_justificativa(dlg)
+
+    def _pedir_justificativa(self, **kwargs) -> Optional[str]:
+        from interface.tabs.dataset_manager.justification_dialog import (
+            JustificationDialog,
+        )
+        return self._colher_justificativa(JustificationDialog(self.view, **kwargs))
+
+    @staticmethod
+    def _colher_justificativa(dlg) -> Optional[str]:
+        """Justificativa validada pelo backend, ou None se o perito desistiu."""
+        try:
+            if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return None
+            return require_justification(dlg.justificativa())
+        except JustificationRequiredError:
+            return None
+        finally:
+            dlg.deleteLater()
 
     # ── Auditorias ───────────────────────────────────────────────────────
 
@@ -590,6 +646,12 @@ class DatasetAnalysisController(QtCore.QObject):
         if not deleted_faces:
             return
 
+        # Justificativa obrigatória (cadeia de custódia) — pedida ANTES de
+        # mexer no dataset; cancelar não exclui nada.
+        justificativa = self._pedir_justificativa_exclusao(len(deleted_faces))
+        if justificativa is None:
+            return
+
         self.dataset.faces = [
             f for f in self.dataset.faces
             if getattr(f, "image_path", None) not in target
@@ -599,6 +661,9 @@ class DatasetAnalysisController(QtCore.QObject):
             op_id=f"delete-{uuid.uuid4()}",
             description=self._describe_delete(deleted_faces),
             deleted_faces=deleted_faces,
+            kind="delete",
+            justification=justificativa,
+            applied_at=_utc_now(),
         ))
 
         self._invalidate_heavy_caches()
@@ -650,12 +715,30 @@ class DatasetAnalysisController(QtCore.QObject):
         if not new_identity or new_identity == old_identity:
             return
 
+        n_afetadas = sum(
+            1 for f in self.dataset.faces
+            if getattr(f, "identity", None) == old_identity
+        )
+        justificativa = self._pedir_justificativa(
+            titulo_janela="Renomear identidade",
+            titulo_html=(
+                f"<b>Renomear '{old_identity}' → '{new_identity}'</b> "
+                f"({n_afetadas} registro(s))"
+            ),
+            texto_confirmar="Renomear",
+            exemplo="Ex.: grafia corrigida conforme o documento de identificação.",
+        )
+        if justificativa is None:
+            return
+
         # Coleta (path, old_id) das faces afetadas pra undo
         changes: Dict[str, str] = {}
+        alteradas = []
         for f in self.dataset.faces:
             if getattr(f, "identity", None) == old_identity:
                 changes[getattr(f, "image_path", "")] = old_identity
                 f.identity = new_identity
+                alteradas.append(f)
         if not changes:
             return
 
@@ -665,6 +748,12 @@ class DatasetAnalysisController(QtCore.QObject):
                 old_identity, new_identity, changes,
             ),
             identity_changes=changes,
+            kind="rename",
+            justification=justificativa,
+            applied_at=_utc_now(),
+            old_identities=[str(old_identity)],
+            new_identity=str(new_identity),
+            changed_identifiers=[face_identifier(f) for f in alteradas],
         ))
 
         self._invalidate_heavy_caches()
@@ -717,15 +806,29 @@ class DatasetAnalysisController(QtCore.QObject):
         if not ok or not target:
             return
 
+        fontes_txt = ", ".join(
+            f"'{s}'" for s in sorted(identities_in_selection - {target})
+        )
+        justificativa = self._pedir_justificativa(
+            titulo_janela="Mesclar identidades",
+            titulo_html=f"<b>Mesclar {fontes_txt} → '{target}'</b>",
+            texto_confirmar="Mesclar",
+            exemplo="Ex.: mesma pessoa cadastrada sob dois nomes (ver documento).",
+        )
+        if justificativa is None:
+            return
+
         # Aplica: todas as faces das identidades não-alvo recebem o alvo.
         # Captura (path, old_id) pra undo.
         changes: Dict[str, str] = {}
+        alteradas = []
         sources = identities_in_selection - {target}
         for f in self.dataset.faces:
             ident = getattr(f, "identity", None)
             if ident in sources:
                 changes[getattr(f, "image_path", "")] = ident
                 f.identity = target
+                alteradas.append(f)
         if not changes:
             return
 
@@ -733,6 +836,12 @@ class DatasetAnalysisController(QtCore.QObject):
             op_id=f"merge-{uuid.uuid4()}",
             description=self._describe_merge(sources, target, changes),
             identity_changes=changes,
+            kind="merge",
+            justification=justificativa,
+            applied_at=_utc_now(),
+            old_identities=sorted(str(s) for s in sources),
+            new_identity=str(target),
+            changed_identifiers=[face_identifier(f) for f in alteradas],
         ))
 
         self._invalidate_heavy_caches()
@@ -774,6 +883,7 @@ class DatasetAnalysisController(QtCore.QObject):
         """Reverte a ação no dataset e refresca a UI. Compartilhado pelos
         dois handlers de undo (Ctrl+Z global e botão por linha)."""
         action.apply_undo(self.dataset)
+        self._undone_count += 1
 
         self._invalidate_heavy_caches()
         self.view.clear_preview_cache()

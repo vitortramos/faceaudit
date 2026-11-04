@@ -117,3 +117,9 @@ experiments/Teste Tipicidade/*.json
 experiments/Teste Tipicidade/*.log
 experiments/Teste Tipicidade/*.csv
 experiments/Teste Tipicidade/*.parquet
+
+# Configuração por máquina (caminhos locais). Modelo: config.example.json
+config.json
+
+# Manual em PDF — gerado localmente por docs/user_guide/dataset_manager/build_pdf.py
+docs/user_guide/dataset_manager/Manual_Gerenciador_de_Datasets.pdf

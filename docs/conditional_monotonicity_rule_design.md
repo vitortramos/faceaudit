@@ -2,7 +2,35 @@
 
 **Versão**: 1.0 (consolidada após duas rodadas de revisão crítica do colaborador forense)
 **Data**: 2026-06-07
-**Status**: V1 aprovada para implementação; V1.5 e V2 enfileiradas; projeto paralelo `TYPICALITY_EFFECT_AUDIT` definido.
+**Status**: documento de design. V1, V1.5 (componente A) e V2 (componente 1) estão implementados, com as divergências listadas em §0; os demais componentes e o projeto paralelo `TYPICALITY_EFFECT_AUDIT` não foram implementados.
+
+---
+
+## 0. Estado da implementação (conferido contra o código)
+
+O texto a partir de §1 é o design original. O que o código faz hoje
+(`faceaudit/validation_rules/conditional_monotonicity_rule.py`,
+`RULE_VERSION = "2.0"`) difere dele nos pontos abaixo; onde houver conflito,
+vale esta seção.
+
+**Implementado**
+- Regra `ConditionalMonotonicityRule` (estende `ValidationRuleBase`), tipo `ValidationRuleType.CONDITIONAL_MONOTONICITY`, criada pela `ValidationRuleFactory`.
+- Protocolo `MonotonicityDerivativeProviderProtocol` e dataclass `MonotonicityRegionResult` em `faceaudit/protocols/monotonicity_derivative_provider_protocol.py`.
+- `LRArchitectureDerivativeProvider` (V1, todas as 15 arquiteturas) e `PiecewiseLinearDerivativeProvider` (V1.5). Dispatch na regra: `architecture_state` no metadata → provider LR; só `piecewise_enabled=True` → provider piecewise; nenhum dos dois → erro.
+- Domínios `observed_rows`, `central_box` (P5–P95 por padrão) e `reportable_box` (V2, opcional).
+- Persistência em `calibrator.metadata["monotonicity_audit"]`, escrita pela própria regra (não existe `CalibrationModelMetadataService.bind_audit_result`).
+
+**Diferente do design**
+- **Não é regra default auto-populada.** `CalibrationModelTrainingInstruction._ensure_default_validation_rules` popula só `MIN_CALIBRATION_PAIRS` e `SCORE_CALIBRATION_STATE(RAW)`. A auditoria roda dentro do executor, após o refit (`_bind_training_raw_input` + `_run_monotonicity_audit`), e **só quando o calibrador tem `architecture_state`** — calibrador piecewise sem `architecture_state` não é auditado automaticamente; a regra pode ser acrescentada à mão pelo "➕ Adicionar Regra".
+- **Parâmetros**: `calibrator_resource_id`, `numerical_epsilon` (1e-12), `operational_min_slope` (None), `box_quantile_low` (0,05), `box_quantile_high` (0,95), `reportable_box` (None) e `dataset_resource_id_override`. **Não existe o parâmetro `policy`.**
+- **Fingerprint divergente** entre calibrador e raw_input gera **WARNING** ("best-effort"), não CRITICAL. A integridade do `architecture_state` é conferida ao reconstruí-lo (`LRArchitectureStateFactory.from_dict`); falha ali é erro.
+- **`training_raw_input_resource_id` ausente** no calibrador → warning e `audit_status = "NOT_AUDITED"`, não CRITICAL. Recurso indicado mas ausente do contexto → erro.
+- **Ordem da política**: violação em `observed_rows` → CRITICAL; senão em `reportable_box` → CRITICAL; senão em canto da `central_box` → WARNING; senão `min_slope_observed < operational_min_slope` → WARNING; senão OK. Termo com variância zero gera warning na validação, mas não altera `audit_status`.
+- **Regiões**: `s_gt_s0`/`s_le_s0` quando a arquitetura tem hinge, `global` quando não tem; no piecewise, `segment_0 … segment_K`.
+- **Métricas não implementadas**: `relative_slope_ratio`, `min_slope_x_score_range` e o aviso de "curva quase plana" por razão relativa. O metadata persistido traz `rule_version`, `audit_status`, `architecture`, `training_raw_input_resource_id`, `vectorization_contract_fingerprint`, `audit_domain_modes`, os quantis, `reportable_box`, `numerical_epsilon`, `operational_min_slope` e a lista `regions` (por região: suporte, mínimo/máximo observados, cantos e piores pontos de cada caixa, termos de variância zero/quase zero). Não há `rule_run_timestamp`, `warnings`, `policy`, `calibrator_fingerprint`, `segment_support` nem `slopes_by_region` como no exemplo de §8.
+- **Testes**: `tests/test_conditional_monotonicity_rule.py` (cobertura paramétrica `test_provider_covers_all_architectures` — não existe `tests/test_monotonicity_provider_coverage.py` —, casos HIER_ONE_FACE saudável/violado, calibrador sem `architecture_state`, fingerprint divergente e os 6 de `reportable_box`) e `tests/test_piecewise_linear_derivative_provider.py` (os 11 de V1.5). A maioria dos casos 1–20 de §9 não tem teste próprio; `MissingScalerError` não existe.
+
+**Não implementado**: componentes B–D de V1.5 (auditoria por fold, `fold_audit_status`), componentes 2–4 de V2, a política para modelos legados de §11 (`legacy_override_reason` etc.) e o `TYPICALITY_EFFECT_AUDIT`.
 
 ---
 
@@ -10,7 +38,7 @@
 
 Regra plugável `ValidationRuleType.CONDITIONAL_MONOTONICITY` que verifica, **após o refit final** do calibrador, que a derivada `∂ log_LR / ∂ s` é estritamente positiva em todas as comparações efetivamente observadas em `D_cal`. Auditoria estendida cobre cantos da caixa central de raridades observadas (`central_box`, P5-P95) e — em V2 — o domínio explicitamente declarado pela política de reportabilidade (`reportable_box`).
 
-**Anexa-se** ao `CALIBRATION_MODEL_TRAINING` como regra default auto-populada, paralela às existentes (`MIN_CALIBRATION_PAIRS`, `SCORE_CALIBRATION_STATE`).
+**Anexa-se** ao `CALIBRATION_MODEL_TRAINING` como regra default auto-populada, paralela às existentes (`MIN_CALIBRATION_PAIRS`, `SCORE_CALIBRATION_STATE`). *(Implementado de outra forma: auditoria embutida no executor, pós-refit — ver §0.)*
 
 **Cobertura V1**: todas as 15 arquiteturas declarativas de `LR_ARCHITECTURE_VECTORIZATION`.
 
@@ -267,9 +295,9 @@ Adicionar nova arquitetura ao `LR_ARCHITECTURE_SPECS` sem cobrir o provider faz 
 3. **Service**: `faceaudit/services/lr_architecture_derivative_provider.py`
 4. **Regra**: `faceaudit/validation_rules/conditional_monotonicity_rule.py` extendendo `ValidationRuleBase`
 5. **Factory**: `faceaudit/factories/validation_rule_factory.py` — mapping `CONDITIONAL_MONOTONICITY → ConditionalMonotonicityRule`
-6. **Auto-populate**: `faceaudit/models/instructions/calibration_model_training_instruction.py._ensure_default_validation_rules` — auto-adiciona `CONDITIONAL_MONOTONICITY` para qualquer arquitetura LR_ARCH_VEC
-7. **UI**: automático via `InstructionConfigPanel` (a regra aparece na seção âmbar com botões 🗑/📤/➕)
-8. **Persistência**: `CalibrationModelMetadataService.bind_audit_result(model, audit_metadata)`
+6. **Auto-populate**: `faceaudit/models/instructions/calibration_model_training_instruction.py._ensure_default_validation_rules` — auto-adiciona `CONDITIONAL_MONOTONICITY` para qualquer arquitetura LR_ARCH_VEC *(não implementado assim: o executor `CalibrationModelTrainingInstructionExecutor._run_monotonicity_audit` roda a regra pós-refit)*
+7. **UI**: automático via `InstructionConfigPanel` (a regra aparece na seção âmbar com botões 🗑/📤/➕) *(só quando acrescentada à mão)*
+8. **Persistência**: `CalibrationModelMetadataService.bind_audit_result(model, audit_metadata)` *(não existe: a regra grava `calibrator.metadata["monotonicity_audit"]` diretamente)*
 
 ---
 

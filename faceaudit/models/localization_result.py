@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from faceaudit.enums.localization_mode import LocalizationMode
 from faceaudit.enums.localization_naming import NamingStrategy
@@ -59,6 +59,44 @@ class LocalizationResult:
     def succeeded(self) -> bool:
         """True quando nenhuma face falhou."""
         return self.n_failed == 0
+
+    @property
+    def n_faces_remaining(self) -> int:
+        """Faces que sobraram no dataset devolvido.
+
+        Falha de cópia REMOVE a face do resultado (não há imagem a que
+        apontar), então este número pode ser menor que `n_processed`.
+        """
+        return len(getattr(self.dataset, "faces", None) or [])
+
+    @property
+    def is_empty(self) -> bool:
+        """True quando não sobrou face nenhuma — o resultado não pode ser
+        aplicado nem gravado. Parquet de zero linhas é aceito pela UI,
+        listado como recurso e some dos seletores sem explicação."""
+        return self.n_faces_remaining == 0
+
+    def failures_preview(self, limit: int = 5) -> str:
+        """Lista curta das falhas, uma por linha, para mostrar ao usuário."""
+        linhas = [f"  • {p}: {msg}" for p, msg in list(self.failures)[:limit]]
+        if len(self.failures) > limit:
+            linhas.append(f"  … (+{len(self.failures) - limit})")
+        return "\n".join(linhas)
+
+    def refusal_message(self) -> Optional[str]:
+        """Motivo para NÃO aplicar o resultado, ou None quando pode seguir."""
+        if not self.is_empty:
+            return None
+        msg = (
+            f"Nenhuma das {self.n_processed} face(s) sobrou após a operação "
+            "— o resultado não foi aplicado e o dataset aberto continua "
+            "como estava."
+        )
+        if self.failures:
+            msg += (
+                f"\n\n{self.n_failed} falha(s):\n" + self.failures_preview()
+            )
+        return msg
 
     def summary(self) -> str:
         """Mensagem curta pra logs/UI."""

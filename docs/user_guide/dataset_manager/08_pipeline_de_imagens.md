@@ -1,11 +1,16 @@
 # 08 — Pipeline de imagens
 
-A aba **Imagens** do ribbon expõe dois botões que trabalham juntos:
+A aba **Imagens** do ribbon tem dois botões que trabalham juntos:
 
 - 🎨 **Editor** — monta um *pipeline* de transformações de imagem
   interativamente, com pré-visualização e métricas de qualidade
 - 🌀 **Processar** — aplica um pipeline salvo a todo o dataset,
   gerando um **novo dataset** com as imagens transformadas
+
+(O terceiro botão da aba, ✂️ **Gerar Imagens**, é independente: gera,
+numa pasta nova, a face de cada imagem de uma pasta escolhida — recortada
+com margem ou alinhada — com um manifesto de procedência, sem criar
+dataset.)
 
 A motivação forense: simular **degradações realistas** (compressão
 de mensageiro, oclusão, blur de zoom digital, etc.) sobre um
@@ -19,10 +24,11 @@ biométrica se comporta.
 3. [Os tipos de step](#os-tipos-de-step)
 4. [Configuração detalhada de cada step](#configuração-detalhada)
 5. [Métricas de qualidade ao vivo](#métricas-ao-vivo)
-6. [Salvando e carregando pipelines](#salvando-e-carregando)
-7. [O diálogo *Processar*](#o-diálogo-processar)
-8. [O dataset de saída](#o-dataset-de-saída)
-9. [Casos de uso forense](#casos-de-uso-forense)
+6. [A imagem questionada como alvo](#a-imagem-questionada-como-alvo)
+7. [Salvando e carregando pipelines](#salvando-e-carregando)
+8. [O diálogo *Processar*](#o-diálogo-processar)
+9. [O dataset de saída](#o-dataset-de-saída)
+10. [Casos de uso forense](#casos-de-uso-forense)
 
 ---
 
@@ -33,7 +39,7 @@ Um **pipeline de imagens** é uma sequência ordenada de
 
 - `Blur(σ=2) → JPEG(qual=60)` — simula uma foto desfocada
   comprimida pelo WhatsApp
-- `Crop(face_detected, padding=0.2) → JPEG(qual=85)` — recorta
+- `Crop(face_detected, margem=1.4) → JPEG(qual=85)` — recorta
   só a face e comprime
 - `Occlusion(rectangle, 30%) → JPEG(qual=70)` — simula uma
   evidência parcialmente bloqueada
@@ -54,7 +60,7 @@ O diálogo tem **três painéis principais**:
 
 | Sub-área | Função |
 |---|---|
-| **Topo — Lista** | Steps na ordem de aplicação. Cada linha mostra `Nº.  Rótulo` (ex.: `1.  Desfoque`). Drag-drop pra reordenar. Botão ✕ vermelho remove |
+| **Topo — Lista** | Steps na ordem de aplicação. Cada linha mostra `Nº.  Rótulo  —  resumo` (ex.: `1.  Desfoque  —  σ 2`). Drag-drop pra reordenar. Botão ✕ vermelho remove |
 | **Base — Configuração** | Formulário dinâmico que reage ao step selecionado — campos variam conforme o tipo |
 
 Botão verde **➕ Adicionar** no topo abre um menu com os tipos
@@ -67,8 +73,12 @@ distinguíveis.
 
 | Elemento | Função |
 |---|---|
-| **Imagem original** (480×480 esquerda) | Imagem de entrada, sem transformação |
-| **Imagem processada** (480×480 direita) | Resultado após aplicar o pipeline atual |
+| **Original** (esquerda) | Imagem de entrada, sem transformação |
+| **Processada** (ao lado) | Resultado após aplicar o pipeline atual |
+| **Questionada** (direita) | Só aparece quando o pipeline tem uma questionada (ver adiante) |
+
+Os painéis têm no mínimo 220 px de lado e crescem com a janela; o
+título de cada um mostra as dimensões da imagem.
 | ◀ ▶ 🎲 | Navegação entre faces do dataset (anterior / próxima / aleatória) |
 | Status label | `17 / 234  · foto_05.png` (índice atual / total · nome do arquivo) |
 | **▶ Aplicar** | Reaplica o pipeline na face atual (após alterar steps/parâmetros) |
@@ -99,7 +109,7 @@ num *worker* separado pra não travar a UI.
 | **Nome** | Identificador do pipeline (vira o stem do JSON salvo) |
 | **Origem** | Fonte que alimenta o pipeline: **Imagem original** (foto inteira, com fundo e pose variada) ou **Face alinhada (112×112)** (o ForensicFace detecta e alinha a face **antes** de qualquer step rodar) |
 | **Seed** | Inteiro pra steps aleatórios (`Oclusão` com posição aleatória, etc.) — torna o pipeline reproduzível |
-| **📂 Carregar** | Carrega um pipeline salvo da biblioteca global (substitui o pipeline em memória; mudanças não salvas são descartadas após confirmação) |
+| **📂 Carregar** | Carrega um pipeline salvo da biblioteca global ou um modelo pronto do FaceAudit (`[modelo] …`) (substitui o pipeline em memória; mudanças não salvas são descartadas após confirmação) |
 | **💾 Salvar** | Pergunta o ID do pipeline (default = nome atual) e grava em `<biblioteca>/image_pipelines/<id>.json`; se já existir um pipeline com esse ID, pergunta se quer sobrescrever |
 
 > 💡 **Truque**: selecione **Origem = Face alinhada (112×112)** e deixe o
@@ -127,7 +137,7 @@ tipo de step.
 | **Desfoque** | `BLUR` | Aplica filtro Gaussiano. Simula desfoque por movimento, falha de foco, ou degradação de zoom |
 | **Compressão JPEG** | `JPEG` | Codifica + decodifica em JPEG. Simula compressão de mensageiros, e-mail, redes sociais |
 | **Compressão WebP** | `WEBP` | Como JPEG mas no formato WebP (compressão moderna, melhor qualidade pelo mesmo bitrate) |
-| **Recorte** | `CROP` | Recorta a imagem. Modos centralizado (fixo) ou detectado por face (com padding) |
+| **Recorte** | `CROP` | Recorta a imagem. Modos centralizado (fixo) ou pela face (com margem) |
 | **Oclusão** | `OCCLUSION` | Adiciona oclusão (máscara desenhada à mão, retângulo preto ou círculo preto). Simula obstruções parciais |
 | **Redimensionar** | `RESIZE` | Muda a resolução — por **distância entre os olhos alvo** (iguala o tamanho da face entre fotos diferentes) ou por fator |
 | **Tons de cinza** | `GRAYSCALE` | Converte para tons de cinza |
@@ -232,7 +242,7 @@ tipos geométricos (retângulo e círculo) usam posição + dimensões.
 | | Intensidade | 0 – 1 | 1 | |
 | **Meio-tom** | Técnica | Difusão de erro / ordenado / retícula | Difusão de erro | |
 | | Tamanho da célula | 2 – 64 px | 6 | Só retícula |
-| | Ângulo | 0 – 180° | 45 | Só retícula |
+| | Ângulo | 0 – 179,9° | 45 | Só retícula |
 | **Ruído de toner** | Densidade | 0 – 0,05 | 0,002 | Fração dos pixels que recebe um ponto |
 | | Raio do ponto | 0 – 5 px | 0 | 0 = um pixel |
 
@@ -471,8 +481,8 @@ base, **uma a uma**, mais parecidas com a questionada.
   ajuste seria otimista, e uma validação pequena oscila muito (em 40
   imagens, 2 imagens são 5 pontos percentuais).
 - **Quando não melhora, ele diz.** Se a validação não melhorar (menos
-  excesso além da tolerância e nenhuma queda na parcela de imagens
-  dentro), a janela avisa, recomenda **não aplicar** e deixa "Não" como
+  excesso além da tolerância e nenhuma queda na parcela de imagens com
+  todas as medidas, ou todas menos uma, dentro), a janela avisa, recomenda **não aplicar** e deixa "Não" como
   botão padrão. Isso acontece, por exemplo, quando os valores já foram
   ajustados antes: o que limita, aí, é a estrutura do pipeline.
 - **Nada é aplicado sem confirmação.** A janela final lista cada campo
@@ -488,7 +498,8 @@ Pipelines são salvos como JSON em
 `<paths.library>/image_pipelines/`. Cada step é serializado **plano**
 (sem objeto `config` aninhado): a chave `step_type` guarda o tipo em
 minúsculas e os parâmetros ficam no mesmo nível. O pipeline também
-grava `description` e `input_source`:
+grava `description` e `input_source` (e `questioned`, o perfil da
+questionada, quando há uma):
 
 ```json
 {
@@ -518,9 +529,9 @@ Aplica um pipeline **a todas as imagens do dataset** num batch
 
 | Campo | Notas |
 |---|---|
-| **Pipeline** | Combo listando os nomes (stems dos `*.json` de `image_pipelines/`). Um rótulo abaixo mostra **Origem · Seed · Steps · Descrição** do pipeline selecionado |
+| **Pipeline** | Combo listando os nomes (stems dos `*.json` de `image_pipelines/`; os modelos prontos não aparecem aqui — carregue-os no Editor e salve). Um rótulo abaixo mostra **Origem · Seed · Steps · Descrição** (e a **Questionada**, quando há) do pipeline selecionado, com a lista dos steps |
 | **Pasta** (**📁 Escolher…**) | Qualquer pasta. O dataset ganha uma pasta própria **dentro** dela. Default sugerido: a pasta que contém o dataset aberto |
-| **Nome do dataset** | Nome do dataset derivado — também nome da pasta e do parquet. Default: `<dataset>__<pipeline>`. Espaços e acentos são mantidos |
+| **Nome do dataset** | Nome do dataset derivado — também nome da pasta e do parquet. Default: `<dataset>__<pipeline>` (no nome sugerido, espaços viram `_`). Num nome digitado, espaços e acentos são mantidos; só os caracteres proibidos em nome de pasta são trocados |
 | *Será criado:* | Mostra o caminho exato que será criado (`<pasta>/<nome>/`); avisa quando ele já existe e não está vazio |
 | ☑️ **Pular imagens cujo PNG destino já existe** | Idempotente: pula quando o PNG de destino **já existe** (por existência do arquivo, não por comparação de hash). Default ON |
 | **Após processar** | Radio: `Manter dataset atual aberto` (default) ou `Abrir o novo dataset (fecha o atual)` |
@@ -539,10 +550,11 @@ Cada face do dataset original é:
 3. Escrita como **PNG lossless** em `images/`, na pasta do dataset
 
 > ⚠️ **Cancelar não interrompe o lote no meio.** Não há ponto de
-> cancelamento granular dentro do laço por face: o lote atual roda até
-> o fim e o resultado é simplesmente **descartado**. Cancelar evita
-> abrir/registrar o dataset derivado, mas os PNGs já gravados
-> permanecem no disco.
+> cancelamento granular dentro do laço por face: o lote roda até o fim
+> e grava o dataset derivado **completo** na pasta (parquet, cadeia de
+> custódia, manifesto e PNGs). Cancelar só evita abri-lo e registrar a
+> entrada `COPY_IMAGES` na cadeia do dataset de origem — apague a pasta
+> se não quiser o resultado.
 
 ## O dataset de saída
 
@@ -673,7 +685,8 @@ lados estão na mesma "escala de degradação" para a comparação.
 
 A evidência mostra o rosto com a parte inferior coberta (ex.: máscara
 facial). Para ocluir a região da boca, use posição **Sobre a boca**
-(`MOUTH`) — que exige o FFService para localizar os landmarks:
+(`MOUTH`) — que usa os pontos da face do dataset (ou, sem eles, uma
+detecção na imagem de entrada; ver *A posição da face*):
 
 ```
 Pipeline "mask_lower_face":
@@ -747,8 +760,8 @@ Pipeline "anonymize_eyes":
   1. Oclusão  tipo=Círculo preto, posição=Sobre os olhos, raio=0.15
 ```
 
-(Posição **Sobre os olhos** exige o FFService para localizar os
-landmarks.)
+(Posição **Sobre os olhos** usa os pontos da face do dataset ou, sem
+eles, uma detecção na imagem de entrada — ver *A posição da face*.)
 
 > ⚠️ Anonimização por oclusão é uma técnica básica — não é
 > garantia contra re-identificação automatizada. Use com critério.

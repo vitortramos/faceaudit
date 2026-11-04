@@ -532,9 +532,11 @@ class FaceDataset:
         
         faces_a = [f for f in self.faces if f.identity in ids_a]
         faces_b = [f for f in self.faces if f.identity not in ids_a]
-        
-        return (FaceDataset(f"{self.name}_A", faces=faces_a), 
-                FaceDataset(f"{self.name}_B", faces=faces_b))
+
+        return (
+            self._derived_with_faces(f"{self.name}_A", faces_a),
+            self._derived_with_faces(f"{self.name}_B", faces_b),
+        )
 
     def split_by_identity_list(self, ids_for_dataset_b: Union[Set[str], List[str]], name_a: str = "", name_b: str = "") -> Tuple['FaceDataset', 'FaceDataset']:
         """
@@ -565,9 +567,51 @@ class FaceDataset:
         n_b = name_b if name_b else f"{self.name}_B"
 
         return (
-            FaceDataset(name=n_a, faces=faces_a, description=f"Split manual de {self.name} (Restante)"),
-            FaceDataset(name=n_b, faces=faces_b, description=f"Split manual de {self.name} (Específicos)")
+            self._derived_with_faces(
+                n_a, faces_a,
+                description=f"Split manual de {self.name} (Restante)",
+            ),
+            self._derived_with_faces(
+                n_b, faces_b,
+                description=f"Split manual de {self.name} (Específicos)",
+            ),
         )
+
+    def _derived_with_faces(
+        self, name: str, faces: List[FaceInfo],
+        description: Optional[str] = None,
+    ) -> 'FaceDataset':
+        """Dataset novo com um SUBCONJUNTO das faces e a mesma ancoragem.
+
+        Usado pela divisão. As faces continuam com o `image_path` de antes,
+        então o resultado precisa da mesma régua para achá-las: `path_mode`,
+        `path_root` e a pasta do parquet de origem (`_parquet_dir`). A versão
+        anterior construía `FaceDataset(name, faces)` — mesmo defeito que o
+        `concat` já teve: com origem RELATIVE (dataset autocontido,
+        `path_root="images"`), as metades nasciam ABSOLUTE com caminhos
+        relativos dentro, e nem a rede de proteção do `to_parquet` as salvava
+        (ela só age sobre dataset declarado RELATIVE e com `_parquet_dir`).
+
+        `column_specs`, `is_aligned` e a proveniência também acompanham: um
+        subconjunto de faces alinhadas continua alinhado, e as colunas não
+        podem voltar como CUSTOM. As faces não são copiadas — cada metade
+        recebe as mesmas instâncias, como antes.
+        """
+        derivado = FaceDataset(
+            name=name,
+            faces=list(faces),
+            description=(
+                description if description is not None else self.description
+            ),
+            path_mode=self.path_mode,
+            path_root=self.path_root,
+        )
+        derivado._parquet_dir = self._parquet_dir
+        derivado.is_aligned = bool(self.is_aligned)
+        if self.column_specs:
+            derivado.column_specs = dict(self.column_specs)
+        derivado.provenance_metadata = dict(self.provenance_metadata or {})
+        return derivado
 
     def to_pandas(self, include_embeddings: bool = True) -> pd.DataFrame:
         """

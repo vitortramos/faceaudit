@@ -13,12 +13,21 @@
 >   unificada (substituto formal).
 > - **`docs/typicality_models.md`** — matemática completa dos dois
 >   backends (k-NN + MoVMF), `UnitNormPolicy`,
->   `PopulationWeightingMode`, `CROSS_FIT_IDENTITY`, fingerprints em
->   3 camadas.
+>   `PopulationWeightingMode`, `CROSS_FIT_IDENTITY`, fingerprints.
 >
 > Estratégias V2.14 que usavam `KNN_TYPICALITY_MODEL_TRAINING` são
 > automaticamente migradas pelo `LegacyStrategyMigrationService` ao
 > abrir o projeto. Defaults históricos preservados literalmente.
+>
+> Nomes deste documento que não existem mais no código: os arquivos
+> `knn_typicality_model_training_instruction.py` e
+> `knn_typicality_model_training_instruction_executor.py` (hoje
+> `typicality_model_training_instruction*.py`), o campo
+> `reference_mode` da instrução (hoje `population_weighting_mode` no
+> config do backend) e o score type `LOG_DENSITY_KNN` (hoje
+> `LOG_DENSITY_ESTIMATE`). A classe paramétrica chamada aqui de
+> `TypicalityModel` é a `MoVMFTypicalityModel`; o nome antigo sobrevive
+> só como alias em `faceaudit` e `faceaudit.services`.
 >
 > Preservado por valor histórico. Para a versão atual, ver os docs
 > V2.15.
@@ -31,8 +40,8 @@
 > fundamentação, as três métricas, configurações, fórmulas e exemplos.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `55c3d8a`
-> (branch `claude/read-claude-md-SgzIV`). Campos, fórmulas e enums conferidos
+> **Fonte documental:** repositório FaceAudit no commit `55c3d8a`.
+> Campos, fórmulas e enums conferidos
 > em `faceaudit/services/knn_typicality_model.py`,
 > `faceaudit/executors/instructions/knn_typicality_model_training_instruction_executor.py`,
 > `faceaudit/models/instructions/knn_typicality_model_training_instruction.py`,

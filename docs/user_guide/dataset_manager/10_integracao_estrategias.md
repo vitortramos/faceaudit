@@ -55,11 +55,11 @@ para o projeto aberto no Gerenciador de Estratégias:
 | Ação | O que acontece |
 |---|---|
 | 1. Salvar antes | A pré-condição no lado do Dataset Manager é o dataset estar **salvo em disco**. Se houver edições pendentes, aparece um prompt **Salvar antes** — cancelar aborta o envio |
-| 2. Projeto aberto | Se **nenhum projeto** está aberto no Gerenciador de Estratégias, um diálogo oferece **Abrir existente…** / **Criar novo…** / Cancelar (não é um erro) |
-| 3. ID do recurso | Um diálogo pede para **confirmar ou editar o ID do recurso** (default = nome do arquivo, sem extensão; deve ser único no projeto) |
-| 4. Cópia | O parquet é **copiado** para `<projeto>/datasets/<id_do_recurso>.parquet` (estrutura do *Pendrive Paradigm*). Datasets com paths de imagem relativos têm essas referências **absolutizadas** na cópia, para não quebrar ao mudar de pasta |
-| 5. Registro | O dataset vira um `StrategyResource` do tipo `DATASET` no projeto, e um diálogo de sucesso mostra o path final no projeto |
-| 6. Switch | A aba muda automaticamente para Gerenciador de Estratégias |
+| 2. Switch | A aba muda para o Gerenciador de Estratégias, onde acontecem os passos seguintes |
+| 3. Projeto aberto | Se **nenhum projeto** está aberto no Gerenciador de Estratégias, um diálogo oferece **Abrir existente…** / **Criar novo…** / Cancelar (não é um erro) |
+| 4. ID do recurso | Um diálogo pede para **confirmar ou editar o ID do recurso** (default = nome do arquivo, sem extensão; deve ser único no projeto) |
+| 5. Cópia | O parquet é **copiado** para `<projeto>/datasets/<id_do_recurso>.parquet` (estrutura do *Pendrive Paradigm*). Datasets com paths de imagem relativos têm essas referências **absolutizadas** na cópia, para não quebrar ao mudar de pasta. As imagens **não** são copiadas para o projeto |
+| 6. Registro | O dataset passa a aparecer como recurso `DATASET` do projeto (o sidecar de estatísticas é calculado na hora), e um diálogo de sucesso mostra o path final no projeto |
 
 > 💡 O envio em si **não** gera entrada no Audit Log. Uma entrada
 > `SAVE` só aparece se o dataset estava com edições pendentes e
@@ -92,14 +92,26 @@ global** — a pasta configurada na máquina (default
 | 2. Configuração | Verifica que `paths.library` está **configurado** no `config.json` (não testa gravabilidade) |
 | 3. Identificador | Um diálogo pede o **Identificador (sem extensão)** — será o nome do arquivo na biblioteca (default = nome atual do dataset) |
 | 4. Overwrite | Se já existir um `.parquet` com esse identificador na biblioteca, pede confirmação para sobrescrever |
-| 5. Cópia | Parquet copiado para `<global_library>/datasets/<identificador>.parquet`, e um diálogo exibe o **hash SHA-256** do arquivo |
+| 5. Cópia | Parquet gravado em `<global_library>/datasets/<identificador>.parquet`, e um diálogo exibe o path final e o início (16 caracteres) do **hash SHA-256** do arquivo gravado |
+
+Se o dataset é **relativo** (o autocontido, por exemplo, com as
+imagens em `images/` ao lado do parquet), a cópia na biblioteca é
+gravada com caminhos **absolutos**, apontando para as imagens **onde
+elas estão** — o mesmo tratamento do botão 🎯 **→ Estratégia**. Sem
+isso, o `path_root` relativo passaria a apontar para
+`<global_library>/datasets/images/`, onde as imagens não estão. As
+imagens **não** são copiadas para a biblioteca: se a pasta original
+for movida ou apagada, a cópia da biblioteca deixa de achá-las.
+Dataset já absoluto é copiado como está. O parquet de origem não é
+alterado.
 
 > 💡 O salvamento na biblioteca **não** grava entrada no Audit Log
 > do dataset (só o `SAVE` do passo 1, se houve edições pendentes).
 
-Depois disso, o dataset aparece no diálogo *Adicionar Recurso da
-Biblioteca* (toolbar do Gerenciador de Estratégias), de onde
-pode ser puxado para qualquer projeto.
+Depois disso, o dataset aparece no diálogo *Adicionar Recursos ao
+Projeto* (botão 📥 **Adicionar Recursos** do ribbon *Projeto* do
+Gerenciador de Estratégias), de onde pode ser puxado para qualquer
+projeto.
 
 ### Diferença chave entre Biblioteca e Projeto
 
@@ -202,7 +214,7 @@ Stems consistentes facilitam identificar o conteúdo sem abrir.
 Cada `Salvar` registra uma entrada no log. Em datasets ativos
 isso pode ficar grande. Periódico:
 
-- Verifique a integridade da cadeia (botão **🔒 Verificar integridade** no diálogo de Auditoria)
+- Verifique a integridade da cadeia (botão **🔒 Verificar integridade** no diálogo **📜 Custódia** / *Audit Log*)
 - Exporte o log pra arquivo morto se for entregar como evidência
 - O log **não** é truncado automaticamente — design forense
 
@@ -210,8 +222,10 @@ isso pode ficar grande. Periódico:
 
 Quando um caso fecha:
 
-1. Exporte o projeto FaceAudit completo (zip do `.fa`)
-2. Exporte o Audit Log do dataset
+1. Guarde o projeto FaceAudit completo (compacte a pasta que
+   contém o `.fa`; o **Selar projeto** do Gerenciador de Estratégias
+   copia antes as imagens referenciadas para dentro dela)
+2. Exporte o Audit Log do dataset (botão **📤 Exportar log** do diálogo **📜 Custódia**)
 3. Exporte o dataset como CSV/Excel pelo botão **📤 Exportar para CSV/Excel…** do painel de **Colunas**
 4. Inclua um README com a sequência de operações executadas
 5. **Para datasets extraídos de vídeo**: preserve também a
@@ -233,8 +247,10 @@ leituras:
   preparados aqui
 - **CLAUDE.md** *(na raiz do repositório)* — referência técnica
   para desenvolvedores estendendo o FaceAudit
-- **Os PDFs em `docs/`** — documentos sobre tópicos específicos:
-  bi-Gaussianized calibration, arquitetura, roadmap
+- **Os documentos em `docs/`** — textos sobre tópicos específicos
+  (calibração, similaridade, tipicidade, vetorização de escores) e
+  os PDFs da calibração bi-Gaussianizada e do roadmap do Gerenciador
+  de Datasets
 
 ---
 

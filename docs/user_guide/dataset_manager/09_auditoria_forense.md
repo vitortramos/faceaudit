@@ -34,15 +34,17 @@ Este capítulo cobre dois diálogos relacionados:
 ## O conceito de *AuditIssue*
 
 Um **AuditIssue** é um achado da análise — uma violação detectada
-ou uma observação relevante. Cada issue tem:
+ou uma observação relevante. Os issues de um mesmo tipo são agrupados
+numa **AuditFinding** (uma linha da árvore), que define categoria,
+tipo e severidade:
 
 | Atributo | Conteúdo |
 |---|---|
-| **Categoria** | Grupo (Integridade Física, Lógica de Rótulos, Qualidade, Biométrica, Hubness, etc.) |
-| **Tipo** | Sub-tipo específico (Caminhos órfãos, Conflitos de hash, etc.) |
-| **Severidade** | 🔴 CRÍTICO / 🟠 AVISO / ⚪ INFO |
-| **Locators** | Lista de faces afetadas (paths ou índices) |
-| **Detalhes** | Informações adicionais (identidades envolvidas, threshold violado) |
+| **Categoria** (da finding) | Grupo (Integridade Física, Integridade Lógica (rótulos), Qualidade das Amostras, Auditoria Biométrica, Hubness, etc.) |
+| **Tipo** (da finding) | Sub-tipo específico (Paths órfãos, Hash compartilhado entre identidades distintas, etc.) |
+| **Severidade** (da finding) | 🔴 CRÍTICO / 🟠 AVISO / ⚪ INFO |
+| **Locators** | `image_path` das faces afetadas (1 por issue em auditorias por face; N em auditorias por grupo) |
+| **Detalhes** | Descrição curta + metadados (identidades envolvidas, threshold violado) |
 
 A auditoria é **dividida em duas passagens**:
 
@@ -56,42 +58,42 @@ A auditoria é **dividida em duas passagens**:
 
 ![Diálogo Auditar com toolbar superior, árvore de achados, detalhes e painel de visualização](assets/40_auditar.png)
 
-Três áreas principais:
+Duas colunas principais, abaixo da toolbar:
 
-### Painel esquerdo — Tree de findings
+### Coluna esquerda — Árvore de auditorias + histórico
 
-Hierárquica, agrupada por categoria. Cada categoria mostra seu
-contador (`Integridade Física (3)`). Categorias são colapsáveis.
+Árvore hierárquica (colunas **Auditoria** e **Total**), agrupada por
+categoria. Categorias são colapsáveis.
 
-Selecionar um issue popula o painel central.
+Abaixo da árvore fica o painel **📜 Histórico de mudanças** (ver
+[Undo/redo](#undoredo)).
 
-### Painel central — Detalhes do issue
+Selecionar uma auditoria na árvore popula a coluna direita.
 
-| Sub-área | Função |
-|---|---|
-| **Topo — Resumo** | Texto descritivo + badge de severidade |
-| **Meio — Tabela de issues** | Uma linha por locator (identity / file_name / metadados) |
-| **Carrossel inferior — Preview** | Thumbnails das faces afetadas. Suporta Ctrl+Click (multi-select) e Shift+Click (range) |
+### Coluna direita — Detalhes e visualizações
 
-Faces deletadas (ações já executadas) aparecem com fundo
-**vermelho**; faces renomeadas/mescladas com fundo **laranja**.
-
-### Painel direito — Visualizações
-
-A visualização **não** é uma aba clicável: é um painel que **troca
-automaticamente** conforme a auditoria que você seleciona na árvore à
-esquerda (internamente um `QStackedWidget`, não um `QTabWidget`). Você
-não alterna abas manualmente — a página muda com o achado.
+No topo, o título e o resumo da auditoria selecionada (e, para
+auditorias de semântica não óbvia, uma caixa de explicação). Abaixo,
+um painel que **troca automaticamente** conforme a auditoria
+selecionada na árvore (internamente um `QStackedWidget`, não um
+`QTabWidget`). Você não alterna abas manualmente — a página muda com
+o achado.
 
 | Página | Quando aparece |
 |---|---|
-| **Detalhes** | Padrão — tabela de locators + preview |
-| **Histograma** | Achados envolvendo distribuições de qualidade (FIQA, OFIQ, embedding norm) |
-| **Scatter** | Achados de correlação entre métricas |
-| **Boxplot** | Estratificação por pose ou identidade |
-| **Balance Metrics** | Achados de distribuição por identidade |
+| **Detalhes** | Padrão — tabela de issues (colunas Locator / Descrição / Detalhes) + preview |
+| **Histograma** | Histogramas de métricas de qualidade (FIQA, OFIQ, norma do embedding) e de amostras por identidade |
+| **Scatter** | Correlação entre métricas (ex.: FIQA × Norma do embedding) |
+| **Boxplot** | Norma por quartil de FIQA |
+| **Balance Metrics** | Métricas de balanceamento por identidade |
 | **Hubness Tables** | Achado de hubness (top hubs / anti-hubs) |
 | **UMAP** | Após rodar 🌌 UMAP (Embeddings) |
+
+Na página **Detalhes**, o preview abaixo da tabela mostra as
+miniaturas das faces afetadas e suporta Ctrl+Click (multi-select) e
+Shift+Click (range). Faces excluídas (ações já executadas) aparecem
+em **vermelho** com a marca `✗ EXCLUÍDA`; faces renomeadas/mescladas
+em **laranja** com `✎ ID: antigo → novo`.
 
 ### Toolbar superior — Botões de ação
 
@@ -99,7 +101,7 @@ Os botões ficam numa **toolbar no topo** do diálogo (não num rodapé):
 
 | Botão | Função |
 |---|---|
-| **⚙ Configurações** | Ajusta os thresholds das auditorias (FIQA, mín. amostras/ID, duplicatas, mixed) |
+| **⚙ Configurações** | Ajusta os thresholds das auditorias (qualidade por métrica disponível, mín. amostras/ID, duplicatas, mixed) |
 | **🔄 Reanalisar** | Reexecuta as auditorias rápidas O(N) (útil após edição manual no dataset) |
 | **🔬 Comparar Centroids** | Detecta duplicate/mixed identities via centróides de embedding |
 | **🔍 Comparar Embeddings** | Roda hard mining O(N²) — pares de mesma ID com baixa similaridade + pares de IDs distintas com alta |
@@ -112,42 +114,46 @@ Os botões ficam numa **toolbar no topo** do diálogo (não num rodapé):
 
 | Issue | O que detecta | Por que importa | Severidade |
 |---|---|---|---|
-| **Orphan Paths** | `image_path` que não existe no disco (ou está vazio) | Quebra a inspeção visual; indica perda de arquivo (deleção acidental, ingest mal-sucedido). Bloqueia hash recomputation | 🔴 CRÍTICO |
-| **Hash Conflicts** | Mesmo SHA-256 sob **duas identidades** diferentes | Indica contaminação — a mesma foto está rotulada como duas pessoas. **Fatal pra LR** — viola a premissa de mapeamento 1:1 foto→identidade | 🔴 CRÍTICO |
-| **Exact Duplicates** | Múltiplas linhas com hash idêntico | Inflaciona contagens artificialmente; testes estatísticos pressupõem independência. Pode ser intencional (augmentation) ou bug de ingest | 🟠 AVISO |
-| **Missing Embeddings** | Faces sem vetor de embedding (segundo o schema) | Sem embedding, mining/hubness/scores falham. Indica falha no extractor | 🔴 CRÍTICO |
+| **Paths órfãos** | `image_path` que não existe no disco (ou está vazio) | Quebra a inspeção visual; indica perda de arquivo (deleção acidental, ingest mal-sucedido). Bloqueia hash recomputation | 🔴 CRÍTICO |
+| **Hash compartilhado entre identidades distintas** | Mesmo SHA-256 sob **duas identidades** diferentes | Indica contaminação — a mesma foto está rotulada como duas pessoas. **Fatal pra LR** — viola a premissa de mapeamento 1:1 foto→identidade | 🔴 CRÍTICO |
+| **Duplicatas exatas (mesmo hash)** | Múltiplas linhas com hash idêntico | Inflaciona contagens artificialmente; testes estatísticos pressupõem independência. Pode ser intencional (augmentation) ou bug de ingest | 🟠 AVISO |
+| **Faces sem embedding** (uma por coluna de embedding do schema) | Faces sem vetor de embedding | Sem embedding, mining/hubness/scores falham. Indica falha no extractor | 🔴 CRÍTICO |
+| **Faces sem OFIQ** / **Faces sem SER-FIQ** | Cobertura incompleta dos enriquecimentos opcionais | Só sinaliza, para você decidir se quer rodar o enriquecimento | ⚪ INFO |
 
-### 2. Lógica de Rótulos
+### 2. Integridade Lógica (rótulos)
 
 | Issue | O que detecta | Por que importa | Severidade |
 |---|---|---|---|
-| **Singleton Identities** | Identidades com < `min_samples` amostras (default 2) | Não dá pra fazer LR within-identity (sem variância); quebra premissas de balanceamento de classes | 🟠 AVISO |
+| **Identidades com < N amostra(s)** | Identidades com < `min_samples` amostras (default 2) | Não dá pra fazer LR within-identity (sem variância); quebra premissas de balanceamento de classes | 🟠 AVISO |
 
-### 3. Qualidade
+### 3. Qualidade das Amostras
 
-| Issue | O que detecta |
-|---|---|
-| **Low FIQA** | Faces abaixo de um threshold de FIQA |
-| **Low OFIQ** | Faces com OFIQ unificado baixo |
-| **Low SER-FIQ** | Robustez baixa |
-| **Low embedding norm** | Magnitude do embedding atipicamente baixa — embedding "fraco" |
+Uma auditoria por métrica disponível no dataset, rotulada
+`<métrica> < <threshold>` (ex.: `FIQA < 1.5`):
 
-Severidade `🟠 AVISO` ou `⚪ INFO` conforme o threshold. Não
-são bloqueadores — servem como sinal pra revisão manual.
+| Métrica | O que detecta | Threshold default |
+|---|---|---|
+| **FIQA** | Faces abaixo do threshold de CR-FIQA | 1.50 |
+| **OFIQ** | Faces com OFIQ unificado baixo | 25 |
+| **SER-FIQ** | Robustez baixa | 50 |
+| **Norma do embedding** | Magnitude do embedding atipicamente baixa — embedding "fraco" | 17.0 |
+
+Severidade sempre `🟠 AVISO`. Não são bloqueadores — servem como
+sinal pra revisão manual. Os thresholds ficam em **⚙ Configurações**.
 
 > ⚠️ **SER-FIQ só aparece em datasets legados.** A coleta de
 > SER-FIQ foi removida da interface de criação/enriquecimento, então
-> datasets novos não têm a coluna `serfiq_score` e a auditoria
-> **Low SER-FIQ** não surge para eles. As métricas de qualidade
+> datasets novos não têm a coluna `serfiq_score` e a auditoria de
+> SER-FIQ baixo não surge para eles. As métricas de qualidade
 > auditáveis são descobertas pelas colunas presentes no dataset —
 > tipicamente FIQA, OFIQ e norma de embedding.
 
-### 4. Biométrica (heavy, O(N²))
+### 4. Auditoria Biométrica (heavy, O(N²))
 
 | Issue | O que detecta | Por que importa | Severidade |
 |---|---|---|---|
-| **Duplicate Identities** | Pares de **identidades diferentes** cujo centróide de embedding tem similaridade ≥ threshold (default cos ≥ 0.35, ajustável em ⚙ Configurações → duplicatas) | Sugere que duas labels são a mesma pessoa (data entry, alias) | 🟠 AVISO |
-| **Mixed Identities** | **Faces** cujo cosseno contra o centróide *leave-one-out* das demais faces do mesmo ID cai abaixo do threshold (default cos < 0.20) | Cada face fora do padrão indica provável rótulo errado — face de outra pessoa marcada com esta identidade | 🟠 AVISO |
+| **Pessoas com mais de um rótulo** (duplicate identities) | Pares de **identidades diferentes** cujo centróide de embedding tem similaridade ≥ threshold (default cos ≥ 0.35, ajustável em ⚙ Configurações → duplicatas) | Sugere que duas labels são a mesma pessoa (data entry, alias) | 🟠 AVISO |
+| **Faces com erro de identidade** (mixed identities) | **Faces** cujo cosseno contra o centróide *leave-one-out* das demais faces do mesmo ID cai abaixo do threshold (default cos < 0.20) | Cada face fora do padrão indica provável rótulo errado — face de outra pessoa marcada com esta identidade | 🟠 AVISO |
 
 > 💡 **Mixed Identities é por face, não por identidade.** Para cada
 > face X de um ID com ≥ N amostras (default 3), o auditor calcula o
@@ -170,10 +176,11 @@ branco para ela). Ela produz dois achados sem locators:
 
 Veja [seção dedicada abaixo](#hubness--análise-topológica).
 
-### 6. Visualizações
+### 6. Histogramas, Correlações, Balanceamento e Visualização
 
-Não geram issues por si só — apenas renderizam os gráficos para
-inspeção manual. O painel direito troca automaticamente para a
+Categorias informativas: não geram issues por si só — apenas
+renderizam os gráficos (histogramas, scatter, boxplot, métricas de
+balanceamento, UMAP) para inspeção manual. O painel direito troca automaticamente para a
 visualização correspondente quando você seleciona o achado na árvore.
 
 ## Ações sobre issues selecionados
@@ -201,6 +208,7 @@ persiste no save).
 | Aspecto | Comportamento |
 |---|---|
 | Seleção | Ctrl+Click / Shift+Click no carrossel ou na tabela |
+| Justificativa | Obrigatória — o diálogo *Excluir registros do dataset* só habilita **Excluir** com texto; cancelar não exclui nada |
 | Estado visual | Faces deletadas marcadas em vermelho — clique fica desabilitado |
 | Undo | Disponível via histórico (ver seção abaixo) |
 | Persistência | Mudança fica em memória; **Salvar** para persistir |
@@ -214,7 +222,7 @@ e "Alice S." são a mesma pessoa e quer unificar.
 | Aspecto | Comportamento |
 |---|---|
 | Escopo | Identidade inteira, não apenas locators selecionados |
-| UX | Diálogo pede novo nome |
+| UX | Diálogo pede novo nome; em seguida, a **justificativa** (obrigatória) |
 | Visual | Faces marcadas em laranja com legenda `✎ ID: old → new` |
 
 ### Mesclar identidades
@@ -224,13 +232,13 @@ identidades, escolhe qual delas vira o alvo (no diálogo).
 
 | Aspecto | Comportamento |
 |---|---|
-| UX | Lista as identidades candidatas, ordenadas por número de amostras (sugere a maior como alvo) |
+| UX | Lista as identidades candidatas, ordenadas por número de amostras (sugere a maior como alvo); em seguida, a **justificativa** (obrigatória) |
 | Efeito | Todas as faces dos lados não-alvos ganham a identidade do alvo |
 | Undo | Disponível |
 
 ## Visualizações analíticas
 
-As 5 abas de visualização do painel direito:
+As páginas de visualização da coluna direita:
 
 ### Histograma
 
@@ -239,7 +247,7 @@ As 5 abas de visualização do painel direito:
 | **X** | Valor da métrica (FIQA, OFIQ, embedding norm, etc.) |
 | **Y** | Contagem de faces |
 | **Visual** | Barras + KDE leve por cima |
-| **Bonus** | Carrossel abaixo mostrando top-10 faces na cauda esquerda (pior qualidade) e direita (melhor) — facilita inspeção forense direta |
+| **Bonus** | Duas faixas abaixo mostrando as 10 faces de menor valor (cauda esquerda) e as 10 de maior valor (cauda direita) — facilita inspeção forense direta |
 
 Insight: forma da distribuição (bimodal → subpopulações?),
 caudas (outliers a investigar).
@@ -260,8 +268,8 @@ Insight: dependência (alto r) ou ortogonalidade entre as métricas.
 
 | Eixo | Conteúdo |
 |---|---|
-| **X** | Bins (quartis, ranges de pose, etc.) |
-| **Y** | Métrica |
+| **X** | Quartis de FIQA |
+| **Y** | Norma do embedding |
 | **Visual** | Box por grupo: mediana, Q1/Q3, whiskers, outliers |
 | **Overlay** | Linha conectando medianas |
 
@@ -276,7 +284,7 @@ face.
 | Elemento | Função |
 |---|---|
 | **Eixos** | `umap_x` / `umap_y` |
-| **Cor** | Selecionável via dropdown: identidade (top 20 + "others" em cinza), gênero, source, pose (yaw), FIQA, norm |
+| **Cor** | Selecionável via dropdown, entre os atributos presentes: identidade (top 20 + "outros / sem valor" em cinza), gênero, etnia, origem, source, pose (yaw, pitch), FIQA, norma |
 | **Interação** | No modo **por identidade (centroides)**, clique num ponto → painel lookalike abre à direita mostrando k-NN por cosine (o modo por face não habilita o clique) |
 
 Insight: geometria dos embeddings — clusters por identidade,
@@ -291,8 +299,7 @@ Duas tabelas lado-a-lado:
 | **Top Hubs** | Top 50 faces com Nk **alto** |
 | **Top Anti-hubs** | Top 50 faces com Nk **baixo** (zero ou perto) |
 
-Colunas: Identity, Photo, FIQA, embedding norm, Nk, total de
-faces da identidade.
+Colunas: Identidade, Foto, FIQA, Norma, Nk, Fotos do ID.
 
 Clique numa linha → preview da imagem no painel inferior.
 
@@ -348,7 +355,7 @@ configuráveis:
 | n_neighbors | 15 | Vizinhos locais — maior = preserva estrutura global |
 | min_dist | 0.1 | Distância mínima entre pontos no plot |
 | metric | cosine | Métrica: cosine / euclidean / manhattan / correlation |
-| max_samples | — | Limite de amostras; datasets maiores são subsampled reproduzivelmente (seed 42) |
+| max_samples | 100 000 | Limite de amostras; datasets maiores são subsampled reproduzivelmente (seed 42) |
 | random_state | 42 | Fixo — reprodutibilidade |
 
 O resultado popula a página UMAP (descrita acima). No modo **por
@@ -363,17 +370,43 @@ Toda ação destrutiva (delete / rename / merge) é registrada num
 | Operação | O que armazena |
 |---|---|
 | Delete | Backup dos `FaceInfo` removidos |
-| Rename | Mapeamento `old_identity → new_identity` |
-| Merge | Mapeamento `path → (old_identity, new_identity)` |
+| Rename | Mapeamento `image_path → identidade antiga` |
+| Merge | Mapeamento `image_path → identidade antiga` (das faces dos lados não-alvo) |
 
-O botão **↩ Desfazer** reverte a última ação. Você pode também
-clicar em uma ação específica no painel de histórico pra desfazer
-qualquer uma (não só a última) — útil quando você fez 3 ações e
-descobriu que a 2ª foi um erro.
+**Ctrl+Z** reverte a última ação. No painel **📜 Histórico de
+mudanças** (abaixo da árvore, mais recente em cima), o botão **↶** de
+cada linha desfaz aquela ação específica (não só a última) — útil
+quando você fez 3 ações e descobriu que a 2ª foi um erro.
 
-> ⚠️ O histórico é **em memória** — fechar o dataset descarta.
+> ⚠️ O histórico é **em memória** e pertence ao diálogo — fechar o
+> diálogo Auditar o descarta (as mudanças continuam no dataset).
 > Recomendação: **Salvar Como** entre operações irreversíveis se
 > o caso for crítico.
+
+### Registro na cadeia de custódia
+
+Cada exclusão, renomeação ou mescla pede uma **justificativa
+obrigatória** antes de ser aplicada. Ao **fechar** o diálogo Auditar
+(por qualquer caminho, inclusive o X), as ações que **continuam
+aplicadas** são gravadas na cadeia de custódia, na ordem em que foram
+feitas, cada uma com a sua justificativa e o instante em que foi
+aplicada (`applied_at`):
+
+| Ação | Operação | Principais campos |
+|---|---|---|
+| Excluir | `REMOVE_FACES` | `removed_count`, `justification`, primeiros 50 `removed_identifiers`, `removed_set_sha256`, `pending_until_save` |
+| Renomear | `EDIT_LABEL` (`action=rename_identity`) | `old_identities`, `new_identity`, `changed_count`, primeiros 50 `changed_identifiers`, `changed_set_sha256`, `justification` |
+| Mesclar | `EDIT_LABEL` (`action=merge_identities`) | idem, com as identidades não-alvo em `old_identities` |
+
+Todas levam `origin=audit_dialog` e a sessão do diálogo
+(`audit_session_id`, `audit_session_actions_applied`,
+`audit_session_actions_undone`). O que foi **desfeito** não vira
+entrada — nunca chegou ao dataset —, mas a contagem de desfeitas fica
+registrada. Registrar o saldo ao fechar, e não cada ato e cada
+desfazer, faz a cadeia afirmar exatamente o que foi aplicado ao
+dataset. Como na Tabela, a exclusão só vai para o arquivo no save
+seguinte, que grava o hash e fecha o elo. Com filtro ativo, as faces
+excluídas saem também do dataset de origem.
 
 ## O diálogo *Custódia*
 
@@ -391,34 +424,58 @@ operações que mutaram o dataset.
 | 📂 OPEN | Lido do disco |
 | 💾 SAVE / SAVE_AS | Persistido |
 | 🚪 CLOSE | Sessão encerrada |
-| ✏️ EDIT_LABEL | Identidade ou metadado editado |
-| 🏷️ EDIT_SCHEMA | Esquema de coluna modificado |
-| ➕ ADD_COLUMN / ➖ REMOVE_COLUMN / ✏️ RENAME_COLUMN | Operações de esquema |
-| 🔬 ENRICH | Forense Face, OFIQ ou SER-FIQ executados |
+| 🏷️ EDIT_SCHEMA | Metadados/esquema de coluna editados |
+| ➕ ADD_COLUMN | Coluna adicionada |
+| • REMOVE_FACES | Registros excluídos pela Tabela, Galeria ou pelo diálogo Auditar, com a justificativa obrigatória (contagem, primeiros 50 identificadores, `removed_set_sha256`; pendente até o save seguinte). A cadeia recusa a entrada sem justificativa |
+| ✏️ EDIT_LABEL | Identidade renomeada ou mesclada no diálogo Auditar, com justificativa (ver [Registro na cadeia de custódia](#registro-na-cadeia-de-custódia)) |
+| 🔗 MERGE | Dataset criado por **Juntar** — primeira entrada do arquivo unido (ver [cap. 07](07_operacoes_estruturais.md#juntar)) |
+| ✂️ SPLIT | Metade criada por **Dividir** — primeira entrada de cada parquet (ver [cap. 07](07_operacoes_estruturais.md#dividir)) |
+| 🔬 ENRICH | Forensic Face ou OFIQ executados (SER-FIQ em datasets legados) |
 | 🎬 VIDEO_EXTRACT | Dataset criado a partir de vídeo (seleção condicionada à âncora — ver [cap. 02b](02b_criando_dataset_de_video.md)) |
-| 🔗 MERGE / ✂️ SPLIT | Operações estruturais |
 | 📤 EXPORT | Exportação CSV/Excel |
 | 🗂 COPY_IMAGES | Modificação de caminhos das imagens (path_root/REBASE/REWRITE/COPY) |
 | ✅ INTEGRITY_VERIFIED / ❌ INTEGRITY_FAILED | Verificação da cadeia |
+
+O enum também define REMOVE_COLUMN e RENAME_COLUMN, mas a versão
+atual não grava entradas desses tipos.
+
+**Dataset que ainda não tem arquivo** (o resultado de um Juntar, um
+subconjunto criado pela galeria): a entrada não se perde — fica
+pendente no dataset e é escrita na cadeia do arquivo quando ele é
+gravado, antes da entrada SAVE/SAVE_AS (que traz o hash e fecha o
+elo). Essas entradas levam `recorded_at` (instante do ato) e
+`written_on_save=true`.
 
 ### Estrutura do log
 
 Sidecar JSON: `<dataset_stem>.audit.json` (mesma pasta do parquet).
 Não é JSON-Lines — é um **array JSON único, indentado** (uma lista
-de entradas, `indent=2`). Se o dataset for renomeado ou copiado com
-**Salvar Como**, o sidecar segue junto automaticamente.
+de entradas, `indent=2`). No **Salvar Como**, o sidecar é **copiado**
+(não movido) para o arquivo novo — a origem mantém a própria cadeia e
+recebe uma entrada SAVE_AS com `this_file_unchanged=True`.
 
 Cada entrada tem:
 
 | Campo | Conteúdo |
 |---|---|
+| `entry_id` | UUID4 da entrada |
 | `timestamp` | UTC ISO 8601 |
-| `operator` | User / sistema |
+| `operator` | `usuário@máquina` do sistema operacional |
 | `operation` | Um dos valores acima |
 | `description` | Texto livre |
-| `dataset_hash` | SHA-256 do dataset no momento da operação |
+| `dataset_hash` | SHA-256 do parquet no momento da operação (vazio quando ainda não foi salvo) |
 | `metadata` | Detalhes estruturados específicos da operação (contagens, thresholds, proveniência) |
-| `entry_hash` | SHA-256 da própria entrada — depende do `entry_hash` do registro anterior |
+| `parent_entry_hash` | `entry_hash` da entrada anterior (vazio só na primeira) |
+| `entry_hash` | SHA-256 de todos os campos acima |
+
+Toda entrada traz ainda `metadata["software"]`, preenchido
+automaticamente ao gravar a entrada (quando a operação não o fornece):
+`faceaudit_version` (versão do FaceAudit), `git_commit` (commit do
+código em execução; vazio fora de um checkout git ou sem git no PATH)
+e `git_dirty` (`true` quando havia alterações não commitadas em
+`faceaudit/` ou `interface/` — aí o commit sozinho não reproduz o
+código). É lido uma vez por sessão do programa e, por estar dentro de
+`metadata`, é coberto pelo `entry_hash`.
 
 > 💡 **Duplo-clique numa entrada** abre um diálogo com o JSON
 > completo do registro — `metadata`, hashes e todos os campos. Útil
@@ -459,8 +516,8 @@ proveniência** persistidas no parquet:
 
 ### Encadeamento (chain-of-custody)
 
-O `entry_hash` de cada entrada **inclui** o `entry_hash` do
-registro anterior. Isso forma uma **cadeia hash** (igual à
+O `entry_hash` de cada entrada **inclui** o `parent_entry_hash`
+(o `entry_hash` do registro anterior). Isso forma uma **cadeia hash** (igual à
 estrutura de blockchain): qualquer modificação retroativa quebra
 todos os hashes a partir dela.
 

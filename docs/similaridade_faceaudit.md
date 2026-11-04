@@ -5,9 +5,8 @@
 > comparação facial — cosseno e PLDA (todas as variantes), com foco em PLDA.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `9a02d46`
-> (branch `claude/read-claude-md-SgzIV`). Defaults, fórmulas e enums
-> conferidos em `faceaudit/models/similarity/`,
+> **Fonte documental:** código atual do repositório FaceAudit. Defaults,
+> fórmulas e enums conferidos em `faceaudit/models/similarity/`,
 > `faceaudit/services/two_covariance_plda_service.py`,
 > `faceaudit/services/shrinkage_two_covariance_plda_service.py`,
 > `faceaudit/services/cross_condition_two_covariance_plda_service.py`,
@@ -357,8 +356,11 @@ Antes de treinar, `_extract_training_arrays` aplica:
    1 amostra — porque a variância intra-classe não é estimável a partir de uma
    única amostra. (No cross-condition, singletons são preservados — §9.)
 
-Se restarem menos de 2 amostras ou menos de 2 classes com $\ge 2$ amostras, o
-treino levanta `ValueError`.
+Se restarem menos de 2 amostras, o treino levanta `ValueError`. Nas variantes
+two-covariance o serviço de treino exige também pelo menos 2 classes com
+$\ge 2$ amostras (`ValueError` caso contrário); na SIMPLE essa checagem não é
+feita no modelo — quem a garante antes do treino é a regra
+`MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES` (§11).
 
 ---
 
@@ -459,8 +461,10 @@ $$
 $$
 
 Os kernels $Q$, $P$ e `const` são cacheados em `fit()`/`load()`
-(`self._two_cov_kernels`) e reusados em todas as chamadas de scoring —
-`score_matrix` os aplica vetorizadamente via `einsum`. A simetria
+(`self._two_cov_kernels`) e reusados por `score_matrix`, que os aplica
+vetorizadamente via `einsum`. O caminho unitário (`score_vectors`, via
+`score_two_covariance_pair`) recomputa os kernels a cada chamada — por isso,
+em lote, use sempre `score_matrix`. A simetria
 $\mathrm{LR}(x_1,x_2)=\mathrm{LR}(x_2,x_1)$ decorre de $P$ ser simétrica.
 
 ### 7.3 Regularização (Tikhonov)
@@ -728,6 +732,9 @@ O **cosseno não popula regras** (stateless).
 
 **`SIMILARITY_SCORING`** constrói em runtime (não persistidas):
 
+- `EmbeddingsCompleteRule` — sobre o probe e, se houver, sobre a referência:
+  face sem embedding barra o cálculo, qualquer que seja o modelo (a regra
+  existe mesmo antes de o modelo ser escolhido);
 - `ModelFittedRule` — o modelo selecionado tem `is_fitted=True`;
 - `EmbeddingDimMatchesModelRule` — sobre o probe e, se cross-comparison,
   também sobre a referência. Modelos sem `input_dimension` (cosseno) passam.
@@ -840,7 +847,8 @@ Combinar **PLDA + `SCORE_INTERACTION_FEATURE`** (a feature que modula
 similaridade por raridade derivada de um modelo de tipicidade) pode **contar a
 tipicidade duas vezes**. A documentação do módulo de interação alerta
 explicitamente para isso: a combinação exige uma comparação A/B explícita
-(modelos 8 e 9 da janela de Comparação) para verificar se a feature de
+(PLDA sozinho contra PLDA + interação, lado a lado na janela de Comparação)
+para verificar se a feature de
 raridade ainda agrega informação além do que o $B$ do PLDA já captura.
 
 Com **cosseno** o risco não existe (o cosseno não modela tipicidade), e a
@@ -1184,11 +1192,13 @@ Acesse os campos opcionais via `getattr` (compat com pickles antigos).
 | `MinIdentitiesWithMultipleSamplesRule` | `MIN_IDENTITIES_WITH_MULTIPLE_SAMPLES` | treino PLDA (primário; +secundário em cross) | $n_{\text{multi}}\ge 2$ (CRÍTICA); warning se $<10$ |
 | `DatasetsEmbeddingCompatRule` | `DATASETS_EMBEDDING_COMPAT` | cross-condition (primário×secundário) | mesma coluna de embedding e dimensão |
 | `DatasetOverlapRequiredRule` | `DATASET_OVERLAP_REQUIRED` | cross-condition (primário×secundário) | $\ge$ N identidades comuns; warning abaixo do ratio |
+| `EmbeddingsCompleteRule` | `EMBEDDINGS_COMPLETE` (dinâmica) | scoring (probe; +referência em cross) | toda face tem embedding |
 | `ModelFittedRule` | `MODEL_FITTED` (dinâmica) | scoring | `is_fitted=True` |
 | `EmbeddingDimMatchesModelRule` | `EMBEDDING_DIM_MATCHES_MODEL` (dinâmica) | scoring (probe; +referência em cross) | `dataset.embedding_dim == model.input_dimension`; cosseno passa |
 
 As duas primeiras são **defaults persistentes** (editáveis/removíveis na UI;
-flag `validation_rules_user_managed`); as duas últimas são **dinâmicas**
+flag `validation_rules_user_managed`), assim como as duas seguintes no modo
+cross-condition; as três últimas são **dinâmicas**
 (construídas em runtime, não persistidas, não removíveis).
 
 ---
@@ -1231,3 +1241,14 @@ flag `validation_rules_user_managed`); as duas últimas são **dinâmicas**
       (double-counting)?
 - [ ] Hiperparâmetros, $\alpha$ efetivo e composição do treino foram
       registrados para reprodução?
+
+## Apêndice — notas de implementação do PLDA (migradas do CLAUDE.md)
+
+> Conteúdo migrado do `CLAUDE.md` da raiz na reestruturação de 2026-11. As regras permanentes continuam resumidas lá; aqui fica o detalhe.
+
+- `faceaudit/services/two_covariance_plda_service.py` — Implementação numpy pura do PLDA de duas covariâncias (Brümmer & de Villiers 2010). Usado pelo `PLDASimilarityModel` quando `config.plda_variant=TWO_COVARIANCE` (e como base de scoring das variantes SHRINKAGE/cross-condition). Treino em forma fechada: `W=S_w/N`, `B=S_b/N` (MLE enviesado), `regularization` soma `ε·I` em B **e** W. Scoring via kernels `Q=K−0.5(M+N⁎)`, `P=N⁎−M`, `const=log|W+B|−0.5log|W+2B|−0.5log|W|` com `K=inv(W+B)`, `M=inv(W+2B)`, `N⁎=inv(W)` — pré-computados em `_compute_scoring_kernels`, cacheados no modelo, NÃO persistidos (recomputados em load). Documentado em `docs/similaridade_faceaudit.md`.
+- `faceaudit/services/shrinkage_two_covariance_plda_service.py` — Variante `SHRINKAGE_TWO_COVARIANCE` — `fit_shrinkage_two_covariance(X,y,shrinkage_mode,shrinkage_intensity,regularization)`. Shrinkage aplicado **apenas a W** contra alvo scaled-identity `(tr(W)/D)·I`: `W_shrunk=(1−α)W_emp+α·(tr(W)/D)I`. B permanece empírica (não injeta variância entre-classes artificial); `regularization` (Tikhonov final) incide **só em W** (diverge do TWO_COVARIANCE puro, que aplica em B e W). α via `CovarianceShrinkageMode`: NONE/LEDOIT_WOLF (`ledoit_wolf_alpha`, forma fechada)/MANUAL. Scoring reusa kernels do `two_covariance_plda_service`. Retorna `TwoCovariancePLDAState` com `shrinkage_mode`/`shrinkage_target=SCALED_IDENTITY`/`shrinkage_alpha_w` populados (`shrinkage_alpha_b` sempre None na v1).
+- `faceaudit/services/cross_condition_two_covariance_plda_service.py` — `fit_cross_condition_two_covariance(X_a,y_a,X_b,y_b,...)` — estimador PLDA two-covariance com peso igual por condição. Disparado quando `SimilarityModelTrainingInstruction.secondary_dataset_resource_id` é definido em variantes TWO_COVARIANCE / SHRINKAGE_TWO_COVARIANCE (SIMPLE + secondary → erro). Dois modos via `CrossConditionWithinMode`: `PER_CONDITION` (resíduos centrados em `μ_c^cond`) e `BALANCED_IDENTITY` (default — `μ_c=(μ_c^A+μ_c^B)/2`, mais conservador forensicamente). Singletons entram em B/μ via μ_c balanceada; não contribuem como linha em W_cond. `W = (W_A+W_B)/2`, `B = (1/C) Σ_c (μ_c−μ)(μ_c−μ)ᵀ` — normalizações divergem por design do `fit_two_covariance` (peso igual por condição/classe; W_cond usa `S_w_cond/N_residuals_cond`). Em LEDOIT_WOLF, `α = (α_A+α_B)/2` per-condição. Scoring permanece via kernels Q/P/const do `two_covariance_plda_service`. State retorna em `TwoCovariancePLDAState` com `cross_condition=True`, `n_ids_condition_a/b`, `n_common_identities`, `cross_condition_within_mode` — todos os novos campos são opcionais; UI deve acessar via `getattr` para compat com pickles antigos.
+- `faceaudit/enums/cross_condition_within_mode.py` — `CrossConditionWithinMode` — `PER_CONDITION` e `BALANCED_IDENTITY` (default). Controla o ponto de centragem dos resíduos no PLDA cross-condition (`fit_cross_condition_two_covariance`). Só tem efeito quando há `secondary_dataset_resource_id`.
+- `faceaudit/enums/plda_variant.py` — `PLDAVariant` — `SIMPLE` (default — SpeechBrain, subspace F, EM), `TWO_COVARIANCE` (Brümmer 2010, B/W cheias, forma fechada), `SHRINKAGE_TWO_COVARIANCE` (two-cov + shrinkage de W). `from_str` defaulta SIMPLE.
+- `faceaudit/enums/covariance_shrinkage_mode.py` — `CovarianceShrinkageMode` — `NONE` (ablação), `LEDOIT_WOLF` (analítico; default do enum/`from_str`), `MANUAL` (α fixo). Como `SHRINKAGE_TWO_COVARIANCE` resolve α do shrinkage de W. **Nota**: o default do *config* `PLDASimilarityModelConfig.shrinkage_mode` é `MANUAL` com α=0.10, não LEDOIT_WOLF — LW escolhe α agressivo demais (~0.23) na config típica e piora a calibração a jusante.

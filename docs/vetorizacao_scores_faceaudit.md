@@ -6,8 +6,8 @@
 > multivariadas. Objetivo, fundamentação, alinhamento, configurações e exemplos.
 > **Público-alvo:** peritos, desenvolvedores e revisores técnicos com
 > conhecimento intermediário.
-> **Fonte documental:** repositório FaceAudit no commit `55c3d8a`
-> (branch `claude/read-claude-md-SgzIV`). Campos e algoritmo conferidos em
+> **Fonte documental:** código atual do repositório FaceAudit. Campos e
+> algoritmo conferidos em
 > `faceaudit/executors/instructions/score_vectorization_instruction_executor.py`,
 > `faceaudit/models/instructions/score_vectorization_instruction.py`.
 >
@@ -141,9 +141,17 @@ transformer **re-ajusta s₀/r̄ por fold** dentro do `GridSearchCV` — após
 detalhe na seção "Arquitetura LR declarativa" do `CLAUDE.md`.
 
 Compatibilidade: o encadeamento antigo continua válido sem migração obrigatória
-(preserva tolerância histórica via `legacy_transform_typicality`). Calibradores
-treinados pelo fluxo novo aplicam-se a datasets vetorizados pelo fluxo antigo
-somente com `compatibility_mode=LEGACY_PERMISSIVE` opt-in (warning visível).
+(preserva tolerância histórica via `legacy_transform_typicality`). O
+`SCORE_CALIBRATION` confere o vínculo dataset↔calibrador pelo
+`vectorization_contract_fingerprint` (`CalibrationModelMetadataService.validate_compatibility`):
+dataset e calibrador ambos sem fingerprint (fluxo antigo de ponta a ponta)
+passam com aviso; fingerprints iguais passam; fingerprints diferentes, ou
+fingerprint presente só de um lado, são **erro**. Um calibrador treinado pelo
+fluxo novo **nunca** se aplica a dataset vetorizado pelo fluxo antigo. O modo
+`LEGACY_PERMISSIVE` existe no serviço (só relaxa o caso "dataset com
+fingerprint + calibrador antigo"), mas a instrução `SCORE_CALIBRATION` hoje
+chama a validação sempre em `STRICT` — não há campo na instrução para optar
+por ele.
 
 ---
 
@@ -211,13 +219,23 @@ $(p, r)$ e $(r, p)$ representam o mesmo objeto forense. Resolve o caso comum de 
 usuário ter definido probe/reference em ordem trocada entre o `SIMILARITY_SCORING`
 e o `TYPICALITY_PAIR_SCORING`.
 
+> **Cuidado com entradas orientadas.** A chave não distingue $(p, r)$ de
+> $(r, p)$. Entradas que dependem do papel de cada face — tipicidade com
+> combinador unilateral (`REFERENCE_ONLY`/`PROBE_ONLY`) ou feature de interação
+> construída sobre ela — só são alinhadas corretamente se probe e reference
+> tiverem sido definidos na mesma ordem em todas as instruções de origem; com a
+> ordem trocada, o par casa e a coluna recebe a tipicidade da outra face, sem
+> erro.
+
 ### 4.2 Defesas
 
 - **Cardinalidade**: erro se algum input tem número de pares diferente do anchor
   (sinaliza `PAIR_MINING` em apenas um lado).
 - **Pares ausentes**: erro se algum par do anchor não existe num input (com
-  exemplos das chaves faltantes). Pares **extras** num input não-anchor são
-  descartados silenciosamente.
+  exemplos das chaves faltantes). Como a cardinalidade já tem de ser igual,
+  pares "extras" num input não-anchor só aparecem quando ele tem chaves
+  repetidas; nesse caso são descartados sem aviso.
+- **Dataset vazio**: erro se algum input não tem pares.
 
 > **Nota:** o campo `require_pair_match` é aceito por compat de JSON antigo, mas
 > **perdeu efeito prático** — o fast path posicional + o fallback por
@@ -259,7 +277,7 @@ aprendido para aquele sistema, respeitando a correlação entre eles.
 
 **Recomendação**: use `standardize_features=True` no calibrador quando as
 colunas estão em escalas muito diferentes (ex.: cosseno em $[-1,1]$ ×
-`log_density_knn` em escala real) — o LogReg fica mais estável e os coeficientes
+tipicidade `LOG_DENSITY_ESTIMATE` em escala real) — o LogReg fica mais estável e os coeficientes
 ficam comparáveis.
 
 > **Nota V2.14.** Quando o vetor vem de `LR_ARCHITECTURE_VECTORIZATION` com
@@ -309,8 +327,8 @@ calibração a jusante de pares insuficientes; vale só para A porque a regra
 dinâmica garante que B tem o mesmo conjunto).
 
 Regra dinâmica (intrínseca): `SCORE_VECTOR_PAIR_COMPATIBILITY` — todos os inputs
-(A, B, extras) compartilham exatamente o mesmo conjunto de pares
-`(probe.face_hash, reference.face_hash)`. É o catch antecipado que evita o
+(A, B, extras) compartilham exatamente o mesmo conjunto de pares, pela mesma
+chave simétrica `{probe.face_hash, reference.face_hash}` do executor. É o catch antecipado que evita o
 `ValueError` tardio do executor.
 
 ---
