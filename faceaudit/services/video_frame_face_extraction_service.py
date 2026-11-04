@@ -101,59 +101,10 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _faceaudit_version() -> Optional[str]:
-    """Versão do pacote faceaudit — `__version__` se exportado, senão a metadata
-    do pacote instalado (editable)."""
-    try:
-        import faceaudit
-        v = getattr(faceaudit, "__version__", None)
-        if v:
-            return str(v)
-    except Exception:
-        pass
-    try:
-        from importlib.metadata import version, PackageNotFoundError
-        try:
-            return version("faceaudit")
-        except PackageNotFoundError:
-            return None
-    except Exception:
-        return None
-
-
-def _git_commit_short() -> Optional[str]:
-    """Hash curto do commit git do código em execução (cadeia de custódia /
-    reprodutibilidade), com sufixo `-dirty` quando há arquivos RASTREADOS
-    modificados — pois nesse caso o commit sozinho não reproduz o código.
-    Best-effort: None fora de um checkout git ou sem git no PATH (ex.: exe
-    empacotado). `untracked-files=no` ignora dados/config não versionados."""
-    try:
-        import subprocess
-        repo_root = Path(__file__).resolve().parents[2]
-
-        def _git(*args):
-            return subprocess.run(["git", *args], cwd=str(repo_root),
-                                  capture_output=True, text=True, timeout=3)
-
-        head = _git("rev-parse", "--short=10", "HEAD")
-        if head.returncode != 0:
-            return None
-        commit = head.stdout.strip()
-        if not commit:
-            return None
-        # Dirty ESCOPADO aos diretórios de CÓDIGO (faceaudit/, interface/): evita
-        # marcar dirty por dados/config versionados que não afetam a extração
-        # (ex.: config.json, quase sempre modificado localmente).
-        status = _git("status", "--porcelain", "--untracked-files=no",
-                      "--", "faceaudit", "interface")
-        if status.returncode == 0 and status.stdout.strip():
-            commit += "-dirty"
-        return commit
-    except Exception:
-        return None
-
-
 def _library_versions() -> Dict[str, Optional[str]]:
+    from faceaudit._version import __version__
+    from faceaudit.services.software_provenance_service import commit_label
+
     versions: Dict[str, Optional[str]] = {"opencv": cv2.__version__, "numpy": np.__version__}
     for mod_name, key in (("forensicface", "forensicface"), ("onnxruntime", "onnxruntime")):
         try:
@@ -161,8 +112,8 @@ def _library_versions() -> Dict[str, Optional[str]]:
             versions[key] = getattr(mod, "__version__", None)
         except Exception:
             versions[key] = None
-    versions["faceaudit"] = _faceaudit_version()
-    versions["faceaudit_git_commit"] = _git_commit_short()
+    versions["faceaudit"] = __version__
+    versions["faceaudit_git_commit"] = commit_label()
     return versions
 
 

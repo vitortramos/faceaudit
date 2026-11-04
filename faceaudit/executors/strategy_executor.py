@@ -184,6 +184,9 @@ class StrategyExecutor:
         # rotular seus outputs (ex: STRATEGY_EVALUATION → StrategyValidationResult).
         context.set_metadata("strategy_id", strategy_definition.strategy_id)
         context.set_metadata("strategy_name", strategy_definition.name)
+        # Qual FaceAudit executou (vai para o execution_metadata do modelo).
+        from faceaudit.services.software_provenance_service import software_provenance
+        context.set_metadata("software", software_provenance())
 
         self._log(context, f"🚀 Contexto preparado para '{strategy_definition.name}'")
         return context

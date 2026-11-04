@@ -1,5 +1,7 @@
 # Arquivo: faceaudit/faceaudit/__init__.py
 
+from ._version import __version__
+
 # Trazendo as classes para o nível superior para facilitar o import
 # Models
 from .models.case_result import CaseResult

@@ -24,6 +24,7 @@ from faceaudit.models.image_processing.image_processing_pipeline_config import (
     ImageProcessingPipelineConfig,
 )
 from faceaudit.services.audit_log_service import AuditLogService
+from faceaudit.services.software_provenance_service import software_provenance
 from faceaudit.services.hash_service import HashService
 from faceaudit.services.image_pipeline_batch_service import (
     ImagePipelineBatchService,
@@ -132,6 +133,9 @@ def test_cadeia_do_derivado_nasce_com_create(origem, tmp_path):
     assert m["manifest_sha256"] == HashService().calculate_file_hash(r.manifest_path)
     assert m["pipeline_config"]["steps"][0]["step_type"] == "blur"
     assert m["rows"] == 3 and m["n_failed"] == 0
+    # Qual FaceAudit gerou o derivado — na custódia e no manifesto.
+    manifesto = json.loads(r.manifest_path.read_text(encoding="utf-8"))
+    assert m["software"] == manifesto["software"] == software_provenance()
     assert "oclusão boca" in entrada.description
 
 
