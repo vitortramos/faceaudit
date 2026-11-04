@@ -1985,10 +1985,10 @@ class DatasetManagerController(QtCore.QObject):
         
         if dialog.exec():
             ingestion_config: DatasetIngestionConfig = dialog.get_config()
-            # O destino escolhido no diálogo manda; sem ele, biblioteca global.
-            storage_path = Path(ingestion_config.dataset_dir or self.pipeline.storage_path)
-            cache_file = storage_path / f"{ingestion_config.dataset_name}.parquet"
-            
+            # O caminho final vem do backend — no modo autocontido o parquet
+            # mora em `Destino/{nome}/{nome}.parquet`, não em `Destino/`.
+            cache_file = self.pipeline.destination_parquet(ingestion_config)
+
             if cache_file.exists():
                 msg = f"O dataset '{ingestion_config.dataset_name}' já existe. Sobrescrever?"
                 res = QMessageBox.question(self.view, "Confirmar", msg)
@@ -2573,15 +2573,33 @@ class DatasetManagerController(QtCore.QObject):
             )
             return
 
+        # Zero faces: nada a aplicar. Trocar o dataset aberto por um vazio
+        # e propor "Salvar Como" produziria um parquet de zero linhas, que
+        # a UI aceita e depois some dos seletores sem explicação.
+        recusa = result.refusal_message()
+        if recusa is not None:
+            QMessageBox.critical(self.view, "Caminhos não modificados", recusa)
+            return
+
         # Resumo na barra de status / popup
         if result.n_failed:
-            failures_preview = "\n".join(
-                f"  • {p}: {msg}" for p, msg in list(result.failures)[:5]
-            )
             extra = (
-                f"\n\n⚠ {result.n_failed} falha(s):\n{failures_preview}"
-                + ("\n  …" if result.n_failed > 5 else "")
+                f"\n\n⚠ {result.n_failed} falha(s):\n{result.failures_preview()}"
             )
+            # Falha parcial REMOVE faces do resultado — exige decisão.
+            perdidas = result.n_processed - result.n_faces_remaining
+            resp = QMessageBox.question(
+                self.view, "Faces sem imagem",
+                f"{result.n_failed} face(s) falharam"
+                + (f" e {perdidas} ficariam de fora do dataset" if perdidas else "")
+                + f".{extra}\n\nAplicar o resultado com "
+                f"{result.n_faces_remaining} face(s)?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
         else:
             extra = ""
 
@@ -3158,25 +3176,41 @@ class DatasetManagerController(QtCore.QObject):
                 ds_a.name = config["name_a"]
                 ds_b.name = config["name_b"]
                 
-                path_a = self.pipeline.storage_path / f"{ds_a.name}.parquet"
-                path_b = self.pipeline.storage_path / f"{ds_b.name}.parquet"
-                
-                ds_a.to_parquet(path_a)
-                ds_b.to_parquet(path_b)
-                
+                # As metades referenciam as imagens onde estão: o backend
+                # reaponta `path_root` (ou absolutiza) para que continuem
+                # resolvendo na pasta de destino, e recusa metade vazia.
+                from faceaudit.services.dataset_split_save_service import (
+                    EmptySplitHalfError, save_split_halves,
+                )
+                try:
+                    salvo_a, salvo_b = save_split_halves(
+                        ds_a, ds_b, self.pipeline.storage_path,
+                    )
+                except EmptySplitHalfError as e:
+                    QApplication.restoreOverrideCursor()
+                    QMessageBox.warning(self.view, "Divisão não gravada", str(e))
+                    return
+                path_a, path_b = salvo_a.path, salvo_b.path
+
                 QApplication.restoreOverrideCursor()
-                
+
+                avisos = "".join(
+                    f"\n\n{s.dataset.name}: {s.rebase.message}"
+                    for s in (salvo_a, salvo_b)
+                    if s.rebase is not None and s.rebase.changed
+                )
                 QMessageBox.information(
-                    self.view, 
-                    "Sucesso", 
-                    f"Divisão concluída com sucesso!\n\nSalvos em:\n- {path_a.name}\n- {path_b.name}"
+                    self.view,
+                    "Sucesso",
+                    f"Divisão concluída com sucesso!\n\nSalvos em:\n- {path_a}\n- {path_b}"
+                    f"{avisos}"
                 )
 
                 action = config["post_action"]
                 if action == 1:
-                    self.carregar_dataset_na_tela(ds_a, path=str(path_a))
+                    self.carregar_dataset_na_tela(salvo_a.dataset, path=str(path_a))
                 elif action == 2:
-                    self.carregar_dataset_na_tela(ds_b, path=str(path_b))
+                    self.carregar_dataset_na_tela(salvo_b.dataset, path=str(path_b))
                 
             except Exception as e:
                 QApplication.restoreOverrideCursor()

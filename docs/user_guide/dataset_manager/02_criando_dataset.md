@@ -74,7 +74,7 @@ bloqueio.
 | Campo | Padrão | Descrição |
 |---|---|---|
 | **Nome:** | (vazio) | Nome lógico do dataset — vira o arquivo `.parquet` e identifica o dataset em todos os diálogos. |
-| **Destino:** | pasta de datasets da biblioteca global | Pasta onde o `.parquet` será gravado (+ botão `…`). Gravar fora da biblioteca global significa que o dataset não aparece nela. |
+| **Destino:** | pasta de datasets | Pasta onde o dataset será gravado (+ botão `…`). Em *Caminho absoluto* o arquivo é `{Destino}/{nome}.parquet`; em *Autocontido* o dataset ganha pasta própria, `{Destino}/{nome}/{nome}.parquet`, com as imagens em `{Destino}/{nome}/images/`. Se esse arquivo já existe, o FaceAudit pergunta antes de sobrescrever — nos dois modos. |
 | **Tipo:** | **Caminho absoluto** | *Autocontido (copia imagens)* torna o dataset portátil: ele ganha pasta própria, `<Destino>/<nome>/`, com o `.parquet` e as imagens em `images/` dentro, e a pasta inteira pode ser movida ou levada para outra máquina. *Caminho absoluto (referencia originais)* é mais leve mas quebra se as imagens mudarem de lugar. |
 | **Imagem:** | Face alinhada | **Só aparece no modo Autocontido** — decide *o que copiar*: *Foto original* (a cena inteira), *Face recortada* (recorte da face com margem, sem rotação — preserva a geometria real do rosto, útil para laudo e conferência visual) ou *Face alinhada* (112×112, o que o modelo enxerga). Em *Face recortada* aparece o campo **Margem:** (fator 1,0–5,0, padrão 2,0; 1,0 = caixa exata). (Em *Faces já alinhadas*, *Foto original* fica desabilitada.) |
 | ▸ **Descrição (opcional)** | (recolhido) | Painel colapsável com um campo de texto livre — metadado do **dataset inteiro** (não é coluna). |

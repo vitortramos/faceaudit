@@ -445,6 +445,17 @@ class FeatureExtractionPipeline:
             dataset_dir = self_contained_dataset_dir(dataset_dir, config.dataset_name)
         return dataset_dir, dataset_dir / f"{config.dataset_name}.parquet"
 
+    def destination_parquet(self, config: DatasetIngestionConfig) -> Path:
+        """Arquivo parquet que a criação com `config` vai gravar.
+
+        A interface pergunta AQUI antes de avisar que o dataset já existe.
+        Montar o caminho por fora (`Destino/{nome}.parquet`) errava no modo
+        autocontido, que grava em `Destino/{nome}/{nome}.parquet`: o aviso
+        de sobrescrita nunca disparava e o dataset anterior era substituído
+        sem pergunta.
+        """
+        return self._resolve_destination(config)[1]
+
     @staticmethod
     def _set_aside_undetected(
         dataset: FaceDataset,

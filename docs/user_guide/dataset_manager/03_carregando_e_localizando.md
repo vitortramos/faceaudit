@@ -298,6 +298,23 @@ externa, transferência por USB/cloud, ou snapshot perícia
 > dataset **100 % portátil** — funciona em qualquer máquina com
 > FaceAudit instalado.
 
+## Quando faces falham
+
+Uma face cuja imagem não foi encontrada ou não pôde ser copiada entra
+na lista de falhas e, nas operações que copiam ou geram imagens, **sai
+do resultado** — não há imagem a que apontar. Isso nunca é aplicado
+em silêncio:
+
+| Situação | O que acontece |
+|---|---|
+| Nenhuma falha | O resultado substitui o dataset aberto e o resumo é exibido |
+| Algumas falhas | O FaceAudit lista as primeiras falhas e **pergunta** se aplica o resultado com as faces que sobraram. *Cancelar* mantém o dataset aberto como estava |
+| **Nenhuma face sobrou** | O resultado é **recusado**: o dataset aberto continua como estava, nada é marcado para gravar e as falhas são exibidas. Um dataset sem faces seria gravado como um parquet vazio, que some dos seletores do Gerenciador de Estratégias sem explicação |
+
+As imagens que chegaram a ser copiadas para a pasta destino continuam
+lá; rodar de novo com *Pular arquivos que já existem com o mesmo conteúdo* aproveita a
+cópia.
+
 ## Estratégia de nomeação
 
 Disponível **somente em COPY_ORIGINALS** — controla como os arquivos

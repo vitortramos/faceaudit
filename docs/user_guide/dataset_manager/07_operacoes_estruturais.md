@@ -249,6 +249,19 @@ compatibilidade de tipos no momento da junção.
 - **Proveniência**: união dos metadados de proveniência dos dois (em
   conflito, vale a de A).
 
+### O que é preservado
+
+- **Resolução das imagens.** Se A e B estão ancorados na mesma pasta
+  (mesmo `path_mode` e, em modo relativo, a mesma pasta de imagens),
+  o resultado continua relativo. Se as âncoras são diferentes, os
+  caminhos dos dois são convertidos para **absolutos** antes da união
+  — um dataset só tem um `path_root`, e metade das faces apontaria
+  para a pasta errada.
+- **`column_specs`** de A e B são **unidos** (em conflito, prevalece
+  o do dataset atual).
+- **`is_aligned`** só sobrevive se **os dois** forem alinhados.
+- A **proveniência** dos dois é unida.
+
 ## Dividir
 
 ![Diálogo Dividir Dataset](assets/36_dividir.png)
@@ -283,10 +296,26 @@ O botão de confirmação é rotulado **Dividir e Salvar**.
 
 ### Saída
 
-Os dois parquets são gravados **em disco** na pasta de datasets
-configurada (`paths.datasets` do `config.json`) — **não** na pasta do
-dataset de origem —, com os nomes informados. O
-dataset **atual não é modificado** — só lido. Conforme a opção
+Os dois parquets são gravados **em disco** na pasta de datasets da biblioteca (`<biblioteca>/datasets`) — **não** na
+pasta do dataset de origem —, com os nomes informados. O
+dataset **atual não é modificado** — só lido.
+
+Cada metade herda do original o modo de caminho (`path_mode`,
+`path_root`), o esquema de colunas, o `is_aligned` e a proveniência.
+Como ela é gravada **noutra pasta**, os caminhos são ajustados para
+continuar achando as imagens **onde elas estão** — nenhuma imagem é
+copiada: o `path_root` é reapontado para a mesma pasta de imagens
+(o dataset continua relativo) ou, quando não há caminho relativo
+possível (outro drive), os caminhos são gravados como absolutos. O
+aviso de conclusão diz o que foi feito em cada metade. Se a divisão
+deixar uma das metades **sem nenhuma face** (proporção extrema com
+poucas identidades), **nada é gravado** e um aviso explica por quê.
+
+> 💡 Para que uma metade vire uma unidade portátil, com as próprias
+> imagens, use depois **Salvar Como** no modo autocontido ou
+> **Modificar Caminhos → Copiar originais**.
+
+Conforme a opção
 *Após concluir*, o lado A ou B pode ser aberto no visualizador; em
 *Manter Dataset Original Aberto*, nada é recarregado na tela (os
 parquets ficam salvos, mas a visualização continua no original).

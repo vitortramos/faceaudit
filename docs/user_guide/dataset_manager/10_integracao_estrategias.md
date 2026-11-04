@@ -92,7 +92,18 @@ global** — a pasta configurada na máquina (default
 | 2. Configuração | Verifica que `paths.library` está **configurado** no `config.json` (não testa gravabilidade) |
 | 3. Identificador | Um diálogo pede o **Identificador (sem extensão)** — será o nome do arquivo na biblioteca (default = nome atual do dataset) |
 | 4. Overwrite | Se já existir um `.parquet` com esse identificador na biblioteca, pede confirmação para sobrescrever |
-| 5. Cópia | Parquet copiado para `<global_library>/datasets/<identificador>.parquet`, e um diálogo exibe o path final e o início (16 caracteres) do **hash SHA-256** do arquivo |
+| 5. Cópia | Parquet gravado em `<global_library>/datasets/<identificador>.parquet`, e um diálogo exibe o path final e o início (16 caracteres) do **hash SHA-256** do arquivo gravado |
+
+Se o dataset é **relativo** (o autocontido, por exemplo, com as
+imagens em `images/` ao lado do parquet), a cópia na biblioteca é
+gravada com caminhos **absolutos**, apontando para as imagens **onde
+elas estão** — o mesmo tratamento do botão 🎯 **→ Estratégia**. Sem
+isso, o `path_root` relativo passaria a apontar para
+`<global_library>/datasets/images/`, onde as imagens não estão. As
+imagens **não** são copiadas para a biblioteca: se a pasta original
+for movida ou apagada, a cópia da biblioteca deixa de achá-las.
+Dataset já absoluto é copiado como está. O parquet de origem não é
+alterado.
 
 > 💡 O salvamento na biblioteca **não** grava entrada no Audit Log
 > do dataset (só o `SAVE` do passo 1, se houve edições pendentes).
