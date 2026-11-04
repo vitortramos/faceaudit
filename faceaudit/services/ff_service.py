@@ -765,6 +765,33 @@ class FFService:
         else:
             target_models = [self._default_model]
 
+        # Sessões de recognition com FreeDimensionOverride ativo (macOS com
+        # `use_gpu=True` OU monkey-patch global disparado por qualquer
+        # `FFService(use_gpu=True)` anterior no mesmo processo) EXIGEM
+        # batch fixo em `_batch_size`. Chamada per-face de 1 face nesse
+        # cenário quebra com "Got: 1 Expected: 32" no CoreMLExecutionProvider.
+        # Delegamos ao caminho batch — que preenche com zeros e trunca a
+        # saída — para garantir compatibilidade em qualquer estado do
+        # monkey-patch. Ver `_run_engine_batch` (§ padding pra batch parcial)
+        # e docstring de `_patch_onnxruntime_for_coreml_static_shapes`.
+        # `onnxruntime` é importado lazy no `__init__` do FFService — não no
+        # topo do módulo — então importamos localmente aqui.
+        import onnxruntime as _ort
+        _global_bs = int(getattr(
+            _ort.InferenceSession, _RECOGNITION_BATCH_SIZE_ATTR, 1))
+        _override_active = self._use_gpu or _global_bs > 1
+        if _override_active:
+            faces_batch = bgr_aligned_face[np.newaxis, ...]  # (1, 112, 112, 3)
+            kps_batch = None
+            if aligned_keypoints is not None:
+                kps_batch = np.asarray(aligned_keypoints)[np.newaxis, ...]
+            results = self.extract_embeddings_from_aligned_faces_batch(
+                faces_batch,
+                models=target_models,
+                aligned_keypoints_batch=kps_batch,
+            )
+            return results[0] if results else None
+
         # BGR → RGB (process_aligned_face_image espera RGB)
         rgb_aligned_face = bgr_aligned_face[..., ::-1].copy()
 
@@ -929,7 +956,17 @@ class FFService:
         """
         n_real = int(bgr_aligned_faces.shape[0])
         pad_count = 0
-        if self._use_gpu and n_real > 0 and n_real < self._batch_size:
+        # Padding é necessário quando as sessões de recognition têm
+        # `FreeDimensionOverride('batch_size', N)` ativo. Isso acontece com
+        # `use_gpu=True` OU quando o monkey-patch global foi disparado por
+        # qualquer FFService(use_gpu=True) anterior no processo (o patch
+        # afeta TODAS as sessões subsequentes, mesmo as criadas por
+        # FFService(use_gpu=False)). Detectamos ambos os casos.
+        import onnxruntime as _ort
+        _global_bs = int(getattr(
+            _ort.InferenceSession, _RECOGNITION_BATCH_SIZE_ATTR, 1))
+        _override_active = self._use_gpu or _global_bs > 1
+        if _override_active and n_real > 0 and n_real < self._batch_size:
             pad_count = self._batch_size - n_real
             pad_faces = np.zeros(
                 (pad_count, *bgr_aligned_faces.shape[1:]),
