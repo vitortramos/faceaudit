@@ -52,7 +52,20 @@ from faceaudit.services.hash_service import HashService
 # Quantos identificadores de face a entrada de auditoria lista antes de
 # truncar. O hash do conjunto completo continua gravado, então a prova
 # de pertinência não se perde com o truncamento.
-_MAX_AUDIT_IDENTIFIERS = 50
+from faceaudit.services import dataset_custody_service as custody
+from faceaudit.services.audit_log_service import (
+    JustificationRequiredError,
+    require_justification,
+)
+
+_MAX_AUDIT_IDENTIFIERS = custody.MAX_AUDIT_IDENTIFIERS
+
+# Operações que não descrevem o CONTEÚDO do dataset: sem arquivo, não há o
+# que guardar para depois (fechar um dataset em memória não deixa história).
+_NAO_ADIAR_SEM_ARQUIVO = frozenset({
+    AuditOperation.OPEN, AuditOperation.SAVE, AuditOperation.SAVE_AS,
+    AuditOperation.CLOSE,
+})
 
 
 def _sem_infinito(valor):
@@ -452,7 +465,14 @@ class DatasetManagerController(QtCore.QObject):
         )
         if dlg.exec() != QtWidgets.QDialog.DialogCode.Accepted:
             return
-        justificativa = dlg.justificativa()
+        # O diálogo já não confirma sem texto; a regra, porém, é do backend
+        # e é conferida ANTES de mexer no dataset — exclusão aplicada sem
+        # registro possível é o pior desfecho.
+        try:
+            justificativa = require_justification(dlg.justificativa())
+        except JustificationRequiredError as e:
+            QMessageBox.warning(self.view, rotulo, str(e))
+            return
 
         n = len(matched)
         matched_ids = {id(f) for f in matched}      # remove EXATAMENTE as faces casadas
@@ -483,37 +503,13 @@ class DatasetManagerController(QtCore.QObject):
         Identificar o que saiu importa, mas listar 5 mil linhas não serve a
         ninguém: guarda os primeiros hashes e um hash do conjunto inteiro,
         que permite provar depois se um registro específico estava ou não
-        entre os excluídos.
+        entre os excluídos. O conteúdo da entrada é montado no backend
+        (`dataset_custody_service.removal_entry`), que recusa justificativa
+        vazia.
         """
-        import hashlib
-
-        def _ident(face) -> str:
-            return (
-                getattr(face, "hash", None)
-                or getattr(face, "image_path", None)
-                or "(sem identificação)"
-            )
-
-        identificadores = [_ident(f) for f in faces]
-        conjunto = hashlib.sha256(
-            "\n".join(sorted(identificadores)).encode("utf-8")
-        ).hexdigest()
         try:
-            self._audit(
-                AuditOperation.REMOVE_FACES,
-                f"{len(faces)} registro(s) excluído(s) do dataset."
-                + (f" Justificativa: {justificativa}" if justificativa else ""),
-                metadata={
-                    "removed_count": len(faces),
-                    "justification": justificativa or None,
-                    "removed_identifiers": identificadores[:_MAX_AUDIT_IDENTIFIERS],
-                    "removed_identifiers_truncated": (
-                        len(identificadores) > _MAX_AUDIT_IDENTIFIERS
-                    ),
-                    "removed_set_sha256": conjunto,
-                    "pending_until_save": True,
-                },
-            )
+            descricao, meta = custody.removal_entry(faces, justificativa)
+            self._audit(AuditOperation.REMOVE_FACES, descricao, metadata=meta)
         except Exception:
             pass  # audit é best-effort — nunca impede a operação do perito
 
@@ -792,7 +788,23 @@ class DatasetManagerController(QtCore.QObject):
         """
         path = path_override or self.current_path
         if not path:
-            return  # dataset em memória ainda — sem sidecar pra escrever
+            # Dataset só em memória (resultado de Juntar, subset da galeria,
+            # vídeo sem parquet): ainda não há sidecar. A entrada fica
+            # pendente no dataset e é escrita quando ele for gravado — antes
+            # ela simplesmente se perdia. Fica no dataset RAIZ: com filtro
+            # ativo, o recorte na tela é descartável.
+            if operation in _NAO_ADIAR_SEM_ARQUIVO:
+                return
+            raiz = getattr(self, "dataset_original", None) or getattr(self, "dataset", None)
+            if raiz is None:
+                return
+            try:
+                custody.queue_pending(raiz, operation, description, metadata)
+            except Exception as e:
+                import sys as _sys
+                print(f"[AuditLog] Falha ao adiar {operation.value}: {e}",
+                      file=_sys.stderr)
+            return
         try:
             ds_hash = None
             extra_meta = dict(metadata or {})
@@ -819,6 +831,21 @@ class DatasetManagerController(QtCore.QObject):
             # Best-effort — não abortar o fluxo principal
             import sys as _sys
             print(f"[AuditLog] Falha ao registrar {operation.value}: {e}",
+                  file=_sys.stderr)
+
+    def _escrever_pendencias_de_custodia(self, path, gravado, *origens) -> None:
+        """Escreve na cadeia de `path` as entradas adiadas de `gravado` e das
+        `origens` (de onde o gravado deriva) e esvazia as do `gravado`, que
+        agora tem arquivo. As das origens ficam: uma origem que continua
+        aberta sem arquivo ainda as escreverá quando for gravada."""
+        try:
+            itens = custody.pending_entries(gravado, *origens)
+            if itens:
+                custody.write_pending(path, itens)
+            custody.clear_pending(gravado)
+        except Exception as e:
+            import sys as _sys
+            print(f"[AuditLog] Falha ao escrever entradas adiadas: {e}",
                   file=_sys.stderr)
 
     def carregar_dataset_na_tela(self, dataset, path=None, display_df=None):
@@ -1294,6 +1321,7 @@ class DatasetManagerController(QtCore.QObject):
         if self.current_path:
             try:
                 self.dataset.to_parquet(self.current_path)
+                self._escrever_pendencias_de_custodia(self.current_path, self.dataset)
                 QMessageBox.information(self.view, "Salvo", "Dataset salvo com sucesso.")
                 self.set_dirty(False)
                 # PR 25 (Tema 5.4) — registra SAVE com hash do arquivo
@@ -1604,6 +1632,14 @@ class DatasetManagerController(QtCore.QObject):
                 AuditLogService.copy_sidecar(old_path, path)
             except Exception:
                 pass  # se a cópia falhar, segue com chain nova
+        # Entradas adiadas (dataset que ainda não tinha arquivo — ex.: o
+        # resultado de um Juntar) vão para a cadeia do arquivo novo ANTES do
+        # SAVE_AS, que traz o hash e fecha o elo. Vêm de todos os objetos de
+        # que o gravado deriva (recorte de filtro, seleção, dataset raiz).
+        self._escrever_pendencias_de_custodia(
+            path, a_gravar, origem,
+            getattr(self, "dataset", None), getattr(self, "dataset_original", None),
+        )
         salvo_nome = a_gravar.name
         salvo_linhas = len(a_gravar)
         salvo_ids = a_gravar.number_of_identities
@@ -3009,13 +3045,76 @@ class DatasetManagerController(QtCore.QObject):
             analysis_ctrl.dataset_modified.connect(self._on_dataset_modified_by_audit)
 
             QApplication.restoreOverrideCursor()
-            analysis_ctrl.exec()
+            try:
+                analysis_ctrl.exec()
+            finally:
+                # O que ficou aplicado ao fechar vai para a cadeia — mesmo
+                # se o diálogo fechou pelo X ou por exceção.
+                self._registrar_acoes_da_auditoria(analysis_ctrl)
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             QApplication.restoreOverrideCursor()
             QMessageBox.critical(self.view, "Erro", f"Falha ao abrir Auditoria: {e}")
+
+    def _registrar_acoes_da_auditoria(self, analysis_ctrl) -> None:
+        """Registra na cadeia as ações do diálogo Auditar que ficaram aplicadas.
+
+        O Auditar tem desfazer (Ctrl+Z e ↶ por linha, inclusive no meio da
+        pilha). Registrar no ato e registrar cada desfazer encheria a cadeia
+        de afirmações que se anulam e nenhuma chega ao arquivo; registrar só
+        o saldo ao fechar faz a cadeia dizer exatamente o que foi aplicado
+        ao dataset — cada ação com a própria justificativa e o instante em
+        que foi aplicada (`applied_at`), e a sessão diz quantas foram
+        desfeitas. Exclusões → REMOVE_FACES; renomear/mesclar → EDIT_LABEL.
+
+        Com filtro ativo, a exclusão também sai do dataset de origem (como
+        na Tabela/Galeria) — senão "Limpar filtro" desfaria em silêncio a
+        exclusão que a cadeia acabou de afirmar.
+        """
+        try:
+            acoes = analysis_ctrl.applied_actions()
+        except Exception:
+            return
+        if not acoes:
+            return
+        sessao = {
+            "origin": "audit_dialog",
+            "audit_session_id": getattr(analysis_ctrl, "session_id", None),
+            "audit_session_actions_applied": len(acoes),
+            "audit_session_actions_undone": int(analysis_ctrl.undone_count()),
+        }
+        original = getattr(self, "dataset_original", None)
+        for acao in acoes:
+            try:
+                extra = {**sessao, "applied_at": acao.applied_at}
+                if acao.kind == "delete":
+                    if original is not None and original is not self.dataset:
+                        ids = {id(f) for f in acao.deleted_faces}
+                        original.faces = [f for f in original.faces if id(f) not in ids]
+                    descricao, meta = custody.removal_entry(
+                        acao.deleted_faces, acao.justification,
+                        origin="audit_dialog", extra=extra,
+                    )
+                    self._audit(AuditOperation.REMOVE_FACES, descricao, metadata=meta)
+                elif acao.kind in ("rename", "merge"):
+                    descricao, meta = custody.identity_edit_entry(
+                        action=(
+                            "rename_identity" if acao.kind == "rename"
+                            else "merge_identities"
+                        ),
+                        old_identities=acao.old_identities,
+                        new_identity=acao.new_identity,
+                        changed_identifiers=acao.changed_identifiers,
+                        justification=acao.justification,
+                        extra=extra,
+                    )
+                    self._audit(AuditOperation.EDIT_LABEL, descricao, metadata=meta)
+            except Exception as e:
+                import sys as _sys
+                print(f"[AuditLog] Falha ao registrar ação do Auditar: {e}",
+                      file=_sys.stderr)
 
     def _on_dataset_modified_by_audit(self) -> None:
         """Hook chamado pelo DatasetAnalysisController quando faces foram
@@ -3079,7 +3178,8 @@ class DatasetManagerController(QtCore.QObject):
         # num enriquecimento futuro os recortes 112×112 passam pelo detector,
         # que costuma falhar neles. Pergunta ANTES, porque depois de unido
         # não há como separar sem refazer.
-        if bool(self.dataset.is_aligned) != bool(other.is_aligned):
+        alinhamento_misto = bool(self.dataset.is_aligned) != bool(other.is_aligned)
+        if alinhamento_misto:
             alinhado = ("o atual" if self.dataset.is_aligned else "o escolhido")
             resposta = QMessageBox.question(
                 self.view, "Tipos de imagem diferentes",
@@ -3095,12 +3195,22 @@ class DatasetManagerController(QtCore.QObject):
                 return
 
         with wait_cursor():
-            new_ds = self.dataset.concat(other)
+            base = self.dataset
+            new_ds = base.concat(other)
+            self._registrar_juntar(
+                new_ds, base, other, path,
+                alinhamento_misto=alinhamento_misto,
+            )
             ausentes, verificadas = self._amostrar_imagens_ausentes(new_ds)
+            # O unido é um dataset por si: o estado de filtro da base não
+            # vale para ele ("Limpar filtro" traria a base de volta por cima).
+            self.dataset_original = None
+            self.current_filter_config = FilterConfig()
             self.carregar_dataset_na_tela(new_ds)
 
         msg = f"Datasets unidos. Total: {len(new_ds)} imagens."
-        if new_ds.path_mode is not self.dataset.path_mode:
+        # Compara com a BASE: depois de carregar, `self.dataset` já é o unido.
+        if new_ds.path_mode is not base.path_mode:
             # Explica a mudança de modo antes que o usuário a descubra ao
             # mover a pasta: os dois lados tinham âncoras diferentes e os
             # caminhos foram resolvidos para absolutos.
@@ -3124,6 +3234,83 @@ class DatasetManagerController(QtCore.QObject):
         else:
             QMessageBox.information(self.view, "Juntar", msg)
         self.set_dirty(True)
+
+    def _descrever_origem(self, dataset, path, *, sem_alteracoes: bool, conteudo=None) -> dict:
+        """Descrição da origem de um derivado (arquivo, SHA-256, contagens)."""
+        return custody.describe_source(
+            dataset, path,
+            has_unsaved_changes=not sem_alteracoes,
+            content=conteudo,
+        )
+
+    def _registrar_juntar(self, unido, base, outro, outro_path, *, alinhamento_misto: bool) -> None:
+        """MERGE na cadeia do dataset unido.
+
+        O unido nasce em memória, sem arquivo: a entrada fica pendente nele
+        e é escrita na cadeia do arquivo quando ele for gravado (Salvar
+        Como), antes do SAVE_AS. Herda também as entradas ainda pendentes
+        da base — se ela própria nunca foi gravada, é a única história que
+        ela tem. Best-effort: falha de registro não desfaz a união.
+        """
+        try:
+            base_desc = self._descrever_origem(
+                base, self.current_path,
+                sem_alteracoes=bool(self.current_path) and not self.is_dirty(),
+                conteudo=self._descrever_conteudo_salvo(base),
+            )
+            outro_desc = self._descrever_origem(outro, outro_path, sem_alteracoes=True)
+            descricao, meta = custody.merge_entry(
+                base_desc, outro_desc, unido,
+                mixed_alignment=alinhamento_misto,
+                # Só se chega aqui com alinhamento misto se o perito disse Sim.
+                mixed_alignment_confirmed=alinhamento_misto,
+            )
+            custody.inherit_pending(unido, base, getattr(self, "dataset_original", None))
+            custody.queue_pending(unido, AuditOperation.MERGE, descricao, meta)
+        except Exception as e:
+            import sys as _sys
+            print(f"[AuditLog] Falha ao registrar MERGE: {e}", file=_sys.stderr)
+
+    def _registrar_divisao(self, config, partes) -> None:
+        """SPLIT na cadeia de cada metade gravada.
+
+        `partes` = [(rótulo, dataset, path), ...] — as duas metades já em
+        disco. Cada uma recebe as entradas ainda pendentes da origem (se a
+        origem nunca foi gravada) e a sua entrada SPLIT com o hash do
+        próprio arquivo. Best-effort: falha de registro não desfaz a divisão.
+        """
+        try:
+            origem = self.dataset
+            fonte = self._descrever_origem(
+                origem, self.current_path,
+                sem_alteracoes=bool(self.current_path) and not self.is_dirty(),
+                conteudo=self._descrever_conteudo_salvo(origem),
+            )
+            modo = config.get("mode")
+            semente = (
+                config.get("random_seed", custody.default_split_seed())
+                if modo == "ratio" else None
+            )
+            pendentes = custody.pending_entries(
+                origem, getattr(self, "dataset_original", None),
+            )
+            for i, (rotulo, parte, caminho) in enumerate(partes):
+                _r, irma, caminho_irma = partes[1 - i]
+                if pendentes:
+                    custody.write_pending(caminho, pendentes)
+                descricao, meta = custody.split_entry(
+                    fonte, part_label=rotulo, part=parte,
+                    sibling=irma, sibling_path=caminho_irma,
+                    mode=modo, ratio=config.get("ratio"), random_seed=semente,
+                    ids_for_b=config.get("manual_ids_b"),
+                )
+                self._audit(
+                    AuditOperation.SPLIT, descricao, metadata=meta,
+                    path_override=str(caminho), hash_file=True,
+                )
+        except Exception as e:
+            import sys as _sys
+            print(f"[AuditLog] Falha ao registrar SPLIT: {e}", file=_sys.stderr)
 
     @classmethod
     def _amostrar_imagens_ausentes(cls, dataset) -> tuple:
@@ -3191,6 +3378,10 @@ class DatasetManagerController(QtCore.QObject):
                     QMessageBox.warning(self.view, "Divisão não gravada", str(e))
                     return
                 path_a, path_b = salvo_a.path, salvo_b.path
+                # Cadeia de custódia de cada metade (origem, critério, contagens).
+                self._registrar_divisao(
+                    config, [("A", salvo_a.dataset, path_a), ("B", salvo_b.dataset, path_b)]
+                )
 
                 QApplication.restoreOverrideCursor()
 

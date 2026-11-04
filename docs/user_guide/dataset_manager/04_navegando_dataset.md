@@ -289,7 +289,8 @@ selecionadas:
 > ⚠️ **Remover do dataset** é uma operação **não destrutiva** no disco:
 > ela retira as faces da tabela do dataset, mas os arquivos de imagem
 > originais permanecem. Antes de remover, o diálogo *Excluir registros do
-> dataset* pede uma **justificativa**, que fica registrada na cadeia de
+> dataset* pede uma **justificativa obrigatória** (o botão *Excluir* só
+> habilita com texto), que fica registrada na cadeia de
 > custódia junto com a contagem e os identificadores das faces. A
 > remoção só é persistida quando você clica 💾 **Salvar**. Com filtro
 > ativo, as faces saem também do dataset de origem — *Limpar Filtro*

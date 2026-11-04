@@ -208,6 +208,7 @@ persiste no save).
 | Aspecto | Comportamento |
 |---|---|
 | Seleção | Ctrl+Click / Shift+Click no carrossel ou na tabela |
+| Justificativa | Obrigatória — o diálogo *Excluir registros do dataset* só habilita **Excluir** com texto; cancelar não exclui nada |
 | Estado visual | Faces deletadas marcadas em vermelho — clique fica desabilitado |
 | Undo | Disponível via histórico (ver seção abaixo) |
 | Persistência | Mudança fica em memória; **Salvar** para persistir |
@@ -221,7 +222,7 @@ e "Alice S." são a mesma pessoa e quer unificar.
 | Aspecto | Comportamento |
 |---|---|
 | Escopo | Identidade inteira, não apenas locators selecionados |
-| UX | Diálogo pede novo nome |
+| UX | Diálogo pede novo nome; em seguida, a **justificativa** (obrigatória) |
 | Visual | Faces marcadas em laranja com legenda `✎ ID: old → new` |
 
 ### Mesclar identidades
@@ -231,7 +232,7 @@ identidades, escolhe qual delas vira o alvo (no diálogo).
 
 | Aspecto | Comportamento |
 |---|---|
-| UX | Lista as identidades candidatas, ordenadas por número de amostras (sugere a maior como alvo) |
+| UX | Lista as identidades candidatas, ordenadas por número de amostras (sugere a maior como alvo); em seguida, a **justificativa** (obrigatória) |
 | Efeito | Todas as faces dos lados não-alvos ganham a identidade do alvo |
 | Undo | Disponível |
 
@@ -382,6 +383,31 @@ quando você fez 3 ações e descobriu que a 2ª foi um erro.
 > Recomendação: **Salvar Como** entre operações irreversíveis se
 > o caso for crítico.
 
+### Registro na cadeia de custódia
+
+Cada exclusão, renomeação ou mescla pede uma **justificativa
+obrigatória** antes de ser aplicada. Ao **fechar** o diálogo Auditar
+(por qualquer caminho, inclusive o X), as ações que **continuam
+aplicadas** são gravadas na cadeia de custódia, na ordem em que foram
+feitas, cada uma com a sua justificativa e o instante em que foi
+aplicada (`applied_at`):
+
+| Ação | Operação | Principais campos |
+|---|---|---|
+| Excluir | `REMOVE_FACES` | `removed_count`, `justification`, primeiros 50 `removed_identifiers`, `removed_set_sha256`, `pending_until_save` |
+| Renomear | `EDIT_LABEL` (`action=rename_identity`) | `old_identities`, `new_identity`, `changed_count`, primeiros 50 `changed_identifiers`, `changed_set_sha256`, `justification` |
+| Mesclar | `EDIT_LABEL` (`action=merge_identities`) | idem, com as identidades não-alvo em `old_identities` |
+
+Todas levam `origin=audit_dialog` e a sessão do diálogo
+(`audit_session_id`, `audit_session_actions_applied`,
+`audit_session_actions_undone`). O que foi **desfeito** não vira
+entrada — nunca chegou ao dataset —, mas a contagem de desfeitas fica
+registrada. Registrar o saldo ao fechar, e não cada ato e cada
+desfazer, faz a cadeia afirmar exatamente o que foi aplicado ao
+dataset. Como na Tabela, a exclusão só vai para o arquivo no save
+seguinte, que grava o hash e fecha o elo. Com filtro ativo, as faces
+excluídas saem também do dataset de origem.
+
 ## O diálogo *Custódia*
 
 ![Diálogo Audit Log com cadeia de custódia SHA-256](assets/43_audit_log.png)
@@ -400,15 +426,25 @@ operações que mutaram o dataset.
 | 🚪 CLOSE | Sessão encerrada |
 | 🏷️ EDIT_SCHEMA | Metadados/esquema de coluna editados |
 | ➕ ADD_COLUMN | Coluna adicionada |
-| • REMOVE_FACES | Registros excluídos pela Tabela ou Galeria, com a justificativa obrigatória (contagem, primeiros 50 identificadores, `removed_set_sha256`; pendente até o save seguinte) |
+| • REMOVE_FACES | Registros excluídos pela Tabela, Galeria ou pelo diálogo Auditar, com a justificativa obrigatória (contagem, primeiros 50 identificadores, `removed_set_sha256`; pendente até o save seguinte). A cadeia recusa a entrada sem justificativa |
+| ✏️ EDIT_LABEL | Identidade renomeada ou mesclada no diálogo Auditar, com justificativa (ver [Registro na cadeia de custódia](#registro-na-cadeia-de-custódia)) |
+| 🔗 MERGE | Dataset criado por **Juntar** — primeira entrada do arquivo unido (ver [cap. 07](07_operacoes_estruturais.md#juntar)) |
+| ✂️ SPLIT | Metade criada por **Dividir** — primeira entrada de cada parquet (ver [cap. 07](07_operacoes_estruturais.md#dividir)) |
 | 🔬 ENRICH | Forensic Face ou OFIQ executados (SER-FIQ em datasets legados) |
 | 🎬 VIDEO_EXTRACT | Dataset criado a partir de vídeo (seleção condicionada à âncora — ver [cap. 02b](02b_criando_dataset_de_video.md)) |
 | 📤 EXPORT | Exportação CSV/Excel |
 | 🗂 COPY_IMAGES | Modificação de caminhos das imagens (path_root/REBASE/REWRITE/COPY) |
 | ✅ INTEGRITY_VERIFIED / ❌ INTEGRITY_FAILED | Verificação da cadeia |
 
-O enum também define EDIT_LABEL, REMOVE_COLUMN, RENAME_COLUMN, MERGE
-e SPLIT, mas a versão atual não grava entradas desses tipos.
+O enum também define REMOVE_COLUMN e RENAME_COLUMN, mas a versão
+atual não grava entradas desses tipos.
+
+**Dataset que ainda não tem arquivo** (o resultado de um Juntar, um
+subconjunto criado pela galeria): a entrada não se perde — fica
+pendente no dataset e é escrita na cadeia do arquivo quando ele é
+gravado, antes da entrada SAVE/SAVE_AS (que traz o hash e fecha o
+elo). Essas entradas levam `recorded_at` (instante do ato) e
+`written_on_save=true`.
 
 ### Estrutura do log
 

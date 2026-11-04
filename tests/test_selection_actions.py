@@ -187,10 +187,37 @@ def test_caminho_ambiguo_aborta_sem_excluir(app, sem_dialogos, monkeypatch):
     assert ctrl.auditorias == []
 
 
-def test_dialogo_de_exclusao_permite_justificativa_vazia(app):
-    """Exigir texto produziria 'ok', 'teste', 'limpeza' — ruído na trilha."""
+def test_dialogo_de_exclusao_exige_justificativa(app):
+    """A justificativa é obrigatória: Excluir só habilita com texto não-branco."""
     dlg = RemoveFacesDialog(n_faces=3, nome_dataset="base")
     try:
         assert dlg.justificativa() == ""
+        assert not dlg.pode_confirmar()
+        dlg.set_justificativa("   \n  ")
+        assert not dlg.pode_confirmar()
+        dlg.accept()
+        assert dlg.result() != QtWidgets.QDialog.DialogCode.Accepted
+        dlg.set_justificativa("  imagens duplicadas ")
+        assert dlg.pode_confirmar()
+        assert dlg.justificativa() == "imagens duplicadas"
     finally:
         dlg.deleteLater()
+
+
+def test_justificativa_em_branco_nao_exclui(app, sem_dialogos, monkeypatch):
+    """Mesmo que a tela deixasse passar, o backend recusa e nada sai."""
+    monkeypatch.setattr(RemoveFacesDialog, "justificativa", lambda self: "   ")
+    avisos = []
+    monkeypatch.setattr(
+        "interface.tabs.dataset_manager.dataset_manager_controller."
+        "QMessageBox.warning",
+        lambda *a, **k: avisos.append(a),
+    )
+    ds = _dataset()
+    ctrl = _ControllerStub(ds)
+
+    ctrl.excluir_selecionados(["/fotos/f1.png"])
+
+    assert len(ds.faces) == 6
+    assert ctrl.auditorias == []
+    assert avisos

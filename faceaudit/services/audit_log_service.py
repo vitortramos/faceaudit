@@ -40,6 +40,38 @@ from faceaudit.models.audit.audit_log_entry import AuditLogEntry
 from faceaudit.services.software_provenance_service import software_provenance
 
 
+class JustificationRequiredError(ValueError):
+    """Operação que exige justificativa chegou sem ela (ou só com brancos)."""
+
+
+# Operações em que a decisão do perito precisa vir acompanhada do PORQUÊ.
+# A cadeia só as aceita com `metadata["justification"]` não-branca.
+OPERATIONS_REQUIRING_JUSTIFICATION = frozenset({AuditOperation.REMOVE_FACES})
+
+
+def require_justification(text: Optional[str]) -> str:
+    """Devolve a justificativa sem brancos nas pontas, ou levanta.
+
+    Ponto único da regra "justificativa obrigatória": o diálogo desabilita
+    o botão até haver texto, mas a regra mora aqui — outra tela, um script
+    ou um teste não conseguem gravar exclusão sem motivo.
+    """
+    limpo = (text or "").strip()
+    if not limpo:
+        raise JustificationRequiredError(
+            "Justificativa obrigatória: descreva por que a operação foi feita."
+        )
+    return limpo
+
+
+def validate_entry_request(
+    operation: AuditOperation, metadata: Optional[Dict[str, Any]],
+) -> None:
+    """Recusa, antes de gravar, a entrada que a cadeia não pode aceitar."""
+    if operation in OPERATIONS_REQUIRING_JUSTIFICATION:
+        require_justification((metadata or {}).get("justification"))
+
+
 @dataclass(frozen=True)
 class AuditChainProblem:
     """Problema detectado em uma entrada durante verify_chain."""
@@ -126,7 +158,11 @@ class AuditLogService:
         operator: Optional[str] = None,
     ) -> AuditLogEntry:
         """Carrega log existente, calcula `parent_entry_hash` da última
-        entrada, cria nova entrada, persiste e retorna a entry criada."""
+        entrada, cria nova entrada, persiste e retorna a entry criada.
+
+        Levanta `JustificationRequiredError` em operação que exige
+        justificativa (REMOVE_FACES) sem `metadata["justification"]`."""
+        validate_entry_request(operation, metadata)
         entries = cls.load(dataset_path)
         parent_hash = entries[-1].entry_hash if entries else None
         op_str = operator or cls.current_operator()

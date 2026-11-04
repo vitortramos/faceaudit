@@ -205,6 +205,25 @@ diálogo próprio** — ela:
    foi movida ou renomeada
 5. Marca como modificado (você precisa **Salvar Como** pra persistir)
 
+### Cadeia de custódia do resultado
+
+O dataset unido nasce com uma entrada **`MERGE`** na própria cadeia de
+custódia. Como ele ainda não tem arquivo, a entrada fica pendente e é
+escrita quando você o grava (Salvar Como), antes da entrada `SAVE_AS`
+que traz o hash do arquivo. A `metadata` registra:
+
+| Campo | Conteúdo |
+|---|---|
+| `sources` | Uma descrição por origem (o dataset aberto e o escolhido): `name`, `parquet_path`, `parquet_sha256`, `rows`, `identities`, `is_aligned`, `path_mode`, `has_unsaved_changes` (o aberto tinha alterações não salvas, ou nunca foi gravado) e `audit_chain_head` (o `entry_hash` da última entrada da cadeia daquela origem, que amarra o unido à história dela). Para o aberto, também o que estava na tela (`content`: inteiro ou vista filtrada, e o critério do filtro) |
+| `rows`, `identities` | Contagens do resultado; `rows_from_sources` as de cada lado |
+| `mixed_alignment`, `mixed_alignment_confirmed_by_operator` | Só um dos lados era de faces alinhadas e você confirmou a união |
+| `is_aligned`, `path_mode`, `paths_absolutized` | Como o resultado ficou marcado, e se os caminhos viraram absolutos por as âncoras diferirem |
+| `duplicates_removed` | Sempre `false` — a junção não deduplica |
+
+Entradas ainda pendentes do dataset aberto (se ele próprio nunca foi
+gravado) são herdadas pelo unido. Os arquivos de origem e as cadeias
+deles não são alterados.
+
 ### Como a concatenação trata diferenças de esquema
 
 A junção é uma **concatenação das listas de faces** (o resultado é
@@ -319,6 +338,23 @@ Conforme a opção
 *Após concluir*, o lado A ou B pode ser aberto no visualizador; em
 *Manter Dataset Original Aberto*, nada é recarregado na tela (os
 parquets ficam salvos, mas a visualização continua no original).
+
+### Cadeia de custódia das metades
+
+Cada metade nasce com uma entrada **`SPLIT`** na própria cadeia, com o
+SHA-256 do próprio arquivo em `dataset_hash`. A `metadata` registra:
+
+| Campo | Conteúdo |
+|---|---|
+| `part` | `A` ou `B` |
+| `source` | O dataset de origem: `name`, `parquet_path`, `parquet_sha256`, `rows`, `identities`, `has_unsaved_changes`, `audit_chain_head` e o que estava na tela (`content`, com o critério do filtro, se havia) |
+| `criterion` | `mode` (`ratio` ou `manual`, sempre por identidade). No sorteio: `ratio_identities_to_a` e `random_seed`. Na seleção manual: `ids_for_b_count`, as primeiras 50 identidades de B (`ids_for_b`) e `ids_for_b_sha256` |
+| `rows`, `identities`, `identities_sha256` | Contagens e hash do conjunto de identidades desta metade |
+| `sibling` | A outra metade: `name`, `parquet_path`, `rows`, `identities` |
+
+O arquivo de origem e a cadeia dele não são alterados. Se a origem
+nunca foi gravada, as entradas pendentes dela entram na cadeia de cada
+metade antes do `SPLIT`.
 
 ## Balancear
 
