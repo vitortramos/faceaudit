@@ -36,7 +36,7 @@ A lista temática completa (detecção, geometria, metadados, OFIQ, pipeline de 
 - Trabalhe num branch próprio → commits → `git merge --no-ff` no `master` → apague o branch.
 - `git push` só quando o usuário pedir.
 - `config.json` nunca entra em commit (é por máquina; o modelo é `config.example.json`).
-- Mensagens de commit terminam com `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Mensagens de commit terminam com `Co-Authored-By: <modelo que fez o trabalho> <noreply@anthropic.com>`, nomeando o modelo REAL da sessão (ex.: `Claude Fable 5.1`, `Claude Opus 5.5`). Piso: Opus 5.5 — modelos abaixo disso não devem assinar commits neste repositório. Porquê: a atribuição vai para o histórico e precisa ser verdadeira.
 
 ---
 
