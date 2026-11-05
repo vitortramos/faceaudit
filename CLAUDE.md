@@ -6,7 +6,7 @@ Orientação para assistentes de IA (Claude Code e similares) que trabalham nest
 
 O FaceAudit é uma plataforma de análise e comparação forense de imagens faciais. O objetivo é permitir que o perito **crie e configure estratégias de cálculo de razão de verossimilhança (LR)** sobre embeddings faciais inteiramente pela interface — nada fixo no código. Software livre (GPL v3, ver `LICENSE`), mantido como iniciativa pessoal.
 
-**Versão.** Fonte única em `faceaudit/_version.py` (hoje 0.2.0; o `pyproject.toml` lê de lá). **Suba a versão e crie a tag `vX.Y.Z` sempre que uma mudança alterar o que o programa PRODUZ** (imagens, embeddings, escores, LRs). Porquê: versão e commit vão para a cadeia de custódia de todo artefato (`software_provenance_service` → `AuditLogService.append` põe `metadata["software"] = {faceaudit_version, git_commit, git_dirty, python, platform, dependencies}` em TODA entrada, coberto pelo `entry_hash`); uma versão que não sobe faz artefatos diferentes declararem a mesma origem.
+**Versão.** Fonte única em `faceaudit/_version.py` (hoje 0.2.1; o `pyproject.toml` lê de lá). **Suba a versão e crie a tag `vX.Y.Z` sempre que uma mudança alterar o que o programa PRODUZ** (imagens, embeddings, escores, LRs). Porquê: versão e commit vão para a cadeia de custódia de todo artefato (`software_provenance_service` → `AuditLogService.append` põe `metadata["software"] = {faceaudit_version, git_commit, git_dirty, python, platform, dependencies}` em TODA entrada, coberto pelo `entry_hash`); uma versão que não sobe faz artefatos diferentes declararem a mesma origem.
 
 ## Comandos
 

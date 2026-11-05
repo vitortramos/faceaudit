@@ -5,4 +5,4 @@ embeddings, escores, LRs): o número vai para a cadeia de custódia de todo
 artefato, junto do commit (`software_provenance_service`).
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

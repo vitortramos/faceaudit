@@ -143,10 +143,12 @@ class SepaelModel(Enum):
 
     def installed_on_disk(self, models_root: Optional[Path] = None) -> bool:
         """True quando o detector + encoder principal do modelo estão
-        no disco. Suporta os dois layouts que a `forensicface >= 0.7.0`
-        aceita:
+        no disco. Suporta os layouts que a `forensicface >= 0.8` aceita:
 
-        - **Shared (novo)**:
+        - **Por tarefa (0.8)**: `<models_root>/detection/scrfd/det_10g.onnx`
+          + `<models_root>/recognition/<ff_name>/*face*.onnx` — é para onde
+          o `migrate_shared` da 0.8 move o detector.
+        - **Shared (0.7)**:
           `<models_root>/detection/det_10g.onnx` +
           `<models_root>/recognition/<ff_name>/*face*.onnx`.
         - **Legacy (per-model)**:
@@ -155,8 +157,8 @@ class SepaelModel(Enum):
           `encoder_subdir` é qualquer pasta que não seja sidecar
           conhecido).
 
-        A `ForensicFace.__init__` da v0.7.0 tenta o layout shared primeiro
-        e cai no legacy. Esse helper imita o mesmo comportamento para que
+        A `ForensicFace.__init__` tenta o layout por tarefa, depois o shared
+        e por fim o legacy. Esse helper imita o mesmo comportamento para que
         `available_on_disk()` reflita o que a lib de fato consegue
         carregar — mesmo depois do usuário rodar
         `python -m forensicface.tools.migrate_shared --apply`.
@@ -167,9 +169,12 @@ class SepaelModel(Enum):
         # em `recognition/<ff_name>/`. Pasta `recognition/` pode existir
         # parcialmente populada — exige tanto o detector quanto pelo
         # menos um arquivo `*face*.onnx` na subpasta do modelo.
-        shared_detector = root / "detection" / "det_10g.onnx"
+        shared_detector = any(
+            (root / "detection" / sub / "det_10g.onnx").exists()
+            for sub in ("scrfd", "")
+        )
         shared_recog_dir = root / "recognition" / self.ff_name
-        if shared_detector.exists() and shared_recog_dir.exists():
+        if shared_detector and shared_recog_dir.exists():
             if any(shared_recog_dir.glob("*face*.onnx")):
                 return True
 
