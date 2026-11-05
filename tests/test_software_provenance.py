@@ -46,7 +46,8 @@ def test_sem_git_o_commit_fica_vazio(monkeypatch):
     sp._git_state.cache_clear()
     try:
         prov = sp.software_provenance()
-        assert prov == {"faceaudit_version": __version__, "git_commit": None, "git_dirty": None}
+        assert prov["faceaudit_version"] == __version__
+        assert prov["git_commit"] is None and prov["git_dirty"] is None
         assert sp.commit_label() is None
     finally:
         sp._git_state.cache_clear()
@@ -67,3 +68,35 @@ def test_toda_entrada_da_custodia_leva_o_software(tmp_path):
     AuditLogService.sidecar_path_for(parquet).write_text(json.dumps(bruto), encoding="utf-8")
     ok, problemas = AuditLogService.verify_chain(AuditLogService.load(parquet))
     assert not ok and problemas[0].code == "self_hash_mismatch"
+
+
+def test_versoes_das_bibliotecas_que_decidem_o_resultado():
+    from importlib import metadata
+    import platform
+    prov = sp.software_provenance()
+    deps = prov["dependencies"]
+    # O que está instalado entra com a versão exata do pip; o que não está fica de fora.
+    for dist in sp._TRACKED_DISTRIBUTIONS:
+        try:
+            instalada = metadata.version(dist)
+        except metadata.PackageNotFoundError:
+            assert dist not in deps
+        else:
+            assert deps[dist] == instalada
+    assert "forensicface" in deps and "numpy" in deps
+    assert any(d.startswith("onnxruntime") for d in deps)
+    assert prov["python"] == platform.python_version()
+    assert prov["platform"].split("-")[0] in ("win32", "darwin", "linux")
+    json.dumps(prov)  # vai para JSON (cadeia de custódia, manifestos)
+
+
+def test_versoes_das_bibliotecas_ficam_na_custodia(tmp_path, monkeypatch):
+    parquet = tmp_path / "ds.parquet"
+    e = AuditLogService.append(parquet, AuditOperation.CREATE, "criado")
+    assert e.metadata["software"]["dependencies"] == sp.dependency_versions()
+    # Trocar a versão registrada de uma biblioteca quebra a cadeia.
+    bruto = json.loads(AuditLogService.sidecar_path_for(parquet).read_text(encoding="utf-8"))
+    bruto[0]["metadata"]["software"]["dependencies"]["forensicface"] = "9.9.9"
+    AuditLogService.sidecar_path_for(parquet).write_text(json.dumps(bruto), encoding="utf-8")
+    ok, _ = AuditLogService.verify_chain(AuditLogService.load(parquet))
+    assert not ok
