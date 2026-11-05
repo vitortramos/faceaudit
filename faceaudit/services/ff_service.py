@@ -26,6 +26,62 @@ except ImportError:
     ForensicFace = None
 
 
+# O `FFService` usa partes internas do forensicface (`_aligned_face_runner`,
+# sessões de recognition). A versão é fixada no pyproject; esta checagem pega
+# o ambiente que não foi reinstalado depois de um pull.
+_FORENSICFACE_MIN_VERSION: Tuple[int, int] = (0, 8)
+
+
+def _forensicface_version() -> Optional[str]:
+    from importlib import metadata
+    try:
+        return metadata.version("forensicface")
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _exigir_forensicface_compativel() -> None:
+    versao = _forensicface_version()
+    if versao is None:
+        return  # instalado sem metadados (cópia local): sem como conferir
+    partes = tuple(int(p) for p in versao.split(".")[:2] if p.isdigit())
+    if partes < _FORENSICFACE_MIN_VERSION:
+        minima = ".".join(map(str, _FORENSICFACE_MIN_VERSION))
+        raise ImportError(
+            f"forensicface {versao} instalado; o FaceAudit exige >= {minima}. "
+            f"Reinstale as dependências: `pip install -e .` na pasta do FaceAudit."
+        )
+
+
+def _par_do_lote(resultado, n: int):
+    """Confere o `(embeddings, fiqa_scores)` devolvido pela biblioteca.
+
+    Falha alto quando o formato não é o esperado: com um lote de 2 faces,
+    desmontar um array (N, 512) como par "funciona" e grava um número no
+    lugar do embedding.
+    """
+    if not (isinstance(resultado, tuple) and len(resultado) == 2):
+        raise TypeError(
+            f"forensicface devolveu {type(resultado).__name__} no lote; "
+            f"esperado o par (embeddings, fiqa_scores)."
+        )
+    embeddings, fiqa_scores = resultado
+    if isinstance(embeddings, list) and len(embeddings) == 1:
+        embeddings = embeddings[0]
+    emb = np.asarray(embeddings)
+    if emb.ndim != 2 or emb.shape[0] != n:
+        raise TypeError(
+            f"forensicface devolveu embeddings com forma {emb.shape} para "
+            f"{n} face(s); esperado ({n}, dim)."
+        )
+    if fiqa_scores is not None and np.asarray(fiqa_scores).reshape(-1).shape[0] != n:
+        raise TypeError(
+            f"forensicface devolveu {np.asarray(fiqa_scores).size} FIQA para "
+            f"{n} face(s)."
+        )
+    return embeddings, fiqa_scores
+
+
 _PATCHED_MARKER = "_faceaudit_coreml_static_patched"
 _RECOGNITION_BATCH_SIZE_ATTR = "_faceaudit_recognition_batch_size"
 _SYMBOLIC_BATCH_DIM_NAMES: Tuple[str, ...] = ("batch_size", "batch")
@@ -315,6 +371,7 @@ class FFService:
     ):
         if ForensicFace is None:
             raise ImportError("A biblioteca 'forensicface' não foi encontrada.")
+        _exigir_forensicface_compativel()
 
         # Resolve a lista de modelos a carregar:
         #   - `models` tem prioridade quando fornecido (forma nova)
@@ -837,11 +894,10 @@ class FFService:
     ) -> List[Optional[FFInfo]]:
         """Extrai embeddings + FIQA de **N faces alinhadas em paralelo**.
 
-        Delega à lib `forensicface` (>= 0.6.0) via
-        `engine._try_compute_embeddings_batch` — herda OOM recovery por
-        halving recursivo e suporte automático a sepaelv6 (KPRPE) quando
-        `aligned_keypoints_batch` é fornecido. Versões anteriores da lib
-        caem em fallback inline (loop manual via `rec.run`).
+        Delega à lib `forensicface` (>= 0.8) via
+        `engine._aligned_face_runner().try_compute_batch` — herda OOM
+        recovery por halving recursivo e suporte automático a sepaelv6
+        (KPRPE) quando `aligned_keypoints_batch` é fornecido.
 
         Args:
             bgr_aligned_faces: array `(N, 112, 112, 3)` BGR uint8.
@@ -927,18 +983,11 @@ class FFService:
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Roda o batch em um engine ForensicFace específico.
 
-        Caminhos suportados em ordem de preferência:
-
-        1. **v0.7.x**: `engine._recognition_runner().try_compute_batch(...)`
-           — método do `RecognitionRunner` (recognition.py) com OOM auto-recovery
-           (halving recursivo até batch_size=1) e suporte nativo a KPRPE
-           (`aligned_keypoints_batch`).
-
-        2. **v0.6.x (legado)**: `engine._try_compute_embeddings_batch(...)` —
-           mesmo método antes da reorganização em `RecognitionRunner`.
-
-        3. **v0.5.x (legado)**: inferência inline via `rec_inference_sessions[0]`.
-           Sem OOM recovery, sem suporte a KPRPE.
+        Delega a `engine._aligned_face_runner().try_compute_batch(...)`
+        (forensicface >= 0.8): embeddings + FIQA, com OOM auto-recovery
+        (halving recursivo até batch_size=1) e KPRPE nativo
+        (`aligned_keypoints_batch`). O formato do retorno é conferido
+        (`_par_do_lote`) — é API interna da biblioteca.
 
         Retorna `(embeddings, fiqa_scores)`. Embeddings shape `(N, dim)`;
         fiqa_scores shape `(N,)` ou None quando `extended=False`. Ambos
@@ -1006,68 +1055,25 @@ class FFService:
             # — o helper de OOM avisa quando acontece auto-recovery (halving).
             import warnings as _warnings
 
-            # Caminho moderno (v0.7+): RecognitionRunner.try_compute_batch
-            recognition_runner = getattr(engine, "_recognition_runner", None)
-            if callable(recognition_runner):
-                runner = recognition_runner()
-                if hasattr(runner, "try_compute_batch"):
-                    with _warnings.catch_warnings(record=True) as caught:
-                        _warnings.simplefilter("always")
-                        embeddings, fiqa_scores = runner.try_compute_batch(
-                            bgr_aligned_faces,
-                            aligned_keypoints_batch=aligned_keypoints_batch,
-                        )
-                    for w in caught:
-                        (error_callback or print)(f"⚠ [forensicface] {w.message}")
-                    if isinstance(embeddings, list) and len(embeddings) == 1:
-                        embeddings = embeddings[0]
-                    return _truncate_padding(embeddings, fiqa_scores)
-
-            # Legado v0.6.x: método privado no próprio engine
-            if hasattr(engine, "_try_compute_embeddings_batch"):
-                kwargs = {}
-                if aligned_keypoints_batch is not None:
-                    kwargs["aligned_keypoints_batch"] = aligned_keypoints_batch
-                with _warnings.catch_warnings(record=True) as caught:
-                    _warnings.simplefilter("always")
-                    embeddings, fiqa_scores = engine._try_compute_embeddings_batch(
-                        bgr_aligned_faces, **kwargs,
-                    )
-                for w in caught:
-                    (error_callback or print)(f"⚠ [forensicface] {w.message}")
-                if isinstance(embeddings, list) and len(embeddings) == 1:
-                    embeddings = embeddings[0]
-                return _truncate_padding(embeddings, fiqa_scores)
-
-            # Fallback lib 0.5.x: roda direto via rec_inference_sessions.
-            batched = bgr_aligned_faces.astype(np.float32)
-            batched = ((batched / 255.0) - 0.5) / 0.5
-            batched_input = batched.transpose(0, 3, 1, 2).copy()
-
-            rec = engine.rec_inference_sessions[0]
-            rec_out = rec.run(
-                None, {rec.get_inputs()[0].name: batched_input},
+            # `AlignedFaceRunner.try_compute_batch` (forensicface >= 0.8):
+            # embeddings e FIQA com OOM auto-recovery independente para cada
+            # um e KPRPE nativo. É interno da biblioteca — por isso o retorno
+            # é conferido em `_par_do_lote` antes de usar: na 0.8 o
+            # `RecognitionRunner.try_compute_batch` (que a 0.7 usava) passou a
+            # devolver só os embeddings, e desmontar isso como par num lote de
+            # 2 faces gravava lixo sem erro.
+            runner = engine._aligned_face_runner()
+            with _warnings.catch_warnings(record=True) as caught:
+                _warnings.simplefilter("always")
+                resultado = runner.try_compute_batch(
+                    bgr_aligned_faces,
+                    aligned_keypoints_batch=aligned_keypoints_batch,
+                )
+            for w in caught:
+                (error_callback or print)(f"⚠ [forensicface] {w.message}")
+            embeddings, fiqa_scores = _par_do_lote(
+                resultado, int(bgr_aligned_faces.shape[0]),
             )
-            if len(rec_out) == 2:
-                embeddings = rec_out[0] * rec_out[1]
-            else:
-                embeddings = rec_out[0]
-
-            fiqa_scores = None
-            if self._extended:
-                ort_fiqa = getattr(engine, "ort_fiqa", None)
-                if ort_fiqa is not None:
-                    try:
-                        _, fiqa_out = ort_fiqa.run(
-                            None,
-                            {ort_fiqa.get_inputs()[0].name: batched_input},
-                        )
-                        fiqa_scores = np.asarray(fiqa_out).reshape(-1)
-                    except Exception as e:
-                        (error_callback or print)(
-                            f"[FFService.batch] inferência FIQA falhou: {e}"
-                        )
-
             return _truncate_padding(embeddings, fiqa_scores)
 
         except Exception as e:

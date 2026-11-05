@@ -38,11 +38,13 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 ### Pré-requisitos
 
-- **Python 3.13+** (exigido pelo `forensicface` 0.7.1)
+- **Python 3.13+** (exigido pelo `forensicface` 0.8.1)
 - **Sistema operacional**: Windows (otimizado), macOS ou Linux.
 - **Modelos Sepael (v2 a v6)**: arquivos ONNX obtidos à parte e colocados em
   `~/.forensicface/models/` — no layout compartilhado
-  (`detection/det_10g.onnx` + `recognition/<sepaelv2|…|sepaelv6>/*face*.onnx`)
+  (`detection/det_10g.onnx` — ou `detection/scrfd/det_10g.onnx`, para onde o
+  `forensicface.tools.migrate_shared` da 0.8 o move — +
+  `recognition/<sepaelv2|…|sepaelv6>/*face*.onnx`)
   ou no layout antigo por modelo (`<sepaelv2|…|sepaelv6>/det_10g.onnx` + o
   encoder numa subpasta). O FaceAudit detecta automaticamente quais estão
   completos (`SepaelModel.available_on_disk()`).
@@ -73,7 +75,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 | `numpy`, `pandas`, `scipy`, `scikit-learn`, `pyarrow` | Núcleo numérico, parquet I/O, LogReg, KDE, GridSearch |
 | `tqdm` | Barras de progresso |
 | `opencv-python-headless` | Processamento de imagens (sem deps de GUI nativa) |
-| `forensicface` (PyPI, 0.7.1) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`) |
+| `forensicface` (PyPI, 0.8.1) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`) |
 | `matplotlib`, `seaborn`, `statsmodels` | Plots forenses (Tippett, DET, ECE) e LOWESS de auditoria |
 | `umap-learn` | t-SNE/UMAP scatter na auditoria de embeddings |
 | `speechbrain` | Backend do PLDA variante SIMPLE |
@@ -86,7 +88,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 | Ferramenta | Função |
 |---|---|
-| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada do PyPI (`forensicface==0.7.1`). Não instale pela URL git do upstream: o repositório tem arquivos com `:` no nome e o checkout falha no Windows |
+| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada do PyPI (`forensicface==0.8.1`, versão exata: o FaceAudit usa partes internas dela). Não instale pela URL git do upstream: o repositório tem arquivos com `:` no nome e o checkout falha no Windows |
 | **Sepael V2** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v2` no parquet, `FFInfo.embedding_sepaelv2`) |
 | **Sepael V3** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v3`, `FFInfo.embedding_sepaelv3`) |
 | **Sepael V4** | Encoder AdaFace ViT WebFace4M — embeddings 512-D (`embedding_v4`, `FFInfo.embedding_sepaelv4`) |
@@ -548,7 +550,7 @@ forense estabelecida:
 
 ## Status
 
-Versão **0.2.0** (fonte única em `faceaudit/_version.py`) — em desenvolvimento ativo. Os componentes core (engine
+Versão **0.2.1** (fonte única em `faceaudit/_version.py`) — em desenvolvimento ativo. Os componentes core (engine
 declarativa, calibração tripla LogReg/KDE/biGauss, PLDA tri-variante
 (SIMPLE/TWO_COVARIANCE/SHRINKAGE_TWO_COVARIANCE), score vectorization
 multivariado, hubness diagnostics, tipicidade kNN não-paramétrica — e MoVMF

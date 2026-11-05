@@ -28,11 +28,13 @@ dependencies = [
     # Forensic embedding backend. `FFService` (faceaudit/services/ff_service.py)
     # delega à API >= 0.6.0. Vem do PyPI, não da URL git: o repositório
     # upstream tem arquivos com `:` no nome (`*:Zone.Identifier`) e o
-    # `git checkout` falha no Windows. O wheel 0.7.1 do PyPI tem o mesmo
-    # código da tag v0.7.1 e exige Python >= 3.13 (daí o requires-python).
+    # `git checkout` falha no Windows. A 0.8.x exige Python >= 3.13 (daí o
+    # requires-python). Versão EXATA: o FFService usa partes internas da
+    # biblioteca (`_aligned_face_runner`), e cada troca precisa passar por
+    # `tests/test_forensicface_compat.py` e pela comparação dos embeddings.
     # Note: o usuário ainda precisa baixar os arquivos de modelo em
     # ~/.forensicface/models/ — o pacote não distribui pesos.
-    "forensicface==0.7.1",
+    "forensicface==0.8.1",
     # Plotting (used by validation, casework, hubness widgets and
     # by generate_arch_doc.py PDF generation)
     "matplotlib",
