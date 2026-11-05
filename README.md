@@ -38,7 +38,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 ### Pré-requisitos
 
-- **Python 3.11+**
+- **Python 3.13+** (exigido pelo `forensicface` 0.7.1)
 - **Sistema operacional**: Windows (otimizado), macOS ou Linux.
 - **Modelos Sepael (v2 a v6)**: arquivos ONNX obtidos à parte e colocados em
   `~/.forensicface/models/` — no layout compartilhado
@@ -73,7 +73,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 | `numpy`, `pandas`, `scipy`, `scikit-learn`, `pyarrow` | Núcleo numérico, parquet I/O, LogReg, KDE, GridSearch |
 | `tqdm` | Barras de progresso |
 | `opencv-python-headless` | Processamento de imagens (sem deps de GUI nativa) |
-| `forensicface` (via git) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`) |
+| `forensicface` (PyPI, 0.7.1) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`) |
 | `matplotlib`, `seaborn`, `statsmodels` | Plots forenses (Tippett, DET, ECE) e LOWESS de auditoria |
 | `umap-learn` | t-SNE/UMAP scatter na auditoria de embeddings |
 | `speechbrain` | Backend do PLDA variante SIMPLE |
@@ -86,7 +86,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 
 | Ferramenta | Função |
 |---|---|
-| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada via git URL (PyPI tem apenas 0.4.1; precisamos ≥ 0.7.1 do upstream `rafribeiro/forensicface@v0.7.1`) |
+| **ForensicFace** | Lib que orquestra detecção (`det_10g`) + alinhamento + encoder. Instalada do PyPI (`forensicface==0.7.1`). Não instale pela URL git do upstream: o repositório tem arquivos com `:` no nome e o checkout falha no Windows |
 | **Sepael V2** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v2` no parquet, `FFInfo.embedding_sepaelv2`) |
 | **Sepael V3** | Encoder AdaFace ResNet — embeddings 512-D (`embedding_v3`, `FFInfo.embedding_sepaelv3`) |
 | **Sepael V4** | Encoder AdaFace ViT WebFace4M — embeddings 512-D (`embedding_v4`, `FFInfo.embedding_sepaelv4`) |
