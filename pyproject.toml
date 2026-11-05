@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Biblioteca de auditoria forense facial"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
     # Core data + math
     "numpy",
@@ -26,11 +26,13 @@ dependencies = [
     #     é o caminho oficial (sem .so de GUI que falham fora do Linux).
     "opencv-python-headless",
     # Forensic embedding backend. `FFService` (faceaudit/services/ff_service.py)
-    # delega à API >= 0.6.0 — PyPI só tem até 0.4.1, então instalamos do
-    # repositório upstream via git URL (PEP 508).
+    # delega à API >= 0.6.0. Vem do PyPI, não da URL git: o repositório
+    # upstream tem arquivos com `:` no nome (`*:Zone.Identifier`) e o
+    # `git checkout` falha no Windows. O wheel 0.7.1 do PyPI tem o mesmo
+    # código da tag v0.7.1 e exige Python >= 3.13 (daí o requires-python).
     # Note: o usuário ainda precisa baixar os arquivos de modelo em
     # ~/.forensicface/models/ — o pacote não distribui pesos.
-    "forensicface @ git+https://github.com/rafribeiro/forensicface.git@v0.7.1",
+    "forensicface==0.7.1",
     # Plotting (used by validation, casework, hubness widgets and
     # by generate_arch_doc.py PDF generation)
     "matplotlib",
