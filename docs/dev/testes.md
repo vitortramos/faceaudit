@@ -201,6 +201,7 @@ python -m pytest tests/test_selection_actions.py
 ## Interface (Strategy Manager V2 e Dataset Manager)
 
 ```bash
+python -m pytest tests/test_crash_log.py                       # exceção em slot vai para o log e não aborta o app
 python -m pytest tests/test_score_comparison_table.py           # seleção das linhas: caso completo vs extremos
 python -m pytest tests/test_comparison_table_thumbnails.py      # miniaturas localizadas pelo face_hash
 python -m pytest tests/test_face_comparison_dialog.py           # duas faces lado a lado + enquadramento

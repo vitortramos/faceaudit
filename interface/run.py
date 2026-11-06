@@ -166,6 +166,11 @@ def _apply_light_palette(app: QtWidgets.QApplication) -> None:
 
 
 if __name__ == "__main__":
+    # Antes de tudo: sem isso, exceção em slot aborta o app (qFatal do PyQt6)
+    # e queda nativa não deixa rastro. Ver interface/crash_log.py.
+    from interface.crash_log import install as _install_crash_log
+    _install_crash_log()
+
     app = QtWidgets.QApplication(sys.argv)
     app.setStyle("Fusion")
     _apply_light_palette(app)
