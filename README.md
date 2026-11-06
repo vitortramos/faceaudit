@@ -75,7 +75,7 @@ ponta-a-ponta com hashes SHA-256 e cadeia de custódia.
 | `numpy`, `pandas`, `scipy`, `scikit-learn`, `pyarrow` | Núcleo numérico, parquet I/O, LogReg, KDE, GridSearch |
 | `tqdm` | Barras de progresso |
 | `opencv-python-headless` | Processamento de imagens (sem deps de GUI nativa) |
-| `forensicface` (PyPI, 0.8.1) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`) |
+| `forensicface` (PyPI, 0.8.1) | Detecção, alinhamento e extração de embeddings (traz `onnxruntime-gpu`; no macOS ver o contorno em "Passos") |
 | `matplotlib`, `seaborn`, `statsmodels` | Plots forenses (Tippett, DET, ECE) e LOWESS de auditoria |
 | `umap-learn` | t-SNE/UMAP scatter na auditoria de embeddings |
 | `speechbrain` | Backend do PLDA variante SIMPLE |
@@ -112,6 +112,43 @@ pip install -e ".[docs]"
 # Desenvolvimento:
 pip install -e ".[dev]"
 ```
+
+#### macOS: contorno enquanto o `forensicface` 0.8.1 for o pino
+
+No macOS o `pip install -e .` acima **falha** com
+`No matching distribution found for onnxruntime-gpu>=1.25.0`: o
+`forensicface` 0.8.1 declara `onnxruntime-gpu` sem marcador de plataforma e
+esse pacote não publica wheels para macOS. A correção está proposta no
+upstream ([rafribeiro/forensicface#20](https://github.com/rafribeiro/forensicface/pull/20));
+quando sair uma versão com ela, basta subir o pino em `pyproject.toml` e
+apagar este bloco. Até lá, instale assim (Python 3.13, dentro do venv):
+
+```bash
+# 1. forensicface sem as dependências dele, e as dependências à mão com o
+#    onnxruntime CPU — que no Apple Silicon já traz o CoreMLExecutionProvider.
+pip install --no-deps forensicface==0.8.1
+pip install onnxruntime onnx opencv-python-headless scikit-image pandas tqdm
+
+# 2. FaceAudit sem resolver dependências (senão o pip volta a exigir o onnxruntime-gpu)…
+pip install -e . --no-deps
+
+# 3. …e as dependências do FaceAudit lidas do próprio pyproject.toml, menos o forensicface.
+python -c "import tomllib; print('\n'.join(d for d in tomllib.load(open('pyproject.toml','rb'))['project']['dependencies'] if not d.startswith('forensicface')))" | pip install -r /dev/stdin
+
+# Desenvolvimento (testes): pytest + pytest-qt
+pip install pytest pytest-qt
+```
+
+O passo 1 imprime um aviso do resolvedor do pip dizendo que o
+`forensicface` exige `onnxruntime-gpu`; é esperado e não interrompe a
+instalação. `pip check` vai repetir essa única pendência. Conferência:
+`python -c "import faceaudit; print(faceaudit.__version__)"`.
+
+Sobre desempenho no Apple Silicon: `ff.use_gpu: true` compila os modelos no
+CoreML (minutos na primeira construção do serviço) e cada chamada ao encoder
+é preenchida até `ff.batch_size` faces. Para fluxos de poucas faces por
+chamada (clique de âncora no dataset de vídeo), a CPU é mais rápida; o CoreML
+compensa em extrações grandes com lotes cheios.
 
 ### Configuração mínima
 
